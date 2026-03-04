@@ -5,8 +5,9 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "db:ping": "node index.js",
     "server": "node server.js",
     "server:dev": "node --watch server.js",
     "db:schema": "node scripts/run-schema.js",
