@@ -294,9 +294,9 @@ router.post('/trucks/bulk', async (req, res, next) => {
           status: status || 'active',
         }
       );
-      const row = result.recordset[0];
-      inserted.push(row);
-      if (row?.id) await createFleetApplication(req.user.tenant_id, 'truck', row.id, 'import');
+      const insertedRow = result.recordset[0];
+      inserted.push(insertedRow);
+      if (insertedRow?.id) await createFleetApplication(req.user.tenant_id, 'truck', insertedRow.id, 'import');
     }
     const regList = inserted.map((t) => t.registration || '').filter(Boolean);
     if (regList.length > 0) notifyFleetDriverEmails(req.user.tenant_name || null, 'truck', regList, req.user?.email, 'added (import)');
@@ -477,9 +477,9 @@ router.post('/drivers/bulk', async (req, res, next) => {
           email: email || null,
         }
       );
-      const row = result.recordset[0];
-      inserted.push(row);
-      if (row?.id) await createFleetApplication(req.user.tenant_id, 'driver', row.id, 'import');
+      const insertedRow = result.recordset[0];
+      inserted.push(insertedRow);
+      if (insertedRow?.id) await createFleetApplication(req.user.tenant_id, 'driver', insertedRow.id, 'import');
     }
     const driverList = inserted.map((d) => [d.full_name, d.surname].filter(Boolean).join(' ').trim() || 'Driver').filter(Boolean);
     if (driverList.length > 0) notifyFleetDriverEmails(req.user.tenant_name || null, 'driver', driverList, req.user?.email, 'added (import)');

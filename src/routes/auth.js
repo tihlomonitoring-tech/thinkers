@@ -314,7 +314,18 @@ router.post('/forgot-password', async (req, res, next) => {
       { userId: user.id, token, code, expiresAt: expiresAt.toISOString() }
     );
 
-    const appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+    // Use FRONTEND_ORIGIN / APP_URL so reset link points to your deployed app, not localhost
+    let appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || '').trim().replace(/\/$/, '');
+    if (!appUrl) {
+      const raw = req.get('origin') || req.get('referer') || '';
+      if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        try {
+          const u = new URL(raw);
+          appUrl = `${u.protocol}//${u.host}`;
+        } catch (_) {}
+      }
+    }
+    if (!appUrl) appUrl = 'http://localhost:5173';
     const resetLink = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
     const html = passwordResetHtml({ resetLink, code, appUrl });
 
