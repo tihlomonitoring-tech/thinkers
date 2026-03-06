@@ -2132,7 +2132,9 @@ function TabRequests() {
       .finally(() => setAddingComment(false));
   };
 
-  const withOverride = () => (report?.status === 'approved' || report?.status === 'rejected') && report?.submitted_to_user_id === user?.id;
+  const isSuperAdmin = user?.role === 'super_admin';
+  const isAssignedApprover = report?.submitted_to_user_id != null && user?.id != null && String(report.submitted_to_user_id) === String(user.id);
+  const withOverride = () => (report?.status === 'approved' || report?.status === 'rejected') && (isAssignedApprover || isSuperAdmin);
   const needsOverrideToAct = withOverride();
   const effectiveOverride = needsOverrideToAct ? overrideCode.trim() : null;
 
@@ -2172,7 +2174,7 @@ function TabRequests() {
       .finally(() => setRequestingOverride(false));
   };
 
-  const canAct = report && (report.status === 'pending_approval' || report.status === 'provisional' || needsOverrideToAct) && report.submitted_to_user_id === user?.id;
+  const canAct = report && (report.status === 'pending_approval' || report.status === 'provisional' || needsOverrideToAct) && (isAssignedApprover || isSuperAdmin);
   const canShowActions = canAct && (evaluation || needsOverrideToAct);
   const showEvalForm = canAct && !needsOverrideToAct;
 
@@ -2554,6 +2556,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   const [commsLog, setCommsLog] = useState(() => (Array.isArray(initialData?.communication_log) && initialData.communication_log.length) ? initialData.communication_log : [emptyComm]);
   const [trucksList, setTrucksList] = useState([]);
   const [driversList, setDriversList] = useState([]);
+  const [routeList, setRouteList] = useState([]);
   const [fleetLoadError, setFleetLoadError] = useState('');
   const [markingAddressed, setMarkingAddressed] = useState(null);
 
@@ -2568,6 +2571,12 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       .then(([trucks, drivers]) => { if (!cancelled) { setTrucksList(trucks); setDriversList(drivers); } })
       .catch((err) => { if (!cancelled) setFleetLoadError(err?.message || 'Could not load fleet/drivers. You can still type manually.'); });
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    contractorApi.routes.list()
+      .then((r) => setRouteList(r.routes || []))
+      .catch(() => setRouteList([]));
   }, []);
 
   const addRow = (setter, empty) => setter((prev) => [...prev, { ...empty }]);
@@ -2684,7 +2693,33 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Route</label>
-              <input name="route" type="text" placeholder="e.g. Ntshovelo Colliery" value={formFields.route} onChange={set('route')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              {routeList.length > 0 ? (
+                <>
+                  <select
+                    name="route"
+                    value={routeList.some((r) => (r.name || '').trim() === (formFields.route || '').trim()) ? formFields.route : '__other__'}
+                    onChange={(e) => setFormFields((f) => ({ ...f, route: e.target.value === '__other__' ? f.route : e.target.value }))}
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">Select route</option>
+                    {routeList.map((r) => (
+                      <option key={r.id} value={r.name || ''}>{r.name || '—'}</option>
+                    ))}
+                    <option value="__other__">Other (specify below)</option>
+                  </select>
+                  {!routeList.some((r) => (r.name || '').trim() === (formFields.route || '').trim()) && (
+                    <input
+                      type="text"
+                      placeholder="e.g. Ntshovelo Colliery"
+                      value={formFields.route || ''}
+                      onChange={(e) => setFormFields((f) => ({ ...f, route: e.target.value }))}
+                      className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mt-2"
+                    />
+                  )}
+                </>
+              ) : (
+                <input name="route" type="text" placeholder="e.g. Ntshovelo Colliery (or add routes in Access Management)" value={formFields.route} onChange={set('route')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Report date</label>

@@ -1649,44 +1649,60 @@ router.delete('/routes/:id', async (req, res, next) => {
   }
 });
 
-/** Trucks that are approved (facility_access=1) and not currently suspended */
+/** Trucks that are approved (facility_access=1) and not currently suspended. Scoped by company (contractor_id) when user has contractor scope. */
 router.get('/enrollment/approved-trucks', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const result = await query(
-      `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access
+    const allowed = await getAllowedContractorIds(req);
+    let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access
        FROM contractor_trucks t
        WHERE t.tenant_id = @tenantId AND t.facility_access = 1
          AND NOT EXISTS (
            SELECT 1 FROM contractor_suspensions s
            WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50))
              AND s.[status] IN (N'suspended', N'under_appeal')
-         )
-       ORDER BY t.registration ASC`,
-      { tenantId }
-    );
+         )`;
+    const params = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ trucks: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND t.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    sql += ` ORDER BY t.registration ASC`;
+    const result = await query(sql, params);
     res.json({ trucks: result.recordset });
   } catch (err) {
     next(err);
   }
 });
 
-/** Drivers that are approved and not suspended */
+/** Drivers that are approved and not suspended. Scoped by company (contractor_id) when user has contractor scope. */
 router.get('/enrollment/approved-drivers', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const result = await query(
-      `SELECT d.id, d.full_name, d.license_number, d.phone, d.facility_access
+    const allowed = await getAllowedContractorIds(req);
+    let sql = `SELECT d.id, d.full_name, d.license_number, d.phone, d.facility_access
        FROM contractor_drivers d
        WHERE d.tenant_id = @tenantId AND d.facility_access = 1
          AND NOT EXISTS (
            SELECT 1 FROM contractor_suspensions s
            WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50))
              AND s.[status] IN (N'suspended', N'under_appeal')
-         )
-       ORDER BY d.full_name ASC`,
-      { tenantId }
-    );
+         )`;
+    const params = { tenantId };
+    if (allowed && allowed.length === 0) {
+      return res.json({ drivers: [] });
+    }
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND d.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    sql += ` ORDER BY d.full_name ASC`;
+    const result = await query(sql, params);
     res.json({ drivers: result.recordset });
   } catch (err) {
     next(err);
@@ -1710,31 +1726,38 @@ router.get('/routes/enrolled-by-truck/:truckId', async (req, res, next) => {
   }
 });
 
-/** GET single route with enrolled trucks and drivers */
+/** GET single route with enrolled trucks and drivers. When user has contractor scope, only trucks/drivers for that company are returned. */
 router.get('/routes/:id', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { id } = req.params;
+    const allowed = await getAllowedContractorIds(req);
     const routeResult = await query(
       `SELECT * FROM contractor_routes WHERE id = @id AND tenant_id = @tenantId`,
       { id, tenantId }
     );
     if (!routeResult.recordset?.[0]) return res.status(404).json({ error: 'Route not found' });
     const route = routeResult.recordset[0];
-    const trucksResult = await query(
-      `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no
+    let trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no
        FROM contractor_route_trucks rt
        JOIN contractor_trucks t ON t.id = rt.truck_id
-       WHERE rt.route_id = @id ORDER BY t.registration`,
-      { id }
-    );
-    const driversResult = await query(
-      `SELECT rd.driver_id, d.full_name, d.license_number
+       WHERE rt.route_id = @id`;
+    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number
        FROM contractor_route_drivers rd
        JOIN contractor_drivers d ON d.id = rd.driver_id
-       WHERE rd.route_id = @id ORDER BY d.full_name`,
-      { id }
-    );
+       WHERE rd.route_id = @id`;
+    const trucksParams = { id };
+    const driversParams = { id };
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      trucksSql += ` AND t.contractor_id IN (${placeholders})`;
+      driversSql += ` AND d.contractor_id IN (${placeholders})`;
+      allowed.forEach((cid, i) => { trucksParams[`c${i}`] = cid; driversParams[`c${i}`] = cid; });
+    }
+    trucksSql += ` ORDER BY t.registration`;
+    driversSql += ` ORDER BY d.full_name`;
+    const trucksResult = await query(trucksSql, trucksParams);
+    const driversResult = await query(driversSql, driversParams);
     res.json({
       route,
       trucks: trucksResult.recordset,
@@ -1745,7 +1768,7 @@ router.get('/routes/:id', async (req, res, next) => {
   }
 });
 
-/** POST enroll trucks on route (body: { truckIds: [] }) */
+/** POST enroll trucks on route (body: { truckIds: [] }). Only trucks belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/trucks', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
@@ -1756,14 +1779,19 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
     const routeRow = await query(`SELECT id, name FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
     if (!routeRow.recordset?.length) return res.status(404).json({ error: 'Route not found' });
     const routeName = routeRow.recordset[0].name;
+    const allowed = await getAllowedContractorIds(req);
     const addedTruckIds = [];
     for (const truckId of ids) {
-      const truckOk = await query(
-        `SELECT 1 FROM contractor_trucks t
+      let truckSql = `SELECT 1 FROM contractor_trucks t
          WHERE t.id = @truckId AND t.tenant_id = @tenantId AND t.facility_access = 1
-           AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))`,
-        { truckId, tenantId }
-      );
+           AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))`;
+      const truckParams = { truckId, tenantId };
+      if (allowed && allowed.length > 0) {
+        const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+        truckSql += ` AND t.contractor_id IN (${placeholders})`;
+        allowed.forEach((id, i) => { truckParams[`c${i}`] = id; });
+      }
+      const truckOk = await query(truckSql, truckParams);
       if (!truckOk.recordset?.length) continue;
       try {
         await query(
@@ -1826,7 +1854,7 @@ router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
   }
 });
 
-/** POST enroll drivers on route (body: { driverIds: [] }) */
+/** POST enroll drivers on route (body: { driverIds: [] }). Only drivers belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/drivers', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
@@ -1836,14 +1864,19 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
     if (ids.length === 0) return res.status(400).json({ error: 'driverIds array is required' });
     const routeCheck = await query(`SELECT 1 FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
     if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
+    const allowed = await getAllowedContractorIds(req);
     let added = 0;
     for (const driverId of ids) {
-      const driverOk = await query(
-        `SELECT 1 FROM contractor_drivers d
+      let driverSql = `SELECT 1 FROM contractor_drivers d
          WHERE d.id = @driverId AND d.tenant_id = @tenantId AND d.facility_access = 1
-           AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))`,
-        { driverId, tenantId }
-      );
+           AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))`;
+      const driverParams = { driverId, tenantId };
+      if (allowed && allowed.length > 0) {
+        const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+        driverSql += ` AND d.contractor_id IN (${placeholders})`;
+        allowed.forEach((id, i) => { driverParams[`c${i}`] = id; });
+      }
+      const driverOk = await query(driverSql, driverParams);
       if (!driverOk.recordset?.length) continue;
       try {
         await query(
@@ -1877,17 +1910,32 @@ router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
   }
 });
 
-/** GET fleet list CSV (approved trucks; optional ?routeId= or ?routeIds=id1,id2 for route filter) */
+/** GET fleet list CSV (approved trucks; optional ?routeId= or ?routeIds=id1,id2 for route filter). Scoped by company when user has contractor scope. */
 router.get('/enrollment/fleet-list', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
+    const allowed = await getAllowedContractorIds(req);
+    const params = { tenantId };
+    let contractorClause = '';
+    if (allowed && allowed.length === 0) {
+      const result = await query(`SELECT t.registration, t.make_model, t.fleet_no, t.commodity_type, t.capacity_tonnes FROM contractor_trucks t WHERE 1=0`, params);
+      const rows = result.recordset || [];
+      const headers = ['Registration', 'Make/Model', 'Fleet No', 'Commodity', 'Capacity (t)'];
+      const csv = [headers.join(',')].concat(rows.map((r) => [r.registration, r.make_model, r.fleet_no, r.commodity_type, r.capacity_tonnes].map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="fleet-list.csv"');
+      return res.send('\uFEFF' + csv);
+    }
+    if (allowed && allowed.length > 0) {
+      contractorClause = ' AND t.contractor_id IN (' + allowed.map((_, i) => `@fc${i}`).join(',') + ')';
+      allowed.forEach((id, i) => { params[`fc${i}`] = id; });
+    }
     const routeId = req.query.routeId;
     const routeIdsRaw = req.query.routeIds;
     const routeIds = routeIdsRaw && typeof routeIdsRaw === 'string' ? routeIdsRaw.split(',').map((id) => id.trim()).filter(Boolean) : null;
     const useRoutes = routeId || (routeIds && routeIds.length > 0);
     const ids = routeId ? [routeId] : (routeIds || []);
     let sql;
-    const params = { tenantId };
     if (useRoutes && ids.length > 0) {
       const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
       for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
@@ -1895,19 +1943,19 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
              FROM contractor_route_trucks rt
              JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1
              JOIN contractor_routes r ON r.id = rt.route_id AND r.tenant_id = @tenantId
-             WHERE rt.route_id IN (${placeholders})
+             WHERE rt.route_id IN (${placeholders})${contractorClause}
              ORDER BY r.[order], r.name, t.registration`;
     } else if (useRoutes && ids.length === 0) {
       sql = `SELECT t.registration, t.make_model, t.fleet_no, t.commodity_type, t.capacity_tonnes
              FROM contractor_trucks t
              WHERE t.tenant_id = @tenantId AND t.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
+               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
              ORDER BY t.registration`;
     } else {
       sql = `SELECT t.registration, t.make_model, t.fleet_no, t.commodity_type, t.capacity_tonnes
              FROM contractor_trucks t
              WHERE t.tenant_id = @tenantId AND t.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
+               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
              ORDER BY t.registration`;
     }
     const result = await query(sql, params);
@@ -1937,17 +1985,32 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
   }
 });
 
-/** GET driver list CSV (approved drivers; optional ?routeId= or ?routeIds=id1,id2 for route filter) */
+/** GET driver list CSV (approved drivers; optional ?routeId= or ?routeIds=id1,id2 for route filter). Scoped by company when user has contractor scope. */
 router.get('/enrollment/driver-list', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
+    const allowed = await getAllowedContractorIds(req);
+    const params = { tenantId };
+    let contractorClause = '';
+    if (allowed && allowed.length === 0) {
+      const result = await query(`SELECT d.full_name, d.license_number, d.phone, d.email FROM contractor_drivers d WHERE 1=0`, params);
+      const rows = result.recordset || [];
+      const headers = ['Name', 'License', 'Phone', 'Email'];
+      const csv = [headers.join(',')].concat(rows.map((r) => [r.full_name, r.license_number, r.phone, r.email].map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="driver-list.csv"');
+      return res.send('\uFEFF' + csv);
+    }
+    if (allowed && allowed.length > 0) {
+      contractorClause = ' AND d.contractor_id IN (' + allowed.map((_, i) => `@dc${i}`).join(',') + ')';
+      allowed.forEach((id, i) => { params[`dc${i}`] = id; });
+    }
     const routeId = req.query.routeId;
     const routeIdsRaw = req.query.routeIds;
     const routeIds = routeIdsRaw && typeof routeIdsRaw === 'string' ? routeIdsRaw.split(',').map((id) => id.trim()).filter(Boolean) : null;
     const useRoutes = routeId || (routeIds && routeIds.length > 0);
     const ids = routeId ? [routeId] : (routeIds || []);
     let sql;
-    const params = { tenantId };
     if (useRoutes && ids.length > 0) {
       const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
       for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
@@ -1955,19 +2018,19 @@ router.get('/enrollment/driver-list', async (req, res, next) => {
              FROM contractor_route_drivers rd
              JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1
              JOIN contractor_routes r ON r.id = rd.route_id AND r.tenant_id = @tenantId
-             WHERE rd.route_id IN (${placeholders})
+             WHERE rd.route_id IN (${placeholders})${contractorClause}
              ORDER BY r.[order], r.name, d.full_name`;
     } else if (useRoutes && ids.length === 0) {
       sql = `SELECT d.full_name, d.license_number, d.phone, d.email
              FROM contractor_drivers d
              WHERE d.tenant_id = @tenantId AND d.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
+               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
              ORDER BY d.full_name`;
     } else {
       sql = `SELECT d.full_name, d.license_number, d.phone, d.email
              FROM contractor_drivers d
              WHERE d.tenant_id = @tenantId AND d.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
+               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
              ORDER BY d.full_name`;
     }
     const result = await query(sql, params);

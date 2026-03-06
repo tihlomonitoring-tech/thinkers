@@ -35,7 +35,7 @@ export default function Login() {
       >
         <div className="max-w-sm">
           <h1 className="text-2xl font-bold text-white tracking-tight">Thinkers Afrika</h1>
-          <p className="text-[#fecaca] text-base mt-1.5 font-medium">Management System</p>
+          <p className="text-[#fecaca] text-base mt-1.5 font-medium">Smart Administration System</p>
           <p className="text-[#fca5a5]/80 mt-3 text-sm leading-relaxed">
             Sign in to manage your operations in one place.
           </p>
@@ -48,7 +48,7 @@ export default function Login() {
           {/* Mobile branding */}
           <div className="md:hidden text-center mb-6">
             <h1 className="text-xl font-bold text-white">Thinkers Afrika</h1>
-            <p className="text-[#b91c1c] text-sm font-medium mt-0.5">Management System</p>
+            <p className="text-[#b91c1c] text-sm font-medium mt-0.5">Smart Administration System</p>
           </div>
 
           <div className="bg-[#262626]/90 rounded-xl shadow-2xl shadow-black/20 border border-[#404040]/80 p-6 backdrop-blur-sm">
@@ -124,8 +124,9 @@ export default function Login() {
           </div>
 
           <p className="mt-4 text-center text-[10px] text-[#525252]">
-            Thinkers Afrika Management System
+            Thinkers Afrika Smart Administration System
           </p>
+          <p className="mt-1 text-center text-[10px] text-[#525252]">For support, please contact the application developer: Vincent Mogashoa on: <a href="mailto:vincent@thinkersafrika.co.za" className="text-[#737373] hover:text-[#a3a3a3] underline">vincent@thinkersafrika.co.za</a></p>
         </div>
       </div>
     </div>

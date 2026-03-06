@@ -460,6 +460,7 @@ router.post('/', requireTenantAdmin, async (req, res, next) => {
     const primaryTenantId = tenantIds[0];
     if (!canAccessTenant(req, primaryTenantId)) return res.status(403).json({ error: 'Forbidden' });
 
+    const pool = await getPool();
     const safeRole = role === 'tenant_admin' || role === 'user' ? role : 'user';
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 

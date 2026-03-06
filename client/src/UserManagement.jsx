@@ -209,6 +209,28 @@ export default function UserManagement() {
     setError('');
   };
 
+  /** Open Add user form pre-filled from an existing user (tenants, page roles, contractors). You only change name, email, password. */
+  const openCreateFromUser = (u) => {
+    const tenantIds = (Array.isArray(u.tenant_ids) && u.tenant_ids.length > 0)
+      ? u.tenant_ids.map((id) => (id != null ? String(id) : '')).filter(Boolean)
+      : (u.tenant_id != null ? [String(u.tenant_id)] : []);
+    setFormUser({
+      email: '',
+      full_name: '',
+      password: '',
+      role: u.role || 'user',
+      id_number: '',
+      cellphone: '',
+      tenant_id: tenantIds[0] || me?.tenant_id || '',
+      tenant_ids: tenantIds,
+      page_roles: Array.isArray(u.page_roles) ? u.page_roles.slice() : [],
+      contractor_ids: (Array.isArray(u.contractor_ids) ? u.contractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
+    });
+    setFormContractors([]);
+    setModal('create');
+    setError('');
+  };
+
   const openEdit = (u) => {
     const tenantIds = (Array.isArray(u.tenant_ids) && u.tenant_ids.length > 0)
       ? u.tenant_ids.map((id) => (id != null ? String(id) : '')).filter(Boolean)
@@ -604,6 +626,9 @@ export default function UserManagement() {
                     {me?.role === 'super_admin' && <td className="px-4 py-2 text-surface-600">{u.tenant_name || '—'}</td>}
                     <td className="px-4 py-2 text-surface-600">{formatDate(u.last_login_at)}</td>
                     <td className="px-4 py-2 text-right">
+                      {canManageUsers && (
+                        <button type="button" onClick={() => openCreateFromUser(u)} className="text-brand-600 hover:underline mr-2" title="Add a new user with same tenants, page access and contractors">Add like this</button>
+                      )}
                       {canManageUsers && u.id !== me?.id && (
                         <button type="button" onClick={() => openEdit(u)} className="text-brand-600 hover:underline mr-2">Edit</button>
                       )}
@@ -741,6 +766,9 @@ export default function UserManagement() {
               </div>
               {canManageUsers && detailUser.id !== me?.id && (
                 <div className="flex gap-2 pt-2">
+                  {canManageUsers && (
+                    <button type="button" onClick={() => { openCreateFromUser(detailUser); setDetailUser(null); }} className="px-3 py-1.5 text-sm rounded-lg border border-brand-600 text-brand-700 hover:bg-brand-50 mr-2">Add like this</button>
+                  )}
                   <button type="button" onClick={() => { openEdit(detailUser); setDetailUser(null); }} className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Edit</button>
                   <button type="button" onClick={() => deleteUser(detailUser.id)} className="px-3 py-1.5 text-sm rounded-lg border border-red-300 text-red-600 hover:bg-red-50">Delete</button>
                 </div>

@@ -112,7 +112,8 @@ export default function ForgotPassword() {
             </p>
           </div>
 
-          <p className="mt-4 text-center text-[10px] text-[#525252]">Thinkers Afrika Management System</p>
+          <p className="mt-4 text-center text-[10px] text-[#525252]">Thinkers Afrika Smart Administration System</p>
+          <p className="mt-1 text-center text-[10px] text-[#525252]">For support, please contact the application developer: Vincent Mogashoa on: <a href="mailto:vincent@thinkersafrika.co.za" className="text-[#737373] hover:text-[#a3a3a3] underline">vincent@thinkersafrika.co.za</a></p>
         </div>
       </div>
     </div>

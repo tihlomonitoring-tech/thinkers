@@ -535,7 +535,7 @@ router.get('/fleet-applications', async (req, res, next) => {
     const statusFilter = req.query.status === 'pending' ? "AND a.[status] = N'pending'" : '';
     const result = await query(
       `SELECT a.id, a.tenant_id, a.entity_type, a.entity_id, a.source, a.[status], a.reviewed_by_user_id, a.reviewed_at, a.decline_reason, a.created_at,
-        t.name AS contractor_name,
+        COALESCE(c.name, t.name) AS contractor_name,
         tr.registration AS truck_registration, tr.make_model AS truck_make_model, tr.main_contractor AS truck_main_contractor, tr.sub_contractor AS truck_sub_contractor,
         tr.year_model AS truck_year_model, tr.ownership_desc AS truck_ownership_desc, tr.fleet_no AS truck_fleet_no,
         tr.trailer_1_reg_no AS truck_trailer_1_reg_no, tr.trailer_2_reg_no AS truck_trailer_2_reg_no,
@@ -547,6 +547,7 @@ router.get('/fleet-applications', async (req, res, next) => {
        JOIN tenants t ON t.id = a.tenant_id
        LEFT JOIN contractor_trucks tr ON tr.id = a.entity_id AND a.entity_type = N'truck'
        LEFT JOIN contractor_drivers d ON d.id = a.entity_id AND a.entity_type = N'driver'
+       LEFT JOIN contractors c ON c.id = COALESCE(tr.contractor_id, d.contractor_id)
        WHERE 1=1 ${statusFilter}
        ORDER BY a.created_at DESC`
     );
@@ -1133,9 +1134,13 @@ router.get('/fleet-applications/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const appResult = await query(
-      `SELECT a.*, t.name AS contractor_name
+      `SELECT a.*, t.name AS tenant_name,
+        COALESCE(c.name, t.name) AS contractor_name
        FROM cc_fleet_applications a
        JOIN tenants t ON t.id = a.tenant_id
+       LEFT JOIN contractor_trucks tr ON tr.id = a.entity_id AND a.entity_type = N'truck'
+       LEFT JOIN contractor_drivers d ON d.id = a.entity_id AND a.entity_type = N'driver'
+       LEFT JOIN contractors c ON c.id = COALESCE(tr.contractor_id, d.contractor_id)
        WHERE a.id = @id`,
       { id }
     );
@@ -1399,7 +1404,13 @@ router.patch('/fleet-applications/:id/decline', async (req, res, next) => {
       { entityId, declineReason }
     );
     const updated = await query(
-      `SELECT a.*, t.name AS contractor_name FROM cc_fleet_applications a JOIN tenants t ON t.id = a.tenant_id WHERE a.id = @id`,
+      `SELECT a.*, t.name AS tenant_name, COALESCE(c.name, t.name) AS contractor_name
+       FROM cc_fleet_applications a
+       JOIN tenants t ON t.id = a.tenant_id
+       LEFT JOIN contractor_trucks tr ON tr.id = a.entity_id AND a.entity_type = N'truck'
+       LEFT JOIN contractor_drivers d ON d.id = a.entity_id AND a.entity_type = N'driver'
+       LEFT JOIN contractors c ON c.id = COALESCE(tr.contractor_id, d.contractor_id)
+       WHERE a.id = @id`,
       { id }
     );
     const row = updated.recordset?.[0];
@@ -1469,9 +1480,10 @@ router.get('/approvers', async (req, res, next) => {
   }
 });
 
-/** GET shift reports: created by me, or assigned to me for approval. Query ?requests=1 for only assigned to me. ?decidedByMe=1 for reports you approved/rejected (for override flow). */
+/** GET shift reports: created by me, or assigned to me for approval. Query ?requests=1 for only assigned to me. ?decidedByMe=1 for reports you approved/rejected (for override flow). Super_admin sees all requests and all reports. */
 router.get('/shift-reports', async (req, res, next) => {
   try {
+    const isSuperAdmin = req.user?.role === 'super_admin';
     const requestsOnly = req.query.requests === '1';
     const decidedByMe = req.query.decidedByMe === '1';
     let sql = `
@@ -1486,19 +1498,23 @@ router.get('/shift-reports', async (req, res, next) => {
       WHERE 1=1`;
     const params = {};
     if (decidedByMe) {
-      sql += ` AND r.submitted_to_user_id = @userId AND r.status IN ('approved', 'rejected')`;
-      params.userId = req.user.id;
+      if (!isSuperAdmin) sql += ` AND r.submitted_to_user_id = @userId AND r.status IN ('approved', 'rejected')`;
+      else sql += ` AND r.status IN ('approved', 'rejected')`;
+      if (!isSuperAdmin) params.userId = req.user.id;
       sql += ` ORDER BY r.updated_at DESC`;
       const result = await query(sql, params);
       const list = (result.recordset || []).slice(0, 20).map(rowToShiftReport);
       return res.json({ reports: list });
     }
     if (requestsOnly) {
-      sql += ` AND r.submitted_to_user_id = @userId AND r.status IN ('pending_approval', 'provisional')`;
-      params.userId = req.user.id;
+      if (!isSuperAdmin) sql += ` AND r.submitted_to_user_id = @userId AND r.status IN ('pending_approval', 'provisional')`;
+      else sql += ` AND r.status IN ('pending_approval', 'provisional')`;
+      if (!isSuperAdmin) params.userId = req.user.id;
     } else {
-      sql += ` AND (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)`;
-      params.userId = req.user.id;
+      if (!isSuperAdmin) {
+        sql += ` AND (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)`;
+        params.userId = req.user.id;
+      }
     }
     sql += ` ORDER BY r.updated_at DESC`;
     const result = await query(sql, params);
@@ -1532,10 +1548,14 @@ router.get('/shift-items', async (req, res, next) => {
       LEFT JOIN users creator ON creator.id = r.created_by_user_id
       LEFT JOIN users approver ON approver.id = r.submitted_to_user_id
       LEFT JOIN users approvedBy ON approvedBy.id = r.approved_by_user_id
-      WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)
+      WHERE 1=1
         AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) >= @dateFrom
         AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) <= @dateTo`;
-    const params = { userId: req.user.id, dateFrom: dateFromStr, dateTo: dateToStr };
+    const params = { dateFrom: dateFromStr, dateTo: dateToStr };
+    if (req.user?.role !== 'super_admin') {
+      params.userId = req.user.id;
+      sql = sql.replace('WHERE 1=1', `WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)`);
+    }
     if (routeFilter) {
       sql += ` AND LOWER(LTRIM(RTRIM(ISNULL(r.route, N'')))) = LOWER(LTRIM(RTRIM(@routeFilter)))`;
       params.routeFilter = routeFilter;
@@ -1595,8 +1615,12 @@ router.get('/shift-report-export', async (req, res, next) => {
     let sql = `
       SELECT r.*
       FROM command_centre_shift_reports r
-      WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)`;
-    const params = { userId: req.user.id };
+      WHERE 1=1`;
+    const params = {};
+    if (req.user?.role !== 'super_admin') {
+      sql = sql.replace('WHERE 1=1', 'WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)');
+      params.userId = req.user.id;
+    }
     if (dateFrom) { sql += ` AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) >= @dateFrom`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) <= @dateTo`; params.dateTo = dateTo; }
     if (routeFilter) { sql += ` AND LOWER(LTRIM(RTRIM(ISNULL(r.route, N'')))) = LOWER(LTRIM(RTRIM(@routeFilter)))`; params.routeFilter = routeFilter; }
@@ -1772,9 +1796,12 @@ router.get('/trends', async (req, res, next) => {
     let sql = `
       SELECT r.*
       FROM command_centre_shift_reports r
-      WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)
-        AND r.status = N'approved'`;
-    const params = { userId: req.user.id };
+      WHERE r.status = N'approved'`;
+    const params = {};
+    if (req.user?.role !== 'super_admin') {
+      sql = sql.replace('WHERE r.status', 'WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId) AND r.status');
+      params.userId = req.user.id;
+    }
     if (dateFrom) { sql += ` AND (r.report_date >= @dateFrom OR r.shift_date >= @dateFrom)`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND (r.report_date <= @dateTo OR r.shift_date <= @dateTo)`; params.dateTo = dateTo; }
     if (routeFilter) { sql += ` AND LOWER(LTRIM(RTRIM(ISNULL(r.route, N'')))) = LOWER(LTRIM(RTRIM(@routeFilter)))`; params.routeFilter = routeFilter; }
@@ -1952,7 +1979,8 @@ router.post('/shift-reports/:id/evaluation', async (req, res, next) => {
     );
     const report = reportResult.recordset?.[0];
     if (!report) return res.status(404).json({ error: 'Report not found' });
-    if (report.submitted_to_user_id !== req.user.id) return res.status(403).json({ error: 'Only the assigned approver can submit an evaluation' });
+    const isApproverOrSuperAdmin = report.submitted_to_user_id === req.user.id || req.user?.role === 'super_admin';
+    if (!isApproverOrSuperAdmin) return res.status(403).json({ error: 'Only the assigned approver can submit an evaluation' });
     if (!report.status || !['pending_approval', 'provisional'].includes(report.status)) return res.status(400).json({ error: 'Report is not awaiting your review' });
     if (!answers || typeof answers !== 'object') return res.status(400).json({ error: 'answers object required' });
     if (!overall_comment || typeof overall_comment !== 'string' || !String(overall_comment).trim()) return res.status(400).json({ error: 'overall_comment is required' });
@@ -1999,7 +2027,7 @@ router.post('/shift-reports/:id/request-override', async (req, res, next) => {
     );
     const report = reportResult.recordset?.[0];
     if (!report) return res.status(404).json({ error: 'Report not found' });
-    if (report.submitted_to_user_id !== req.user.id) return res.status(403).json({ error: 'Only the assigned approver can request an override' });
+    if (report.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can request an override' });
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
     await query(
@@ -2228,7 +2256,8 @@ router.post('/shift-reports/:id/comments', async (req, res, next) => {
     if (!report) return res.status(404).json({ error: 'Report not found' });
     const isApprover = report.submitted_to_user_id === req.user.id;
     const isCreator = report.created_by_user_id === req.user.id;
-    if (!isApprover && !isCreator) return res.status(403).json({ error: 'Not allowed to comment' });
+    const isSuperAdmin = req.user?.role === 'super_admin';
+    if (!isApprover && !isCreator && !isSuperAdmin) return res.status(403).json({ error: 'Not allowed to comment' });
 
     const result = await query(
       `INSERT INTO command_centre_shift_report_comments (report_id, user_id, comment_text) OUTPUT INSERTED.*
@@ -2315,7 +2344,7 @@ router.patch('/shift-reports/:id/approve', async (req, res, next) => {
     );
     const existing = getResult.recordset?.[0];
     if (!existing) return res.status(404).json({ error: 'Report not found' });
-    if (existing.submitted_to_user_id !== req.user.id) return res.status(403).json({ error: 'Only the assigned approver can approve' });
+    if (existing.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can approve' });
     const overrideCode = req.body?.override_code;
     const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode);
     if (check.error) return res.status(400).json({ error: check.error });
@@ -2349,7 +2378,7 @@ router.patch('/shift-reports/:id/reject', async (req, res, next) => {
     );
     const existing = getResult.recordset?.[0];
     if (!existing) return res.status(404).json({ error: 'Report not found' });
-    if (existing.submitted_to_user_id !== req.user.id) return res.status(403).json({ error: 'Only the assigned approver can reject' });
+    if (existing.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can reject' });
     const overrideCode = req.body?.override_code;
     const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode);
     if (check.error) return res.status(400).json({ error: check.error });
@@ -2382,7 +2411,7 @@ router.patch('/shift-reports/:id/provisional', async (req, res, next) => {
     );
     const existing = getResult.recordset?.[0];
     if (!existing) return res.status(404).json({ error: 'Report not found' });
-    if (existing.submitted_to_user_id !== req.user.id) return res.status(403).json({ error: 'Only the assigned approver can give provisional approval' });
+    if (existing.submitted_to_user_id !== req.user.id && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the assigned approver can give provisional approval' });
     const overrideCode = req.body?.override_code;
     const check = await requireEvaluationOrOverride(query, req.params.id, req.user.id, existing.status, overrideCode);
     if (check.error) return res.status(400).json({ error: check.error });
@@ -2418,7 +2447,7 @@ router.patch('/shift-reports/:id/revoke-approval', async (req, res, next) => {
     if (String(existing.status).toLowerCase().trim() !== 'approved') return res.status(400).json({ error: 'Only approved reports can have approval revoked' });
     const approvedBy = existing.approved_by_user_id != null ? String(existing.approved_by_user_id).toLowerCase().trim() : '';
     const userId = req.user?.id != null ? String(req.user.id).toLowerCase().trim() : '';
-    if (approvedBy !== userId) return res.status(403).json({ error: 'Only the user who approved this report can revoke approval' });
+    if (approvedBy !== userId && req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Only the user who approved this report can revoke approval' });
 
     await query(
       `UPDATE command_centre_shift_reports SET status = 'draft', approved_by_user_id = NULL, approved_at = NULL, updated_at = SYSUTCDATETIME() WHERE id = @id`,
