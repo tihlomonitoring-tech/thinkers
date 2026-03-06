@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
-import { getTenantUserEmails, getCommandCentreAndRectorEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getTenantUserEmails, getContractorUserEmails, getCommandCentreAndRectorEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { applicationApprovedHtml, applicationBulkApprovedHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
@@ -350,15 +350,17 @@ router.post('/suspend-truck', async (req, res, next) => {
       { truckId, tenantId }
     );
     // Email contractor and rector (grey templates)
-    if (isEmailConfigured?.() && sendEmail && getTenantUserEmails && getCommandCentreAndRectorEmails) {
+    if (isEmailConfigured?.() && sendEmail && getCommandCentreAndRectorEmails) {
       try {
         const truckInfo = await query(
-          `SELECT t.registration FROM contractor_trucks t WHERE t.id = @truckId`,
+          `SELECT t.registration, t.contractor_id FROM contractor_trucks t WHERE t.id = @truckId`,
           { truckId }
         );
+        const truckRow = truckInfo.recordset?.[0];
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
-        const truckRegistration = truckInfo.recordset?.[0]?.registration || `Truck #${truckId}`;
+        const truckRegistration = truckRow?.registration || `Truck #${truckId}`;
         const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
+        const truckContractorId = truckRow?.contractor_id ?? truckRow?.contractor_Id ?? null;
         let suspensionEndsAt = null;
         if (!isPermanent && durationDays) {
           const endRow = await query(
@@ -368,7 +370,7 @@ router.post('/suspend-truck', async (req, res, next) => {
           const endsAt = endRow.recordset?.[0]?.suspension_ends_at;
           if (endsAt) suspensionEndsAt = typeof endsAt === 'string' ? endsAt : (endsAt.toISOString ? endsAt.toISOString().slice(0, 10) : String(endsAt));
         }
-        const contractorEmails = await getTenantUserEmails(query, tenantId);
+        const contractorEmails = truckContractorId ? await getContractorUserEmails(query, tenantId, truckContractorId) : await getTenantUserEmails(query, tenantId);
         const rectorEmails = await getCommandCentreAndRectorEmails(query);
         const appUrl = process.env.APP_URL || '';
         if (contractorEmails.length) {
@@ -448,21 +450,26 @@ router.post('/reinstate-suspension', async (req, res, next) => {
       `UPDATE contractor_suspensions SET [status] = N'reinstated', updated_at = SYSUTCDATETIME() WHERE id = @id`,
       { id: suspensionId }
     );
-    if (tenantId && entityId && isEmailConfigured?.() && sendEmail && getTenantUserEmails && getCommandCentreAndRectorEmails && getAccessManagementEmails) {
+    if (tenantId && entityId && isEmailConfigured?.() && sendEmail && getCommandCentreAndRectorEmails && getAccessManagementEmails) {
       try {
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
         const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
         let entityLabel = '';
+        let entityContractorId = null;
         if (entityType === 'truck') {
-          const truckInfo = await query(`SELECT registration FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
-          entityLabel = truckInfo.recordset?.[0]?.registration || `Truck #${entityId}`;
+          const truckInfo = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
+          const tr = truckInfo.recordset?.[0];
+          entityLabel = tr?.registration || `Truck #${entityId}`;
+          entityContractorId = tr?.contractor_id ?? tr?.contractor_Id ?? null;
         } else {
-          const driverInfo = await query(`SELECT full_name FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
-          entityLabel = driverInfo.recordset?.[0]?.full_name || `Driver #${entityId}`;
+          const driverInfo = await query(`SELECT full_name, contractor_id FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
+          const dr = driverInfo.recordset?.[0];
+          entityLabel = dr?.full_name || `Driver #${entityId}`;
+          entityContractorId = dr?.contractor_id ?? dr?.contractor_Id ?? null;
         }
         const appUrl = process.env.APP_URL || '';
         const reinstatedBy = req.user?.full_name || req.user?.email || 'Command Centre';
-        const contractorEmails = await getTenantUserEmails(query, tenantId);
+        const contractorEmails = entityContractorId ? await getContractorUserEmails(query, tenantId, entityContractorId) : await getTenantUserEmails(query, tenantId);
         const rectorEmails = await getCommandCentreAndRectorEmails(query);
         const accessManagementEmails = await getAccessManagementEmails(query);
         if (contractorEmails.length) {
@@ -1049,7 +1056,7 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const updated = updateResult.recordset?.[0];
     if (!updated) return res.status(404).json({ error: 'Breakdown not found' });
     const detailResult = await query(
-      `SELECT i.id, i.tenant_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
+      `SELECT i.id, i.tenant_id, i.contractor_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
               tr.registration AS truck_registration, r.name AS route_name,
               d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
               c.name AS contractor_name
@@ -1066,16 +1073,17 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
     const resolvedAtStr = row?.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
     const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
+    const incidentContractorId = row?.contractor_id ?? row?.contractor_Id ?? null;
     (async () => {
       try {
-        if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmails || !getTenantUserEmails) return;
+        if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmails) return;
         const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
         const driverEmail = (row?.driver_email || '').trim();
         const tenantId = row?.tenant_id || updated.tenant_id;
-        const contractorEmails = tenantId ? await getTenantUserEmails(query, tenantId) : [];
+        const contractorEmails = tenantId ? (incidentContractorId ? await getContractorUserEmails(query, tenantId, incidentContractorId) : await getTenantUserEmails(query, tenantId)) : [];
         const allTo = [...new Set([...ccRectorEmails, ...(driverEmail ? [driverEmail] : []), ...contractorEmails])];
         const mask = (e) => (e && e.includes('@') ? e.slice(0, 2) + '***@' + e.split('@')[1] : e);
-        console.log('[commandCentre] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor(tenant)=', contractorEmails.length, 'total=', allTo.length);
+        console.log('[commandCentre] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor=', contractorEmails.length, 'total=', allTo.length);
         if (allTo.length === 0) return;
         const html = breakdownResolvedHtml({
           ref: `INC-${String(updated.id).replace(/-/g, '').slice(0, 8).toUpperCase()}`,
@@ -1286,8 +1294,9 @@ router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
 
     (async () => {
       try {
-        if (!sendEmail || !getTenantUserEmails || !tenantId) return;
-        const toEmails = await getTenantUserEmails(query, tenantId);
+        if (!sendEmail || !tenantId) return;
+        const contractorId = entityType === 'truck' ? (await query(`SELECT contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId })).recordset?.[0]?.contractor_id : (await query(`SELECT contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId })).recordset?.[0]?.contractor_id;
+        const toEmails = contractorId ? await getContractorUserEmails(query, tenantId, contractorId) : await getTenantUserEmails(query, tenantId);
         if (toEmails.length > 0) {
           const html = applicationApprovedHtml({ entityType, entityLabel, tenantName, contractorName });
           await sendEmail({ to: toEmails, subject: `${entityType === 'truck' ? 'Truck' : 'Driver'} approved – you can now enroll on the route`, body: html, html: true });
@@ -1319,7 +1328,7 @@ router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array required' });
     const approved = [];
     const items = [];
-    const tenantIds = new Set();
+    const recipientScopes = []; // { tenantId, contractorId } per approved item for contractor-scoped emails
     for (const id of ids) {
       const appResult = await query(`SELECT id, entity_type, entity_id, tenant_id, [status] FROM cc_fleet_applications WHERE id = @id`, { id });
       const app = appResult.recordset?.[0];
@@ -1334,33 +1343,40 @@ router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
       await query(`UPDATE ${table} SET facility_access = 1, last_decline_reason = NULL WHERE id = @entityId`, { entityId });
       let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
       let contractorName = null;
+      let contractorId = null;
       if (entityType === 'truck') {
         const tr = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId });
         const trRow = tr.recordset?.[0];
         entityLabel = trRow?.registration || entityLabel;
-        if (trRow?.contractor_id) {
-          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: trRow.contractor_id });
+        contractorId = trRow?.contractor_id ?? trRow?.contractor_Id ?? null;
+        if (contractorId) {
+          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: contractorId });
           contractorName = cn.recordset?.[0]?.name ?? null;
         }
       } else {
         const dr = await query(`SELECT full_name, surname, contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId });
         const d = dr.recordset?.[0];
         entityLabel = [d?.full_name, d?.surname].filter(Boolean).join(' ').trim() || entityLabel;
-        if (d?.contractor_id) {
-          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: d.contractor_id });
+        contractorId = d?.contractor_id ?? d?.contractor_Id ?? null;
+        if (contractorId) {
+          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: contractorId });
           contractorName = cn.recordset?.[0]?.name ?? null;
         }
       }
       approved.push({ id, entityType, entityId });
       items.push({ entityType, entityLabel, contractorName });
       const tid = getRow(app, 'tenant_id');
-      if (tid) tenantIds.add(tid);
+      if (tid) recipientScopes.push({ tenantId: tid, contractorId });
     }
-    if (approved.length > 0 && sendEmail && getTenantUserEmails) {
+    if (approved.length > 0 && sendEmail) {
       try {
         const allEmails = new Set();
-        for (const tid of tenantIds) {
-          const list = await getTenantUserEmails(query, tid);
+        const seen = new Set();
+        for (const { tenantId: tid, contractorId: cid } of recipientScopes) {
+          const key = `${tid}:${cid || 'tenant'}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const list = cid ? await getContractorUserEmails(query, tid, cid) : await getTenantUserEmails(query, tid);
           list.forEach((e) => allEmails.add(e));
         }
         if (allEmails.size > 0) {

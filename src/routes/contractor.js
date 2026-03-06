@@ -6,7 +6,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
-import { getCommandCentreAndRectorEmails, getTenantUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getCommandCentreAndRectorEmails, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
@@ -956,7 +956,7 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
       try {
         if (!isEmailConfigured() || !getCommandCentreAndRectorEmails || !getTenantUserEmails) return;
         const detailResult = await query(
-          `SELECT i.id, i.title, i.resolution_note, i.resolved_at, i.tenant_id,
+          `SELECT i.id, i.title, i.resolution_note, i.resolved_at, i.tenant_id, i.contractor_id,
                   tr.registration AS truck_registration, r.name AS route_name,
                   d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
                   c.name AS contractor_name
@@ -973,9 +973,10 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         const driverName = [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver';
         const resolvedAtStr = row.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
         const contractorName = row.contractor_name ?? row.contractor_Name ?? null;
+        const incidentContractorId = row.contractor_id ?? row.contractor_Id ?? null;
         const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
         const driverEmail = (row.driver_email || '').trim();
-        const contractorEmails = row.tenant_id ? await getTenantUserEmails(query, row.tenant_id) : [];
+        const contractorEmails = row.tenant_id ? (incidentContractorId ? await getContractorUserEmails(query, row.tenant_id, incidentContractorId) : await getTenantUserEmails(query, row.tenant_id)) : [];
         const allTo = [...new Set([...ccRectorEmails, ...(driverEmail ? [driverEmail] : []), ...contractorEmails])];
         const mask = (e) => (e && e.includes('@') ? e.slice(0, 2) + '***@' + e.split('@')[1] : e);
         console.log('[contractor/incidents] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor(tenant)=', contractorEmails.length, 'total=', allTo.length);
@@ -1493,21 +1494,26 @@ router.patch('/suspensions/:id', async (req, res, next) => {
     const updated = result.recordset[0];
     const entityType = String(getRow(updated, 'entity_type') || '').toLowerCase();
     const entityId = getRow(updated, 'entity_id');
-    if (isReinstating && (entityType === 'truck' || entityType === 'driver') && entityId && isEmailConfigured?.() && sendEmail && getTenantUserEmails && getCommandCentreAndRectorEmails && getAccessManagementEmails) {
+    if (isReinstating && (entityType === 'truck' || entityType === 'driver') && entityId && isEmailConfigured?.() && sendEmail && (getContractorUserEmails || getTenantUserEmails) && getCommandCentreAndRectorEmails && getAccessManagementEmails) {
       try {
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
         const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
         let entityLabel = '';
+        let entityContractorId = null;
         if (entityType === 'truck') {
-          const truckInfo = await query(`SELECT registration FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
-          entityLabel = truckInfo.recordset?.[0]?.registration || `Truck #${entityId}`;
+          const truckInfo = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
+          const tr = truckInfo.recordset?.[0];
+          entityLabel = tr?.registration || `Truck #${entityId}`;
+          entityContractorId = tr?.contractor_id ?? tr?.contractor_Id ?? null;
         } else {
-          const driverInfo = await query(`SELECT full_name FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
-          entityLabel = driverInfo.recordset?.[0]?.full_name || `Driver #${entityId}`;
+          const driverInfo = await query(`SELECT full_name, contractor_id FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
+          const dr = driverInfo.recordset?.[0];
+          entityLabel = dr?.full_name || `Driver #${entityId}`;
+          entityContractorId = dr?.contractor_id ?? dr?.contractor_Id ?? null;
         }
         const appUrl = process.env.APP_URL || '';
         const reinstatedBy = req.user?.full_name || req.user?.email || 'Access Management';
-        const contractorEmails = await getTenantUserEmails(query, tenantId);
+        const contractorEmails = entityContractorId ? await getContractorUserEmails(query, tenantId, entityContractorId) : await getTenantUserEmails(query, tenantId);
         const rectorEmails = await getCommandCentreAndRectorEmails(query);
         const accessManagementEmails = await getAccessManagementEmails(query);
         if (contractorEmails.length) {
@@ -2296,7 +2302,7 @@ router.post('/distribution-history', async (req, res, next) => {
   }
 });
 
-/** GET list of contractors (tenants) for per-contractor distribution. Super_admin/enterprise see all; others see own tenant only. */
+/** GET list of contractors (company names) for per-contractor distribution. Super_admin/enterprise see all; others see own tenant only. */
 router.get('/distribution/contractors', async (req, res, next) => {
   try {
     const currentTenantId = getTenantId(req);
@@ -2304,9 +2310,9 @@ router.get('/distribution/contractors', async (req, res, next) => {
     const canSeeAll = req.user?.role === 'super_admin' || isEnterprise;
     let result;
     if (canSeeAll) {
-      result = await query(`SELECT id, name FROM tenants ORDER BY name`);
+      result = await query(`SELECT c.id, c.name FROM contractors c ORDER BY c.name`);
     } else if (currentTenantId) {
-      result = await query(`SELECT id, name FROM tenants WHERE id = @tenantId`, { tenantId: currentTenantId });
+      result = await query(`SELECT c.id, c.name FROM contractors c WHERE c.tenant_id = @tenantId ORDER BY c.name`, { tenantId: currentTenantId });
     } else {
       result = { recordset: [] };
     }
@@ -2334,25 +2340,27 @@ const DRIVER_COLUMNS = [
   { key: 'route_name', label: 'Route' },
 ];
 
-/** Get fleet list data: { headers, keys, rows }. Optional columns = array of keys to include. */
-async function getFleetListData(query, tenantId, routeIds, columns = null) {
+/** Get fleet list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = filter by company. */
+async function getFleetListData(query, tenantId, routeIds, columns = null, contractorId = null) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
   let sql;
   const params = { tenantId };
+  if (contractorId != null) params.contractorId = contractorId;
+  const contractorClause = contractorId != null ? ' AND t.contractor_id = @contractorId' : '';
   if (useRoutes && ids.length > 0) {
     const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
     sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes, r.name AS route_name
            FROM contractor_route_trucks rt
-           JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1
+           JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1${contractorClause}
            JOIN contractor_routes r ON r.id = rt.route_id AND r.tenant_id = @tenantId
            WHERE rt.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, t.registration`;
   } else {
     sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes
            FROM contractor_trucks t
-           WHERE t.tenant_id = @tenantId AND t.facility_access = 1
+           WHERE t.tenant_id = @tenantId AND t.facility_access = 1${contractorClause}
              AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
            ORDER BY t.registration`;
   }
@@ -2365,25 +2373,27 @@ async function getFleetListData(query, tenantId, routeIds, columns = null) {
   return { headers: selected.map((c) => c.label), keys: selected.map((c) => c.key), rows };
 }
 
-/** Get driver list data: { headers, keys, rows }. Optional columns = array of keys to include. */
-async function getDriverListData(query, tenantId, routeIds, columns = null) {
+/** Get driver list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = filter by company. */
+async function getDriverListData(query, tenantId, routeIds, columns = null, contractorId = null) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
   let sql;
   const params = { tenantId };
+  if (contractorId != null) params.contractorId = contractorId;
+  const contractorClause = contractorId != null ? ' AND d.contractor_id = @contractorId' : '';
   if (useRoutes && ids.length > 0) {
     const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
     sql = `SELECT d.full_name, d.license_number, d.phone, d.email, r.name AS route_name
            FROM contractor_route_drivers rd
-           JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1
+           JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1${contractorClause}
            JOIN contractor_routes r ON r.id = rd.route_id AND r.tenant_id = @tenantId
            WHERE rd.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, d.full_name`;
   } else {
     sql = `SELECT d.full_name, d.license_number, d.phone, d.email
            FROM contractor_drivers d
-           WHERE d.tenant_id = @tenantId AND d.facility_access = 1
+           WHERE d.tenant_id = @tenantId AND d.facility_access = 1${contractorClause}
              AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
            ORDER BY d.full_name`;
   }
@@ -2417,9 +2427,10 @@ function distributionFilename(routeName, contractorName, ext, listKind = '') {
   return `${prefix}${route}_${contractor}_${datePart}_${timePart}.${ext}`;
 }
 
-/** Build fleet list CSV; optional columns = array of keys to include (default all). */
-async function buildFleetListCsv(query, tenantId, routeIds, columns = null) {
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns);
+/** Build fleet list CSV; optional columns = array of keys to include (default all). opts.contractorId = filter by company. */
+async function buildFleetListCsv(query, tenantId, routeIds, columns = null, opts = {}) {
+  const contractorId = opts.contractorId ?? null;
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId);
   if (headers.length === 0) return '\uFEFF';
   const csv = [headers.join(',')].concat(
     rows.map((r) => keys.map((k) => r[k]).map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))
@@ -2427,9 +2438,10 @@ async function buildFleetListCsv(query, tenantId, routeIds, columns = null) {
   return '\uFEFF' + csv;
 }
 
-/** Build driver list CSV; optional columns = array of keys to include (default all). */
-async function buildDriverListCsv(query, tenantId, routeIds, columns = null) {
-  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns);
+/** Build driver list CSV; optional columns = array of keys to include (default all). opts.contractorId = filter by company. */
+async function buildDriverListCsv(query, tenantId, routeIds, columns = null, opts = {}) {
+  const contractorId = opts.contractorId ?? null;
+  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId);
   if (headers.length === 0) return '\uFEFF';
   const csv = [headers.join(',')].concat(
     rows.map((r) => keys.map((k) => r[k]).map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))
@@ -2503,9 +2515,10 @@ function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
   }
 }
 
-/** Build fleet list as Excel buffer (template: title, subtitle, header, data). opts: { title, subtitle }. */
+/** Build fleet list as Excel buffer (template: title, subtitle, header, data). opts: { title, subtitle, contractorId }. */
 async function buildFleetListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns);
+  const contractorId = opts.contractorId ?? null;
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId);
   const title = opts.title ?? 'Thinkers – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
   const workbook = new ExcelJS.Workbook();
@@ -2535,9 +2548,10 @@ async function buildFleetListExcel(query, tenantId, routeIds, columns = null, op
   return Buffer.from(buf);
 }
 
-/** Build driver list as Excel buffer (template: title, subtitle, header, data). opts: { title, subtitle }. */
+/** Build driver list as Excel buffer (template: title, subtitle, header, data). opts: { title, subtitle, contractorId }. */
 async function buildDriverListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
-  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns);
+  const contractorId = opts.contractorId ?? null;
+  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
   const workbook = new ExcelJS.Workbook();
@@ -2632,14 +2646,16 @@ function buildDistributionPdf(title, subtitle, headers, rows, keys) {
 }
 
 async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns);
+  const contractorId = opts.contractorId ?? null;
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId);
   const title = opts.title ?? 'Thinkers – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
 }
 
 async function buildDriverListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
-  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns);
+  const contractorId = opts.contractorId ?? null;
+  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${new Date().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
@@ -2783,31 +2799,34 @@ router.post('/distribution/send-email', async (req, res, next) => {
     const historyTenantId = tenantId;
 
     if (perContractor && contractorIds.length > 0) {
-      const tenantsResult = await query(
-        `SELECT id, name FROM tenants WHERE id IN (${contractorIds.map((_, i) => `@cid${i}`).join(',')})`,
+      const contractorsResult = await query(
+        `SELECT id, name, tenant_id FROM contractors WHERE id IN (${contractorIds.map((_, i) => `@cid${i}`).join(',')})`,
         Object.fromEntries(contractorIds.map((id, i) => [`cid${i}`, id]))
       );
-      const tenants = (tenantsResult.recordset || []).reduce((acc, t) => { acc[t.id] = t.name || 'Contractor'; return acc; }, {});
+      const contractorsList = contractorsResult.recordset || [];
       const entries = [];
       const generated = new Date();
       const subtitle = `Access management – List distribution · Generated ${generated.toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}`;
 
-      for (const cid of contractorIds) {
-        const contractorName = tenants[cid] || cid;
+      for (const row of contractorsList) {
+        const cid = row.id;
+        const contractorName = row.name || 'Contractor';
+        const tid = row.tenant_id;
         const routesResult = await query(
           `SELECT id, name FROM contractor_routes WHERE tenant_id = @tid ORDER BY [order], name`,
-          { tid: cid }
+          { tid }
         );
         const routes = routesResult.recordset || [];
+        const listOpts = { title: '', subtitle, contractorId: cid };
         if (routes.length === 0) {
           const routeLabel = 'All approved';
-          const title = `${contractorName} – ${routeLabel}`;
+          listOpts.title = `${contractorName} – ${routeLabel}`;
           if (listType === 'fleet' || listType === 'both') {
             const buf = usePdf
-              ? await buildFleetListPdf(query, cid, null, fleetCols, { title, subtitle })
+              ? await buildFleetListPdf(query, tid, null, fleetCols, listOpts)
               : useExcel
-                ? await buildFleetListExcel(query, cid, null, fleetCols, { title, subtitle })
-                : Buffer.from(await buildFleetListCsv(query, cid, null, fleetCols), 'utf8');
+                ? await buildFleetListExcel(query, tid, null, fleetCols, listOpts)
+                : Buffer.from(await buildFleetListCsv(query, tid, null, fleetCols, listOpts), 'utf8');
             attachments.push({
               filename: distributionFilename(routeLabel, contractorName, ext, 'fleet'),
               content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
@@ -2816,10 +2835,10 @@ router.post('/distribution/send-email', async (req, res, next) => {
           }
           if (listType === 'driver' || listType === 'both') {
             const buf = usePdf
-              ? await buildDriverListPdf(query, cid, null, driverCols, { title, subtitle })
+              ? await buildDriverListPdf(query, tid, null, driverCols, listOpts)
               : useExcel
-                ? await buildDriverListExcel(query, cid, null, driverCols, { title, subtitle })
-                : Buffer.from(await buildDriverListCsv(query, cid, null, driverCols), 'utf8');
+                ? await buildDriverListExcel(query, tid, null, driverCols, listOpts)
+                : Buffer.from(await buildDriverListCsv(query, tid, null, driverCols, listOpts), 'utf8');
             attachments.push({
               filename: distributionFilename(routeLabel, contractorName, ext, 'driver'),
               content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
@@ -2830,14 +2849,14 @@ router.post('/distribution/send-email', async (req, res, next) => {
         } else {
           for (const r of routes) {
             const routeName = r.name || 'Route';
-            const title = `${contractorName} – ${routeName}`;
+            listOpts.title = `${contractorName} – ${routeName}`;
             const singleRoute = [r.id];
             if (listType === 'fleet' || listType === 'both') {
               const buf = usePdf
-                ? await buildFleetListPdf(query, cid, singleRoute, fleetCols, { title, subtitle })
+                ? await buildFleetListPdf(query, tid, singleRoute, fleetCols, listOpts)
                 : useExcel
-                  ? await buildFleetListExcel(query, cid, singleRoute, fleetCols, { title, subtitle })
-                  : Buffer.from(await buildFleetListCsv(query, cid, singleRoute, fleetCols), 'utf8');
+                  ? await buildFleetListExcel(query, tid, singleRoute, fleetCols, listOpts)
+                  : Buffer.from(await buildFleetListCsv(query, tid, singleRoute, fleetCols, listOpts), 'utf8');
               attachments.push({
                 filename: distributionFilename(routeName, contractorName, ext, 'fleet'),
                 content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),
@@ -2846,10 +2865,10 @@ router.post('/distribution/send-email', async (req, res, next) => {
             }
             if (listType === 'driver' || listType === 'both') {
               const buf = usePdf
-                ? await buildDriverListPdf(query, cid, singleRoute, driverCols, { title, subtitle })
+                ? await buildDriverListPdf(query, tid, singleRoute, driverCols, listOpts)
                 : useExcel
-                  ? await buildDriverListExcel(query, cid, singleRoute, driverCols, { title, subtitle })
-                  : Buffer.from(await buildDriverListCsv(query, cid, singleRoute, driverCols), 'utf8');
+                  ? await buildDriverListExcel(query, tid, singleRoute, driverCols, listOpts)
+                  : Buffer.from(await buildDriverListCsv(query, tid, singleRoute, driverCols, listOpts), 'utf8');
               attachments.push({
                 filename: distributionFilename(routeName, contractorName, ext, 'driver'),
                 content: (typeof buf === 'object' && buf instanceof Buffer ? buf : Buffer.from(buf)).toString('base64'),

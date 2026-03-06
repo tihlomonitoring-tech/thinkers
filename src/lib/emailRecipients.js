@@ -79,6 +79,28 @@ export async function getTenantUserEmails(query, tenantId) {
   return Array.from(emails);
 }
 
+/** Users in a tenant who are scoped to a specific contractor (company): users with no user_contractors rows (tenant-wide) or linked to this contractor_id. Use for per-company alerts (approval, suspend, reinstate, breakdown). */
+export async function getContractorUserEmails(query, tenantId, contractorId) {
+  if (!tenantId || !contractorId) return [];
+  const emails = new Set();
+  try {
+    const result = await query(
+      `SELECT u.email FROM users u
+       WHERE u.tenant_id = @tenantId AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         AND (NOT EXISTS (SELECT 1 FROM user_contractors uc WHERE uc.user_id = u.id)
+              OR EXISTS (SELECT 1 FROM user_contractors uc WHERE uc.user_id = u.id AND uc.contractor_id = @contractorId))`,
+      { tenantId, contractorId }
+    );
+    for (const row of result.recordset || []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getContractorUserEmails:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
 /** Management users' emails for a tenant (for leave application notifications). */
 export async function getManagementEmailsForTenant(query, tenantId) {
   if (!tenantId) return [];

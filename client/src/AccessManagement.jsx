@@ -134,6 +134,7 @@ export default function AccessManagement() {
   const [distSendPerContractor, setDistSendPerContractor] = useState(false);
   const [distContractors, setDistContractors] = useState([]);
   const [distSelectedContractorIds, setDistSelectedContractorIds] = useState([]);
+  const [distContractorSearch, setDistContractorSearch] = useState('');
   const [distCcRecipients, setDistCcRecipients] = useState([]);
   const [distCustomCcEmail, setDistCustomCcEmail] = useState('');
 
@@ -1231,37 +1232,116 @@ export default function AccessManagement() {
 
             <h3 className="font-medium text-surface-900 pt-4">Send from system (actual fleet/driver list attached)</h3>
             <p className="text-sm text-surface-500">Add recipients from existing users or enter any email address. Choose attachment format: Excel (professional layout), PDF, or CSV.</p>
-            <label className="flex items-center gap-2 cursor-pointer mt-3">
-              <input
-                type="checkbox"
-                checked={distSendPerContractor}
-                onChange={(e) => setDistSendPerContractor(e.target.checked)}
-                className="rounded border-surface-300"
-              />
-              <span className="text-sm font-medium text-surface-700">Send list per contractor (one list per contractor and route; file names: route, contractor, date and time)</span>
-            </label>
-            {distSendPerContractor && (
-              <div className="mt-3 pl-6 space-y-2">
-                <p className="text-xs text-surface-600">Select contractors to include (each gets fleet/driver list per route):</p>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <select
-                    multiple
-                    value={distSelectedContractorIds}
-                    onChange={(e) => setDistSelectedContractorIds(Array.from(e.target.selectedOptions, (o) => o.value))}
-                    className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-h-[80px] min-w-[200px]"
-                  >
-                    {distContractors.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                  <div className="flex flex-col gap-1">
-                    <button type="button" onClick={() => setDistSelectedContractorIds(distContractors.map((c) => c.id))} className="text-xs text-brand-600 hover:underline">Select all</button>
-                    <button type="button" onClick={() => setDistSelectedContractorIds([])} className="text-xs text-surface-500 hover:underline">Clear</button>
-                  </div>
+            <div className="mt-3 rounded-lg border border-surface-300 bg-surface-50/50 p-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={distSendPerContractor}
+                  onChange={(e) => setDistSendPerContractor(e.target.checked)}
+                  className="rounded border-surface-300"
+                />
+                <span className="text-sm font-medium text-surface-700">Send list per contractor (one list per contractor and route; file names: route, contractor, date and time)</span>
+              </label>
+              {distSendPerContractor && (
+                <div className="mt-3 pl-6 space-y-3 border-t border-surface-200 pt-3">
+                  <p className="text-xs text-surface-600">Select contractors to include (each gets fleet/driver list per route):</p>
+                  {(() => {
+                    const q = (distContractorSearch || '').trim().toLowerCase();
+                    const filtered = q
+                      ? distContractors.filter((c) => (c.name || '').toLowerCase().includes(q))
+                      : distContractors;
+                    const selectedSet = new Set(distSelectedContractorIds.map(String));
+                    const allFilteredSelected = filtered.length > 0 && filtered.every((c) => selectedSet.has(String(c.id)));
+                    const someFilteredSelected = filtered.some((c) => selectedSet.has(String(c.id)));
+                    return (
+                      <div className="rounded-lg border border-surface-300 bg-white overflow-hidden">
+                        <div className="flex flex-wrap gap-2 items-center p-2 border-b border-surface-200 bg-surface-50">
+                          <input
+                            type="search"
+                            placeholder="Search contractors…"
+                            value={distContractorSearch}
+                            onChange={(e) => setDistContractorSearch(e.target.value)}
+                            className="flex-1 min-w-[160px] rounded-md border border-surface-300 px-3 py-2 text-sm placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                            aria-label="Search contractors"
+                          />
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-surface-500 whitespace-nowrap">
+                              {distSelectedContractorIds.length} of {distContractors.length} selected
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const add = filtered.filter((c) => !selectedSet.has(String(c.id))).map((c) => c.id);
+                                setDistSelectedContractorIds((prev) => [...new Set([...prev, ...add])]);
+                              }}
+                              className="px-3 py-1.5 text-xs font-medium rounded-md border border-surface-300 text-surface-700 bg-white hover:bg-surface-50"
+                            >
+                              Select all
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (filtered.length === 0) return;
+                                const removeIds = new Set(filtered.map((c) => String(c.id)));
+                                setDistSelectedContractorIds((prev) => prev.filter((id) => !removeIds.has(String(id))));
+                              }}
+                              className="px-3 py-1.5 text-xs font-medium rounded-md border border-surface-300 text-surface-700 bg-white hover:bg-surface-50"
+                            >
+                              Clear
+                            </button>
+                            {distContractors.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setDistSelectedContractorIds(allFilteredSelected ? [] : distContractors.map((c) => c.id))}
+                                className="px-3 py-1.5 text-xs font-medium rounded-md border border-brand-400 text-brand-700 bg-brand-50 hover:bg-brand-100"
+                              >
+                                {allFilteredSelected ? 'Deselect all' : 'Select all (list)'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="max-h-[220px] overflow-y-auto p-1" role="listbox" aria-multiselectable aria-label="Contractors">
+                          {filtered.length === 0 ? (
+                            <p className="py-4 text-center text-sm text-surface-500">
+                              {distContractors.length === 0 ? 'No contractors available.' : 'No contractors match your search.'}
+                            </p>
+                          ) : (
+                            filtered.map((c) => {
+                              const id = String(c.id);
+                              const checked = selectedSet.has(id);
+                              return (
+                                <label
+                                  key={c.id}
+                                  role="option"
+                                  aria-selected={checked}
+                                  className={`flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer text-sm select-none ${checked ? 'bg-brand-50 text-surface-900 border border-brand-200' : 'hover:bg-surface-100 text-surface-800 border border-transparent'}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => {
+                                      setDistSelectedContractorIds((prev) =>
+                                        prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id]
+                                      );
+                                    }}
+                                    className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                                    aria-label={`Select ${c.name || 'contractor'}`}
+                                  />
+                                  <span className="flex-1 truncate">{c.name || 'Unnamed'}</span>
+                                </label>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  {distSelectedContractorIds.length > 0 && (
+                    <p className="text-xs text-surface-500">Each selected contractor will receive one list per route; PDF/Excel title = contractor name and route name.</p>
+                  )}
                 </div>
-                {distSelectedContractorIds.length > 0 && <p className="text-xs text-surface-500">{distSelectedContractorIds.length} contractor(s) selected. Each will receive one list per route; PDF/Excel title = contractor name and route name.</p>}
-              </div>
-            )}
+              )}
+            </div>
             <div className="flex flex-wrap gap-4 items-center mt-3">
               <span className="text-sm text-surface-600">Attachment format:</span>
               <select

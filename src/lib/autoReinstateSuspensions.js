@@ -4,7 +4,7 @@
  * Run periodically from server.js.
  */
 import { query } from '../db.js';
-import { getTenantUserEmails, getCommandCentreAndRectorEmails, getAccessManagementEmails } from './emailRecipients.js';
+import { getTenantUserEmails, getContractorUserEmails, getCommandCentreAndRectorEmails, getAccessManagementEmails } from './emailRecipients.js';
 import { reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from './emailTemplates.js';
 import { sendEmail, isEmailConfigured } from './emailService.js';
 
@@ -35,19 +35,24 @@ export async function runAutoReinstateSuspensions() {
           { id }
         );
         count++;
-        if (!tenantId || !entityId || !getTenantUserEmails || !getCommandCentreAndRectorEmails || !getAccessManagementEmails) continue;
+        if (!tenantId || !entityId || !getCommandCentreAndRectorEmails || !getAccessManagementEmails) continue;
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
         const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
         let entityLabel = '';
+        let entityContractorId = null;
         if (entityType === 'truck') {
-          const truckInfo = await query(`SELECT registration FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
-          entityLabel = truckInfo.recordset?.[0]?.registration || `Truck #${entityId}`;
+          const truckInfo = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
+          const tr = truckInfo.recordset?.[0];
+          entityLabel = tr?.registration || `Truck #${entityId}`;
+          entityContractorId = tr?.contractor_id ?? tr?.contractor_Id ?? null;
         } else {
-          const driverInfo = await query(`SELECT full_name FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
-          entityLabel = driverInfo.recordset?.[0]?.full_name || `Driver #${entityId}`;
+          const driverInfo = await query(`SELECT full_name, contractor_id FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
+          const dr = driverInfo.recordset?.[0];
+          entityLabel = dr?.full_name || `Driver #${entityId}`;
+          entityContractorId = dr?.contractor_id ?? dr?.contractor_Id ?? null;
         }
         const appUrl = process.env.APP_URL || '';
-        const contractorEmails = await getTenantUserEmails(query, tenantId);
+        const contractorEmails = entityContractorId ? await getContractorUserEmails(query, tenantId, entityContractorId) : await getTenantUserEmails(query, tenantId);
         const rectorEmails = await getCommandCentreAndRectorEmails(query);
         const accessManagementEmails = await getAccessManagementEmails(query);
         if (contractorEmails.length) {
