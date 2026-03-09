@@ -37,6 +37,8 @@ const RECTOR_ALERT_OPTIONS = [
   { value: 'weekly_summary', label: 'Weekly summary' },
   { value: 'incident_alerts', label: 'Incident alerts' },
   { value: 'list_distribution', label: 'List distribution updates' },
+  { value: 'suspension_alerts', label: 'Truck/driver suspension alerts' },
+  { value: 'reinstatement_alerts', label: 'Truck/driver reinstatement alerts' },
 ];
 
 function TabIcon({ name, className }) {
@@ -109,7 +111,7 @@ export default function AccessManagement() {
   const [showRouteForm, setShowRouteForm] = useState(false);
 
   // Route rector form (create/edit) - user_id = assign existing user to route
-  const [rectorForm, setRectorForm] = useState({ route_id: '', user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] });
+  const [rectorForm, setRectorForm] = useState({ route_ids: [], user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] });
   const [editingRectorId, setEditingRectorId] = useState(null);
   const [showRectorForm, setShowRectorForm] = useState(false);
   const [tenantUsers, setTenantUsers] = useState([]);
@@ -318,7 +320,7 @@ export default function AccessManagement() {
     setEditingRectorId(f.id);
     const alertList = (f.alert_types && typeof f.alert_types === 'string') ? f.alert_types.split(',').map((s) => s.trim()).filter(Boolean) : [];
     setRectorForm({
-      route_id: f.route_id || '',
+      route_ids: f.route_id ? [f.route_id] : [],
       user_id: f.user_id || '',
       name: f.name || '',
       company: f.company || '',
@@ -340,34 +342,34 @@ export default function AccessManagement() {
       setError('Select an existing user. Create the user in User management first, then assign them to a route here.');
       return;
     }
-    if (!rectorForm.route_id) {
-      setError('Please select a route. Rectors must be linked to at least one route.');
+    const routeIds = Array.isArray(rectorForm.route_ids) ? rectorForm.route_ids.filter(Boolean) : [];
+    if (routeIds.length === 0) {
+      setError('Please select at least one route. Rectors must be linked to at least one route.');
       return;
     }
     setSaving(true);
     setError('');
     try {
-      const payload = {
-        route_id: rectorForm.route_id || null,
+      const basePayload = {
         user_id: assignUser || null,
-        name: rectorForm.name.trim() || null,
-        company: rectorForm.company.trim() || null,
-        email: rectorForm.email.trim() || null,
-        phone: rectorForm.phone.trim() || null,
-        mobile_alt: rectorForm.mobile_alt.trim() || null,
-        address: rectorForm.address.trim() || null,
-        role_or_type: rectorForm.role_or_type.trim() || null,
-        notes: rectorForm.notes.trim() || null,
-        alert_types: rectorForm.alert_types.length ? rectorForm.alert_types : null,
+        name: rectorForm.name?.trim() || null,
+        company: rectorForm.company?.trim() || null,
+        email: rectorForm.email?.trim() || null,
+        phone: rectorForm.phone?.trim() || null,
+        mobile_alt: rectorForm.mobile_alt?.trim() || null,
+        address: rectorForm.address?.trim() || null,
+        role_or_type: rectorForm.role_or_type?.trim() || null,
+        notes: rectorForm.notes?.trim() || null,
+        alert_types: rectorForm.alert_types?.length ? rectorForm.alert_types : null,
       };
       if (editingRectorId) {
-        await contractorApi.routeFactors.update(editingRectorId, payload);
+        await contractorApi.routeFactors.update(editingRectorId, { ...basePayload, route_id: routeIds[0] });
         setShowRectorForm(false);
         setEditingRectorId(null);
       } else {
-        await contractorApi.routeFactors.create(payload);
+        await contractorApi.routeFactors.bulkCreate({ ...basePayload, route_ids: routeIds });
         setShowRectorForm(false);
-        setRectorForm({ route_id: '', user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] });
+        setRectorForm({ route_ids: [], user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] });
       }
       load();
     } catch (err) {
@@ -396,7 +398,7 @@ export default function AccessManagement() {
   };
 
   const addRectorsToRoute = (routeId) => {
-    setRectorForm((prev) => ({ ...prev, route_id: routeId, user_id: '' }));
+    setRectorForm((prev) => ({ ...prev, route_ids: [routeId], user_id: '' }));
     setEditingRectorId(null);
     setShowRectorForm(true);
   };
@@ -744,7 +746,7 @@ export default function AccessManagement() {
             <h2 className="text-lg font-semibold text-surface-900">Route rectors</h2>
             <button
               type="button"
-              onClick={() => { setEditingRectorId(null); setRectorForm({ route_id: '', user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] }); setShowRectorForm(true); }}
+              onClick={() => { setEditingRectorId(null); setRectorForm({ route_ids: [], user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] }); setShowRectorForm(true); }}
               className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
             >
               Assign user to route
@@ -798,8 +800,8 @@ export default function AccessManagement() {
           {showRectorForm && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowRectorForm(false)}>
               <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6 max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
-                <h3 className="font-semibold text-surface-900 mb-4">{editingRectorId ? 'Edit route rector' : 'Assign user to route'}</h3>
-                <p className="text-xs text-surface-500 mb-4">User must exist in User management first. They will only see data for their assigned route(s) on the Rector page.</p>
+                <h3 className="font-semibold text-surface-900 mb-4">{editingRectorId ? 'Edit route rector' : 'Assign user to route(s)'}</h3>
+                <p className="text-xs text-surface-500 mb-4">User must exist in User management first. Select one or more routes to assign them as rector. They will only see data for their assigned route(s) on the Rector page.</p>
                 <form onSubmit={saveRector} className="space-y-3">
                   <div>
                     <label className="block text-xs font-medium text-surface-600 mb-1">User (required)</label>
@@ -816,18 +818,19 @@ export default function AccessManagement() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-surface-600 mb-1">Route (required)</label>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Route(s) (required) — select one or more</label>
                     <select
-                      value={rectorForm.route_id}
-                      onChange={(e) => setRectorForm((f) => ({ ...f, route_id: e.target.value }))}
-                      className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                      multiple
+                      value={rectorForm.route_ids}
+                      onChange={(e) => setRectorForm((f) => ({ ...f, route_ids: Array.from(e.target.selectedOptions, (o) => o.value) }))}
+                      className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm min-h-[100px]"
                       required
                     >
-                      <option value="">— Select route —</option>
                       {routes.map((r) => (
                         <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
+                    <p className="text-xs text-surface-500 mt-1">Hold Ctrl/Cmd to select multiple routes. {rectorForm.route_ids?.length > 0 ? `${rectorForm.route_ids.length} selected` : ''}</p>
                   </div>
                   <div>
                     <p className="text-xs font-medium text-surface-600 mb-2">Automated alerts to receive</p>

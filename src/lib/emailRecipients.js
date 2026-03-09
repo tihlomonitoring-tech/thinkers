@@ -62,6 +62,161 @@ export async function getCommandCentreAndRectorEmails(query) {
   return list;
 }
 
+/** CC and Access Management only (no rector page / route factors). Use with getRectorEmailsForAlertType for suspend/reinstate so only opted-in rectors get those alerts. */
+export async function getCommandCentreAndAccessManagementEmails(query) {
+  const emails = new Set();
+  const getRowEmail = (row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = Object.keys(row).find((k) => k.toLowerCase() === 'email');
+    const e = (key ? row[key] : row.email ?? row.Email ?? '').toString().trim();
+    return e && e.includes('@') ? e : null;
+  };
+  try {
+    const ccResult = await query(
+      `SELECT DISTINCT u.email FROM command_centre_grants g INNER JOIN users u ON u.id = g.user_id WHERE u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of ccResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+    const pageResult = await query(
+      `SELECT DISTINCT u.email FROM user_page_roles r INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id IN (N'command_centre', N'access_management') AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of pageResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getCommandCentreAndAccessManagementEmails:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
+/** Rector emails for a specific alert type (suspension_alerts, reinstatement_alerts, etc.). alert_types is stored comma-separated on access_route_factors. */
+export async function getRectorEmailsForAlertType(query, alertType) {
+  if (!alertType || typeof alertType !== 'string') return [];
+  const emails = new Set();
+  try {
+    const result = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         AND (',' + LTRIM(RTRIM(ISNULL(f.alert_types, N''))) + N',' LIKE N'%,' + @alertType + N',%')`,
+      { alertType: String(alertType).trim() }
+    );
+    for (const row of result?.recordset ?? []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getRectorEmailsForAlertType:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
+/**
+ * Command Centre + Access Management + rectors assigned to the given route only.
+ * When routeId is null/undefined, returns same as getCommandCentreAndRectorEmails (all rectors) for backward compat.
+ * When routeId is set, rectors are strictly those in access_route_factors for that route only (no blanket rector page role).
+ */
+export async function getCommandCentreAndRectorEmailsForRoute(query, routeId) {
+  if (routeId == null || routeId === '') {
+    return getCommandCentreAndRectorEmails(query);
+  }
+  const emails = new Set();
+  const getRowEmail = (row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = Object.keys(row).find((k) => k.toLowerCase() === 'email');
+    const e = (key ? row[key] : row.email ?? row.Email ?? '').toString().trim();
+    return e && e.includes('@') ? e : null;
+  };
+  try {
+    const ccResult = await query(
+      `SELECT DISTINCT u.email FROM command_centre_grants g INNER JOIN users u ON u.id = g.user_id WHERE u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of ccResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+    const pageResult = await query(
+      `SELECT DISTINCT u.email FROM user_page_roles r INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id IN (N'command_centre', N'access_management') AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of pageResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+    const factorsResult = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.route_id = @routeId AND f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of factorsResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getCommandCentreAndRectorEmailsForRoute:', err?.message || err);
+  }
+  const list = Array.from(emails);
+  console.log('[emailRecipients] getCommandCentreAndRectorEmailsForRoute routeId=', routeId, 'total=', list.length);
+  return list;
+}
+
+/**
+ * Rector emails for a specific alert type and route only. Strict: only rectors assigned to that route who have the alert type.
+ */
+export async function getRectorEmailsForAlertTypeAndRoute(query, alertType, routeId) {
+  if (!alertType || typeof alertType !== 'string' || routeId == null || routeId === '') return [];
+  const emails = new Set();
+  try {
+    const result = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.route_id = @routeId AND f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         AND (',' + LTRIM(RTRIM(ISNULL(f.alert_types, N''))) + N',' LIKE N'%,' + @alertType + N',%')`,
+      { routeId, alertType: String(alertType).trim() }
+    );
+    for (const row of result?.recordset ?? []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getRectorEmailsForAlertTypeAndRoute:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
+/**
+ * Rector emails for a specific alert type and any of the given route IDs. Used when entity (truck/driver) is on multiple routes.
+ */
+export async function getRectorEmailsForAlertTypeAndRoutes(query, alertType, routeIds) {
+  if (!alertType || typeof alertType !== 'string' || !Array.isArray(routeIds) || routeIds.length === 0) return [];
+  const emails = new Set();
+  const ids = routeIds.filter((id) => id != null && id !== '');
+  if (ids.length === 0) return [];
+  try {
+    const placeholders = ids.map((_, i) => `@rid${i}`).join(',');
+    const params = { alertType: String(alertType).trim() };
+    ids.forEach((id, i) => { params[`rid${i}`] = id; });
+    const result = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.route_id IN (${placeholders}) AND f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         AND (',' + LTRIM(RTRIM(ISNULL(f.alert_types, N''))) + N',' LIKE N'%,' + @alertType + N',%')`,
+      params
+    );
+    for (const row of result?.recordset ?? []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getRectorEmailsForAlertTypeAndRoutes:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
 /** All users in a tenant (for contractor notifications e.g. approval). */
 export async function getTenantUserEmails(query, tenantId) {
   if (!tenantId) return [];

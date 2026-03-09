@@ -9,9 +9,10 @@ export const PATH_PAGE_IDS = {
   '/tasks': 'tasks',
   '/profile': 'profile',
   '/management': 'management',
+  '/transport-operations': 'transport_operations',
 };
 
-export const ALL_PATHS_ORDER = ['/profile', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/access-management', '/rector', '/tasks'];
+export const ALL_PATHS_ORDER = ['/profile', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/access-management', '/rector', '/tasks', '/transport-operations'];
 
 /**
  * Whether the user can access the given page.

@@ -10,7 +10,7 @@ const FONT_SIZE_BODY = 9;
 const FONT_SIZE_TABLE = 8;
 
 const BLACK = [0, 0, 0];
-const GRAY_LINE = [180, 180, 180];
+const TABLE_BORDER = [60, 60, 60];
 const TEXT_DARK = [33, 33, 33];
 const TEXT_MUTED = [80, 80, 80];
 
@@ -71,8 +71,8 @@ function sectionBar(doc, yRef, title) {
 function keyValueTable(doc, yRef, entries) {
   const labelW = 48;
   const valueW = CONTENT_WIDTH - labelW;
-  doc.setDrawColor(...GRAY_LINE);
-  doc.setLineWidth(0.15);
+  doc.setDrawColor(...TABLE_BORDER);
+  doc.setLineWidth(0.4);
 
   entries.forEach(([key, value]) => {
     setTableFont(doc, false);
@@ -103,8 +103,8 @@ function drawTable(doc, yRef, headers, rows, colWidths) {
 
   checkNewPage(doc, yRef, ROW_HEIGHT * 3 + 15);
   y = yRef.current;
-  doc.setDrawColor(...GRAY_LINE);
-  doc.setLineWidth(0.15);
+  doc.setDrawColor(...TABLE_BORDER);
+  doc.setLineWidth(0.4);
   setTableFont(doc, true);
   doc.rect(startX, y, tableWidth, ROW_HEIGHT, 'S');
   let x = startX;

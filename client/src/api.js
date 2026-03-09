@@ -17,7 +17,15 @@ export async function openAttachmentWithAuth(url) {
 /** Download an attachment (fetch with credentials, then trigger save). */
 export async function downloadAttachmentWithAuth(url, filename) {
   const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(res.status === 401 ? 'Please sign in again' : 'Could not download');
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = res.status === 401 ? 'Please sign in again' : 'Could not download';
+    try {
+      const data = JSON.parse(text);
+      if (data?.error) msg = data.error;
+    } catch (_) {}
+    throw new Error(msg);
+  }
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -234,6 +242,7 @@ export const contractor = {
   routeFactors: {
     list: (routeId) => request(`/contractor/route-factors${routeId ? `?routeId=${encodeURIComponent(routeId)}` : ''}`),
     create: (body) => request('/contractor/route-factors', { method: 'POST', body: JSON.stringify(body) }),
+    bulkCreate: (body) => request('/contractor/route-factors/bulk', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => request(`/contractor/route-factors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/contractor/route-factors/${id}`, { method: 'DELETE' }),
   },
@@ -568,4 +577,65 @@ export const profileManagement = {
     create: (body) => pm('/schedule-events', { method: 'POST', body: JSON.stringify(body) }),
   },
   tenantUsers: () => pm('/users/tenant'),
+};
+
+const to = (path, options = {}) => request(`/transport-operations${path}`, options);
+
+export const transportOperations = {
+  tenantUsers: () => to('/tenant-users'),
+  trucks: {
+    list: () => to('/trucks'),
+    create: (body) => to('/trucks', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => to(`/trucks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => to(`/trucks/${id}`, { method: 'DELETE' }),
+  },
+  drivers: {
+    list: () => to('/drivers'),
+    create: (body) => to('/drivers', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => to(`/drivers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => to(`/drivers/${id}`, { method: 'DELETE' }),
+  },
+  routes: {
+    list: () => to('/routes'),
+    create: (body) => to('/routes', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => to(`/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => to(`/routes/${id}`, { method: 'DELETE' }),
+  },
+  shiftReports: {
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.pending_my_approval) q.set('pending_my_approval', '1');
+      return to(`/shift-reports${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    get: (id) => to(`/shift-reports/${id}`),
+    create: (body) => to('/shift-reports', { method: 'POST', body: JSON.stringify(body) }),
+    evaluationQuestions: (id) => to(`/shift-reports/${id}/evaluation-questions`),
+    getEvaluation: (id) => to(`/shift-reports/${id}/evaluation`),
+    submitEvaluation: (id, body) => to(`/shift-reports/${id}/evaluation`, { method: 'POST', body: JSON.stringify(body) }),
+    approve: (id) => to(`/shift-reports/${id}/approve`, { method: 'PATCH', body: JSON.stringify({}) }),
+  },
+  presentations: {
+    insights: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.dateFrom) q.set('dateFrom', params.dateFrom);
+      if (params.dateTo) q.set('dateTo', params.dateTo);
+      return to(`/presentations/insights${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    recommendations: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', params.status);
+      return to(`/presentations/recommendations${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    createRecommendation: (body) => to('/presentations/recommendations', { method: 'POST', body: JSON.stringify(body) }),
+    updateRecommendation: (id, body) => to(`/presentations/recommendations/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    saveRecommendationsFromInsights: (recommendations) => to('/presentations/insights/save-recommendations', { method: 'POST', body: JSON.stringify({ recommendations }) }),
+    pptxDownloadUrl: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.dateFrom) q.set('dateFrom', params.dateFrom);
+      if (params.dateTo) q.set('dateTo', params.dateTo);
+      if (params.shift) q.set('shift', params.shift);
+      const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
+      return `${API}/transport-operations/presentations/pptx${q.toString() ? `?${q.toString()}` : ''}`;
+    },
+  },
 };

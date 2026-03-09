@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { query } from '../db.js';
-import { getCommandCentreAndRectorEmails } from '../lib/emailRecipients.js';
+import { getCommandCentreAndRectorEmailsForRoute } from '../lib/emailRecipients.js';
 import { breakdownReportHtml, breakdownConfirmationToDriverHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
@@ -218,9 +218,9 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
           console.warn('[reportBreakdown] Emails skipped: EMAIL_USER and/or EMAIL_PASS not set in .env. Restart the server after adding them.');
           return;
         }
-        if (!getCommandCentreAndRectorEmails) return;
+        if (!getCommandCentreAndRectorEmailsForRoute) return;
         const detailResult = await query(
-          `SELECT i.id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
+          `SELECT i.id, i.route_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
             t.registration AS truck_reg, r.name AS route_name,
             d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email
            FROM contractor_incidents i
@@ -233,7 +233,8 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
         const row = detailResult.recordset?.[0];
         const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || report.driverName : report.driverName;
         const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
-        const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
+        const routeId = row?.route_id ?? row?.route_Id ?? null;
+        const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row?.driver_email || '').trim();
         const fallbackTo = (process.env.EMAIL_USER || '').trim();
         const notificationRecipients = ccRectorEmails.length > 0 ? ccRectorEmails : (fallbackTo && fallbackTo.includes('@') ? [fallbackTo] : []);

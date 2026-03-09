@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
-import { getTenantUserEmails, getContractorUserEmails, getCommandCentreAndRectorEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getTenantUserEmails, getContractorUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { applicationApprovedHtml, applicationBulkApprovedHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
@@ -343,14 +343,17 @@ router.post('/suspend-truck', async (req, res, next) => {
         { tenantId, entityId: String(truckId), reason, days }
       );
     }
+    // Get truck's route IDs before removing from routes (for route-strict rector notifications)
+    const truckRoutesResult = await query(`SELECT route_id FROM contractor_route_trucks WHERE truck_id = @truckId`, { truckId });
+    const suspensionRouteIds = (truckRoutesResult.recordset || []).map((r) => r.route_id ?? r.route_Id).filter(Boolean);
     // Remove truck from all route enrollments so it is not on list distribution
     await query(
       `DELETE FROM contractor_route_trucks WHERE truck_id = @truckId
        AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`,
       { truckId, tenantId }
     );
-    // Email contractor and rector (grey templates)
-    if (isEmailConfigured?.() && sendEmail && getCommandCentreAndRectorEmails) {
+    // Email contractor and rector (grey templates); rectors only for routes the truck was on
+    if (isEmailConfigured?.() && sendEmail && getCommandCentreAndAccessManagementEmails && getRectorEmailsForAlertTypeAndRoutes) {
       try {
         const truckInfo = await query(
           `SELECT t.registration, t.contractor_id FROM contractor_trucks t WHERE t.id = @truckId`,
@@ -371,7 +374,9 @@ router.post('/suspend-truck', async (req, res, next) => {
           if (endsAt) suspensionEndsAt = typeof endsAt === 'string' ? endsAt : (endsAt.toISOString ? endsAt.toISOString().slice(0, 10) : String(endsAt));
         }
         const contractorEmails = truckContractorId ? await getContractorUserEmails(query, tenantId, truckContractorId) : await getTenantUserEmails(query, tenantId);
-        const rectorEmails = await getCommandCentreAndRectorEmails(query);
+        const ccAm = await getCommandCentreAndAccessManagementEmails(query);
+        const rectorSusp = suspensionRouteIds.length > 0 ? await getRectorEmailsForAlertTypeAndRoutes(query, 'suspension_alerts', suspensionRouteIds) : [];
+        const rectorEmails = [...new Set([...ccAm, ...rectorSusp])];
         const appUrl = process.env.APP_URL || '';
         if (contractorEmails.length) {
           const html = truckSuspendedToContractorHtml({
@@ -450,27 +455,34 @@ router.post('/reinstate-suspension', async (req, res, next) => {
       `UPDATE contractor_suspensions SET [status] = N'reinstated', updated_at = SYSUTCDATETIME() WHERE id = @id`,
       { id: suspensionId }
     );
-    if (tenantId && entityId && isEmailConfigured?.() && sendEmail && getCommandCentreAndRectorEmails && getAccessManagementEmails) {
+    if (tenantId && entityId && isEmailConfigured?.() && sendEmail && getCommandCentreAndAccessManagementEmails && getRectorEmailsForAlertTypeAndRoutes && getAccessManagementEmails) {
       try {
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
         const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
         let entityLabel = '';
         let entityContractorId = null;
+        let routeIds = [];
         if (entityType === 'truck') {
           const truckInfo = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
           const tr = truckInfo.recordset?.[0];
           entityLabel = tr?.registration || `Truck #${entityId}`;
           entityContractorId = tr?.contractor_id ?? tr?.contractor_Id ?? null;
+          const trRoutes = await query(`SELECT route_id FROM contractor_route_trucks WHERE truck_id = @entityId`, { entityId });
+          routeIds = (trRoutes.recordset || []).map((r) => r.route_id ?? r.route_Id).filter(Boolean);
         } else {
           const driverInfo = await query(`SELECT full_name, contractor_id FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
           const dr = driverInfo.recordset?.[0];
           entityLabel = dr?.full_name || `Driver #${entityId}`;
           entityContractorId = dr?.contractor_id ?? dr?.contractor_Id ?? null;
+          const drRoutes = await query(`SELECT route_id FROM contractor_route_drivers WHERE driver_id = @entityId`, { entityId });
+          routeIds = (drRoutes.recordset || []).map((r) => r.route_id ?? r.route_Id).filter(Boolean);
         }
         const appUrl = process.env.APP_URL || '';
         const reinstatedBy = req.user?.full_name || req.user?.email || 'Command Centre';
         const contractorEmails = entityContractorId ? await getContractorUserEmails(query, tenantId, entityContractorId) : await getTenantUserEmails(query, tenantId);
-        const rectorEmails = await getCommandCentreAndRectorEmails(query);
+        const ccAm = await getCommandCentreAndAccessManagementEmails(query);
+        const rectorReinst = routeIds.length > 0 ? await getRectorEmailsForAlertTypeAndRoutes(query, 'reinstatement_alerts', routeIds) : [];
+        const rectorEmails = [...new Set([...ccAm, ...rectorReinst])];
         const accessManagementEmails = await getAccessManagementEmails(query);
         if (contractorEmails.length) {
           const html = reinstatedToContractorHtml({ entityType, entityLabel, tenantName, appUrl });
@@ -1056,7 +1068,7 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const updated = updateResult.recordset?.[0];
     if (!updated) return res.status(404).json({ error: 'Breakdown not found' });
     const detailResult = await query(
-      `SELECT i.id, i.tenant_id, i.contractor_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
+      `SELECT i.id, i.route_id, i.tenant_id, i.contractor_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
               tr.registration AS truck_registration, r.name AS route_name,
               d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
               c.name AS contractor_name
@@ -1074,10 +1086,11 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const resolvedAtStr = row?.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
     const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
     const incidentContractorId = row?.contractor_id ?? row?.contractor_Id ?? null;
+    const routeId = row?.route_id ?? row?.route_Id ?? null;
     (async () => {
       try {
-        if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmails) return;
-        const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
+        if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmailsForRoute) return;
+        const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row?.driver_email || '').trim();
         const tenantId = row?.tenant_id || updated.tenant_id;
         const contractorEmails = tenantId ? (incidentContractorId ? await getContractorUserEmails(query, tenantId, incidentContractorId) : await getTenantUserEmails(query, tenantId)) : [];

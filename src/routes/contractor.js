@@ -6,7 +6,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
-import { getCommandCentreAndRectorEmails, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
@@ -858,7 +858,7 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
       try {
         if (!isEmailConfigured() || !getCommandCentreAndRectorEmails) return;
         const detailResult = await query(
-          `SELECT i.id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
+          `SELECT i.id, i.route_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
             tr.registration AS truck_reg, r.name AS route_name,
             d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
             c.name AS contractor_name, tn.name AS tenant_name
@@ -876,7 +876,8 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
         const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
         const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
         const tenantName = row?.tenant_name ?? row?.tenant_name ?? null;
-        const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
+        const routeId = row?.route_id ?? row?.route_Id ?? null;
+        const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row?.driver_email || '').trim();
         const fallbackTo = (process.env.EMAIL_USER || '').trim();
         const notificationRecipients = ccRectorEmails.length > 0 ? ccRectorEmails : (fallbackTo && fallbackTo.includes('@') ? [fallbackTo] : []);
@@ -954,9 +955,9 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
     // Notify Command Centre, rectors, driver, and contractor (tenant users) that breakdown was resolved
     (async () => {
       try {
-        if (!isEmailConfigured() || !getCommandCentreAndRectorEmails || !getTenantUserEmails) return;
+        if (!isEmailConfigured() || !getCommandCentreAndRectorEmailsForRoute || !getTenantUserEmails) return;
         const detailResult = await query(
-          `SELECT i.id, i.title, i.resolution_note, i.resolved_at, i.tenant_id, i.contractor_id,
+          `SELECT i.id, i.route_id, i.title, i.resolution_note, i.resolved_at, i.tenant_id, i.contractor_id,
                   tr.registration AS truck_registration, r.name AS route_name,
                   d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
                   c.name AS contractor_name
@@ -974,7 +975,8 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         const resolvedAtStr = row.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
         const contractorName = row.contractor_name ?? row.contractor_Name ?? null;
         const incidentContractorId = row.contractor_id ?? row.contractor_Id ?? null;
-        const ccRectorEmails = await getCommandCentreAndRectorEmails(query);
+        const routeId = row.route_id ?? row.route_Id ?? null;
+        const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row.driver_email || '').trim();
         const contractorEmails = row.tenant_id ? (incidentContractorId ? await getContractorUserEmails(query, row.tenant_id, incidentContractorId) : await getTenantUserEmails(query, row.tenant_id)) : [];
         const allTo = [...new Set([...ccRectorEmails, ...(driverEmail ? [driverEmail] : []), ...contractorEmails])];
@@ -1494,27 +1496,34 @@ router.patch('/suspensions/:id', async (req, res, next) => {
     const updated = result.recordset[0];
     const entityType = String(getRow(updated, 'entity_type') || '').toLowerCase();
     const entityId = getRow(updated, 'entity_id');
-    if (isReinstating && (entityType === 'truck' || entityType === 'driver') && entityId && isEmailConfigured?.() && sendEmail && (getContractorUserEmails || getTenantUserEmails) && getCommandCentreAndRectorEmails && getAccessManagementEmails) {
+    if (isReinstating && (entityType === 'truck' || entityType === 'driver') && entityId && isEmailConfigured?.() && sendEmail && (getContractorUserEmails || getTenantUserEmails) && getCommandCentreAndAccessManagementEmails && getRectorEmailsForAlertTypeAndRoutes && getAccessManagementEmails) {
       try {
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
         const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
         let entityLabel = '';
         let entityContractorId = null;
+        let routeIds = [];
         if (entityType === 'truck') {
           const truckInfo = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
           const tr = truckInfo.recordset?.[0];
           entityLabel = tr?.registration || `Truck #${entityId}`;
           entityContractorId = tr?.contractor_id ?? tr?.contractor_Id ?? null;
+          const trRoutes = await query(`SELECT route_id FROM contractor_route_trucks WHERE truck_id = @entityId`, { entityId });
+          routeIds = (trRoutes.recordset || []).map((r) => r.route_id ?? r.route_Id).filter(Boolean);
         } else {
           const driverInfo = await query(`SELECT full_name, contractor_id FROM contractor_drivers WHERE id = @entityId AND tenant_id = @tenantId`, { entityId, tenantId });
           const dr = driverInfo.recordset?.[0];
           entityLabel = dr?.full_name || `Driver #${entityId}`;
           entityContractorId = dr?.contractor_id ?? dr?.contractor_Id ?? null;
+          const drRoutes = await query(`SELECT route_id FROM contractor_route_drivers WHERE driver_id = @entityId`, { entityId });
+          routeIds = (drRoutes.recordset || []).map((r) => r.route_id ?? r.route_Id).filter(Boolean);
         }
         const appUrl = process.env.APP_URL || '';
         const reinstatedBy = req.user?.full_name || req.user?.email || 'Access Management';
         const contractorEmails = entityContractorId ? await getContractorUserEmails(query, tenantId, entityContractorId) : await getTenantUserEmails(query, tenantId);
-        const rectorEmails = await getCommandCentreAndRectorEmails(query);
+        const ccAm = await getCommandCentreAndAccessManagementEmails(query);
+        const rectorReinst = routeIds.length > 0 ? await getRectorEmailsForAlertTypeAndRoutes(query, 'reinstatement_alerts', routeIds) : [];
+        const rectorEmails = [...new Set([...ccAm, ...rectorReinst])];
         const accessManagementEmails = await getAccessManagementEmails(query);
         if (contractorEmails.length) {
           const html = reinstatedToContractorHtml({ entityType, entityLabel, tenantName, appUrl });
@@ -2195,6 +2204,56 @@ router.post('/route-factors', async (req, res, next) => {
       }
     );
     res.status(201).json({ factor: result.recordset[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST create route factors (rectors) for multiple routes at once - same user and alert_types per route. Skips routes where user is already rector. */
+router.post('/route-factors/bulk', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { user_id, route_ids, name, company, email, phone, mobile_alt, address, role_or_type, notes, alert_types } = req.body || {};
+    const linkUser = user_id && String(user_id).trim();
+    if (!linkUser) return res.status(400).json({ error: 'user_id is required' });
+    const routeIds = Array.isArray(route_ids) ? route_ids.filter((id) => id != null && String(id).trim()) : [];
+    if (routeIds.length === 0) return res.status(400).json({ error: 'route_ids (array with at least one route) is required' });
+    const userCheck = await query(
+      `SELECT 1 FROM users u INNER JOIN user_tenants ut ON ut.user_id = u.id WHERE u.id = @userId AND ut.tenant_id = @tenantId`,
+      { userId: linkUser, tenantId }
+    );
+    if (!userCheck.recordset?.length) return res.status(400).json({ error: 'User not found or not in this tenant' });
+    const userRow = await query(`SELECT full_name, email FROM users WHERE id = @userId`, { userId: linkUser });
+    const u = userRow.recordset?.[0];
+    const alertStr = Array.isArray(alert_types) ? alert_types.filter(Boolean).join(',') : (typeof alert_types === 'string' && alert_types.trim() ? alert_types.trim() : null);
+    const created = [];
+    for (const route_id of routeIds) {
+      const existing = await query(
+        `SELECT 1 FROM access_route_factors WHERE tenant_id = @tenantId AND route_id = @route_id AND user_id = @userId`,
+        { tenantId, route_id, userId: linkUser }
+      );
+      if (existing.recordset?.length) continue;
+      const result = await query(
+        `INSERT INTO access_route_factors (tenant_id, route_id, user_id, name, company, email, phone, mobile_alt, address, role_or_type, notes, alert_types)
+         OUTPUT INSERTED.* VALUES (@tenantId, @route_id, @user_id, @name, @company, @email, @phone, @mobile_alt, @address, @role_or_type, @notes, @alert_types)`,
+        {
+          tenantId,
+          route_id,
+          user_id: linkUser,
+          name: (u?.full_name || '').trim() || null,
+          company: company ? String(company).trim() : null,
+          email: (u?.email || '').trim() || null,
+          phone: phone ? String(phone).trim() : null,
+          mobile_alt: mobile_alt ? String(mobile_alt).trim() : null,
+          address: address ? String(address).trim() : null,
+          role_or_type: role_or_type ? String(role_or_type).trim() : null,
+          notes: notes ? String(notes).trim() : null,
+          alert_types: alertStr,
+        }
+      );
+      if (result.recordset?.[0]) created.push(result.recordset[0]);
+    }
+    res.status(201).json({ factors: created, created: created.length });
   } catch (err) {
     next(err);
   }

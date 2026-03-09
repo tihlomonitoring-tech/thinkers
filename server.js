@@ -15,6 +15,7 @@ import reportBreakdownRoutes from './src/routes/reportBreakdown.js';
 import testEmailRoutes from './src/routes/testEmail.js';
 import tasksRoutes, { runOverdueTaskNotifications } from './src/routes/tasks.js';
 import profileManagementRoutes from './src/routes/profileManagement.js';
+import transportOperationsRoutes from './src/routes/transportOperations.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
 
@@ -44,6 +45,7 @@ app.use('/api/report-breakdown', reportBreakdownRoutes);
 app.use('/api/test-email', testEmailRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/profile-management', profileManagementRoutes);
+app.use('/api/transport-operations', transportOperationsRoutes);
 
 // Serve frontend (Vite build) when both run on same host (e.g. Render, Railway)
 const clientDist = path.join(__dirname, 'client', 'dist');

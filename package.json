@@ -34,6 +34,11 @@
     "db:access-management-rector-user": "node scripts/run-access-management-rector-user.js",
     "db:distribution-history": "node scripts/run-access-distribution-history.js",
     "db:user-page-roles": "node scripts/run-user-page-roles.js",
+    "db:transport-operations": "node scripts/run-transport-operations-schema.js",
+    "db:transport-operations-expand": "node scripts/run-transport-operations-expand.js",
+    "db:transport-operations-approvals": "node scripts/run-transport-operations-approvals.js",
+    "db:transport-operations-shift-sections": "node scripts/run-transport-operations-shift-sections.js",
+    "db:transport-operations-presentations": "node scripts/run-transport-operations-presentations.js",
     "db:tasks": "node scripts/run-tasks-schema.js",
     "db:tasks-library": "node scripts/run-tasks-library-schema.js",
     "db:fleet-app-comments": "node scripts/run-fleet-application-comments.js",
@@ -64,6 +69,7 @@
     "mssql": "^11.0.1",
     "multer": "^2.1.0",
     "nodemailer": "^6.10.1",
-    "pdfkit": "^0.17.2"
+    "pdfkit": "^0.17.2",
+    "pptxgenjs": "^3.12.0"
   }
 }
