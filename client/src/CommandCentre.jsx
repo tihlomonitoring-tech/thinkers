@@ -702,6 +702,7 @@ function TabBreakdowns() {
   const [selectedBreakdown, setSelectedBreakdown] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [resolveModal, setResolveModal] = useState(null);
+  const [notifyRectorModal, setNotifyRectorModal] = useState(null);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const buildParams = () => {
@@ -759,6 +760,42 @@ function TabBreakdowns() {
         }
       })
       .catch((e) => setError(e?.message || 'Failed to resolve'));
+  };
+
+  const openNotifyRectorModal = () => {
+    if (!selectedBreakdown?.id) return;
+    setNotifyRectorModal({ breakdown: selectedBreakdown, rectors: [], selectedIds: new Set(), loading: true, submitting: false });
+    ccApi.rectorsWithRoutes()
+      .then((r) => setNotifyRectorModal((m) => ({ ...m, rectors: r.rectors || [], loading: false })))
+      .catch((e) => {
+        setError(e?.message || 'Failed to load rectors');
+        setNotifyRectorModal((m) => (m ? { ...m, loading: false } : null));
+      });
+  };
+
+  const toggleNotifyRectorSelection = (userId) => {
+    setNotifyRectorModal((m) => {
+      if (!m) return m;
+      const next = new Set(m.selectedIds);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return { ...m, selectedIds: next };
+    });
+  };
+
+  const handleNotifyRectorSubmit = () => {
+    if (!notifyRectorModal?.breakdown?.id || notifyRectorModal.selectedIds.size === 0) return;
+    const breakdownId = notifyRectorModal.breakdown.id;
+    const rectorIds = Array.from(notifyRectorModal.selectedIds);
+    setNotifyRectorModal((m) => (m ? { ...m, submitting: true } : m));
+    ccApi.breakdowns
+      .notifyRector(breakdownId, rectorIds)
+      .then(() => {
+        setNotifyRectorModal(null);
+        return ccApi.breakdowns.get(breakdownId).then((r) => setSelectedBreakdown(r.breakdown));
+      })
+      .catch((e) => setError(e?.message || 'Failed to notify rector'))
+      .finally(() => setNotifyRectorModal((m) => (m ? { ...m, submitting: false } : null)));
   };
 
   const downloadPdf = async (b) => {
@@ -963,6 +1000,14 @@ function TabBreakdowns() {
                   <div><p className="text-xs font-medium text-surface-400 uppercase tracking-wider">Description</p><p className="text-surface-700 text-sm mt-0.5 whitespace-pre-wrap">{selectedBreakdown.description || '—'}</p></div>
                   <div><p className="text-xs font-medium text-surface-400 uppercase tracking-wider">Actions taken</p><p className="text-surface-700 text-sm mt-0.5 whitespace-pre-wrap">{selectedBreakdown.actions_taken || '—'}</p></div>
 
+                  {selectedBreakdown.rector_was_notified === false && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3 space-y-2">
+                      <p className="text-sm font-medium text-amber-800">The rector was not notified</p>
+                      <p className="text-xs text-amber-700">Would you like to notify the rector? Select the correct rector below and send them the same breakdown report by email.</p>
+                      <button type="button" onClick={openNotifyRectorModal} className="mt-1 px-3 py-2 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700">Notify rector</button>
+                    </div>
+                  )}
+
                   {selectedBreakdown.resolved_at && (
                     <div className="rounded-lg border border-green-200 bg-green-50/50 p-3 space-y-2">
                       <p className="text-xs font-medium text-surface-600 uppercase tracking-wider">Resolution</p>
@@ -1020,6 +1065,44 @@ function TabBreakdowns() {
             <div className="flex gap-2 mt-4">
               <button type="button" onClick={() => setResolveModal(null)} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm font-medium hover:bg-surface-50">Cancel</button>
               <button type="button" onClick={handleResolveSubmit} disabled={!(resolveModal.resolutionNote || '').trim()} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">Save & notify</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notify rector modal – when rector was not notified at report time */}
+      {notifyRectorModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !notifyRectorModal.submitting && setNotifyRectorModal(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-4 border-b border-surface-200">
+              <h3 className="font-semibold text-surface-900">Notify rector about this breakdown</h3>
+              <p className="text-sm text-surface-600 mt-1">{breakdownRef(notifyRectorModal.breakdown?.id)} – {notifyRectorModal.breakdown?.title || 'Breakdown'}. Select the rector(s) to receive the same breakdown report by email.</p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              {notifyRectorModal.loading ? (
+                <div className="flex items-center justify-center py-8 text-surface-500"><span className="inline-block w-6 h-6 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-2" aria-hidden /> Loading rectors…</div>
+              ) : notifyRectorModal.rectors.length === 0 ? (
+                <p className="text-sm text-surface-500 py-4">No rectors (route contacts) are set up. Add rectors in Access Management → Route factors.</p>
+              ) : (
+                <div className="space-y-3">
+                  {notifyRectorModal.rectors.map((r) => (
+                    <label key={r.id} className="flex items-start gap-3 p-3 rounded-lg border border-surface-200 hover:bg-surface-50 cursor-pointer">
+                      <input type="checkbox" checked={notifyRectorModal.selectedIds.has(r.id)} onChange={() => toggleNotifyRectorSelection(r.id)} className="mt-1 rounded border-surface-300" />
+                      <div className="min-w-0">
+                        <span className="font-medium text-surface-900">{r.full_name || r.email || r.id}</span>
+                        {r.route_name && <span className="block text-xs text-surface-500">Route: {r.route_name}</span>}
+                        {r.email && <span className="block text-xs text-surface-500 truncate">{r.email}</span>}
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-surface-200 flex gap-2 justify-end">
+              <button type="button" onClick={() => setNotifyRectorModal(null)} disabled={notifyRectorModal.submitting} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm font-medium hover:bg-surface-50 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={handleNotifyRectorSubmit} disabled={notifyRectorModal.selectedIds.size === 0 || notifyRectorModal.submitting} className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50">
+                {notifyRectorModal.submitting ? 'Sending…' : `Send email to ${notifyRectorModal.selectedIds.size} rector${notifyRectorModal.selectedIds.size !== 1 ? 's' : ''}`}
+              </button>
             </div>
           </div>
         </div>

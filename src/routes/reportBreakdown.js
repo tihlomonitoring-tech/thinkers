@@ -220,7 +220,7 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
         }
         if (!getCommandCentreAndRectorEmailsForRoute) return;
         const detailResult = await query(
-          `SELECT i.id, i.route_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
+          `SELECT i.id, i.route_id, i.truck_id, i.driver_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
             t.registration AS truck_reg, r.name AS route_name,
             d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email
            FROM contractor_incidents i
@@ -233,7 +233,19 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
         const row = detailResult.recordset?.[0];
         const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || report.driverName : report.driverName;
         const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
-        const routeId = row?.route_id ?? row?.route_Id ?? null;
+        let routeId = row?.route_id ?? row?.route_Id ?? null;
+        if (!routeId && (row?.truck_id || row?.driver_id)) {
+          if (row.truck_id) {
+            const trRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_trucks WHERE truck_id = @truckId`, { truckId: row.truck_id });
+            const r0 = trRoutes.recordset?.[0];
+            routeId = r0?.route_id ?? r0?.route_Id ?? null;
+          }
+          if (!routeId && row.driver_id) {
+            const drRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_drivers WHERE driver_id = @driverId`, { driverId: row.driver_id });
+            const r0 = drRoutes.recordset?.[0];
+            routeId = r0?.route_id ?? r0?.route_Id ?? null;
+          }
+        }
         const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row?.driver_email || '').trim();
         const fallbackTo = (process.env.EMAIL_USER || '').trim();

@@ -458,8 +458,14 @@ export const commandCentre = {
         method: 'PATCH',
         body: JSON.stringify({ resolution_note: resolutionNote }),
       }),
+    notifyRector: (id, rectorUserIds) =>
+      request(`/command-centre/breakdowns/${id}/notify-rector`, {
+        method: 'POST',
+        body: JSON.stringify({ rector_user_ids: rectorUserIds }),
+      }),
     attachmentUrl: (id, type) => `${API}/command-centre/breakdowns/${id}/attachments/${type}`,
   },
+  rectorsWithRoutes: () => request('/command-centre/rectors-with-routes'),
 };
 
 export const tasks = {

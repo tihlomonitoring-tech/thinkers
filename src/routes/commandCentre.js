@@ -6,7 +6,7 @@ import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
-import { applicationApprovedHtml, applicationBulkApprovedHtml, applicationApprovedToRectorHtml, applicationBulkApprovedToRectorHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
+import { applicationApprovedHtml, applicationBulkApprovedHtml, applicationApprovedToRectorHtml, applicationBulkApprovedToRectorHtml, breakdownReportHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
@@ -569,6 +569,30 @@ router.get('/rectors', async (req, res, next) => {
   }
 });
 
+/** GET rectors with their route (for breakdown "Notify rector" – show all rectors by route so CC can select the correct one). */
+router.get('/rectors-with-routes', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT u.id, u.full_name, u.email, f.route_id, r.name AS route_name
+       FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       LEFT JOIN contractor_routes r ON r.id = f.route_id
+       WHERE f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+       ORDER BY r.name ASC, u.full_name ASC`
+    );
+    const list = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      full_name: getRow(r, 'full_name'),
+      email: getRow(r, 'email'),
+      route_id: getRow(r, 'route_id'),
+      route_name: getRow(r, 'route_name') || '—',
+    }));
+    res.json({ rectors: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** GET list fleet applications (all contract additions including imports). Optional ?status=pending */
 router.get('/fleet-applications', async (req, res, next) => {
   try {
@@ -993,6 +1017,15 @@ function normIncident(row) {
     driver_name: get(row, 'driver_name'),
     route_name: get(row, 'route_name'),
     driver_email: get(row, 'driver_email'),
+    rector_manual_notified_at: get(row, 'rector_manual_notified_at'),
+    rector_was_notified: row ? (() => {
+      const manual = get(row, 'rector_manual_notified_at');
+      if (manual != null) return true;
+      const routeId = get(row, 'route_id');
+      if (!routeId) return false;
+      const count = row.route_rector_count;
+      return typeof count === 'number' && count > 0;
+    })() : false,
   };
 }
 
@@ -1047,13 +1080,14 @@ router.get('/breakdowns', async (req, res, next) => {
   }
 });
 
-/** GET one breakdown (full detail for view / PDF) */
+/** GET one breakdown (full detail for view / PDF). Includes rector_was_notified so CC can show "Notify rector" when rector was not notified. */
 router.get('/breakdowns/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
       `SELECT i.*, t.name AS tenant_name, tr.registration AS truck_registration, r.name AS route_name,
-              d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email
+              d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
+              (SELECT COUNT(*) FROM access_route_factors f WHERE f.route_id = i.route_id AND f.user_id IS NOT NULL) AS route_rector_count
        FROM contractor_incidents i
        LEFT JOIN tenants t ON t.id = i.tenant_id
        LEFT JOIN contractor_trucks tr ON tr.id = i.truck_id
@@ -1089,7 +1123,7 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const updated = updateResult.recordset?.[0];
     if (!updated) return res.status(404).json({ error: 'Breakdown not found' });
     const detailResult = await query(
-      `SELECT i.id, i.route_id, i.tenant_id, i.contractor_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
+      `SELECT i.id, i.route_id, i.truck_id, i.driver_id, i.tenant_id, i.contractor_id, i.title, i.resolution_note, i.resolved_at, t.name AS tenant_name,
               tr.registration AS truck_registration, r.name AS route_name,
               d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
               c.name AS contractor_name
@@ -1107,7 +1141,19 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     const resolvedAtStr = row?.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
     const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
     const incidentContractorId = row?.contractor_id ?? row?.contractor_Id ?? null;
-    const routeId = row?.route_id ?? row?.route_Id ?? null;
+    let routeId = row?.route_id ?? row?.route_Id ?? null;
+    if (!routeId && (row?.truck_id || row?.driver_id)) {
+      if (row.truck_id) {
+        const trRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_trucks WHERE truck_id = @truckId`, { truckId: row.truck_id });
+        const r0 = trRoutes.recordset?.[0];
+        routeId = r0?.route_id ?? r0?.route_Id ?? null;
+      }
+      if (!routeId && row.driver_id) {
+        const drRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_drivers WHERE driver_id = @driverId`, { driverId: row.driver_id });
+        const r0 = drRoutes.recordset?.[0];
+        routeId = r0?.route_id ?? r0?.route_Id ?? null;
+      }
+    }
     (async () => {
       try {
         if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmailsForRoute) return;
@@ -1143,6 +1189,78 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
       }
     })();
     res.json({ breakdown: { id: updated.id, resolved_at: updated.resolved_at, resolution_note: updated.resolution_note } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST notify selected rector(s) about a breakdown (when rector was not notified at report time). Sends same breakdown email. Body: { rector_user_ids: [uuid, ...] }. */
+router.post('/breakdowns/:id/notify-rector', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const rectorIds = Array.isArray(req.body?.rector_user_ids) ? req.body.rector_user_ids.filter((uid) => uid) : [];
+    if (rectorIds.length === 0) return res.status(400).json({ error: 'At least one rector must be selected (rector_user_ids).' });
+    const detailResult = await query(
+      `SELECT i.id, i.route_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
+              tr.registration AS truck_reg, r.name AS route_name,
+              d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
+              c.name AS contractor_name, tn.name AS tenant_name
+       FROM contractor_incidents i
+       LEFT JOIN contractor_trucks tr ON tr.id = i.truck_id
+       LEFT JOIN contractor_routes r ON r.id = i.route_id
+       LEFT JOIN contractor_drivers d ON d.id = i.driver_id
+       LEFT JOIN contractors c ON c.id = i.contractor_id
+       LEFT JOIN tenants tn ON tn.id = i.tenant_id
+       WHERE i.id = @id`,
+      { id }
+    );
+    const row = detailResult.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Breakdown not found' });
+    const placeholders = rectorIds.map((_, i) => `@uid${i}`).join(',');
+    const params = rectorIds.reduce((o, uid, i) => ({ ...o, [`uid${i}`]: uid }), {});
+    const userRows = await query(
+      `SELECT id, email FROM users WHERE id IN (${placeholders}) AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''`,
+      params
+    );
+    const toEmails = (userRows.recordset || []).map((r) => (r.email || r.Email || '').trim()).filter((e) => e && e.includes('@'));
+    if (toEmails.length === 0) return res.status(400).json({ error: 'No valid rector emails found for the selected users.' });
+    const driverName = row ? [row.driver_name, row.driver_surname].filter(Boolean).join(' ').trim() || 'Driver' : 'Driver';
+    const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
+    const html = breakdownReportHtml({
+      driverName,
+      truckRegistration: row?.truck_reg || '—',
+      routeName: row?.route_name || '—',
+      reportedAt: reportedAtStr,
+      location: row?.location || '—',
+      type: row?.type || 'breakdown',
+      title: row?.title || 'Breakdown',
+      description: row?.description || '',
+      severity: row?.severity || '',
+      actionsTaken: row?.actions_taken || '',
+      incidentId: id,
+      contractorName: row?.contractor_name ?? row?.contractor_Name ?? null,
+      tenantName: row?.tenant_name ?? row?.tenant_name ?? null,
+    });
+    const subject = `Breakdown reported: ${row?.title || 'Breakdown'} – ${driverName}`;
+    if (isEmailConfigured() && sendEmail) {
+      for (const to of toEmails) {
+        try {
+          await sendEmail({ to, subject, body: html, html: true });
+        } catch (sendErr) {
+          console.error('[commandCentre] notify-rector failed to send to', to, sendErr?.message || sendErr);
+        }
+      }
+    }
+    await query(
+      `UPDATE contractor_incidents SET rector_manual_notified_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id }
+    );
+    const updated = await query(`SELECT id, rector_manual_notified_at FROM contractor_incidents WHERE id = @id`, { id });
+    const updatedRow = updated.recordset?.[0];
+    res.json({
+      ok: true,
+      rector_manual_notified_at: updatedRow?.rector_manual_notified_at ?? null,
+    });
   } catch (err) {
     next(err);
   }

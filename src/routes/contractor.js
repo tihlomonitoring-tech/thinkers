@@ -855,12 +855,12 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
     );
     const incident = normalizeIncidentRow(updated.recordset?.[0]) || updated.recordset?.[0];
 
-    // Notify Command Centre and Rector users (same as public report-breakdown flow)
+    // Notify Command Centre and Rector users (same as public report-breakdown flow). Ensure route rector gets email by deriving route_id from truck/driver when missing.
     (async () => {
       try {
-        if (!isEmailConfigured() || !getCommandCentreAndRectorEmails) return;
+        if (!isEmailConfigured() || !getCommandCentreAndRectorEmailsForRoute) return;
         const detailResult = await query(
-          `SELECT i.id, i.route_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
+          `SELECT i.id, i.route_id, i.truck_id, i.driver_id, i.type, i.title, i.description, i.severity, i.actions_taken, i.reported_at, i.location,
             tr.registration AS truck_reg, r.name AS route_name,
             d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
             c.name AS contractor_name, tn.name AS tenant_name
@@ -878,7 +878,19 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
         const reportedAtStr = row?.reported_at ? new Date(row.reported_at).toLocaleString() : new Date().toLocaleString();
         const contractorName = row?.contractor_name ?? row?.contractor_Name ?? null;
         const tenantName = row?.tenant_name ?? row?.tenant_name ?? null;
-        const routeId = row?.route_id ?? row?.route_Id ?? null;
+        let routeId = row?.route_id ?? row?.route_Id ?? null;
+        if (!routeId && (row?.truck_id || row?.driver_id)) {
+          if (row.truck_id) {
+            const trRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_trucks WHERE truck_id = @truckId`, { truckId: row.truck_id });
+            const r0 = trRoutes.recordset?.[0];
+            routeId = r0?.route_id ?? r0?.route_Id ?? null;
+          }
+          if (!routeId && row.driver_id) {
+            const drRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_drivers WHERE driver_id = @driverId`, { driverId: row.driver_id });
+            const r0 = drRoutes.recordset?.[0];
+            routeId = r0?.route_id ?? r0?.route_Id ?? null;
+          }
+        }
         const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row?.driver_email || '').trim();
         const fallbackTo = (process.env.EMAIL_USER || '').trim();
@@ -959,7 +971,7 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
       try {
         if (!isEmailConfigured() || !getCommandCentreAndRectorEmailsForRoute || !getTenantUserEmails) return;
         const detailResult = await query(
-          `SELECT i.id, i.route_id, i.title, i.resolution_note, i.resolved_at, i.tenant_id, i.contractor_id,
+          `SELECT i.id, i.route_id, i.truck_id, i.driver_id, i.title, i.resolution_note, i.resolved_at, i.tenant_id, i.contractor_id,
                   tr.registration AS truck_registration, r.name AS route_name,
                   d.full_name AS driver_name, d.surname AS driver_surname, d.email AS driver_email,
                   c.name AS contractor_name
@@ -977,7 +989,19 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
         const resolvedAtStr = row.resolved_at ? new Date(row.resolved_at).toLocaleString() : new Date().toLocaleString();
         const contractorName = row.contractor_name ?? row.contractor_Name ?? null;
         const incidentContractorId = row.contractor_id ?? row.contractor_Id ?? null;
-        const routeId = row.route_id ?? row.route_Id ?? null;
+        let routeId = row.route_id ?? row.route_Id ?? null;
+        if (!routeId && (row.truck_id || row.driver_id)) {
+          if (row.truck_id) {
+            const trRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_trucks WHERE truck_id = @truckId`, { truckId: row.truck_id });
+            const r0 = trRoutes.recordset?.[0];
+            routeId = r0?.route_id ?? r0?.route_Id ?? null;
+          }
+          if (!routeId && row.driver_id) {
+            const drRoutes = await query(`SELECT TOP 1 route_id FROM contractor_route_drivers WHERE driver_id = @driverId`, { driverId: row.driver_id });
+            const r0 = drRoutes.recordset?.[0];
+            routeId = r0?.route_id ?? r0?.route_Id ?? null;
+          }
+        }
         const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
         const driverEmail = (row.driver_email || '').trim();
         const contractorEmails = row.tenant_id ? (incidentContractorId ? await getContractorUserEmails(query, row.tenant_id, incidentContractorId) : await getTenantUserEmails(query, row.tenant_id)) : [];

@@ -149,12 +149,12 @@ export async function getRectorEmailsForAlertType(query, alertType) {
 
 /**
  * Command Centre + Access Management + rectors assigned to the given route only.
- * When routeId is null/undefined, returns same as getCommandCentreAndRectorEmails (all rectors) for backward compat.
- * When routeId is set, rectors are strictly those in access_route_factors for that route only (no blanket rector page role).
+ * When routeId is null/undefined, returns only CC + AM (no rectors) so we never notify all rectors.
+ * When routeId is set, rectors are strictly those in access_route_factors for that route only.
  */
 export async function getCommandCentreAndRectorEmailsForRoute(query, routeId) {
   if (routeId == null || routeId === '') {
-    return getCommandCentreAndRectorEmails(query);
+    return getCommandCentreAndAccessManagementEmails(query);
   }
   const emails = new Set();
   const getRowEmail = (row) => {
