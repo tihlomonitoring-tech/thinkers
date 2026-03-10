@@ -62,6 +62,38 @@ export async function getCommandCentreAndRectorEmails(query) {
   return list;
 }
 
+/** All users who are rectors (rector page role or in access_route_factors). Use to exclude from notifications that must not go to rectors (e.g. fleet/driver added by contractor). */
+export async function getAllRectorEmails(query) {
+  const emails = new Set();
+  const getRowEmail = (row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = Object.keys(row).find((k) => k.toLowerCase() === 'email');
+    const e = (key ? row[key] : row.email ?? row.Email ?? '').toString().trim();
+    return e && e.includes('@') ? e : null;
+  };
+  try {
+    const pageResult = await query(
+      `SELECT DISTINCT u.email FROM user_page_roles r INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id = N'rector' AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of pageResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+    const factorsResult = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f INNER JOIN users u ON u.id = f.user_id
+       WHERE f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
+    );
+    for (const row of factorsResult?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getAllRectorEmails:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
 /** CC and Access Management only (no rector page / route factors). Use with getRectorEmailsForAlertType for suspend/reinstate so only opted-in rectors get those alerts. */
 export async function getCommandCentreAndAccessManagementEmails(query) {
   const emails = new Set();
@@ -252,6 +284,27 @@ export async function getContractorUserEmails(query, tenantId, contractorId) {
     }
   } catch (err) {
     console.warn('[emailRecipients] getContractorUserEmails:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
+/** Only users explicitly linked to this contractor (user_contractors). Excludes tenant-wide users. Use when only the submitting contractor must be notified (e.g. fleet/driver approval) for privacy. */
+export async function getContractorOnlyUserEmails(query, tenantId, contractorId) {
+  if (!tenantId || !contractorId) return [];
+  const emails = new Set();
+  try {
+    const result = await query(
+      `SELECT u.email FROM users u
+       INNER JOIN user_contractors uc ON uc.user_id = u.id AND uc.contractor_id = @contractorId
+       WHERE u.tenant_id = @tenantId AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`,
+      { tenantId, contractorId }
+    );
+    for (const row of result.recordset || []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getContractorOnlyUserEmails:', err?.message || err);
   }
   return Array.from(emails);
 }

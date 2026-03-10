@@ -414,10 +414,12 @@ export const commandCentre = {
     get: (id) => request(`/command-centre/fleet-applications/${id}`),
     getComments: (id) => request(`/command-centre/fleet-applications/${id}/comments`),
     addComment: (id, body) => request(`/command-centre/fleet-applications/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
-    approve: (id) => request(`/command-centre/fleet-applications/${id}/approve`, { method: 'PATCH' }),
-    bulkApprove: (ids) => request('/command-centre/fleet-applications/bulk-approve', { method: 'POST', body: JSON.stringify({ ids }) }),
+    approve: (id, body = {}) => request(`/command-centre/fleet-applications/${id}/approve`, { method: 'PATCH', body: JSON.stringify(body) }),
+    bulkApprove: (ids, body = {}) => request('/command-centre/fleet-applications/bulk-approve', { method: 'POST', body: JSON.stringify({ ids, ...body }) }),
     decline: (id, declineReason) => request(`/command-centre/fleet-applications/${id}/decline`, { method: 'PATCH', body: JSON.stringify({ decline_reason: declineReason }) }),
   },
+  /** Rectors (users in access_route_factors) for "Notify rectors" when approving fleet applications */
+  rectors: () => request('/command-centre/rectors'),
   fleetIntegration: {
     list: (params = {}) => {
       const q = new URLSearchParams();

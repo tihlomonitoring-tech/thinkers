@@ -6,7 +6,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
-import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
@@ -270,16 +270,18 @@ async function createFleetApplication(tenantId, entityType, entityId, source = '
   );
 }
 
-/** Fire-and-forget: notify CC+Rector and sender when fleet/driver added or edited. contractorName = company (contractor) name. */
+/** Fire-and-forget: notify Command Centre and Access Management only (never rectors) and sender when fleet/driver added or edited. contractorName = company (contractor) name. */
 function notifyFleetDriverEmails(tenantName, contractorName, type, list, senderEmail, action = 'added') {
   (async () => {
     try {
-      if (!sendEmail || !getCommandCentreAndRectorEmails) return;
-      const ccRector = await getCommandCentreAndRectorEmails(query);
+      if (!sendEmail || !getCommandCentreAndAccessManagementEmails || !getAllRectorEmails) return;
+      const ccAm = await getCommandCentreAndAccessManagementEmails(query);
+      const rectorEmails = new Set(await getAllRectorEmails(query));
+      const toList = ccAm.filter((e) => !rectorEmails.has(e));
       const label = type === 'truck' ? 'Fleet' : 'Driver';
-      if (ccRector.length > 0) {
+      if (toList.length > 0) {
         const html = newFleetDriverNotificationHtml({ type, tenantName, contractorName, list, action });
-        await sendEmail({ to: ccRector, subject: `${label} ${action}: ${Array.isArray(list) && list.length ? list.slice(0, 3).join(', ') + (list.length > 3 ? '…' : '') : type}`, body: html, html: true });
+        await sendEmail({ to: toList, subject: `${label} ${action}: ${Array.isArray(list) && list.length ? list.slice(0, 3).join(', ') + (list.length > 3 ? '…' : '') : type}`, body: html, html: true });
       }
       if (senderEmail && (senderEmail || '').trim()) {
         const html = newFleetDriverConfirmationHtml({ type, list, action, contractorName });

@@ -5,8 +5,8 @@ import { randomUUID } from 'crypto';
 import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
-import { getTenantUserEmails, getContractorUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
-import { applicationApprovedHtml, applicationBulkApprovedHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
+import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { applicationApprovedHtml, applicationBulkApprovedHtml, applicationApprovedToRectorHtml, applicationBulkApprovedToRectorHtml, breakdownResolvedHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
@@ -548,6 +548,27 @@ router.get('/compliance-inspections/:id/attachments/:attachmentId', async (req, 
 });
 
 // --- Fleet & driver applications (contract additions: approve/decline for facility access) ---
+/** GET list rectors (users linked in access_route_factors) for "Notify rectors" selection when approving applications */
+router.get('/rectors', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT DISTINCT u.id, u.full_name, u.email
+       FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+       ORDER BY u.full_name ASC`
+    );
+    const list = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      full_name: getRow(r, 'full_name'),
+      email: getRow(r, 'email'),
+    }));
+    res.json({ rectors: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** GET list fleet applications (all contract additions including imports). Optional ?status=pending */
 router.get('/fleet-applications', async (req, res, next) => {
   try {
@@ -1259,10 +1280,11 @@ router.post('/fleet-applications/:id/comments', async (req, res, next) => {
   }
 });
 
-/** PATCH approve: grant facility access */
+/** PATCH approve: grant facility access. Body: optional { notify_rectors: true, rector_user_ids: [uuid,...] } – only those rectors get an email (no automatic rector notification). */
 router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
   try {
     const { id } = req.params;
+    const { notify_rectors, rector_user_ids } = req.body || {};
     const appResult = await query(`SELECT id, entity_type, entity_id, [status] FROM cc_fleet_applications WHERE id = @id`, { id });
     const app = appResult.recordset?.[0];
     if (!app) return res.status(404).json({ error: 'Application not found' });
@@ -1309,10 +1331,21 @@ router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
       try {
         if (!sendEmail || !tenantId) return;
         const contractorId = entityType === 'truck' ? (await query(`SELECT contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId })).recordset?.[0]?.contractor_id : (await query(`SELECT contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId })).recordset?.[0]?.contractor_id;
-        const toEmails = contractorId ? await getContractorUserEmails(query, tenantId, contractorId) : await getTenantUserEmails(query, tenantId);
+        const toEmails = contractorId ? await getContractorOnlyUserEmails(query, tenantId, contractorId) : [];
         if (toEmails.length > 0) {
           const html = applicationApprovedHtml({ entityType, entityLabel, tenantName, contractorName });
           await sendEmail({ to: toEmails, subject: `${entityType === 'truck' ? 'Truck' : 'Driver'} approved – you can now enroll on the route`, body: html, html: true });
+        }
+        const rectorIds = Array.isArray(rector_user_ids) && notify_rectors ? rector_user_ids.filter((uid) => uid) : [];
+        if (rectorIds.length > 0) {
+          const placeholders = rectorIds.map((_, i) => `@uid${i}`).join(',');
+          const params = rectorIds.reduce((o, uid, i) => ({ ...o, [`uid${i}`]: uid }), {});
+          const rectorRows = await query(`SELECT email FROM users WHERE id IN (${placeholders}) AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''`, params);
+          const rectorEmails = (rectorRows.recordset || []).map((r) => (r.email || r.Email || '').trim()).filter((e) => e && e.includes('@'));
+          if (rectorEmails.length > 0) {
+            const html = applicationApprovedToRectorHtml({ entityType, entityLabel, tenantName, contractorName });
+            await sendEmail({ to: rectorEmails, subject: `${entityType === 'truck' ? 'Truck' : 'Driver'} approved (for your awareness): ${entityLabel} – ${tenantName}`, body: html, html: true });
+          }
         }
       } catch (e) {
         console.error('[commandCentre] Approval email error:', e?.message || e);
@@ -1334,10 +1367,10 @@ router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
   }
 });
 
-/** POST bulk-approve: approve multiple fleet applications in one request; send one email listing all with contractor names. */
+/** POST bulk-approve: approve multiple fleet applications in one request; send one email listing all with contractor names. Body: { ids }, optional { notify_rectors: true, rector_user_ids: [uuid,...] } – only those rectors get one email (no automatic rector notification). */
 router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
   try {
-    const { ids } = req.body || {};
+    const { ids, notify_rectors, rector_user_ids } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array required' });
     const approved = [];
     const items = [];
@@ -1386,10 +1419,10 @@ router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
         const allEmails = new Set();
         const seen = new Set();
         for (const { tenantId: tid, contractorId: cid } of recipientScopes) {
-          const key = `${tid}:${cid || 'tenant'}`;
+          const key = `${tid}:${cid || 'none'}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          const list = cid ? await getContractorUserEmails(query, tid, cid) : await getTenantUserEmails(query, tid);
+          const list = cid ? await getContractorOnlyUserEmails(query, tid, cid) : [];
           list.forEach((e) => allEmails.add(e));
         }
         if (allEmails.size > 0) {
@@ -1400,6 +1433,22 @@ router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
             body: html,
             html: true,
           });
+        }
+        const rectorIds = Array.isArray(rector_user_ids) && notify_rectors ? rector_user_ids.filter((uid) => uid) : [];
+        if (rectorIds.length > 0) {
+          const placeholders = rectorIds.map((_, i) => `@ruid${i}`).join(',');
+          const params = rectorIds.reduce((o, uid, i) => ({ ...o, [`ruid${i}`]: uid }), {});
+          const rectorRows = await query(`SELECT email FROM users WHERE id IN (${placeholders}) AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''`, params);
+          const rectorEmails = (rectorRows.recordset || []).map((r) => (r.email || r.Email || '').trim()).filter((e) => e && e.includes('@'));
+          if (rectorEmails.length > 0) {
+            const html = applicationBulkApprovedToRectorHtml({ items });
+            await sendEmail({
+              to: rectorEmails,
+              subject: `Applications approved (${approved.length}) (for your awareness)`,
+              body: html,
+              html: true,
+            });
+          }
         }
       } catch (e) {
         console.error('[commandCentre] Bulk approval email error:', e?.message || e);

@@ -5085,6 +5085,16 @@ function TabApplications() {
   const [showExportExcelModal, setShowExportExcelModal] = useState(false);
   const [exportColumnIds, setExportColumnIds] = useState(() => FLEET_APP_EXPORT_COLUMNS.map((c) => c.id));
   const [exportingExcel, setExportingExcel] = useState(false);
+  const [rectors, setRectors] = useState([]);
+  const [showApproveModal, setShowApproveModal] = useState(false);
+  const [approveModalId, setApproveModalId] = useState(null);
+  const [notifyRectors, setNotifyRectors] = useState(false);
+  const [selectedRectorIds, setSelectedRectorIds] = useState(new Set());
+  const [showBulkApproveModal, setShowBulkApproveModal] = useState(false);
+
+  useEffect(() => {
+    ccApi.rectors().then((r) => setRectors(r.rectors || [])).catch(() => setRectors([]));
+  }, []);
 
   const loadList = () => {
     setLoading(true);
@@ -5138,17 +5148,39 @@ function TabApplications() {
 
   const formatDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
 
-  const handleApprove = async (id) => {
+  const openApproveModal = (id) => {
+    setApproveModalId(id);
+    setNotifyRectors(false);
+    setSelectedRectorIds(new Set());
+    setShowApproveModal(true);
+  };
+
+  const handleApproveSubmit = async () => {
+    if (!approveModalId) return;
     setActing(true);
     try {
-      await ccApi.fleetApplications.approve(id);
+      await ccApi.fleetApplications.approve(approveModalId, {
+        notify_rectors: notifyRectors && selectedRectorIds.size > 0,
+        rector_user_ids: notifyRectors ? [...selectedRectorIds] : [],
+      });
+      setShowApproveModal(false);
+      setApproveModalId(null);
       loadList();
-      if (selectedId === id) setSelectedId(null);
+      if (selectedId === approveModalId) setSelectedId(null);
     } catch (e) {
       window.alert(e?.message || 'Failed to approve');
     } finally {
       setActing(false);
     }
+  };
+
+  const toggleRector = (rectorId) => {
+    setSelectedRectorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rectorId)) next.delete(rectorId);
+      else next.add(rectorId);
+      return next;
+    });
   };
 
   const openDeclineModal = (id) => {
@@ -5204,13 +5236,24 @@ function TabApplications() {
   const applicationsToExport = selectedIds.size > 0
     ? filteredApplications.filter((app) => selectedIds.has(app.id))
     : filteredApplications;
-  const bulkApprove = async () => {
+  const openBulkApproveModal = () => {
     const ids = [...selectedIds].filter((id) => pendingInList.some((a) => a.id === id));
     if (ids.length === 0) return;
-    if (!window.confirm(`Approve ${ids.length} application(s)? This will grant facility access to all selected. One email will be sent listing the approved items and contractor names.`)) return;
+    setNotifyRectors(false);
+    setSelectedRectorIds(new Set());
+    setShowBulkApproveModal(true);
+  };
+
+  const handleBulkApproveSubmit = async () => {
+    const ids = [...selectedIds].filter((id) => pendingInList.some((a) => a.id === id));
+    if (ids.length === 0) return;
     setActing(true);
     try {
-      await ccApi.fleetApplications.bulkApprove(ids);
+      await ccApi.fleetApplications.bulkApprove(ids, {
+        notify_rectors: notifyRectors && selectedRectorIds.size > 0,
+        rector_user_ids: notifyRectors ? [...selectedRectorIds] : [],
+      });
+      setShowBulkApproveModal(false);
       clearSelection();
       loadList();
       setSelectedId(null);
@@ -5443,7 +5486,7 @@ function TabApplications() {
           )}
           <button type="button" onClick={clearSelection} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Clear selection</button>
           {pendingInList.length > 0 && (
-            <button type="button" onClick={bulkApprove} disabled={acting || selectedIds.size === 0} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+            <button type="button" onClick={openBulkApproveModal} disabled={acting || selectedIds.size === 0} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
               {acting ? 'Approving…' : `Bulk approve (${[...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length})`}
             </button>
           )}
@@ -5598,7 +5641,7 @@ function TabApplications() {
 
                   {detail.status === 'pending' && (
                     <div className="border-t border-surface-200 pt-4 flex flex-wrap gap-3">
-                      <button type="button" disabled={acting} onClick={() => handleApprove(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+                      <button type="button" disabled={acting} onClick={() => openApproveModal(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
                         {acting ? 'Processing…' : 'Approve — grant facility access'}
                       </button>
                       <button type="button" disabled={acting} onClick={() => openDeclineModal(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50">
@@ -5687,6 +5730,78 @@ function TabApplications() {
             <div className="flex gap-3 justify-end">
               <button type="button" onClick={() => !acting && setShowDeclineModal(false)} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
               <button type="button" disabled={acting || !declineReason.trim()} onClick={handleDeclineSubmit} className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">Submit decline</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Single approve modal – optional notify rectors */}
+      {showApproveModal && approveModalId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowApproveModal(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold text-surface-900 mb-2">Approve application</h3>
+            <p className="text-sm text-surface-600 mb-4">This will grant facility access. The contractor will receive an email. You can optionally notify selected rectors.</p>
+            <label className="flex items-center gap-2 mb-3 cursor-pointer">
+              <input type="checkbox" checked={notifyRectors} onChange={(e) => setNotifyRectors(e.target.checked)} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+              <span className="text-sm font-medium text-surface-800">Notify rectors</span>
+            </label>
+            {notifyRectors && (
+              <div className="mb-4 pl-6 border-l-2 border-surface-200">
+                <p className="text-xs text-surface-500 mb-2">Select which rectors to notify (they will receive an email for awareness):</p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {rectors.length === 0 ? (
+                    <p className="text-sm text-surface-500">No rectors found. Add rectors in Access Management (route factors).</p>
+                  ) : (
+                    rectors.map((r) => (
+                      <label key={r.id} className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={selectedRectorIds.has(r.id)} onChange={() => toggleRector(r.id)} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+                        <span className="text-sm text-surface-800">{r.full_name || r.email || r.id}</span>
+                        {r.email && r.full_name && <span className="text-xs text-surface-500">({r.email})</span>}
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button type="button" onClick={() => !acting && setShowApproveModal(false)} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
+              <button type="button" disabled={acting} onClick={handleApproveSubmit} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">{acting ? 'Processing…' : 'Approve'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk approve modal – optional notify rectors */}
+      {showBulkApproveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowBulkApproveModal(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold text-surface-900 mb-2">Bulk approve</h3>
+            <p className="text-sm text-surface-600 mb-4">Approve {[...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length} application(s)? This will grant facility access. One email will be sent to contractors listing the approved items. You can optionally notify selected rectors.</p>
+            <label className="flex items-center gap-2 mb-3 cursor-pointer">
+              <input type="checkbox" checked={notifyRectors} onChange={(e) => setNotifyRectors(e.target.checked)} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+              <span className="text-sm font-medium text-surface-800">Notify rectors</span>
+            </label>
+            {notifyRectors && (
+              <div className="mb-4 pl-6 border-l-2 border-surface-200">
+                <p className="text-xs text-surface-500 mb-2">Select which rectors to notify:</p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {rectors.length === 0 ? (
+                    <p className="text-sm text-surface-500">No rectors found.</p>
+                  ) : (
+                    rectors.map((r) => (
+                      <label key={r.id} className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={selectedRectorIds.has(r.id)} onChange={() => toggleRector(r.id)} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
+                        <span className="text-sm text-surface-800">{r.full_name || r.email || r.id}</span>
+                        {r.email && r.full_name && <span className="text-xs text-surface-500">({r.email})</span>}
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button type="button" onClick={() => !acting && setShowBulkApproveModal(false)} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
+              <button type="button" disabled={acting} onClick={handleBulkApproveSubmit} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">{acting ? 'Approving…' : 'Approve all'}</button>
             </div>
           </div>
         </div>

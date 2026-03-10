@@ -232,6 +232,36 @@ export function applicationBulkApprovedHtml({ items }) {
   return wrap(content, 'Applications approved', { charcoal: false });
 }
 
+/** Application approved – for rector awareness (notification only). */
+export function applicationApprovedToRectorHtml({ entityType, entityLabel, tenantName, contractorName }) {
+  const label = entityType === 'truck' ? 'Truck' : 'Driver';
+  const companyName = (contractorName && String(contractorName).trim()) || (tenantName && String(tenantName).trim()) || '—';
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">${label} approved (for your awareness)</h1>
+    <p style="margin:0 0 12px;">Command Centre has approved the application for <strong>${escapeHtml(entityLabel || label)}</strong> (company: <strong>${escapeHtml(companyName)}</strong>).</p>
+    <p style="margin:0 0 12px;">They can now enroll this ${entityType === 'truck' ? 'truck' : 'driver'} on the route in the Contractor portal.</p>
+  `;
+  return wrap(content, `${label} approved`, { charcoal: true });
+}
+
+/** Bulk applications approved – for rector awareness (notification only). */
+export function applicationBulkApprovedToRectorHtml({ items }) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return wrap('<p>No items.</p>', 'Applications approved', { charcoal: true });
+  }
+  const listHtml = items.map((item) => {
+    const label = (item.entityType === 'truck' ? 'Truck' : 'Driver') + ': ' + escapeHtml(item.entityLabel || '—');
+    const company = (item.contractorName && String(item.contractorName).trim()) ? ` (${escapeHtml(item.contractorName)})` : '';
+    return `<li>${label}${company}</li>`;
+  }).join('');
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">Applications approved (for your awareness)</h1>
+    <p style="margin:0 0 12px;">Command Centre has approved the following. They can now be enrolled on the route in the Contractor portal.</p>
+    <ul style="margin:12px 0 0;padding-left:20px;">${listHtml}</ul>
+  `;
+  return wrap(content, 'Applications approved', { charcoal: true });
+}
+
 /** Truck suspended (Command Centre): to contractor – grey template, with instructions to lift suspension. */
 export function truckSuspendedToContractorHtml({ truckRegistration, tenantName, reason, isPermanent, suspensionEndsAt, appUrl }) {
   const reasonText = reason || 'Suspended from Command Centre (Fleet and driver compliance).';
