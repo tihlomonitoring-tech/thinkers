@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { recruitment as recruitmentApi, downloadAttachmentWithAuth, openAttachmentWithAuth, users as usersApi } from './api';
+import { recruitment as recruitmentApi, downloadAttachmentWithAuth, users as usersApi } from './api';
 import { useAuth } from './AuthContext';
 
 const ALL_TABS = [
@@ -378,12 +378,18 @@ function TabCvLibrary({ setError }) {
   const [selectedFolderId, setSelectedFolderId] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [viewingCv, setViewingCv] = useState(null);
+  const [viewLoading, setViewLoading] = useState(false);
 
   const loadFolders = () => recruitmentApi.folders.list().then((r) => setFolders(r.folders || []));
   const loadCvs = () => recruitmentApi.cvs.list(selectedFolderId || undefined).then((r) => setCvs(r.cvs || []));
 
   useEffect(() => { loadFolders(); }, []);
   useEffect(() => { loadCvs(); }, [selectedFolderId]);
+
+  useEffect(() => () => {
+    if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
+  }, [viewingCv?.url]);
 
   const addFolder = () => {
     if (!(newFolderName || '').trim()) return;
@@ -400,6 +406,28 @@ function TabCvLibrary({ setError }) {
       .finally(() => { setUploading(false); e.target.value = ''; });
   };
 
+  const viewCv = (cv) => {
+    if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
+    setViewingCv(null);
+    setViewLoading(true);
+    fetch(recruitmentApi.cvs.downloadUrl(cv.id), { credentials: 'include' })
+      .then((res) => {
+        if (!res.ok) throw new Error(res.status === 401 ? 'Please sign in again' : 'Could not load CV');
+        return res.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        setViewingCv({ url, name: cv.file_name || 'CV', isPdf: (cv.file_name || '').toLowerCase().endsWith('.pdf') });
+      })
+      .catch((e) => setError(e?.message))
+      .finally(() => setViewLoading(false));
+  };
+
+  const closeViewer = () => {
+    if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
+    setViewingCv(null);
+  };
+
   const deleteCv = (id) => {
     if (!window.confirm('Delete this CV?')) return;
     recruitmentApi.cvs.delete(id).then(loadCvs).catch((e) => setError(e?.message));
@@ -408,7 +436,7 @@ function TabCvLibrary({ setError }) {
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-800">CV library</h2>
-      <p className="text-sm text-surface-600">Upload CVs and organise them under folders.</p>
+      <p className="text-sm text-surface-600">Upload CVs and organise them under folders. View on screen or download.</p>
       <div className="flex flex-wrap gap-4 items-center">
         <div className="flex gap-2">
           <input type="text" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} placeholder="New folder name" className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48" />
@@ -432,14 +460,43 @@ function TabCvLibrary({ setError }) {
           <ul className="space-y-2">
             {cvs.map((cv) => (
               <li key={cv.id} className="flex justify-between items-center gap-2 p-2 rounded border border-surface-100">
-                <button type="button" onClick={() => downloadAttachmentWithAuth(recruitmentApi.cvs.downloadUrl(cv.id), cv.file_name).catch((e) => setError(e?.message))} className="text-brand-600 text-sm truncate text-left">{cv.file_name}</button>
-                <span className="text-xs text-surface-500">{cv.applicant_name || cv.applicant_email || '—'}</span>
-                <button type="button" onClick={() => deleteCv(cv.id)} className="text-red-600 text-xs">Delete</button>
+                <span className="text-sm text-surface-800 truncate min-w-0 flex-1" title={cv.file_name}>{cv.file_name}</span>
+                <span className="text-xs text-surface-500 shrink-0">{cv.applicant_name || cv.applicant_email || '—'}</span>
+                <div className="flex gap-1 shrink-0">
+                  <button type="button" onClick={() => viewCv(cv)} className="px-2 py-1 rounded border border-brand-300 text-brand-700 text-xs font-medium hover:bg-brand-50">View</button>
+                  <button type="button" onClick={() => downloadAttachmentWithAuth(recruitmentApi.cvs.downloadUrl(cv.id), cv.file_name).catch((e) => setError(e?.message))} className="px-2 py-1 rounded border border-surface-300 text-surface-700 text-xs hover:bg-surface-50">Download</button>
+                  <button type="button" onClick={() => deleteCv(cv.id)} className="text-red-600 text-xs hover:underline">Delete</button>
+                </div>
               </li>
             ))}
           </ul>
         </div>
       </div>
+
+      {viewLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl px-6 py-4 shadow-xl">Loading CV…</div>
+        </div>
+      )}
+      {viewingCv && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-white" aria-modal="true" role="dialog">
+          <div className="flex items-center justify-between gap-2 p-3 border-b border-surface-200 bg-surface-50 shrink-0">
+            <h3 className="font-medium text-surface-800 truncate">{viewingCv.name}</h3>
+            <button type="button" onClick={closeViewer} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-100">Close</button>
+          </div>
+          <div className="flex-1 min-h-0 p-2">
+            {viewingCv.isPdf ? (
+              <iframe src={viewingCv.url} title={viewingCv.name} className="w-full h-full min-h-[70vh] rounded-lg border border-surface-200" />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full min-h-[70vh] text-center p-6">
+                <p className="text-surface-600 mb-2">Word documents (.doc / .docx) cannot be displayed in the browser.</p>
+                <p className="text-sm text-surface-500 mb-4">Use the Download button to open the file on your device, or convert the CV to PDF for in-browser viewing.</p>
+                <a href={viewingCv.url} download={viewingCv.name} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium">Download file</a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -736,6 +793,8 @@ function TabPanel({ vacancies, setError }) {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [filterScoreMin, setFilterScoreMin] = useState('');
   const [filterScoreMax, setFilterScoreMax] = useState('');
+  const [viewingCv, setViewingCv] = useState(null);
+  const [viewLoading, setViewLoading] = useState(false);
 
   useEffect(() => {
     if (vacancyId) {
@@ -823,6 +882,33 @@ function TabPanel({ vacancies, setError }) {
     setFilterScoreMax('');
   };
 
+  useEffect(() => () => {
+    if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
+  }, [viewingCv?.url]);
+
+  const viewCvPanel = (cvId, fileName) => {
+    if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
+    setViewingCv(null);
+    setViewLoading(true);
+    fetch(recruitmentApi.cvs.downloadUrl(cvId), { credentials: 'include' })
+      .then((res) => {
+        if (!res.ok) throw new Error(res.status === 401 ? 'Please sign in again' : 'Could not load CV');
+        return res.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const name = fileName || 'CV';
+        setViewingCv({ url, name, isPdf: (name || '').toLowerCase().endsWith('.pdf') });
+      })
+      .catch((e) => setError(e?.message))
+      .finally(() => setViewLoading(false));
+  };
+
+  const closeCvViewer = () => {
+    if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
+    setViewingCv(null);
+  };
+
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-800">Panel</h2>
@@ -901,7 +987,7 @@ function TabPanel({ vacancies, setError }) {
                 <h3 className="font-medium text-surface-800">{selectedSession.applicant_name}</h3>
                 {selectedSession.applicant_cv_id ? (
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => openAttachmentWithAuth(recruitmentApi.cvs.downloadUrl(selectedSession.applicant_cv_id)).catch((e) => setError(e?.message))} className="px-3 py-1.5 rounded-lg border border-brand-300 text-brand-700 text-sm font-medium hover:bg-brand-50">View CV</button>
+                    <button type="button" onClick={() => viewCvPanel(selectedSession.applicant_cv_id, selectedSession.applicant_cv_file_name)} className="px-3 py-1.5 rounded-lg border border-brand-300 text-brand-700 text-sm font-medium hover:bg-brand-50">View CV</button>
                     <button type="button" onClick={() => downloadAttachmentWithAuth(recruitmentApi.cvs.downloadUrl(selectedSession.applicant_cv_id), selectedSession.applicant_cv_file_name || 'CV.pdf').catch((e) => setError(e?.message))} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">Download CV</button>
                   </div>
                 ) : (
@@ -949,6 +1035,31 @@ function TabPanel({ vacancies, setError }) {
           )}
         </div>
       </div>
+
+      {viewLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl px-6 py-4 shadow-xl">Loading CV…</div>
+        </div>
+      )}
+      {viewingCv && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-white" aria-modal="true" role="dialog">
+          <div className="flex items-center justify-between gap-2 p-3 border-b border-surface-200 bg-surface-50 shrink-0">
+            <h3 className="font-medium text-surface-800 truncate">{viewingCv.name}</h3>
+            <button type="button" onClick={closeCvViewer} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-100">Close</button>
+          </div>
+          <div className="flex-1 min-h-0 p-2">
+            {viewingCv.isPdf ? (
+              <iframe src={viewingCv.url} title={viewingCv.name} className="w-full h-full min-h-[70vh] rounded-lg border border-surface-200" />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full min-h-[70vh] text-center p-6">
+                <p className="text-surface-600 mb-2">Word documents (.doc / .docx) cannot be displayed in the browser.</p>
+                <p className="text-sm text-surface-500 mb-4">Use the Download button to open the file on your device, or convert the CV to PDF for in-browser viewing.</p>
+                <a href={viewingCv.url} download={viewingCv.name} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium">Download file</a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
