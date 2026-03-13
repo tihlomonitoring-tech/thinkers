@@ -500,6 +500,88 @@ export const monthlyPerformanceReports = {
   delete: (id) => request(`/monthly-performance-reports/${id}`, { method: 'DELETE' }),
 };
 
+const rec = (path, options = {}) => request(`/recruitment${path}`, { ...options, body: options.body ? JSON.stringify(options.body) : options.body });
+export const recruitment = {
+  vacancies: {
+    list: () => rec('/vacancies'),
+    get: (id) => rec(`/vacancies/${id}`),
+    create: (body) => rec('/vacancies', { method: 'POST', body }),
+    update: (id, body) => rec(`/vacancies/${id}`, { method: 'PATCH', body }),
+    delete: (id) => rec(`/vacancies/${id}`, { method: 'DELETE' }),
+  },
+  folders: {
+    list: () => rec('/folders'),
+    create: (body) => rec('/folders', { method: 'POST', body }),
+    update: (id, body) => rec(`/folders/${id}`, { method: 'PATCH', body }),
+    delete: (id) => rec(`/folders/${id}`, { method: 'DELETE' }),
+  },
+  cvs: {
+    list: (folderId) => rec(`/cvs${folderId != null && folderId !== '' ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`),
+    get: (id) => rec(`/cvs/${id}`),
+    upload: (file, body = {}) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (body.folder_id != null) formData.append('folder_id', body.folder_id);
+      if (body.applicant_name) formData.append('applicant_name', body.applicant_name);
+      if (body.applicant_email) formData.append('applicant_email', body.applicant_email);
+      return fetch(`${API}/recruitment/cvs`, { method: 'POST', body: formData, credentials: 'include' })
+        .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+    downloadUrl: (id) => `${API}/recruitment/cvs/${id}/download`,
+    delete: (id) => rec(`/cvs/${id}`, { method: 'DELETE' }),
+  },
+  applicants: {
+    list: (vacancyIdOrParams) => {
+      const params = vacancyIdOrParams == null ? {} : (typeof vacancyIdOrParams === 'string' ? { vacancy_id: vacancyIdOrParams } : vacancyIdOrParams);
+      const qs = new URLSearchParams();
+      if (params.vacancy_id) qs.set('vacancy_id', params.vacancy_id);
+      if (params.date_from) qs.set('date_from', params.date_from);
+      if (params.date_to) qs.set('date_to', params.date_to);
+      return rec(`/applicants${qs.toString() ? `?${qs.toString()}` : ''}`);
+    },
+    create: (body) => rec('/applicants', { method: 'POST', body }),
+    update: (id, body) => rec(`/applicants/${id}`, { method: 'PATCH', body }),
+    sendInterviewInvite: (id, body) => rec(`/applicants/${id}/send-interview-invite`, { method: 'POST', body }),
+    sendRegret: (id) => rec(`/applicants/${id}/send-regret`, { method: 'POST' }),
+  },
+  interviewQuestions: {
+    list: (vacancyId) => rec(`/interview-questions${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`),
+    create: (body) => rec('/interview-questions', { method: 'POST', body }),
+    update: (id, body) => rec(`/interview-questions/${id}`, { method: 'PATCH', body }),
+    delete: (id) => rec(`/interview-questions/${id}`, { method: 'DELETE' }),
+  },
+  panelSessions: {
+    list: (params) => rec(`/panel-sessions${new URLSearchParams(params).toString() ? `?${new URLSearchParams(params)}` : ''}`),
+    create: (body) => rec('/panel-sessions', { method: 'POST', body }),
+    update: (id, body) => rec(`/panel-sessions/${id}`, { method: 'PATCH', body }),
+    getScores: (id) => rec(`/panel-sessions/${id}/scores`),
+    saveScore: (sessionId, body) => rec(`/panel-sessions/${sessionId}/scores`, { method: 'POST', body }),
+  },
+  results: {
+    list: (vacancyId) => rec(`/results${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`),
+  },
+  appointments: {
+    list: (vacancyId) => rec(`/appointments${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`),
+    create: (body) => rec('/appointments', { method: 'POST', body }),
+    update: (id, body) => rec(`/appointments/${id}`, { method: 'PATCH', body }),
+    sendCongratulations: (id) => rec(`/appointments/${id}/send-congratulations`, { method: 'POST' }),
+    sendRegret: (id) => rec(`/appointments/${id}/send-regret`, { method: 'POST' }),
+  },
+  myTabs: () => rec('/my-tabs'),
+  tabPermissions: {
+    list: () => rec('/tab-permissions'),
+    grant: (body) => rec('/tab-permissions', { method: 'POST', body }),
+    revoke: (params) => rec(`/tab-permissions?${new URLSearchParams(params)}`, { method: 'DELETE' }),
+  },
+  panelMembers: {
+    list: () => rec('/panel-members'),
+    options: () => rec('/panel-members/options'),
+    add: (body) => rec('/panel-members', { method: 'POST', body }),
+    remove: (userId) => rec(`/panel-members/${userId}`, { method: 'DELETE' }),
+  },
+  panelAddQuestion: (body) => rec('/panel/add-question', { method: 'POST', body }),
+};
+
 export const tasks = {
   list: (params = {}) => {
     const q = new URLSearchParams(params).toString();

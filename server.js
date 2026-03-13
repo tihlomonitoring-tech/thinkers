@@ -19,6 +19,7 @@ import transportOperationsRoutes from './src/routes/transportOperations.js';
 import progressReportsRoutes from './src/routes/progressReports.js';
 import actionPlansRoutes from './src/routes/actionPlans.js';
 import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
+import recruitmentRoutes from './src/routes/recruitment.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
 
@@ -52,6 +53,7 @@ app.use('/api/transport-operations', transportOperationsRoutes);
 app.use('/api/progress-reports', progressReportsRoutes);
 app.use('/api/action-plans', actionPlansRoutes);
 app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
+app.use('/api/recruitment', recruitmentRoutes);
 
 // Serve frontend (Vite build) when both run on same host (e.g. Render, Railway)
 const clientDist = path.join(__dirname, 'client', 'dist');

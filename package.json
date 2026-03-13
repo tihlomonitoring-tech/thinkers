@@ -35,6 +35,7 @@
     "db:distribution-history": "node scripts/run-access-distribution-history.js",
     "db:user-page-roles": "node scripts/run-user-page-roles.js",
     "db:user-page-roles-transport-operations": "node scripts/run-add-transport-operations-page-role.js",
+    "db:user-page-roles-recruitment": "node scripts/run-add-recruitment-page-role.js",
     "db:transport-operations": "node scripts/run-transport-operations-schema.js",
     "db:transport-operations-expand": "node scripts/run-transport-operations-expand.js",
     "db:transport-operations-approvals": "node scripts/run-transport-operations-approvals.js",
@@ -53,6 +54,8 @@
     "db:contractor-driver-linked-truck": "node scripts/run-contractor-driver-linked-truck.js",
     "db:profile-management": "node scripts/run-profile-management-schema.js",
     "db:profile-missing-tables": "node scripts/run-create-missing-profile-tables.js",
+    "db:recruitment": "node scripts/run-recruitment-schema.js",
+    "db:recruitment-expand": "node scripts/run-recruitment-expand-schema.js",
     "seed": "node scripts/seed.js",
     "seed:contractor": "node scripts/seed-contractor-user.js",
     "db:seed-mock-breakdown": "node scripts/seed-mock-breakdown.js"

@@ -14,8 +14,11 @@ export async function sendEmail({ to, subject, body, html = true, text, cc, atta
             hasCC: !!cc
         });
         
-        const emailUser = (process.env.EMAIL_USER || "").trim();
-        const emailPass = (process.env.EMAIL_PASS || "").trim();
+        // Strip whitespace, newlines, and surrounding quotes (from .env copy-paste)
+        const rawUser = (process.env.EMAIL_USER || "").replace(/[\r\n]+/g, "").trim();
+        const rawPass = (process.env.EMAIL_PASS || "").replace(/[\r\n]+/g, "").trim();
+        const emailUser = (rawUser.startsWith('"') && rawUser.endsWith('"')) || (rawUser.startsWith("'") && rawUser.endsWith("'")) ? rawUser.slice(1, -1) : rawUser;
+        const emailPass = (rawPass.startsWith('"') && rawPass.endsWith('"')) || (rawPass.startsWith("'") && rawPass.endsWith("'")) ? rawPass.slice(1, -1) : rawPass;
         
         if (!emailUser || !emailPass) {
             console.warn('📧 EmailService: EMAIL_USER and EMAIL_PASS not set in .env. Skipping send. Add them to enable alerts/emails.');
@@ -39,11 +42,14 @@ export async function sendEmail({ to, subject, body, html = true, text, cc, atta
             },
             tls: {
                 rejectUnauthorized: false
-            }
+            },
+            connectionTimeout: 15000,
+            greetingTimeout: 10000,
         };
         // Office 365 / Outlook: port 587 with STARTTLS (Microsoft recommendation)
         if (!emailSecure && emailPort === 587 && isOutlook) {
             transportOptions.requireTLS = true;
+            transportOptions.secure = false;
             transportOptions.tls = { rejectUnauthorized: false, minVersion: 'TLSv1.2' };
         }
         const transporter = nodemailer.createTransport(transportOptions);

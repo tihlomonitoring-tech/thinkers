@@ -16,6 +16,7 @@ import Profile from './Profile';
 import Management from './Management';
 import ReportBreakdown from './ReportBreakdown';
 import TransportOperations from './TransportOperations';
+import Recruitment from './Recruitment';
 import { getFirstAllowedPath } from './lib/pageAccess.js';
 
 function ProtectedRoute({ children }) {
@@ -52,6 +53,7 @@ function AppRoutes() {
         <Route path="profile" element={<Profile />} />
         <Route path="management" element={<Management />} />
         <Route path="transport-operations" element={<TransportOperations />} />
+        <Route path="recruitment" element={<Recruitment />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

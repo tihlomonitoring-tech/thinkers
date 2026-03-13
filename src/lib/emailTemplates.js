@@ -758,3 +758,118 @@ export function actionPlanSharedHtml({ planTitle, projectName, documentDate, doc
   `;
   return taskEmailLayout('Action plan shared', content, 'Action plans');
 }
+
+// ——— Recruitment emails (fancy template) ———
+
+/** Panel member added: invite to Recruitment Panel. */
+export function recruitmentPanelInviteHtml(fullName) {
+  const name = escapeHtml(fullName || 'Panel member');
+  const content = `
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;background:#1a365d;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">RECRUITMENT</div>
+    </div>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">You're on the panel</h1>
+    <p style="margin:0 0 16px;">Hello ${name},</p>
+    <p style="margin:0 0 16px;">You have been added to the <strong>Recruitment Panel</strong>. You can now participate in interview grading and evaluations from the Recruitment section of the app.</p>
+    <p style="margin:24px 0 0;padding:16px;background:#edf2f7;border-radius:8px;color:#4a5568;font-size:14px;">Log in to Thinkers and go to <strong>Recruitment → Panel</strong> to view and grade candidates.</p>
+    <p style="margin:20px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+  `;
+  return wrap(content, 'Added to Recruitment Panel', { charcoal: false });
+}
+
+/** Interview invite to applicant. */
+export function recruitmentInterviewInviteHtml({ name, vacancyTitle, interviewDate, interviewLocation, interviewNotes }) {
+  const n = escapeHtml(name || 'Applicant');
+  const role = escapeHtml(vacancyTitle || 'the role');
+  const parts = [];
+  if (interviewDate) parts.push(`<strong>Date & time:</strong> ${escapeHtml(interviewDate)}`);
+  if (interviewLocation) parts.push(`<strong>Location:</strong> ${escapeHtml(interviewLocation)}`);
+  const detailsBlock = parts.length ? `<div style="margin:16px 0;padding:16px;background:#edf2f7;border-radius:8px;color:#2d3748;">${parts.join('<br/>')}</div>` : '';
+  const notesBlock = (interviewNotes && String(interviewNotes).trim()) ? `<p style="margin:16px 0 0;">${escapeHtml(String(interviewNotes).trim())}</p>` : '';
+  const content = `
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;background:#1a365d;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">INTERVIEW INVITATION</div>
+    </div>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">You're invited for an interview</h1>
+    <p style="margin:0 0 16px;">Hello ${n},</p>
+    <p style="margin:0 0 16px;">You are invited for an interview for the position: <strong>${role}</strong>.</p>
+    ${detailsBlock}
+    ${notesBlock}
+    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+  `;
+  return wrap(content, 'Interview invitation', { charcoal: false });
+}
+
+/** Panel reminder: interview scheduled – please show up for this applicant's interview. */
+export function recruitmentPanelInterviewReminderHtml({ applicantName, vacancyTitle, interviewDate, interviewLocation, interviewNotes }) {
+  const name = escapeHtml(applicantName || 'Applicant');
+  const role = escapeHtml(vacancyTitle || 'the role');
+  const parts = [];
+  if (interviewDate) parts.push(`<strong>Date & time:</strong> ${escapeHtml(interviewDate)}`);
+  if (interviewLocation) parts.push(`<strong>Location:</strong> ${escapeHtml(interviewLocation)}`);
+  const detailsBlock = parts.length ? `<div style="margin:16px 0;padding:16px;background:#edf2f7;border-radius:8px;color:#2d3748;">${parts.join('<br/>')}</div>` : '';
+  const notesBlock = (interviewNotes && String(interviewNotes).trim()) ? `<p style="margin:16px 0 0;">${escapeHtml(String(interviewNotes).trim())}</p>` : '';
+  const content = `
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;background:#1a365d;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">PANEL REMINDER</div>
+    </div>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">Interview scheduled – your presence requested</h1>
+    <p style="margin:0 0 16px;">You are requested to attend the interview for <strong>${name}</strong> (position: <strong>${role}</strong>).</p>
+    ${detailsBlock}
+    ${notesBlock}
+    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Please log in to Thinkers → Recruitment → Panel to grade this candidate after the interview.</p>
+    <p style="margin:12px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+  `;
+  return wrap(content, 'Panel – interview scheduled', { charcoal: false });
+}
+
+/** Screening regret (not moving forward). */
+export function recruitmentScreeningRegretHtml({ name, vacancyTitle }) {
+  const n = escapeHtml(name || 'Applicant');
+  const role = escapeHtml(vacancyTitle || 'the role');
+  const content = `
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;background:#553c9a;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">APPLICATION UPDATE</div>
+    </div>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">Update on your application</h1>
+    <p style="margin:0 0 16px;">Hello ${n},</p>
+    <p style="margin:0 0 16px;">Thank you for your interest in the position: <strong>${role}</strong>. After careful consideration, we have decided to move forward with other candidates at this time.</p>
+    <p style="margin:16px 0 0;color:#4a5568;">We encourage you to apply again in the future. We wish you the best in your job search.</p>
+    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+  `;
+  return wrap(content, 'Application update', { charcoal: false });
+}
+
+/** Appointment: congratulations / offer. */
+export function recruitmentCongratulationsHtml({ name, vacancyTitle }) {
+  const n = escapeHtml(name || 'Candidate');
+  const role = escapeHtml(vacancyTitle || 'the role');
+  const content = `
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;background:#276749;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">CONGRATULATIONS</div>
+    </div>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">We'd like to offer you the position</h1>
+    <p style="margin:0 0 16px;">Hello ${n},</p>
+    <p style="margin:0 0 16px;">Congratulations! We are pleased to offer you the position of <strong>${role}</strong>.</p>
+    <p style="margin:16px 0 0;padding:16px;background:#f0fff4;border-radius:8px;color:#276749;">Please respond to this email to accept the offer. We look forward to having you on the team.</p>
+    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+  `;
+  return wrap(content, 'Job offer', { charcoal: false });
+}
+
+/** Appointment: regret (offer went to another candidate). */
+export function recruitmentAppointmentRegretHtml({ name, vacancyTitle }) {
+  const n = escapeHtml(name || 'Candidate');
+  const role = escapeHtml(vacancyTitle || 'the role');
+  const content = `
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;background:#553c9a;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;letter-spacing:0.05em;">APPLICATION UPDATE</div>
+    </div>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#2d3748;">Update on your application</h1>
+    <p style="margin:0 0 16px;">Hello ${n},</p>
+    <p style="margin:0 0 16px;">Thank you for your interest and for participating in our process for <strong>${role}</strong>. After careful consideration, we have decided to offer the position to another candidate.</p>
+    <p style="margin:16px 0 0;color:#4a5568;">We wish you the best in your job search.</p>
+    <p style="margin:24px 0 0;color:#718096;font-size:14px;">Best regards,<br/>Recruitment Team</p>
+  `;
+  return wrap(content, 'Application update', { charcoal: false });
+}

@@ -85,6 +85,14 @@ function IconTransport({ className }) {
   );
 }
 
+function IconRecruitment({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+    </svg>
+  );
+}
+
 function IconChevronLeft({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -148,6 +156,12 @@ const navSections = [
       { to: '/transport-operations', label: 'Transport operations', icon: IconTransport, shortcut: '⌘8', pageId: 'transport_operations' },
     ],
   },
+  {
+    label: 'HR',
+    items: [
+      { to: '/recruitment', label: 'Recruitment', icon: IconRecruitment, shortcut: '⌘9', pageId: 'recruitment' },
+    ],
+  },
 ];
 
 export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen, setMobileOpen }) {
@@ -171,7 +185,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen,
   useEffect(() => {
     function onKeyDown(e) {
       if (e.metaKey || e.ctrlKey) {
-        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '8': '/transport-operations', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
+        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '8': '/transport-operations', '9': '/recruitment', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
         const path = map[e.key];
         const pageId = path && PATH_PAGE_IDS[path];
         if (path && pageId && canAccessPage(user, pageId)) {

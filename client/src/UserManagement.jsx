@@ -17,6 +17,7 @@ const PAGE_ROLES = [
   { id: 'rector', label: 'Rector' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'transport_operations', label: 'Transport operations' },
+  { id: 'recruitment', label: 'Recruitment' },
 ];
 
 function formatDate(d) {
