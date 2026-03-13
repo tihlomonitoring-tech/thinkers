@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
+import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
 import { generateShiftReportPdf } from './lib/shiftReportPdf.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
@@ -147,6 +148,7 @@ function loadStoredInspections() {
 
 export default function CommandCentre() {
   const { user } = useAuth();
+  const [navHidden, setNavHidden] = useSecondaryNavHidden('command-centre');
   const [allowedTabs, setAllowedTabs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -299,13 +301,18 @@ export default function CommandCentre() {
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
-      <nav className="w-72 shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0">
-        <div className="p-4 border-b border-surface-100 shrink-0">
-          <h2 className="text-sm font-semibold text-surface-900">Command Centre</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Controllers & operations</p>
-          <Link to="/contractor" className="mt-2 inline-block text-xs text-brand-600 hover:text-brand-700">← Contractor page</Link>
+      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
+        <div className="p-4 border-b border-surface-100 shrink-0 flex items-start justify-between gap-2 w-72">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-surface-900">Command Centre</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Controllers & operations</p>
+            <Link to="/contractor" className="mt-2 inline-block text-xs text-brand-600 hover:text-brand-700">← Contractor page</Link>
+          </div>
+          <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto py-2 scrollbar-thin min-h-0">
+        <div className="flex-1 overflow-y-auto py-2 scrollbar-thin min-h-0 w-72">
           {sections.map((section) => (
             <div key={section} className="mb-4">
               <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">{section}</p>
@@ -353,8 +360,14 @@ export default function CommandCentre() {
         </div>
       </nav>
 
-      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin">
-        <div className="w-full max-w-7xl mx-auto min-h-full">
+      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin flex flex-col">
+        {navHidden && (
+          <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 text-sm font-medium shadow-sm" aria-label="Show navigation">
+            <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+            Show navigation
+          </button>
+        )}
+        <div className="w-full max-w-7xl mx-auto min-h-full flex-1">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2 flex justify-between items-center">
               {error}

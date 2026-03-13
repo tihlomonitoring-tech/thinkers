@@ -516,7 +516,13 @@ export const recruitment = {
     delete: (id) => rec(`/folders/${id}`, { method: 'DELETE' }),
   },
   cvs: {
-    list: (folderId) => rec(`/cvs${folderId != null && folderId !== '' ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`),
+    list: (folderId, opts = {}) => {
+      const q = new URLSearchParams();
+      if (folderId != null && folderId !== '') q.set('folder_id', folderId);
+      if (opts.linked_to_interview === true) q.set('linked_to_interview', 'true');
+      if (opts.linked_to_interview === false) q.set('linked_to_interview', 'false');
+      return rec(`/cvs${q.toString() ? `?${q.toString()}` : ''}`);
+    },
     get: (id) => rec(`/cvs/${id}`),
     upload: (file, body = {}) => {
       const formData = new FormData();

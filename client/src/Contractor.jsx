@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
+import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { contractor as contractorApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
 import { parseExcelFile, downloadTruckTemplate, downloadDriverTemplate, downloadConsolidatedTemplate, parseConsolidatedFile } from './lib/excelImport.js';
 import JSZip from 'jszip';
@@ -185,6 +186,7 @@ function ContractorNavIcon({ name, className }) {
 
 export default function Contractor() {
   const { user, loading: authLoading } = useAuth();
+  const [navHidden, setNavHidden] = useSecondaryNavHidden('contractor');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [data, setData] = useState({ trucks: [], drivers: [], incidents: [], expiries: [], suspensions: [], messages: [], complianceRecords: [] });
   const [loading, setLoading] = useState(true);
@@ -1359,14 +1361,22 @@ export default function Contractor() {
   return (
     <div className="flex gap-0 w-full min-h-0 -m-4 sm:-m-6">
       {/* Contractor side nav */}
-      <nav className="w-72 shrink-0 flex flex-col border-r border-surface-200 bg-white">
-        <div className="p-4 border-b border-surface-100">
-          <h2 className="text-sm font-semibold text-surface-900">Contractor</h2>
-          {user?.tenant_name ? <p className="text-sm font-medium text-surface-700 mt-0.5" title="Data for this company">{user.tenant_name}</p> : null}
-          <p className="text-xs text-surface-500 mt-0.5">Fleet & operations</p>
-          <Link to="/command-centre" className="text-xs text-brand-600 hover:text-brand-700 mt-1 inline-block">Command Centre →</Link>
+      <nav
+        className={`shrink-0 flex flex-col border-r border-surface-200 bg-white transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        aria-hidden={navHidden}
+      >
+        <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-surface-900">Contractor</h2>
+            {user?.tenant_name ? <p className="text-sm font-medium text-surface-700 mt-0.5" title="Data for this company">{user.tenant_name}</p> : null}
+            <p className="text-xs text-surface-500 mt-0.5">Fleet & operations</p>
+            <Link to="/command-centre" className="text-xs text-brand-600 hover:text-brand-700 mt-1 inline-block">Command Centre →</Link>
+          </div>
+          <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto py-2">
+        <div className="flex-1 overflow-y-auto py-2 w-72">
           {CONTRACTOR_NAV.map((group) => (
             <div key={group.section} className="mb-4">
               <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">
@@ -1396,8 +1406,14 @@ export default function Contractor() {
       </nav>
 
       {/* Main content */}
-      <div className="flex-1 min-w-0 overflow-auto p-4 sm:p-6">
-        <div className="w-full max-w-7xl mx-auto">
+      <div className="flex-1 min-w-0 overflow-auto p-4 sm:p-6 flex flex-col">
+        {navHidden && (
+          <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 text-sm font-medium shadow-sm" aria-label="Show navigation">
+            <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+            Show navigation
+          </button>
+        )}
+        <div className="w-full max-w-7xl mx-auto flex-1">
           {contextError ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-amber-900 max-w-xl">
               <h3 className="font-semibold">Cannot load company data</h3>

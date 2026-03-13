@@ -328,16 +328,40 @@ router.delete('/folders/:id', async (req, res, next) => {
 });
 
 // --- CVs ---
+// linked_to_interview: CV has at least one applicant with interview_date or interview_invite_sent_at set
 router.get('/cvs', async (req, res, next) => {
   try {
-    const { folder_id } = req.query || {};
-    let sql = `SELECT id, folder_id, file_name, file_path, applicant_name, applicant_email, uploaded_at FROM recruitment_cvs WHERE 1=1`;
+    const { folder_id, linked_to_interview } = req.query || {};
+    const linkedFilter = linked_to_interview === 'true' || linked_to_interview === true
+      ? 'yes'
+      : linked_to_interview === 'false' || linked_to_interview === false
+        ? 'no'
+        : null;
+    let sql = `
+      SELECT c.id, c.folder_id, c.file_name, c.file_path, c.applicant_name, c.applicant_email, c.uploaded_at,
+        CAST(CASE WHEN EXISTS (
+          SELECT 1 FROM recruitment_applicants a
+          WHERE a.cv_id = c.id AND (a.interview_date IS NOT NULL OR a.interview_invite_sent_at IS NOT NULL)
+        ) THEN 1 ELSE 0 END AS BIT) AS linked_to_interview
+      FROM recruitment_cvs c
+      WHERE 1=1`;
     const params = {};
     if (folder_id !== undefined && folder_id !== '') {
-      sql += ` AND folder_id = @folder_id`;
+      sql += ` AND c.folder_id = @folder_id`;
       params.folder_id = folder_id;
     }
-    sql += ` ORDER BY uploaded_at DESC`;
+    if (linkedFilter === 'yes') {
+      sql += ` AND EXISTS (
+        SELECT 1 FROM recruitment_applicants a
+        WHERE a.cv_id = c.id AND (a.interview_date IS NOT NULL OR a.interview_invite_sent_at IS NOT NULL)
+      )`;
+    } else if (linkedFilter === 'no') {
+      sql += ` AND NOT EXISTS (
+        SELECT 1 FROM recruitment_applicants a
+        WHERE a.cv_id = c.id AND (a.interview_date IS NOT NULL OR a.interview_invite_sent_at IS NOT NULL)
+      )`;
+    }
+    sql += ` ORDER BY c.uploaded_at DESC`;
     const result = await query(sql, params);
     res.json({ cvs: result.recordset || [] });
   } catch (err) {

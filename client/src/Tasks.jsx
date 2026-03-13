@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
+import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', section: 'Overview' },
@@ -38,6 +39,7 @@ function StatusBadge({ status }) {
 
 export default function Tasks() {
   const { user } = useAuth();
+  const [navHidden, setNavHidden] = useSecondaryNavHidden('tasks');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [tasks, setTasks] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0 });
@@ -199,12 +201,17 @@ export default function Tasks() {
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
-      <nav className="w-72 shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0">
-        <div className="p-4 border-b border-surface-100">
-          <h2 className="text-sm font-semibold text-surface-900">Tasks</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Assign, track and complete work</p>
+      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
+        <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-surface-900">Tasks</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Assign, track and complete work</p>
+          </div>
+          <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto py-2 min-h-0">
+        <div className="flex-1 overflow-y-auto py-2 min-h-0 w-72">
           <div className="mb-4">
             <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">Overview</p>
             <ul className="space-y-0.5">
@@ -226,8 +233,14 @@ export default function Tasks() {
         </div>
       </nav>
 
-      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin">
-        <div className="max-w-7xl mx-auto">
+      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin flex flex-col">
+        {navHidden && (
+          <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 text-sm font-medium shadow-sm" aria-label="Show navigation">
+            <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+            Show navigation
+          </button>
+        )}
+        <div className="max-w-7xl mx-auto flex-1">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2 flex justify-between items-center">
               <span>{error}</span>

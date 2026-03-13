@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { recruitment as recruitmentApi, downloadAttachmentWithAuth, users as usersApi } from './api';
 import { useAuth } from './AuthContext';
+import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 
 const ALL_TABS = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -26,6 +27,7 @@ function formatDateTime(d) {
 
 export default function Recruitment() {
   const { user } = useAuth();
+  const [navHidden, setNavHidden] = useSecondaryNavHidden('recruitment');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [error, setError] = useState('');
   const [vacancies, setVacancies] = useState([]);
@@ -55,15 +57,30 @@ export default function Recruitment() {
   const isSuperAdmin = user?.role === 'super_admin';
   const baseTabs = allowedTabIds && allowedTabIds.length > 0 ? ALL_TABS.filter((t) => allowedTabIds.includes(t.id)) : ALL_TABS;
   const visibleTabs = isSuperAdmin ? baseTabs : baseTabs.filter((t) => t.id !== 'panel-members' && t.id !== 'access');
+  const allowedTabIdSet = useMemo(() => new Set(visibleTabs.map((t) => t.id)), [visibleTabs]);
+  const firstAllowedTabId = visibleTabs[0]?.id ?? 'dashboard';
+
+  // Enforce: if user has no access to current tab (e.g. from quick link or URL), switch to first allowed tab
+  useEffect(() => {
+    if (allowedTabIds === null) return;
+    if (!allowedTabIdSet.has(activeTab)) {
+      setActiveTab(firstAllowedTabId);
+    }
+  }, [allowedTabIds, activeTab, firstAllowedTabId, allowedTabIdSet]);
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
-      <nav className="w-72 shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0" aria-label="Recruitment">
-        <div className="p-4 border-b border-surface-100">
-          <h2 className="text-sm font-semibold text-surface-900">Recruitment</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Vacancies, CVs, screening, interviews</p>
+      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-label="Recruitment" aria-hidden={navHidden}>
+        <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-surface-900">Recruitment</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Vacancies, CVs, screening, interviews</p>
+          </div>
+          <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto py-2 min-h-0">
+        <div className="flex-1 overflow-y-auto py-2 min-h-0 w-72">
           <div className="mb-4">
             <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">Recruitment</p>
             <ul className="space-y-0.5">
@@ -87,28 +104,34 @@ export default function Recruitment() {
         </div>
       </nav>
 
-      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin">
-        <div className="w-full max-w-7xl mx-auto">
+      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin flex flex-col">
+        {navHidden && (
+          <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 text-sm font-medium shadow-sm" aria-label="Show navigation">
+            <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+            Show navigation
+          </button>
+        )}
+        <div className="w-full max-w-7xl mx-auto flex-1">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2 flex justify-between items-center">
               <span>{error}</span>
               <button type="button" onClick={() => setError('')}>Dismiss</button>
             </div>
           )}
-          {activeTab === 'dashboard' && (
-            <TabDashboard vacancies={vacancies} applicants={applicants} loading={loading} setActiveTab={setActiveTab} />
+          {allowedTabIdSet.has(activeTab) && activeTab === 'dashboard' && (
+            <TabDashboard vacancies={vacancies} applicants={applicants} loading={loading} setActiveTab={setActiveTab} allowedTabIds={allowedTabIdSet} />
           )}
-          {activeTab === 'recruit-registration' && (
+          {allowedTabIdSet.has(activeTab) && activeTab === 'recruit-registration' && (
             <TabRecruitRegistration vacancies={vacancies} setVacancies={setVacancies} setError={setError} />
           )}
-          {activeTab === 'cv-library' && <TabCvLibrary setError={setError} />}
-          {activeTab === 'screening' && <TabScreening vacancies={vacancies} setError={setError} />}
-          {activeTab === 'interview' && <TabInterview vacancies={vacancies} setError={setError} />}
-          {activeTab === 'panel' && <TabPanel vacancies={vacancies} setError={setError} />}
-          {activeTab === 'results' && <TabResults vacancies={vacancies} setError={setError} />}
-          {activeTab === 'appointments' && <TabAppointments vacancies={vacancies} setError={setError} />}
-          {activeTab === 'panel-members' && <TabPanelMembers setError={setError} />}
-          {activeTab === 'access' && <TabAccess setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'cv-library' && <TabCvLibrary setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'screening' && <TabScreening vacancies={vacancies} setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'interview' && <TabInterview vacancies={vacancies} setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'panel' && <TabPanel vacancies={vacancies} setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'results' && <TabResults vacancies={vacancies} setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'appointments' && <TabAppointments vacancies={vacancies} setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'panel-members' && <TabPanelMembers setError={setError} />}
+          {allowedTabIdSet.has(activeTab) && activeTab === 'access' && <TabAccess setError={setError} />}
         </div>
       </div>
     </div>
@@ -124,7 +147,8 @@ function getApplicantStage(a) {
   return { stage: 'Screening', status: verdict, key: `screening-${verdict}` };
 }
 
-function TabDashboard({ vacancies, applicants, loading, setActiveTab }) {
+function TabDashboard({ vacancies, applicants, loading, setActiveTab, allowedTabIds }) {
+  const canAccess = (tabId) => allowedTabIds && allowedTabIds.has(tabId);
   const [filterVacancyId, setFilterVacancyId] = useState('');
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
@@ -154,24 +178,32 @@ function TabDashboard({ vacancies, applicants, loading, setActiveTab }) {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <button type="button" onClick={() => setActiveTab('recruit-registration')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
-              <p className="text-2xl font-bold text-surface-900">{vacancies.length}</p>
-              <p className="text-sm text-surface-600">Vacancies</p>
-              <p className="text-xs text-surface-500 mt-1">{open} open</p>
-            </button>
-            <button type="button" onClick={() => setActiveTab('cv-library')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
-              <p className="text-2xl font-bold text-surface-900">CV Library</p>
-              <p className="text-sm text-surface-600">Upload & organise CVs</p>
-            </button>
-            <button type="button" onClick={() => setActiveTab('screening')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
-              <p className="text-2xl font-bold text-surface-900">{applicants.length}</p>
-              <p className="text-sm text-surface-600">Applicants</p>
-              <p className="text-xs text-surface-500 mt-1">{pending} pending screening, {passed} passed</p>
-            </button>
-            <button type="button" onClick={() => setActiveTab('appointments')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
-              <p className="text-2xl font-bold text-surface-900">Appointments</p>
-              <p className="text-sm text-surface-600">Offers & acceptances</p>
-            </button>
+            {canAccess('recruit-registration') && (
+              <button type="button" onClick={() => setActiveTab('recruit-registration')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
+                <p className="text-2xl font-bold text-surface-900">{vacancies.length}</p>
+                <p className="text-sm text-surface-600">Vacancies</p>
+                <p className="text-xs text-surface-500 mt-1">{open} open</p>
+              </button>
+            )}
+            {canAccess('cv-library') && (
+              <button type="button" onClick={() => setActiveTab('cv-library')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
+                <p className="text-2xl font-bold text-surface-900">CV Library</p>
+                <p className="text-sm text-surface-600">Upload & organise CVs</p>
+              </button>
+            )}
+            {canAccess('screening') && (
+              <button type="button" onClick={() => setActiveTab('screening')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
+                <p className="text-2xl font-bold text-surface-900">{applicants.length}</p>
+                <p className="text-sm text-surface-600">Applicants</p>
+                <p className="text-xs text-surface-500 mt-1">{pending} pending screening, {passed} passed</p>
+              </button>
+            )}
+            {canAccess('appointments') && (
+              <button type="button" onClick={() => setActiveTab('appointments')} className="p-4 rounded-xl border border-surface-200 bg-white text-left hover:border-brand-300 hover:shadow-sm">
+                <p className="text-2xl font-bold text-surface-900">Appointments</p>
+                <p className="text-sm text-surface-600">Offers & acceptances</p>
+              </button>
+            )}
           </div>
 
           <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
@@ -382,12 +414,29 @@ function TabCvLibrary({ setError }) {
   const [viewLoading, setViewLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  /** Advanced filters: 'all' | 'yes' (linked to interview) | 'no' (not linked) */
+  const [linkedToInterviewFilter, setLinkedToInterviewFilter] = useState('all');
+  /** Search by file name (and applicant name/email) */
+  const [fileSearch, setFileSearch] = useState('');
 
   const loadFolders = () => recruitmentApi.folders.list().then((r) => setFolders(r.folders || []));
-  const loadCvs = () => recruitmentApi.cvs.list(selectedFolderId || undefined).then((r) => setCvs(r.cvs || []));
+  const loadCvs = () => {
+    const opts = linkedToInterviewFilter === 'yes' ? { linked_to_interview: true } : linkedToInterviewFilter === 'no' ? { linked_to_interview: false } : {};
+    return recruitmentApi.cvs.list(selectedFolderId || undefined, opts).then((r) => setCvs(r.cvs || []));
+  };
+
+  const filteredCvs = useMemo(() => {
+    const q = (fileSearch || '').trim().toLowerCase();
+    if (!q) return cvs;
+    return cvs.filter((cv) => {
+      const name = (cv.file_name || '').toLowerCase();
+      const applicant = [cv.applicant_name, cv.applicant_email].filter(Boolean).join(' ').toLowerCase();
+      return name.includes(q) || applicant.includes(q);
+    });
+  }, [cvs, fileSearch]);
 
   useEffect(() => { loadFolders(); }, []);
-  useEffect(() => { loadCvs(); }, [selectedFolderId]);
+  useEffect(() => { loadCvs(); }, [selectedFolderId, linkedToInterviewFilter]);
 
   useEffect(() => () => {
     if (viewingCv?.url) URL.revokeObjectURL(viewingCv.url);
@@ -452,8 +501,8 @@ function TabCvLibrary({ setError }) {
   };
 
   const selectAll = () => {
-    if (selectedIds.size === cvs.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(cvs.map((c) => c.id)));
+    if (selectedIds.size === filteredCvs.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(filteredCvs.map((c) => c.id)));
   };
 
   const bulkDelete = () => {
@@ -484,6 +533,25 @@ function TabCvLibrary({ setError }) {
           <input type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={onFileSelect} disabled={uploading} />
         </label>
       </div>
+
+      <div className="rounded-lg border border-surface-200 bg-surface-50 p-4">
+        <h3 className="text-sm font-semibold text-surface-800 mb-3">Advanced filters</h3>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2">
+            <span className="text-sm text-surface-600">Linked to interview step</span>
+            <select
+              value={linkedToInterviewFilter}
+              onChange={(e) => setLinkedToInterviewFilter(e.target.value)}
+              className="rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white min-w-[140px]"
+            >
+              <option value="all">All CVs</option>
+              <option value="yes">Yes – linked to interview</option>
+              <option value="no">No – not linked</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
       <div className="flex gap-4">
         <div className="w-48 rounded-lg border border-surface-200 bg-white p-2">
           <p className="text-xs font-medium text-surface-500 uppercase mb-2">Folders</p>
@@ -493,13 +561,23 @@ function TabCvLibrary({ setError }) {
           ))}
         </div>
         <div className="flex-1 rounded-xl border border-surface-200 bg-white p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-            <p className="text-sm text-surface-600">CVs ({cvs.length})</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div className="flex flex-wrap items-center gap-3 min-w-0 flex-1">
+              <input
+                type="search"
+                value={fileSearch}
+                onChange={(e) => setFileSearch(e.target.value)}
+                placeholder="Search by file name or applicant…"
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-64 max-w-full"
+                aria-label="Search file names"
+              />
+              <p className="text-sm text-surface-600">CVs {fileSearch.trim() ? `(${filteredCvs.length} of ${cvs.length})` : `(${cvs.length})`}</p>
+            </div>
             <div className="flex items-center gap-2">
-              {cvs.length > 0 && (
+              {filteredCvs.length > 0 && (
                 <>
                   <label className="inline-flex items-center gap-1.5 text-sm text-surface-600 cursor-pointer">
-                    <input type="checkbox" checked={selectedIds.size === cvs.length && cvs.length > 0} onChange={selectAll} className="rounded border-surface-300" />
+                    <input type="checkbox" checked={selectedIds.size === filteredCvs.length && filteredCvs.length > 0} onChange={selectAll} className="rounded border-surface-300" />
                     Select all
                   </label>
                   {selectedIds.size > 0 && (
@@ -512,13 +590,18 @@ function TabCvLibrary({ setError }) {
             </div>
           </div>
           <ul className="space-y-2">
-            {cvs.map((cv) => (
+            {filteredCvs.map((cv) => (
               <li key={cv.id} className={`flex justify-between items-center gap-2 p-2 rounded border ${selectedIds.has(cv.id) ? 'border-brand-300 bg-brand-50' : 'border-surface-100'}`}>
                 <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
                   <input type="checkbox" checked={selectedIds.has(cv.id)} onChange={() => toggleSelect(cv.id)} className="rounded border-surface-300 shrink-0" />
                   <span className="text-sm text-surface-800 truncate" title={cv.file_name}>{cv.file_name}</span>
                 </label>
-                <span className="text-xs text-surface-500 shrink-0">{cv.applicant_name || cv.applicant_email || '—'}</span>
+                <span className="text-xs text-surface-500 shrink-0 flex items-center gap-2">
+                  {cv.linked_to_interview && (
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-100 text-brand-800" title="This CV is linked to an applicant in the interview step">Interview</span>
+                  )}
+                  {cv.applicant_name || cv.applicant_email || '—'}
+                </span>
                 <div className="flex gap-1 shrink-0">
                   <button type="button" onClick={() => viewCv(cv)} className="px-2 py-1 rounded border border-brand-300 text-brand-700 text-xs font-medium hover:bg-brand-50">View</button>
                   <button type="button" onClick={() => downloadAttachmentWithAuth(recruitmentApi.cvs.downloadUrl(cv.id), cv.file_name).catch((e) => setError(e?.message))} className="px-2 py-1 rounded border border-surface-300 text-surface-700 text-xs hover:bg-surface-50">Download</button>

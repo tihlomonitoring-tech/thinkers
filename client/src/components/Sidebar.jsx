@@ -4,6 +4,7 @@ import { useAuth } from '../AuthContext';
 import { canAccessPage, PATH_PAGE_IDS } from '../lib/pageAccess.js';
 
 const SIDEBAR_KEY = 'thinkers-sidebar-collapsed';
+const SIDEBAR_HIDDEN_KEY = 'thinkers-sidebar-hidden';
 
 function IconUsers({ className }) {
   return (
@@ -101,6 +102,14 @@ function IconChevronLeft({ className }) {
   );
 }
 
+function IconPanelClose({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+    </svg>
+  );
+}
+
 function IconChevronRight({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -164,7 +173,7 @@ const navSections = [
   },
 ];
 
-export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen, setMobileOpen }) {
+export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, setHidden, mobileOpen, setMobileOpen }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -199,6 +208,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen,
   }, [navigate, user]);
 
   const isCollapsed = collapsed;
+  const isHidden = hidden;
 
   const NavItem = ({ to, label, icon: Icon, shortcut }) => (
     <li className="relative">
@@ -251,6 +261,15 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen,
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? <IconChevronRight className="h-5 w-5" /> : <IconChevronLeft className="h-5 w-5" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => setHidden(true)}
+            className="hidden lg:flex h-8 w-8 items-center justify-center rounded-lg text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
+            aria-label="Hide sidebar to see full content"
+            title="Hide sidebar"
+          >
+            <IconPanelClose className="h-5 w-5" />
           </button>
           <button
             type="button"
@@ -328,19 +347,21 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, mobileOpen,
       )}
       <aside
         className={`
-          fixed left-0 top-0 z-50 flex h-full w-[260px] flex-col bg-surface-900 text-surface-300
+          fixed left-0 top-0 z-50 flex h-full flex-col bg-surface-900 text-surface-300
           transition-[width] duration-300 ease-in-out
           lg:translate-x-0
-          ${collapsed ? 'lg:w-[72px]' : 'lg:w-[260px]'}
-          ${mobileOpen ? 'translate-x-0 w-[260px]' : '-translate-x-full lg:translate-x-0'}
+          ${isHidden ? 'lg:w-0 lg:overflow-hidden lg:pointer-events-none' : collapsed ? 'lg:w-[72px]' : 'lg:w-[260px]'}
+          w-[260px]
+          ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         `}
         aria-label="Main navigation"
+        aria-hidden={isHidden}
       >
         {sidebarContent}
       </aside>
       <div
         className="hidden lg:block shrink-0 transition-all duration-300 ease-in-out"
-        style={{ width: collapsed ? 72 : 260 }}
+        style={{ width: hidden ? 0 : (collapsed ? 72 : 260) }}
         aria-hidden
       />
     </>
@@ -355,11 +376,22 @@ export function useSidebarState() {
       return false;
     }
   });
+  const [hidden, setHidden] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(SIDEBAR_HIDDEN_KEY) ?? 'false');
+    } catch {
+      return false;
+    }
+  });
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, JSON.stringify(collapsed));
   }, [collapsed]);
 
-  return { collapsed, setCollapsed, mobileOpen, setMobileOpen };
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_HIDDEN_KEY, JSON.stringify(hidden));
+  }, [hidden]);
+
+  return { collapsed, setCollapsed, hidden, setHidden, mobileOpen, setMobileOpen };
 }

@@ -17,7 +17,7 @@ export default function Layout() {
   const { user, logout, switchTenant } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const { collapsed, setCollapsed, mobileOpen, setMobileOpen } = useSidebarState();
+  const { collapsed, setCollapsed, hidden, setHidden, mobileOpen, setMobileOpen } = useSidebarState();
   const [tenantList, setTenantList] = useState([]);
   const [tenantSwitcherOpen, setTenantSwitcherOpen] = useState(false);
 
@@ -48,6 +48,8 @@ export default function Layout() {
       <Sidebar
         collapsed={collapsed}
         setCollapsed={setCollapsed}
+        hidden={hidden}
+        setHidden={setHidden}
         mobileOpen={mobileOpen}
         setMobileOpen={setMobileOpen}
         onLogout={handleLogout}
@@ -57,9 +59,9 @@ export default function Layout() {
         <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b border-surface-200 bg-white/95 backdrop-blur px-4 lg:px-6">
           <button
             type="button"
-            onClick={() => setMobileOpen(true)}
-            className="lg:hidden flex h-9 w-9 items-center justify-center rounded-lg text-surface-600 hover:bg-surface-100 transition-colors"
-            aria-label="Open menu"
+            onClick={() => (hidden ? setHidden(false) : setMobileOpen(true))}
+            className={`flex h-9 w-9 items-center justify-center rounded-lg text-surface-600 hover:bg-surface-100 transition-colors ${hidden ? 'lg:flex' : 'lg:hidden'}`}
+            aria-label={hidden ? 'Show sidebar' : 'Open menu'}
           >
             <IconMenu className="h-5 w-5" />
           </button>
