@@ -2500,6 +2500,16 @@ function ShiftReportReadOnlyView({ report }) {
   );
 }
 
+function getTruckReg(t) {
+  return (t?.registration ?? t?.Registration ?? '').trim();
+}
+function getTruckMain(t) {
+  return (t?.main_contractor ?? t?.Main_contractor ?? t?.mainContractor ?? '').trim();
+}
+function getTruckFleet(t) {
+  return (t?.fleet_no ?? t?.Fleet_no ?? t?.fleetNo ?? '').trim();
+}
+
 function TruckSearchSelect({ value, onChange, placeholder = 'Search or type truck reg…', trucksList, id }) {
   const [search, setSearch] = useState(value || '');
   const [open, setOpen] = useState(false);
@@ -2514,15 +2524,15 @@ function TruckSearchSelect({ value, onChange, placeholder = 'Search or type truc
   }, []);
   const q = (search || '').trim().toLowerCase();
   const options = (trucksList || []).filter((t) => {
-    const reg = (t.registration || '').trim();
-    const main = (t.main_contractor || t.mainContractor || '').trim();
-    const fleet = (t.fleet_no || t.fleetNo || '').trim();
+    const reg = getTruckReg(t);
+    const main = getTruckMain(t);
+    const fleet = getTruckFleet(t);
     if (!q) return true;
     return reg.toLowerCase().includes(q) || main.toLowerCase().includes(q) || fleet.toLowerCase().includes(q);
   }).slice(0, 15).map((t) => {
-    const reg = (t.registration || '').trim();
-    const main = (t.main_contractor || t.mainContractor || '').trim();
-    return { value: reg, label: main ? `${reg} · ${main}` : reg };
+    const reg = getTruckReg(t);
+    const main = getTruckMain(t);
+    return { value: reg, label: reg ? (main ? `${reg} · ${main}` : reg) : (main || '—') };
   });
   return (
     <div ref={ref} className="relative">
@@ -2538,7 +2548,11 @@ function TruckSearchSelect({ value, onChange, placeholder = 'Search or type truc
       />
       {open && (options.length > 0 || search) && (
         <ul className="absolute z-20 mt-0.5 left-0 right-0 max-h-40 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg py-1 text-sm">
-          {options.length === 0 ? <li className="px-2 py-1.5 text-surface-500">No match. You can type a reg number.</li> : options.map((opt, idx) => (
+          {options.length === 0 ? (
+            <li className="px-2 py-1.5 text-surface-500">
+              {(trucksList || []).length === 0 ? 'No trucks loaded. You can type a reg number.' : 'No match. You can type a reg number.'}
+            </li>
+          ) : options.map((opt, idx) => (
             <li key={`${opt.value}-${idx}`} role="button" tabIndex={0} onClick={() => { onChange(opt.value); setSearch(opt.value); setOpen(false); }} onKeyDown={(e) => e.key === 'Enter' && (onChange(opt.value), setSearch(opt.value), setOpen(false))} className="px-2 py-1.5 hover:bg-surface-100 cursor-pointer truncate">{opt.label}</li>
           ))}
         </ul>
@@ -2670,7 +2684,30 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     let cancelled = false;
     setFleetLoadError('');
     Promise.all([contractorApi.trucks.list().then((r) => r.trucks || []), contractorApi.drivers.list().then((r) => r.drivers || [])])
-      .then(([trucks, drivers]) => { if (!cancelled) { setTrucksList(trucks); setDriversList(drivers); } })
+      .then(([trucks, drivers]) => {
+        if (cancelled) return;
+        setTrucksList(
+          (trucks || []).map((t) => ({
+            ...t,
+            registration: getTruckReg(t),
+            main_contractor: getTruckMain(t),
+            fleet_no: getTruckFleet(t),
+          }))
+        );
+        setDriversList(
+          (drivers || []).map((d) => {
+            const fullName = d?.full_name ?? [d?.name, d?.surname].filter(Boolean).join(' ');
+            const idNum = d?.id_number ?? d?.idNumber ?? '';
+            const lic = d?.license_number ?? d?.licenseNumber ?? '';
+            return {
+              ...d,
+              full_name: String(fullName ?? '').trim(),
+              id_number: String(idNum ?? '').trim(),
+              license_number: String(lic ?? '').trim(),
+            };
+          })
+        );
+      })
       .catch((err) => { if (!cancelled) setFleetLoadError(err?.message || 'Could not load fleet/drivers. You can still type manually.'); });
     return () => { cancelled = true; };
   }, []);

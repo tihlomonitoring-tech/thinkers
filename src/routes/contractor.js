@@ -71,6 +71,12 @@ async function getAllowedContractorIds(req) {
   const tenantId = getTenantId(req);
   if (!tenantId) return null;
   try {
+    // Super_admin or users with Command Centre, Access Management, or Rector page access see all trucks/drivers in the tenant (e.g. shift report)
+    if (req.user?.role === 'super_admin') return null;
+    const pageRoles = req.user?.page_roles || [];
+    const canSeeAllContractors = ['command_centre', 'access_management', 'rector'].some((p) => pageRoles.includes(p));
+    if (canSeeAllContractors) return null;
+
     const result = await query(
       `SELECT contractor_id FROM user_contractors WHERE user_id = @userId`,
       { userId: req.user?.id }
@@ -80,12 +86,7 @@ async function getAllowedContractorIds(req) {
     if (ids.length > 0) return ids;
     if (rows.length > 0) return [];
 
-    // No user_contractors rows: user might be tenant-wide (CC/AM/Rector) or a contractor user not yet assigned
-    const pageRoles = req.user?.page_roles || [];
-    const canSeeAllContractors = ['command_centre', 'access_management', 'rector'].some((p) => pageRoles.includes(p));
-    if (canSeeAllContractors) return null;
-
-    // Contractor-only user with no assignment: restrict so they never see other contractors' data
+    // No user_contractors rows: contractor user not yet assigned
     const countResult = await query(
       `SELECT id FROM contractors WHERE tenant_id = @tenantId`,
       { tenantId }
