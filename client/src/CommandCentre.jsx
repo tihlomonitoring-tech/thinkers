@@ -1427,7 +1427,8 @@ function TabSavedReports() {
   const canSubmit = report && isCreator && (report.status === 'draft' || report.status === 'rejected');
   const canDownload = report && report.status === 'approved';
   const isApprover = report && user && report.approved_by_user_id != null && normId(report.approved_by_user_id) === normId(user.id);
-  const canRevokeApproval = report && report.status === 'approved' && isApprover;
+  const isSuperAdminHere = user?.role === 'super_admin';
+  const canRevokeApproval = report && report.status === 'approved' && (isApprover || isSuperAdminHere);
   const showCommentsToCreator = report && isCreator && (report.status === 'provisional' || report.status === 'pending_approval');
   const canMarkAddressed = report && isCreator && report.status === 'provisional';
   const statusAllowsEdit = report && ['draft', 'provisional', 'rejected'].includes(String(report.status || '').toLowerCase().trim());
