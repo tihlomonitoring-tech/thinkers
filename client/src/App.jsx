@@ -17,6 +17,8 @@ import Management from './Management';
 import ReportBreakdown from './ReportBreakdown';
 import TransportOperations from './TransportOperations';
 import Recruitment from './Recruitment';
+import Letters from './Letters';
+import AccountingManagement from './AccountingManagement';
 import JobApplication from './JobApplication';
 import { getFirstAllowedPath } from './lib/pageAccess.js';
 
@@ -56,6 +58,8 @@ function AppRoutes() {
         <Route path="management" element={<Management />} />
         <Route path="transport-operations" element={<TransportOperations />} />
         <Route path="recruitment" element={<Recruitment />} />
+        <Route path="letters" element={<Letters />} />
+        <Route path="accounting-management" element={<AccountingManagement />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

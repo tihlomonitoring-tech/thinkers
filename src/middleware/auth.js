@@ -1,7 +1,7 @@
 import { query } from '../db.js';
 
 /** Page IDs for app pages (must match client and user_page_roles CHECK). Used for super_admin page_roles. */
-const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment'];
+const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management'];
 
 /** Get value from row with case-insensitive key (SQL Server may return different casing) */
 function get(row, key) {

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
@@ -1784,11 +1785,11 @@ router.get('/routes/:id', async (req, res, next) => {
     );
     if (!routeResult.recordset?.[0]) return res.status(404).json({ error: 'Route not found' });
     const route = routeResult.recordset[0];
-    let trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no
+    let trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no, t.contractor_id
        FROM contractor_route_trucks rt
        JOIN contractor_trucks t ON t.id = rt.truck_id
        WHERE rt.route_id = @id`;
-    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number
+    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
        FROM contractor_route_drivers rd
        JOIN contractor_drivers d ON d.id = rd.driver_id
        WHERE rd.route_id = @id`;
@@ -2460,10 +2461,13 @@ const DRIVER_COLUMNS = [
   { key: 'route_name', label: 'Route' },
 ];
 
-/** Get fleet list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = single company; contractorIds = array of company ids. */
-async function getFleetListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null) {
+/** Get fleet list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = single company; contractorIds = array of company ids.
+ *  queryOpts.includeRouteEnrollmentWithoutAccessFilter: when true and routeIds set, include all trucks enrolled on the route (not only facility_access=1). Used for email/pilot distribution so lists match route roster. */
+async function getFleetListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null, queryOpts = {}) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
+  const skipAccessOnRoute = queryOpts.includeRouteEnrollmentWithoutAccessFilter === true && useRoutes && ids.length > 0;
+  const accessClause = skipAccessOnRoute ? '' : ' AND t.facility_access = 1';
   let sql;
   const params = { tenantId };
   let contractorClause = '';
@@ -2480,7 +2484,7 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
     sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes, r.name AS route_name
            FROM contractor_route_trucks rt
-           JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1${contractorClause}
+           JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId${accessClause}${contractorClause}
            JOIN contractor_routes r ON r.id = rt.route_id AND r.tenant_id = @tenantId
            WHERE rt.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, t.registration`;
@@ -2511,10 +2515,12 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
   return { headers: useCols.map((c) => c.label), keys: useCols.map((c) => c.key), rows };
 }
 
-/** Get driver list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = single company; contractorIds = array of company ids. */
-async function getDriverListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null) {
+/** queryOpts.includeRouteEnrollmentWithoutAccessFilter: when true and routeIds set, include all drivers on route enrollments (not only facility_access=1). */
+async function getDriverListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null, queryOpts = {}) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
+  const skipAccessOnRoute = queryOpts.includeRouteEnrollmentWithoutAccessFilter === true && useRoutes && ids.length > 0;
+  const accessClause = skipAccessOnRoute ? '' : ' AND d.facility_access = 1';
   let sql;
   const params = { tenantId };
   let contractorClause = '';
@@ -2531,7 +2537,7 @@ async function getDriverListData(query, tenantId, routeIds, columns = null, cont
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
     sql = `SELECT d.full_name, d.license_number, d.phone, d.email, r.name AS route_name
            FROM contractor_route_drivers rd
-           JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1${contractorClause}
+           JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId${accessClause}${contractorClause}
            JOIN contractor_routes r ON r.id = rd.route_id AND r.tenant_id = @tenantId
            WHERE rd.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, d.full_name`;
@@ -2587,7 +2593,8 @@ function distributionFilename(routeName, contractorName, ext, listKind = '') {
 async function buildFleetListCsv(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   if (headers.length === 0) return '\uFEFF';
   const csv = [headers.join(',')].concat(
     rows.map((r) => keys.map((k) => r[k]).map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))
@@ -2599,7 +2606,8 @@ async function buildFleetListCsv(query, tenantId, routeIds, columns = null, opts
 async function buildDriverListCsv(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   if (headers.length === 0) return '\uFEFF';
   const csv = [headers.join(',')].concat(
     rows.map((r) => keys.map((k) => r[k]).map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))
@@ -2721,7 +2729,8 @@ function writeDistributionInfoBlock(sheet, opts) {
 async function buildFleetListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
@@ -2763,7 +2772,8 @@ async function buildFleetListExcel(query, tenantId, routeIds, columns = null, op
 async function buildDriverListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   const hasInfoBlock = opts.companyName != null || opts.routeName != null || opts.generated != null;
@@ -2803,9 +2813,10 @@ async function buildDriverListExcel(query, tenantId, routeIds, columns = null, o
 
 /** Build one Excel workbook with Fleet list on sheet 1 and Driver list on sheet 2. opts: { companyName, routeName, generated, subtitle, contractorId }. */
 async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols, driverCols, opts = {}) {
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
   const [fleetData, driverData] = await Promise.all([
-    getFleetListData(query, tenantId, routeIds, fleetCols, opts.contractorId ?? null, opts.contractorIds ?? null),
-    getDriverListData(query, tenantId, routeIds, driverCols, opts.contractorId ?? null, opts.contractorIds ?? null),
+    getFleetListData(query, tenantId, routeIds, fleetCols, opts.contractorId ?? null, opts.contractorIds ?? null, listQ),
+    getDriverListData(query, tenantId, routeIds, driverCols, opts.contractorId ?? null, opts.contractorIds ?? null, listQ),
   ]);
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Thinkers';
@@ -2904,7 +2915,8 @@ function buildDistributionPdf(title, subtitle, headers, rows, keys) {
 async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
@@ -2913,7 +2925,8 @@ async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts
 async function buildDriverListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds);
+  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
@@ -3015,12 +3028,8 @@ function distributionListEmailTextPerContractor(entries, titleOverride = null) {
   ].join('\n');
 }
 
-/** POST send fleet/driver list by email from the system (actual list attached). Optional: send_per_contractor + contractor_ids = one list per contractor/route. */
-router.post('/distribution/send-email', async (req, res, next) => {
-  try {
-    const tenantId = getTenantId(req);
-    const userId = req.user?.id;
-    const userName = req.user?.full_name || null;
+/** Same payload as POST /distribution/send-email. Used by HTTP handler and pilot scheduler. */
+export async function distributionSendEmailInternal({ tenantId, userId, userName }, body) {
     const {
       recipients,
       cc: rawCc,
@@ -3031,13 +3040,18 @@ router.post('/distribution/send-email', async (req, res, next) => {
       format: attachFormat,
       send_per_contractor,
       contractor_ids: rawContractorIds,
-    } = req.body || {};
-    if (!Array.isArray(recipients) || recipients.length === 0) return res.status(400).json({ error: 'recipients (array of emails) is required' });
+      pilot_distribution: pilotDistributionBody,
+    } = body || {};
+    const pilotDist = pilotDistributionBody && typeof pilotDistributionBody === 'object' ? pilotDistributionBody : null;
+    const uuidOk = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || '').trim());
+    const pilotScheduleId = pilotDist?.schedule_id && uuidOk(pilotDist.schedule_id) ? String(pilotDist.schedule_id).trim().toLowerCase() : null;
+    const pilotScheduleName = (pilotDist?.schedule_name || '').toString().trim().slice(0, 200) || null;
+    if (!Array.isArray(recipients) || recipients.length === 0) return { ok: false, status: 400, error: 'recipients (array of emails) is required' };
     const listType = list_type === 'both' ? 'both' : list_type === 'driver' ? 'driver' : 'fleet';
     const routeIdsRaw = Array.isArray(route_ids) ? route_ids : (route_ids && typeof route_ids === 'string' ? route_ids.split(',').map((id) => id.trim()) : []);
     const routeIds = routeIdsRaw.map((id) => (id != null && typeof id !== 'object' ? String(id).trim() : '')).filter((id) => id.length > 0);
     const emails = [...new Set(recipients.map((e) => String(e).trim().toLowerCase()).filter((e) => e && e.includes('@')))];
-    if (emails.length === 0) return res.status(400).json({ error: 'At least one valid recipient email is required' });
+    if (emails.length === 0) return { ok: false, status: 400, error: 'At least one valid recipient email is required' };
     const ccList = Array.isArray(rawCc) ? rawCc : (typeof rawCc === 'string' && rawCc.trim() ? rawCc.split(/[\s,;]+/).map((e) => e.trim()).filter((e) => e && e.includes('@')) : []);
     const ccEmails = ccList.length > 0 ? [...new Set(ccList.map((e) => String(e).trim().toLowerCase()).filter((e) => e && e.includes('@')))] : null;
 
@@ -3051,7 +3065,7 @@ router.post('/distribution/send-email', async (req, res, next) => {
     const usePdf = attachFormat === 'pdf';
     const ext = usePdf ? 'pdf' : useExcel ? 'xlsx' : 'csv';
 
-    if (!isEmailConfigured()) return res.status(503).json({ error: 'Email is not configured. Set EMAIL_USER and EMAIL_PASS in .env.' });
+    if (!isEmailConfigured()) return { ok: false, status: 503, error: 'Email is not configured. Set EMAIL_USER and EMAIL_PASS in .env.' };
 
     const perContractor = send_per_contractor === true && Array.isArray(rawContractorIds) && rawContractorIds.length > 0;
     const contractorIds = perContractor ? [...new Set(rawContractorIds.map((id) => String(id).trim()).filter(Boolean))] : [];
@@ -3079,22 +3093,22 @@ router.post('/distribution/send-email', async (req, res, next) => {
 
       const contractorsOnRouteResult = await query(
         `SELECT DISTINCT t.contractor_id AS cid FROM contractor_route_trucks rt
-         INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1
+         INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
          WHERE rt.route_id IN (${placeholders})
          UNION
          SELECT DISTINCT d.contractor_id AS cid FROM contractor_route_drivers rd
-         INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1
+         INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
          WHERE rd.route_id IN (${placeholders})`,
         { tenantId, ...routeParams }
       );
       let contractorIdsOnRoute = (contractorsOnRouteResult.recordset || []).map((r) => r.cid ?? r.contractor_id).filter(Boolean);
-      if (contractorIdsOnRoute.length === 0) return res.status(400).json({ error: 'No companies have fleet or drivers enrolled on the selected route(s).' });
+      if (contractorIdsOnRoute.length === 0) return { ok: false, status: 400, error: 'No companies have fleet or drivers enrolled on the selected route(s).' };
 
       // If user selected specific companies, only include those that are also on the selected route(s).
       if (contractorIds.length > 0) {
         const selectedSet = new Set(contractorIds.map((id) => String(id).trim()));
         contractorIdsOnRoute = contractorIdsOnRoute.filter((id) => selectedSet.has(String(id)));
-        if (contractorIdsOnRoute.length === 0) return res.status(400).json({ error: 'None of the selected companies have fleet or drivers enrolled on the selected route(s).' });
+        if (contractorIdsOnRoute.length === 0) return { ok: false, status: 400, error: 'None of the selected companies have fleet or drivers enrolled on the selected route(s).' };
       }
 
       const contractorsResult = await query(
@@ -3105,6 +3119,8 @@ router.post('/distribution/send-email', async (req, res, next) => {
       const generated = new Date();
       const subtitle = `List distribution · Generated ${formatDateForAppTz(generated)}`;
       const entries = [];
+      /** Full route roster for email/pilot (not restricted to facility_access=1 only). */
+      const distListOpts = { includeRouteEnrollmentWithoutAccessFilter: true };
 
       for (const row of contractorsList) {
         const cid = row.id;
@@ -3116,6 +3132,7 @@ router.post('/distribution/send-email', async (req, res, next) => {
           companyName: contractorName,
           routeName: routeNameForTitle,
           generated,
+          ...distListOpts,
         };
         if (listType === 'both' && useExcel) {
           const buf = await buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols, driverCols, listOpts);
@@ -3217,7 +3234,12 @@ router.post('/distribution/send-email', async (req, res, next) => {
           for (const r of routes) {
             const routeName = r.name || 'Route';
             const singleRoute = [r.id];
-            const listOpts = { ...baseOpts, title: `${contractorName} – ${routeName}`, routeName };
+            const listOpts = {
+              ...baseOpts,
+              title: `${contractorName} – ${routeName}`,
+              routeName,
+              includeRouteEnrollmentWithoutAccessFilter: true,
+            };
             if (listType === 'both' && useExcel) {
               const buf = await buildFleetAndDriverListExcel(query, tid, singleRoute, fleetCols, driverCols, listOpts);
               attachments.push({
@@ -3256,7 +3278,7 @@ router.post('/distribution/send-email', async (req, res, next) => {
         }
       }
 
-      if (attachments.length === 0) return res.status(400).json({ error: 'No lists generated for selected contractors (no routes or data).' });
+      if (attachments.length === 0) return { ok: false, status: 400, error: 'No lists generated for selected contractors (no routes or data).' };
       subject = 'Lists per contractor – Thinkers';
       bodyHtml = distributionListEmailHtmlPerContractor(entries);
       bodyText = distributionListEmailTextPerContractor(entries);
@@ -3302,7 +3324,7 @@ router.post('/distribution/send-email', async (req, res, next) => {
           }
         }
       }
-      if (attachments.length === 0) return res.status(400).json({ error: 'list_type must be fleet, driver, or both' });
+      if (attachments.length === 0) return { ok: false, status: 400, error: 'list_type must be fleet, driver, or both' };
 
       const routeLabel = routeIds.length > 0 ? ` (${routeIds.length} route${routeIds.length !== 1 ? 's' : ''} selected)` : ' (all approved)';
       const listLabel = listType === 'both' ? 'Fleet and driver lists' : listType === 'fleet' ? 'Fleet list' : 'Driver list';
@@ -3316,21 +3338,286 @@ router.post('/distribution/send-email', async (req, res, next) => {
     const emailBodyText = bodyText && bodyText.trim() ? bodyText : distributionListEmailText('list(s)', '');
     const sent = [];
     const failed = [];
+    const histBase = {
+      tenantId: historyTenantId,
+      userId: userId || null,
+      list_type: listType,
+      route_ids: routeIdsStr,
+      format: formatForHistory,
+      created_by_name: userName,
+    };
     for (const to of emails) {
       try {
         await sendEmail({ to, subject, body: emailBodyHtml, html: true, text: emailBodyText, attachments, cc: ccEmails });
-        await query(
-          `INSERT INTO access_distribution_history (tenant_id, created_by_user_id, list_type, route_ids, format, channel, recipient_email, recipient_phone, created_by_name)
-           VALUES (@tenantId, @userId, @list_type, @route_ids, @format, 'email', @recipient_email, NULL, @created_by_name)`,
-          { tenantId: historyTenantId, userId: userId || null, list_type: listType, route_ids: routeIdsStr, format: formatForHistory, recipient_email: to, created_by_name: userName }
-        );
+        if (pilotScheduleId) {
+          try {
+            await query(
+              `INSERT INTO access_distribution_history (tenant_id, created_by_user_id, list_type, route_ids, format, channel, recipient_email, recipient_phone, created_by_name, is_pilot_distribution, pilot_schedule_id, pilot_schedule_name)
+               VALUES (@tenantId, @userId, @list_type, @route_ids, @format, 'email', @recipient_email, NULL, @created_by_name, 1, @pilotScheduleId, @pilotScheduleName)`,
+              {
+                ...histBase,
+                recipient_email: to,
+                pilotScheduleId,
+                pilotScheduleName,
+              }
+            );
+          } catch (histErr) {
+            await query(
+              `INSERT INTO access_distribution_history (tenant_id, created_by_user_id, list_type, route_ids, format, channel, recipient_email, recipient_phone, created_by_name)
+               VALUES (@tenantId, @userId, @list_type, @route_ids, @format, 'email', @recipient_email, NULL, @created_by_name)`,
+              { ...histBase, recipient_email: to }
+            );
+          }
+        } else {
+          await query(
+            `INSERT INTO access_distribution_history (tenant_id, created_by_user_id, list_type, route_ids, format, channel, recipient_email, recipient_phone, created_by_name)
+             VALUES (@tenantId, @userId, @list_type, @route_ids, @format, 'email', @recipient_email, NULL, @created_by_name)`,
+            { ...histBase, recipient_email: to }
+          );
+        }
         sent.push(to);
       } catch (err) {
         console.error('[contractor/distribution] Send to', to, err?.message || err);
         failed.push({ email: to, error: err?.message || 'Send failed' });
       }
     }
-    res.json({ ok: true, sent: sent.length, failed: failed.length, sentTo: sent, failedTo: failed });
+    return { ok: true, sent: sent.length, failed: failed.length, sentTo: sent, failedTo: failed };
+}
+
+router.post('/distribution/send-email', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const r = await distributionSendEmailInternal(
+      { tenantId, userId: req.user?.id, userName: req.user?.full_name || null },
+      req.body
+    );
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json({ ok: true, sent: r.sent, failed: r.failed, sentTo: r.sentTo, failedTo: r.failedTo });
+  } catch (err) {
+    next(err);
+  }
+});
+
+function requireAccessManagementPilot(req, res, next) {
+  if (req.user?.role === 'super_admin') return next();
+  const roles = Array.isArray(req.user?.page_roles) ? req.user.page_roles : [];
+  if (roles.includes('access_management')) return next();
+  return res.status(403).json({ error: 'Pilot distribution requires Access Management access.' });
+}
+
+router.get('/pilot-distribution', requireAccessManagementPilot, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const result = await query(
+      `SELECT p.id, p.name, p.route_id, p.contractor_ids, p.recipient_emails, p.cc_emails,
+              p.list_type, p.attach_format, p.fleet_columns_json, p.driver_columns_json,
+              p.frequency, p.time_hhmm, p.weekday, p.is_active, p.last_run_at, p.last_run_status, p.last_run_detail,
+              p.created_at, p.updated_at, r.name AS route_name
+       FROM pilot_list_distribution p
+       LEFT JOIN contractor_routes r ON CAST(r.id AS NVARCHAR(64)) = CAST(p.route_id AS NVARCHAR(64)) AND r.tenant_id = p.tenant_id
+       WHERE p.tenant_id = @tenantId
+       ORDER BY p.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ pilots: result.recordset || [] });
+  } catch (err) {
+    if (/Invalid object name|pilot_list_distribution/i.test(String(err.message || ''))) {
+      return res.json({ pilots: [], migration_needed: true, migration_hint: 'npm run db:pilot-distribution' });
+    }
+    next(err);
+  }
+});
+
+router.get('/pilot-distribution/history', requireAccessManagementPilot, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const result = await query(
+      `SELECT TOP 400 id, created_at, recipient_email, list_type, format, route_ids, created_by_name,
+              pilot_schedule_id, pilot_schedule_name
+       FROM access_distribution_history
+       WHERE tenant_id = @tenantId AND channel = N'email' AND ISNULL(is_pilot_distribution, 0) = 1
+       ORDER BY created_at DESC`,
+      { tenantId }
+    );
+    res.json({ history: result.recordset || [] });
+  } catch (err) {
+    const msg = String(err?.message || '');
+    if (/is_pilot_distribution|pilot_schedule|Invalid column/i.test(msg)) {
+      return res.json({
+        history: [],
+        migration_needed: true,
+        migration_hint: 'npm run db:access-distribution-pilot',
+      });
+    }
+    next(err);
+  }
+});
+
+router.post('/pilot-distribution', requireAccessManagementPilot, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const userId = req.user?.id || null;
+    const {
+      name,
+      route_id: routeId,
+      contractor_ids: contractorIdsIn,
+      recipient_emails: recipientsIn,
+      cc_emails: ccIn,
+      list_type,
+      attach_format: attachFormat,
+      fleet_columns,
+      driver_columns,
+      frequency,
+      time_hhmm: timeHhmm,
+      weekday,
+    } = req.body || {};
+    if (!routeId || !String(routeId).trim()) return res.status(400).json({ error: 'route_id is required' });
+    const contractorIds = Array.isArray(contractorIdsIn)
+      ? contractorIdsIn.map((x) => String(x).trim()).filter(Boolean)
+      : String(contractorIdsIn || '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean);
+    if (contractorIds.length === 0) return res.status(400).json({ error: 'Select at least one company' });
+    const recipients = String(recipientsIn || '')
+      .split(/[\s,;]+/)
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => e && e.includes('@'));
+    if (recipients.length === 0) return res.status(400).json({ error: 'At least one recipient email is required' });
+    const freq = String(frequency || '').toLowerCase();
+    if (!['hourly', 'daily', 'weekly'].includes(freq)) return res.status(400).json({ error: 'frequency must be hourly, daily, or weekly' });
+    const lt = list_type === 'driver' ? 'driver' : list_type === 'fleet' ? 'fleet' : 'both';
+    const fmt = attachFormat === 'pdf' ? 'pdf' : attachFormat === 'csv' ? 'csv' : 'excel';
+    const tm = /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(timeHhmm || '').trim()) ? String(timeHhmm).trim() : '09:00';
+    let wd = null;
+    if (freq === 'weekly') {
+      const w = parseInt(String(weekday), 10);
+      if (Number.isNaN(w) || w < 1 || w > 7) return res.status(400).json({ error: 'For weekly schedule, weekday is required (1=Mon … 7=Sun)' });
+      wd = w;
+    }
+    const fleetJson = JSON.stringify(Array.isArray(fleet_columns) ? fleet_columns : []);
+    const driverJson = JSON.stringify(Array.isArray(driver_columns) ? driver_columns : []);
+    const ccStr = ccIn
+      ? [...new Set(String(ccIn).split(/[\s,;]+/).map((e) => e.trim().toLowerCase()).filter((e) => e && e.includes('@')))].join(', ')
+      : null;
+    const id = randomUUID();
+    await query(
+      `INSERT INTO pilot_list_distribution (id, tenant_id, created_by_user_id, name, route_id, contractor_ids, recipient_emails, cc_emails,
+        list_type, attach_format, fleet_columns_json, driver_columns_json, frequency, time_hhmm, weekday, is_active)
+       VALUES (@id, @tenantId, @userId, @name, @routeId, @contractorIds, @recipients, @cc, @lt, @fmt, @fleetJson, @driverJson, @freq, @tm, @wd, 1)`,
+      {
+        id,
+        tenantId,
+        userId,
+        name: (name && String(name).trim().slice(0, 200)) || null,
+        routeId: String(routeId).trim(),
+        contractorIds: contractorIds.join(','),
+        recipients: [...new Set(recipients)].join(','),
+        cc: ccStr,
+        lt,
+        fmt,
+        fleetJson,
+        driverJson,
+        freq,
+        tm,
+        wd,
+      }
+    );
+    res.status(201).json({ ok: true, id });
+  } catch (err) {
+    if (/Invalid object name|pilot_list_distribution/i.test(String(err.message || ''))) {
+      return res.status(503).json({ error: 'Run database migration: npm run db:pilot-distribution' });
+    }
+    next(err);
+  }
+});
+
+router.patch('/pilot-distribution/:id', requireAccessManagementPilot, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    const { id } = req.params;
+    const chk = await query(`SELECT id FROM pilot_list_distribution WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    if (!chk.recordset?.length) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const sets = [];
+    const params = { id, tenantId };
+    if (b.name !== undefined) {
+      sets.push('name = @name');
+      params.name = String(b.name || '').trim().slice(0, 200) || null;
+    }
+    if (b.is_active !== undefined) {
+      sets.push('is_active = @active');
+      params.active = b.is_active ? 1 : 0;
+    }
+    if (b.route_id !== undefined) {
+      sets.push('route_id = @routeId');
+      params.routeId = String(b.route_id).trim();
+    }
+    if (b.contractor_ids !== undefined) {
+      const ids = Array.isArray(b.contractor_ids) ? b.contractor_ids : String(b.contractor_ids).split(',');
+      const cj = ids.map((x) => String(x).trim()).filter(Boolean).join(',');
+      sets.push('contractor_ids = @cids');
+      params.cids = cj;
+    }
+    if (b.recipient_emails !== undefined) {
+      sets.push('recipient_emails = @rec');
+      params.rec = String(b.recipient_emails || '');
+    }
+    if (b.cc_emails !== undefined) {
+      sets.push('cc_emails = @cc');
+      params.cc = String(b.cc_emails || '').trim() || null;
+    }
+    if (b.list_type !== undefined) {
+      sets.push('list_type = @lt');
+      params.lt = b.list_type === 'driver' ? 'driver' : b.list_type === 'fleet' ? 'fleet' : 'both';
+    }
+    if (b.attach_format !== undefined) {
+      sets.push('attach_format = @fmt');
+      params.fmt = b.attach_format === 'pdf' ? 'pdf' : b.attach_format === 'csv' ? 'csv' : 'excel';
+    }
+    if (b.fleet_columns !== undefined) {
+      sets.push('fleet_columns_json = @fj');
+      params.fj = JSON.stringify(Array.isArray(b.fleet_columns) ? b.fleet_columns : []);
+    }
+    if (b.driver_columns !== undefined) {
+      sets.push('driver_columns_json = @dj');
+      params.dj = JSON.stringify(Array.isArray(b.driver_columns) ? b.driver_columns : []);
+    }
+    if (b.frequency !== undefined) {
+      const f = String(b.frequency).toLowerCase();
+      if (!['hourly', 'daily', 'weekly'].includes(f)) return res.status(400).json({ error: 'Invalid frequency' });
+      sets.push('frequency = @freq');
+      params.freq = f;
+    }
+    if (b.time_hhmm !== undefined) {
+      sets.push('time_hhmm = @tm');
+      params.tm = /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(b.time_hhmm).trim()) ? String(b.time_hhmm).trim() : '09:00';
+    }
+    if (b.weekday !== undefined) {
+      sets.push('weekday = @wd');
+      const w = parseInt(String(b.weekday), 10);
+      params.wd = Number.isNaN(w) ? null : Math.min(7, Math.max(1, w));
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    sets.push('updated_at = SYSUTCDATETIME()');
+    await query(`UPDATE pilot_list_distribution SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/pilot-distribution/:id', requireAccessManagementPilot, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
+    await query(`DELETE FROM pilot_list_distribution WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

@@ -52,7 +52,7 @@ router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess('command_centre'));
 
-/** GET my allowed tabs. Super_admin gets all; others get from grants. Breakdowns tab is included for everyone who has any CC tab. */
+/** GET my allowed tabs. Super_admin gets all; others get from grants. */
 router.get('/my-tabs', async (req, res, next) => {
   try {
     if (req.user.role === 'super_admin') {
@@ -63,8 +63,10 @@ router.get('/my-tabs', async (req, res, next) => {
       { userId: req.user.id }
     );
     let tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => CC_TAB_IDS.includes(id));
-    if (tabs.length > 0 && !tabs.includes('breakdowns') && CC_TAB_IDS.includes('breakdowns')) {
-      tabs = [...tabs, 'breakdowns'];
+    if (tabs.length > 0) {
+      if (!tabs.includes('breakdowns') && CC_TAB_IDS.includes('breakdowns')) {
+        tabs = [...tabs, 'breakdowns'];
+      }
     }
     res.json({ tabs });
   } catch (err) {

@@ -24,6 +24,7 @@ export default function JobApplication() {
     id_document: null,
     academic_record: null,
   });
+  const [showFullJob, setShowFullJob] = useState(false);
 
   useEffect(() => {
     if (!token) {
@@ -103,14 +104,43 @@ export default function JobApplication() {
     );
   }
 
+  const desc = (vacancy?.description || '').trim();
+  const reqs = (vacancy?.requirements || '').trim();
+  const hasJobDetails = Boolean(desc || reqs);
+  const excerptLen = 360;
+  const descExcerpt = desc.length > excerptLen ? `${desc.slice(0, excerptLen).trim()}…` : desc;
+  const reqsExcerpt = reqs.length > 200 ? `${reqs.slice(0, 200).trim()}…` : reqs;
+
   return (
     <div className="min-h-screen bg-surface-100 py-8 px-4">
-      <div className="max-w-2xl mx-auto">
+      <div className="max-w-2xl mx-auto space-y-4">
         <div className="bg-white rounded-xl shadow-lg border border-surface-200 overflow-hidden">
           <div className="bg-brand-600 text-white px-6 py-4">
             <h1 className="text-xl font-semibold">Job application</h1>
             {vacancy?.title && <p className="text-brand-100 text-sm mt-1">{vacancy.title}</p>}
+            {vacancy?.role_title && <p className="text-white/90 text-sm mt-0.5 font-medium">{vacancy.role_title}</p>}
           </div>
+          {hasJobDetails && (
+            <div className="px-6 py-4 border-b border-surface-200 bg-surface-50/80">
+              <h2 className="text-sm font-semibold text-surface-900 mb-2">About this role</h2>
+              {desc && (
+                <div className="text-sm text-surface-700 whitespace-pre-wrap mb-3 line-clamp-6">{descExcerpt}</div>
+              )}
+              {reqs && (
+                <div className="mb-3">
+                  <p className="text-xs font-medium text-surface-500 uppercase tracking-wide mb-1">Requirements / qualifications</p>
+                  <p className="text-sm text-surface-700 whitespace-pre-wrap line-clamp-4">{reqsExcerpt}</p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowFullJob(true)}
+                className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
+              >
+                View full job description
+              </button>
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="p-6 space-y-6">
             {error && (
               <div className="rounded-lg bg-red-50 border border-red-100 text-red-700 px-4 py-2 text-sm">{error}</div>
@@ -177,6 +207,44 @@ export default function JobApplication() {
           </form>
         </div>
       </div>
+
+      {showFullJob && vacancy && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowFullJob(false)}>
+          <div
+            className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-surface-200 flex justify-between items-start gap-3 bg-surface-50">
+              <div>
+                <h2 className="text-lg font-semibold text-surface-900">{vacancy.title || 'Vacancy'}</h2>
+                {vacancy.role_title && <p className="text-sm text-surface-600 mt-0.5">{vacancy.role_title}</p>}
+              </div>
+              <button type="button" onClick={() => setShowFullJob(false)} className="text-surface-500 hover:text-surface-800 text-2xl leading-none p-1" aria-label="Close">×</button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1 min-h-0 space-y-5">
+              {desc ? (
+                <section>
+                  <h3 className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-2">Job description</h3>
+                  <div className="text-sm text-surface-800 whitespace-pre-wrap leading-relaxed">{desc}</div>
+                </section>
+              ) : (
+                <p className="text-sm text-surface-500">No detailed job description was provided for this vacancy.</p>
+              )}
+              {reqs && (
+                <section>
+                  <h3 className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-2">Requirements &amp; qualifications</h3>
+                  <div className="text-sm text-surface-800 whitespace-pre-wrap leading-relaxed">{reqs}</div>
+                </section>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t border-surface-200 bg-surface-50">
+              <button type="button" onClick={() => setShowFullJob(false)} className="w-full sm:w-auto px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { recruitment as recruitmentApi, downloadAttachmentWithAuth, users as usersApi } from './api';
+import { recruitment as recruitmentApi, downloadAttachmentWithAuth, openAttachmentWithAuth, users as usersApi } from './api';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 
@@ -941,14 +941,31 @@ function TabScreening({ vacancies, setError }) {
   );
 }
 
+const EXTERNAL_ATTACHMENT_DEFS = [
+  { pathKey: 'cv_file_path', field: 'cv', label: 'CV / résumé' },
+  { pathKey: 'cover_letter_path', field: 'cover_letter', label: 'Cover letter' },
+  { pathKey: 'qualifications_path', field: 'qualifications', label: 'Qualifications' },
+  { pathKey: 'id_document_path', field: 'id_document', label: 'ID document' },
+  { pathKey: 'academic_record_path', field: 'academic_record', label: 'Academic record' },
+];
+
+function fileNameFromPath(p) {
+  if (!p) return 'attachment';
+  const s = p.replace(/\\/g, '/');
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
 function TabExternalApplicationsReview({ vacancies, setError }) {
   const [applications, setApplications] = useState([]);
   const [vacancyFilter, setVacancyFilter] = useState('');
   const [selected, setSelected] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [scoring, setScoring] = useState(false);
   const [form, setForm] = useState({ reviewer_score: '', reviewer_notes: '' });
+  const [fullDetailOpen, setFullDetailOpen] = useState(false);
 
   const loadApplications = () => {
     setLoading(true);
@@ -961,17 +978,29 @@ function TabExternalApplicationsReview({ vacancies, setError }) {
 
   useEffect(() => { loadApplications(); }, [vacancyFilter]);
 
-  useEffect(() => {
-    if (selected) {
-      setForm({ reviewer_score: selected.reviewer_score != null ? String(selected.reviewer_score) : '', reviewer_notes: selected.reviewer_notes || '' });
-    }
-  }, [selected]);
+  const selectApplication = (a) => {
+    setDetailLoading(true);
+    setFullDetailOpen(false);
+    recruitmentApi.externalApplications.get(a.id)
+      .then((r) => {
+        const app = r.application;
+        setSelected(app);
+        setForm({ reviewer_score: app.reviewer_score != null ? String(app.reviewer_score) : '', reviewer_notes: app.reviewer_notes || '' });
+      })
+      .catch((e) => setError(e?.message))
+      .finally(() => setDetailLoading(false));
+  };
 
   const saveReview = () => {
     if (!selected) return;
     setSaving(true);
     recruitmentApi.externalApplications.update(selected.id, { reviewer_score: form.reviewer_score ? Number(form.reviewer_score) : null, reviewer_notes: form.reviewer_notes || null })
-      .then((r) => { setSelected(r.application); setApplications((prev) => prev.map((a) => a.id === r.application.id ? r.application : a)); })
+      .then((r) => {
+        const app = r.application;
+        setSelected(app);
+        setForm({ reviewer_score: app.reviewer_score != null ? String(app.reviewer_score) : '', reviewer_notes: app.reviewer_notes || '' });
+        setApplications((prev) => prev.map((a) => a.id === app.id ? { ...a, ...app } : a));
+      })
       .catch((e) => setError(e?.message))
       .finally(() => setSaving(false));
   };
@@ -980,7 +1009,8 @@ function TabExternalApplicationsReview({ vacancies, setError }) {
     if (!selected) return;
     setScoring(true);
     recruitmentApi.externalApplications.score(selected.id)
-      .then((r) => { setSelected((s) => s ? { ...s, ai_score: r.application?.ai_score ?? r.score, ai_notes: r.application?.ai_notes ?? r.notes } : null); loadApplications(); })
+      .then(() => recruitmentApi.externalApplications.get(selected.id))
+      .then((r) => { setSelected(r.application); loadApplications(); })
       .catch((e) => setError(e?.message))
       .finally(() => setScoring(false));
   };
@@ -990,16 +1020,68 @@ function TabExternalApplicationsReview({ vacancies, setError }) {
     if (!window.confirm(`Add ${selected.name} to Screening as an applicant?`)) return;
     setSaving(true);
     recruitmentApi.externalApplications.acceptToScreening(selected.id)
-      .then((r) => { setSelected((s) => s ? { ...s, applicant_id: r.applicant?.id, status: 'accepted' } : null); loadApplications(); })
+      .then(() => recruitmentApi.externalApplications.get(selected.id))
+      .then((r) => { setSelected(r.application); loadApplications(); })
       .catch((e) => setError(e?.message))
       .finally(() => setSaving(false));
   };
 
-  const openDownload = (field) => {
+  const viewAttachment = (field) => {
     if (!selected) return;
     const url = recruitmentApi.externalApplications.downloadUrl(selected.id, field);
-    window.open(url, '_blank');
+    openAttachmentWithAuth(url).catch((e) => setError(e?.message));
   };
+
+  const downloadAttachment = (field, pathKey) => {
+    if (!selected) return;
+    const url = recruitmentApi.externalApplications.downloadUrl(selected.id, field);
+    downloadAttachmentWithAuth(url, fileNameFromPath(selected[pathKey])).catch((e) => setError(e?.message));
+  };
+
+  const renderApplicationDetail = (inModal) => (
+    <div className={`space-y-4 ${inModal ? '' : ''}`}>
+      <div className="rounded-lg border border-surface-200 bg-surface-50/80 p-4 space-y-3">
+        <h4 className="text-xs font-semibold text-surface-600 uppercase tracking-wide">Applicant details</h4>
+        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm">
+          <div><dt className="text-surface-500 text-xs">Full name</dt><dd className="font-medium text-surface-900">{selected.name || '—'}</dd></div>
+          <div><dt className="text-surface-500 text-xs">Email</dt><dd className="text-surface-800 break-all">{selected.email || '—'}</dd></div>
+          <div><dt className="text-surface-500 text-xs">Phone</dt><dd className="text-surface-800">{selected.phone || '—'}</dd></div>
+          <div><dt className="text-surface-500 text-xs">ID number</dt><dd className="text-surface-800">{selected.id_number || '—'}</dd></div>
+          <div className="sm:col-span-2"><dt className="text-surface-500 text-xs">Address</dt><dd className="text-surface-800 whitespace-pre-wrap mt-0.5">{selected.address?.trim() || '—'}</dd></div>
+          <div className="sm:col-span-2"><dt className="text-surface-500 text-xs">Vacancy</dt><dd className="text-surface-800">{selected.vacancy_title || '—'}{selected.role_title ? ` · ${selected.role_title}` : ''}</dd></div>
+          <div><dt className="text-surface-500 text-xs">Submitted</dt><dd className="text-surface-800">{formatDateTime(selected.created_at)}</dd></div>
+          <div><dt className="text-surface-500 text-xs">Status</dt><dd className="text-surface-800">{selected.status || '—'}</dd></div>
+        </dl>
+      </div>
+      <div>
+        <h4 className="text-xs font-semibold text-surface-600 uppercase tracking-wide mb-2">Attachments</h4>
+        <ul className="space-y-2">
+          {EXTERNAL_ATTACHMENT_DEFS.map(({ pathKey, field, label }) => {
+            const path = selected[pathKey];
+            if (!path) return (
+              <li key={field} className="flex items-center justify-between gap-2 py-2 px-3 rounded-lg border border-dashed border-surface-200 bg-surface-50 text-sm text-surface-400">
+                <span>{label}</span>
+                <span className="text-xs">Not uploaded</span>
+              </li>
+            );
+            const fname = fileNameFromPath(path);
+            return (
+              <li key={field} className="flex flex-wrap items-center justify-between gap-2 py-2 px-3 rounded-lg border border-surface-200 bg-white">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-surface-800 text-sm">{label}</p>
+                  <p className="text-xs text-surface-500 truncate" title={fname}>{fname}</p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button type="button" onClick={() => viewAttachment(field)} className="px-2 py-1.5 rounded-lg border border-brand-300 text-brand-700 text-xs font-medium hover:bg-brand-50">View</button>
+                  <button type="button" onClick={() => downloadAttachment(field, pathKey)} className="px-2 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-xs font-medium hover:bg-surface-50">Download</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -1009,17 +1091,18 @@ function TabExternalApplicationsReview({ vacancies, setError }) {
           {vacancies.map((v) => <option key={v.id} value={v.id}>{v.title}</option>)}
         </select>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="rounded-xl border border-surface-200 bg-white p-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="rounded-xl border border-surface-200 bg-white p-4 lg:col-span-1">
           <h3 className="font-medium text-surface-800 mb-2">External applications</h3>
+          <p className="text-xs text-surface-500 mb-2">Select an application to load full details and attachments.</p>
           {loading ? (
             <p className="text-surface-500 text-sm">Loading…</p>
           ) : applications.length === 0 ? (
             <p className="text-surface-500 text-sm">No external applications yet.</p>
           ) : (
-            <ul className="space-y-1 max-h-96 overflow-y-auto">
+            <ul className="space-y-1 max-h-[28rem] overflow-y-auto">
               {applications.map((a) => (
-                <li key={a.id} className={`p-2 rounded cursor-pointer ${selected?.id === a.id ? 'bg-brand-50 border border-brand-200' : 'hover:bg-surface-50 border border-transparent'}`} onClick={() => setSelected(a)}>
+                <li key={a.id} className={`p-2 rounded cursor-pointer ${selected?.id === a.id ? 'bg-brand-50 border border-brand-200' : 'hover:bg-surface-50 border border-transparent'}`} onClick={() => selectApplication(a)}>
                   <p className="font-medium text-surface-800">{a.name}</p>
                   <p className="text-xs text-surface-500">{a.email} · {a.vacancy_title || '—'} · {a.status}</p>
                   {a.ai_score != null && <span className="text-xs text-surface-500">AI: {a.ai_score}</span>}
@@ -1028,42 +1111,55 @@ function TabExternalApplicationsReview({ vacancies, setError }) {
             </ul>
           )}
         </div>
-        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
-          {selected ? (
+        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4 lg:col-span-2">
+          {!selected && !detailLoading && <p className="text-surface-500 text-sm">Select an application from the list.</p>}
+          {detailLoading && <p className="text-surface-500 text-sm">Loading full application…</p>}
+          {selected && !detailLoading && (
             <>
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <h3 className="font-medium text-surface-800">{selected.name}</h3>
-                {selected.applicant_id && <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">In screening</span>}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-semibold text-surface-900 text-lg">{selected.name}</h3>
+                  {selected.applicant_id && <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">In screening</span>}
+                </div>
+                <button type="button" onClick={() => setFullDetailOpen(true)} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">View full details</button>
               </div>
-              <p className="text-xs text-surface-500">{selected.email}{selected.phone ? ` · ${selected.phone}` : ''}</p>
-              <p className="text-xs text-surface-500">{selected.vacancy_title} · {formatDateTime(selected.created_at)}</p>
-              {selected.id_number && <p className="text-xs text-surface-500">ID: {selected.id_number}</p>}
-              {selected.address && <p className="text-xs text-surface-500">{selected.address}</p>}
-              <div className="flex flex-wrap gap-2">
-                {selected.cv_file_path && <button type="button" onClick={() => openDownload('cv')} className="px-2 py-1 rounded border border-surface-300 text-xs">Download CV</button>}
-                {selected.cover_letter_path && <button type="button" onClick={() => openDownload('cover_letter')} className="px-2 py-1 rounded border border-surface-300 text-xs">Cover letter</button>}
-                {selected.qualifications_path && <button type="button" onClick={() => openDownload('qualifications')} className="px-2 py-1 rounded border border-surface-300 text-xs">Qualifications</button>}
-                {selected.id_document_path && <button type="button" onClick={() => openDownload('id_document')} className="px-2 py-1 rounded border border-surface-300 text-xs">ID document</button>}
-                {selected.academic_record_path && <button type="button" onClick={() => openDownload('academic_record')} className="px-2 py-1 rounded border border-surface-300 text-xs">Academic record</button>}
-              </div>
-              {selected.ai_score != null && <p className="text-sm text-surface-600">AI score: <strong>{selected.ai_score}</strong> {selected.ai_notes && ` – ${selected.ai_notes}`}</p>}
+              {renderApplicationDetail(false)}
+              {selected.ai_score != null && (
+                <div className="rounded-lg border border-surface-200 p-3 bg-surface-50">
+                  <p className="text-sm text-surface-700"><span className="font-medium">AI score:</span> {selected.ai_score}</p>
+                  {selected.ai_notes && <p className="text-sm text-surface-600 mt-1 whitespace-pre-wrap">{selected.ai_notes}</p>}
+                </div>
+              )}
               <button type="button" onClick={runAiScore} disabled={scoring} className="px-3 py-2 rounded-lg border border-surface-300 text-sm">{(selected.ai_score != null ? 'Re-run' : 'Run')} AI scan / score</button>
               <hr className="border-surface-100" />
+              <h4 className="text-xs font-semibold text-surface-600 uppercase tracking-wide">Your review</h4>
               <label className="block">
                 <span className="text-xs font-medium text-surface-500">Reviewer score</span>
-                <input type="number" min={0} max={100} value={form.reviewer_score} onChange={(e) => setForm((f) => ({ ...f, reviewer_score: e.target.value }))} className="mt-1 w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" placeholder="0–100" />
+                <input type="number" min={0} max={100} value={form.reviewer_score} onChange={(e) => setForm((f) => ({ ...f, reviewer_score: e.target.value }))} className="mt-1 w-full max-w-xs rounded-lg border border-surface-300 px-3 py-2 text-sm" placeholder="0–100" />
               </label>
-              <textarea value={form.reviewer_notes} onChange={(e) => setForm((f) => ({ ...f, reviewer_notes: e.target.value }))} placeholder="Reviewer notes" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea value={form.reviewer_notes} onChange={(e) => setForm((f) => ({ ...f, reviewer_notes: e.target.value }))} placeholder="Reviewer notes" rows={3} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={saveReview} disabled={saving} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm">Save review</button>
                 {!selected.applicant_id && <button type="button" onClick={acceptToScreening} disabled={saving} className="px-3 py-2 rounded-lg border border-brand-300 text-brand-700 text-sm">Accept to screening</button>}
               </div>
             </>
-          ) : (
-            <p className="text-surface-500 text-sm">Select an application</p>
           )}
         </div>
       </div>
+
+      {fullDetailOpen && selected && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setFullDetailOpen(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-4 border-b border-surface-200 flex justify-between items-center">
+              <h3 className="font-semibold text-surface-900">Full application – {selected.name}</h3>
+              <button type="button" onClick={() => setFullDetailOpen(false)} className="text-surface-500 hover:text-surface-800 p-1 text-xl leading-none">×</button>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1 min-h-0">
+              {renderApplicationDetail(true)}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

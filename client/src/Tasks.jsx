@@ -200,7 +200,7 @@ export default function Tasks() {
   const completedCount = tasks.filter((t) => t.status === 'completed').length;
 
   return (
-    <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
+    <div className="flex gap-0 w-full min-h-0 flex-1 -m-4 sm:-m-6 overflow-hidden">
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
@@ -240,7 +240,7 @@ export default function Tasks() {
             Show navigation
           </button>
         )}
-        <div className="max-w-7xl mx-auto flex-1">
+        <div className="w-full max-w-7xl mx-auto flex-1 min-w-0">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2 flex justify-between items-center">
               <span>{error}</span>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAuth } from './AuthContext';
 import { contractor as contractorApi, users as usersApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
@@ -12,6 +12,7 @@ const TABS = [
   { id: 'rectors', label: 'Route rectors', icon: 'users', section: 'Routes' },
   { id: 'reinstatement', label: 'Reinstatement requests', icon: 'reinstatement', section: 'Routes' },
   { id: 'distribution', label: 'List distribution', icon: 'share', section: 'Distribution' },
+  { id: 'pilot-distribution', label: 'Pilot distribution', icon: 'clock', section: 'Distribution' },
   { id: 'distribution-history', label: 'Distribution history', icon: 'history', section: 'Distribution' },
   { id: 'progress-report-creation', label: 'Project progress report creation', icon: 'file', section: 'Reports' },
   { id: 'action-plan-timelines', label: 'Action plan and Project timelines', icon: 'calendar', section: 'Reports' },
@@ -76,6 +77,7 @@ function TabIcon({ name, className }) {
         </svg>
       );
     case 'history':
+    case 'clock':
       return (
         <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -171,6 +173,34 @@ export default function AccessManagement() {
   const [distHistoryLoading, setDistHistoryLoading] = useState(false);
   const [distHistoryFilters, setDistHistoryFilters] = useState({ dateFrom: '', dateTo: '', routeId: '', listType: '', channel: '', search: '' });
   const [distHistoryExporting, setDistHistoryExporting] = useState(false);
+
+  const [pilots, setPilots] = useState([]);
+  const [pilotLoading, setPilotLoading] = useState(false);
+  const [pilotSaving, setPilotSaving] = useState(false);
+  const [pilotError, setPilotError] = useState('');
+  const [pilotSuccess, setPilotSuccess] = useState('');
+  const [pilotMigration, setPilotMigration] = useState(false);
+  const [pilotForm, setPilotForm] = useState({
+    name: '',
+    route_id: '',
+    contractor_ids: [],
+    list_type: 'both',
+    attach_format: 'excel',
+    frequency: 'daily',
+    time_hhmm: '09:00',
+    weekday: 1,
+  });
+  const [pilotFleetCols, setPilotFleetCols] = useState(() => FLEET_COLUMNS.map((c) => c.key));
+  const [pilotDriverCols, setPilotDriverCols] = useState(() => DRIVER_COLUMNS.map((c) => c.key));
+  const [pilotContractorSearch, setPilotContractorSearch] = useState('');
+  const [pilotInnerTab, setPilotInnerTab] = useState('schedules');
+  const [pilotRecipients, setPilotRecipients] = useState([]);
+  const [pilotCcRecipients, setPilotCcRecipients] = useState([]);
+  const [pilotCustomEmail, setPilotCustomEmail] = useState('');
+  const [pilotCustomCcEmail, setPilotCustomCcEmail] = useState('');
+  const [pilotHistory, setPilotHistory] = useState([]);
+  const [pilotHistoryLoading, setPilotHistoryLoading] = useState(false);
+  const [pilotHistoryMigration, setPilotHistoryMigration] = useState(false);
 
   // Reinstatement requests tab
   const [reinstatementRequests, setReinstatementRequests] = useState([]);
@@ -332,18 +362,46 @@ export default function AccessManagement() {
     }
   }, [showRectorForm, activeTab, hasTenant]);
 
-  // Load contractors for "send per contractor" when List distribution tab is active
+  // Load contractors for list distribution / pilot
   useEffect(() => {
-    if (activeTab !== 'distribution') return;
+    if (activeTab !== 'distribution' && activeTab !== 'pilot-distribution') return;
     contractorApi.distributionHistory.contractors()
       .then((r) => setDistContractors(r.contractors || []))
       .catch(() => setDistContractors([]));
   }, [activeTab]);
 
-  // Load fleet & drivers per route when List distribution tab is active
   useEffect(() => {
-    if (activeTab !== 'distribution' || !routes.length) {
-      setDistRouteDetails({});
+    if (activeTab !== 'pilot-distribution' || !hasTenant) return;
+    setPilotLoading(true);
+    setPilotMigration(false);
+    contractorApi.pilotDistribution
+      .list()
+      .then((r) => {
+        setPilots(r.pilots || []);
+        setPilotMigration(!!r.migration_needed);
+      })
+      .catch(() => setPilots([]))
+      .finally(() => setPilotLoading(false));
+  }, [activeTab, hasTenant]);
+
+  useEffect(() => {
+    if (activeTab !== 'pilot-distribution' || pilotInnerTab !== 'history' || !hasTenant) return;
+    setPilotHistoryLoading(true);
+    setPilotHistoryMigration(false);
+    contractorApi.pilotDistribution
+      .history()
+      .then((r) => {
+        setPilotHistory(r.history || []);
+        setPilotHistoryMigration(!!r.migration_needed);
+      })
+      .catch(() => setPilotHistory([]))
+      .finally(() => setPilotHistoryLoading(false));
+  }, [activeTab, pilotInnerTab, hasTenant]);
+
+  // Load fleet & drivers per route when List distribution or Pilot tab is active
+  useEffect(() => {
+    if ((activeTab !== 'distribution' && activeTab !== 'pilot-distribution') || !routes.length) {
+      if (activeTab !== 'pilot-distribution' && activeTab !== 'distribution') setDistRouteDetails({});
       return;
     }
     let cancelled = false;
@@ -362,6 +420,23 @@ export default function AccessManagement() {
       .finally(() => { if (!cancelled) setDistLoadingDetails(false); });
     return () => { cancelled = true; };
   }, [activeTab, routes]);
+
+  const pilotContractorsForRoute = useMemo(() => {
+    const rid = pilotForm.route_id;
+    if (!rid || !distRouteDetails[rid]) return distContractors;
+    const d = distRouteDetails[rid];
+    const ids = new Set();
+    (d.trucks || []).forEach((t) => {
+      const cid = t.contractor_id ?? t.contractor_Id;
+      if (cid) ids.add(String(cid));
+    });
+    (d.drivers || []).forEach((dr) => {
+      const cid = dr.contractor_id ?? dr.contractor_Id;
+      if (cid) ids.add(String(cid));
+    });
+    if (ids.size === 0) return distContractors;
+    return distContractors.filter((c) => ids.has(String(c.id)));
+  }, [pilotForm.route_id, distRouteDetails, distContractors]);
 
   // Load progress reports list when Project progress report tab is active
   useEffect(() => {
@@ -813,6 +888,31 @@ export default function AccessManagement() {
     setDistCustomCcEmail('');
   };
   const removeDistCcRecipient = (email) => setDistCcRecipients((prev) => prev.filter((r) => r.email !== email));
+
+  const addPilotRecipientFromUser = (user) => {
+    const email = (user.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) return;
+    setPilotRecipients((prev) => (prev.some((r) => r.email === email) ? prev : [...prev, { email, label: user.full_name || user.email }]));
+  };
+  const addPilotRecipientByEmail = () => {
+    const email = pilotCustomEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) return;
+    setPilotRecipients((prev) => (prev.some((r) => r.email === email) ? prev : [...prev, { email, label: null }]));
+    setPilotCustomEmail('');
+  };
+  const removePilotRecipient = (email) => setPilotRecipients((prev) => prev.filter((r) => r.email !== email));
+  const addPilotCcFromUser = (user) => {
+    const email = (user.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) return;
+    setPilotCcRecipients((prev) => (prev.some((r) => r.email === email) ? prev : [...prev, { email, label: user.full_name || user.email }]));
+  };
+  const addPilotCcByEmail = () => {
+    const email = pilotCustomCcEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) return;
+    setPilotCcRecipients((prev) => (prev.some((r) => r.email === email) ? prev : [...prev, { email, label: null }]));
+    setPilotCustomCcEmail('');
+  };
+  const removePilotCcRecipient = (email) => setPilotCcRecipients((prev) => prev.filter((r) => r.email !== email));
 
   const sendFromSystem = () => {
     const listType = distIncludeFleet && distIncludeDrivers ? 'both' : distIncludeFleet ? 'fleet' : 'driver';
@@ -1867,6 +1967,476 @@ export default function AccessManagement() {
             </div>
             <p className="text-xs text-surface-500">Use “Send list(s) via email” to send the actual fleet/driver list from the system. “Open mail client” opens your email app so you can attach a file you downloaded.</p>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'pilot-distribution' && (
+        <div className="space-y-6 max-w-5xl">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-900">Pilot distribution</h2>
+            <p className="text-sm text-surface-500 mt-1">
+              Schedule automatic list emails (same attachments as <strong>List distribution → Send from system</strong>). Times use the app timezone (default <strong>Africa/Johannesburg</strong>; override with <code className="text-xs bg-surface-100 px-1 rounded">EMAIL_TIMEZONE</code> in .env).
+            </p>
+          </div>
+
+          <div className="flex gap-1 border-b border-surface-200">
+            <button
+              type="button"
+              onClick={() => setPilotInnerTab('schedules')}
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${pilotInnerTab === 'schedules' ? 'border-brand-600 text-brand-700 bg-surface-50' : 'border-transparent text-surface-600 hover:text-surface-900'}`}
+            >
+              Schedules
+            </button>
+            <button
+              type="button"
+              onClick={() => setPilotInnerTab('history')}
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${pilotInnerTab === 'history' ? 'border-brand-600 text-brand-700 bg-surface-50' : 'border-transparent text-surface-600 hover:text-surface-900'}`}
+            >
+              Publication history
+            </button>
+          </div>
+
+          {pilotError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800 flex justify-between">
+              <span>{pilotError}</span>
+              <button type="button" onClick={() => setPilotError('')} className="text-red-600">Dismiss</button>
+            </div>
+          )}
+          {pilotSuccess && pilotInnerTab === 'schedules' && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800 flex justify-between">
+              <span>{pilotSuccess}</span>
+              <button type="button" onClick={() => setPilotSuccess('')} className="text-emerald-600">Dismiss</button>
+            </div>
+          )}
+
+          {pilotInnerTab === 'schedules' && (
+          <>
+          {pilotMigration && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+              Run <code className="bg-amber-100 px-1 rounded">npm run db:pilot-distribution</code> to enable pilot schedules.
+            </div>
+          )}
+
+          <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-4">
+            <h3 className="font-medium text-surface-900">New pilot schedule</h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-surface-500 mb-1">Label (optional)</label>
+                <input
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  placeholder="e.g. Route A – weekly to ops"
+                  value={pilotForm.name}
+                  onChange={(e) => setPilotForm((f) => ({ ...f, name: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Route</label>
+                <select
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  value={pilotForm.route_id}
+                  onChange={(e) => setPilotForm((f) => ({ ...f, route_id: e.target.value, contractor_ids: [] }))}
+                >
+                  <option value="">Select route…</option>
+                  {routes.map((r) => (
+                    <option key={r.id} value={String(r.id)}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Frequency</label>
+                <select
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  value={pilotForm.frequency}
+                  onChange={(e) => setPilotForm((f) => ({ ...f, frequency: e.target.value }))}
+                >
+                  <option value="hourly">Hourly (at the chosen minute past each hour)</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Time (HH:MM, 24h)</label>
+                <input
+                  type="time"
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  value={pilotForm.time_hhmm.length === 5 ? pilotForm.time_hhmm : '09:00'}
+                  onChange={(e) => setPilotForm((f) => ({ ...f, time_hhmm: e.target.value || '09:00' }))}
+                />
+                {pilotForm.frequency === 'hourly' && (
+                  <p className="text-xs text-surface-500 mt-1">Only the <strong>minute</strong> is used (e.g. :00 = top of each hour).</p>
+                )}
+              </div>
+              {pilotForm.frequency === 'weekly' && (
+                <div>
+                  <label className="block text-xs font-medium text-surface-500 mb-1">Day of week</label>
+                  <select
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    value={pilotForm.weekday}
+                    onChange={(e) => setPilotForm((f) => ({ ...f, weekday: parseInt(e.target.value, 10) }))}
+                  >
+                    <option value={1}>Monday</option>
+                    <option value={2}>Tuesday</option>
+                    <option value={3}>Wednesday</option>
+                    <option value={4}>Thursday</option>
+                    <option value={5}>Friday</option>
+                    <option value={6}>Saturday</option>
+                    <option value={7}>Sunday</option>
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">List type</label>
+                <select
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  value={pilotForm.list_type}
+                  onChange={(e) => setPilotForm((f) => ({ ...f, list_type: e.target.value }))}
+                >
+                  <option value="both">Fleet + driver</option>
+                  <option value="fleet">Fleet only</option>
+                  <option value="driver">Driver only</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Attachment format</label>
+                <select
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  value={pilotForm.attach_format}
+                  onChange={(e) => setPilotForm((f) => ({ ...f, attach_format: e.target.value }))}
+                >
+                  <option value="excel">Excel</option>
+                  <option value="pdf">PDF</option>
+                  <option value="csv">CSV</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-2">Companies on route (per-company lists)</label>
+              <input
+                type="search"
+                placeholder="Search contractors…"
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2"
+                value={pilotContractorSearch}
+                onChange={(e) => setPilotContractorSearch(e.target.value)}
+              />
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-surface-200 p-2 space-y-1">
+                {(() => {
+                  const q = pilotContractorSearch.trim().toLowerCase();
+                  const list = q ? pilotContractorsForRoute.filter((c) => (c.name || '').toLowerCase().includes(q)) : pilotContractorsForRoute;
+                  const sel = new Set(pilotForm.contractor_ids.map(String));
+                  return list.length === 0 ? (
+                    <p className="text-sm text-surface-500 py-2">{pilotForm.route_id ? 'No contractors on this route yet.' : 'Select a route first.'}</p>
+                  ) : (
+                    list.map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 text-sm cursor-pointer py-1">
+                        <input
+                          type="checkbox"
+                          checked={sel.has(String(c.id))}
+                          onChange={() => {
+                            setPilotForm((f) => {
+                              const id = String(c.id);
+                              const has = f.contractor_ids.map(String).includes(id);
+                              return {
+                                ...f,
+                                contractor_ids: has ? f.contractor_ids.filter((x) => String(x) !== id) : [...f.contractor_ids, c.id],
+                              };
+                            });
+                          }}
+                          className="rounded border-surface-300"
+                        />
+                        {c.name || 'Unnamed'}
+                      </label>
+                    ))
+                  );
+                })()}
+              </div>
+            </div>
+            <div className="space-y-3 rounded-lg border border-surface-200 bg-surface-50/50 p-4">
+              <p className="text-xs font-medium text-surface-600">To — add from system users or enter an email</p>
+              <div className="flex flex-wrap gap-2 items-center">
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (!id) return;
+                    const u = tenantUsers.find((x) => x.id === id);
+                    if (u) addPilotRecipientFromUser(u);
+                    e.target.value = '';
+                  }}
+                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[200px] bg-white"
+                >
+                  <option value="">Add recipient from users…</option>
+                  {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
+                    <option key={u.id} value={u.id}>{u.full_name || u.email} ({u.email})</option>
+                  ))}
+                </select>
+                <input
+                  type="email"
+                  placeholder="Or type email"
+                  value={pilotCustomEmail}
+                  onChange={(e) => setPilotCustomEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addPilotRecipientByEmail())}
+                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-52 bg-white"
+                />
+                <button type="button" onClick={addPilotRecipientByEmail} className="px-3 py-2 text-sm rounded-lg border border-surface-300 bg-white hover:bg-surface-50">Add</button>
+              </div>
+              {pilotRecipients.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pilotRecipients.map((r) => (
+                    <span key={r.email} className="inline-flex items-center gap-1 rounded-full bg-white border border-surface-200 px-3 py-1 text-sm">
+                      {r.label || r.email}
+                      {r.label && <span className="text-surface-500 text-xs">({r.email})</span>}
+                      <button type="button" onClick={() => removePilotRecipient(r.email)} className="text-surface-500 hover:text-red-600 ml-0.5">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs font-medium text-surface-600 pt-2">CC (optional)</p>
+              <div className="flex flex-wrap gap-2 items-center">
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (!id) return;
+                    const u = tenantUsers.find((x) => x.id === id);
+                    if (u) addPilotCcFromUser(u);
+                    e.target.value = '';
+                  }}
+                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[200px] bg-white"
+                >
+                  <option value="">Add CC from users…</option>
+                  {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
+                    <option key={u.id} value={u.id}>{u.full_name || u.email} ({u.email})</option>
+                  ))}
+                </select>
+                <input
+                  type="email"
+                  placeholder="Or CC email"
+                  value={pilotCustomCcEmail}
+                  onChange={(e) => setPilotCustomCcEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addPilotCcByEmail())}
+                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48 bg-white"
+                />
+                <button type="button" onClick={addPilotCcByEmail} className="px-3 py-2 text-sm rounded-lg border border-surface-300 bg-white hover:bg-surface-50">Add CC</button>
+              </div>
+              {pilotCcRecipients.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pilotCcRecipients.map((r) => (
+                    <span key={r.email} className="inline-flex items-center gap-1 rounded-full bg-white border border-surface-200 px-3 py-1 text-sm text-surface-600">
+                      CC: {r.label || r.email}
+                      <button type="button" onClick={() => removePilotCcRecipient(r.email)} className="text-surface-500 hover:text-red-600 ml-0.5">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={pilotSaving || pilotMigration}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                onClick={() => {
+                  setPilotError('');
+                  setPilotSuccess('');
+                  if (!pilotForm.route_id) {
+                    setPilotError('Select a route.');
+                    return;
+                  }
+                  if (!pilotForm.contractor_ids.length) {
+                    setPilotError('Select at least one company.');
+                    return;
+                  }
+                  const to = [...new Set(pilotRecipients.map((r) => r.email))];
+                  if (!to.length) {
+                    setPilotError('Add at least one recipient (from users or enter an email).');
+                    return;
+                  }
+                  const ccList = pilotCcRecipients.length > 0 ? pilotCcRecipients.map((r) => r.email) : undefined;
+                  setPilotSaving(true);
+                  contractorApi.pilotDistribution
+                    .create({
+                      name: pilotForm.name.trim() || undefined,
+                      route_id: pilotForm.route_id,
+                      contractor_ids: pilotForm.contractor_ids,
+                      recipient_emails: to.join(','),
+                      cc_emails: ccList && ccList.length ? ccList.join(',') : undefined,
+                      list_type: pilotForm.list_type,
+                      attach_format: pilotForm.attach_format,
+                      fleet_columns: pilotFleetCols,
+                      driver_columns: pilotDriverCols,
+                      frequency: pilotForm.frequency,
+                      time_hhmm: pilotForm.time_hhmm,
+                      weekday: pilotForm.frequency === 'weekly' ? pilotForm.weekday : undefined,
+                    })
+                    .then(() => {
+                      setPilotSuccess('Pilot schedule saved. It will run on the next matching time.');
+                      setPilotForm((f) => ({
+                        ...f,
+                        name: '',
+                        contractor_ids: [],
+                      }));
+                      setPilotRecipients([]);
+                      setPilotCcRecipients([]);
+                      return contractorApi.pilotDistribution.list();
+                    })
+                    .then((r) => setPilots(r.pilots || []))
+                    .catch((e) => setPilotError(e?.message || 'Failed to save'))
+                    .finally(() => setPilotSaving(false));
+                }}
+              >
+                {pilotSaving ? 'Saving…' : 'Save pilot schedule'}
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-surface-100 font-medium text-surface-800">Schedules</div>
+            {pilotLoading ? (
+              <p className="p-4 text-sm text-surface-500">Loading…</p>
+            ) : pilots.length === 0 ? (
+              <p className="p-4 text-sm text-surface-500">No pilot schedules yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-surface-50 border-b border-surface-200">
+                    <tr>
+                      <th className="text-left p-3 font-medium text-surface-700">Label / route</th>
+                      <th className="text-left p-3 font-medium text-surface-700">Schedule</th>
+                      <th className="text-left p-3 font-medium text-surface-700">Last run</th>
+                      <th className="text-left p-3 font-medium text-surface-700">Status</th>
+                      <th className="p-3 w-40" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pilots.map((p) => {
+                      const wd = ['—', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                      const sched =
+                        p.frequency === 'hourly'
+                          ? `Hourly at :${String(p.time_hhmm || '00:00').slice(-2)}`
+                          : p.frequency === 'daily'
+                            ? `Daily ${p.time_hhmm || ''}`
+                            : `Weekly ${wd[p.weekday] || '?'} ${p.time_hhmm || ''}`;
+                      const active = !!p.is_active;
+                      const refreshPilots = () => contractorApi.pilotDistribution.list().then((r) => setPilots(r.pilots || []));
+                      return (
+                        <tr key={p.id} className="border-b border-surface-100">
+                          <td className="p-3">
+                            <div className="font-medium text-surface-900">{p.name || '—'}</div>
+                            <div className="text-surface-600 text-xs">{p.route_name || p.route_id}</div>
+                          </td>
+                          <td className="p-3 text-surface-700">{sched}</td>
+                          <td className="p-3 text-surface-600 text-xs max-w-[200px]">
+                            {p.last_run_at ? formatDateTime(p.last_run_at) : '—'}
+                            {p.last_run_status && (
+                              <div className={p.last_run_status === 'ok' ? 'text-emerald-700' : 'text-amber-800'}>
+                                {p.last_run_status}: {(p.last_run_detail || '').slice(0, 80)}
+                                {(p.last_run_detail || '').length > 80 ? '…' : ''}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${active ? 'bg-emerald-100 text-emerald-800' : 'bg-surface-200 text-surface-600'}`}>
+                              {active ? 'Active' : 'Off'}
+                            </span>
+                          </td>
+                          <td className="p-3">
+                            <div className="flex flex-wrap gap-2 items-center">
+                              {active ? (
+                                <button
+                                  type="button"
+                                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-400 text-surface-800 bg-surface-100 hover:bg-surface-200"
+                                  onClick={() => {
+                                    contractorApi.pilotDistribution.update(p.id, { is_active: false }).then(refreshPilots).catch(() => {});
+                                  }}
+                                >
+                                  Switch off
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-brand-500 text-brand-700 bg-brand-50 hover:bg-brand-100"
+                                  onClick={() => {
+                                    contractorApi.pilotDistribution.update(p.id, { is_active: true }).then(refreshPilots).catch(() => {});
+                                  }}
+                                >
+                                  Turn on
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="text-red-600 text-xs hover:underline"
+                                onClick={() => {
+                                  if (!window.confirm('Delete this pilot schedule?')) return;
+                                  contractorApi.pilotDistribution
+                                    .delete(p.id)
+                                    .then(refreshPilots)
+                                    .catch((e) => setPilotError(e?.message || 'Delete failed'));
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          </>
+          )}
+
+          {pilotInnerTab === 'history' && (
+            <div className="space-y-4">
+              {pilotHistoryMigration && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+                  Run <code className="bg-amber-100 px-1 rounded">npm run db:access-distribution-pilot</code> so pilot sends appear in this history.
+                </div>
+              )}
+              <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+                <div className="px-4 py-3 border-b border-surface-100 font-medium text-surface-800">Emails sent by pilot schedules</div>
+                {pilotHistoryLoading ? (
+                  <p className="p-4 text-sm text-surface-500">Loading…</p>
+                ) : pilotHistory.length === 0 ? (
+                  <p className="p-4 text-sm text-surface-500">No pilot publication history yet. History is recorded after each automated send (requires the migration above).</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-surface-50 border-b border-surface-200">
+                        <tr>
+                          <th className="text-left p-3 font-medium text-surface-700">When</th>
+                          <th className="text-left p-3 font-medium text-surface-700">Schedule</th>
+                          <th className="text-left p-3 font-medium text-surface-700">Recipient</th>
+                          <th className="text-left p-3 font-medium text-surface-700">Route</th>
+                          <th className="text-left p-3 font-medium text-surface-700">List</th>
+                          <th className="text-left p-3 font-medium text-surface-700">Format</th>
+                          <th className="text-left p-3 font-medium text-surface-700">Sent by</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pilotHistory.map((h) => {
+                          const rid = h.route_ids ? String(h.route_ids).split(',')[0] : '';
+                          const routeLabel = routes.find((r) => String(r.id) === rid)?.name || h.route_ids || '—';
+                          return (
+                            <tr key={h.id} className="border-b border-surface-100">
+                              <td className="p-3 text-surface-600 whitespace-nowrap">{formatDateTime(h.created_at)}</td>
+                              <td className="p-3 text-surface-800">{h.pilot_schedule_name || '—'}</td>
+                              <td className="p-3 text-surface-700">{h.recipient_email || '—'}</td>
+                              <td className="p-3 text-surface-600 text-xs max-w-[140px] truncate" title={routeLabel}>{routeLabel}</td>
+                              <td className="p-3 text-surface-600">{h.list_type || '—'}</td>
+                              <td className="p-3 text-surface-600">{h.format || '—'}</td>
+                              <td className="p-3 text-surface-600 text-xs">{h.created_by_name || '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

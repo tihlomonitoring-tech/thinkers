@@ -94,6 +94,22 @@ function IconRecruitment({ className }) {
   );
 }
 
+function IconLetters({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
+
+function IconAccounting({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+    </svg>
+  );
+}
+
 function IconChevronLeft({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -169,6 +185,13 @@ const navSections = [
     label: 'HR',
     items: [
       { to: '/recruitment', label: 'Recruitment', icon: IconRecruitment, shortcut: '⌘9', pageId: 'recruitment' },
+      { to: '/letters', label: 'Letters', icon: IconLetters, shortcut: '⌘0', pageId: 'letters' },
+    ],
+  },
+  {
+    label: 'Accounting',
+    items: [
+      { to: '/accounting-management', label: 'Accounting management', icon: IconAccounting, shortcut: '⌘A', pageId: 'accounting_management' },
     ],
   },
 ];
@@ -194,7 +217,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
   useEffect(() => {
     function onKeyDown(e) {
       if (e.metaKey || e.ctrlKey) {
-        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '8': '/transport-operations', '9': '/recruitment', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
+        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '8': '/transport-operations', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
         const path = map[e.key];
         const pageId = path && PATH_PAGE_IDS[path];
         if (path && pageId && canAccessPage(user, pageId)) {

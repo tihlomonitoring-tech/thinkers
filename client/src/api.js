@@ -260,6 +260,13 @@ export const contractor = {
       return `${API}/contractor/distribution-history/export${q ? `?${q}` : ''}`;
     },
   },
+  pilotDistribution: {
+    list: () => request('/contractor/pilot-distribution'),
+    history: () => request('/contractor/pilot-distribution/history'),
+    create: (body) => request('/contractor/pilot-distribution', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => request(`/contractor/pilot-distribution/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => request(`/contractor/pilot-distribution/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
   enrollment: {
     approvedTrucks: () => request('/contractor/enrollment/approved-trucks'),
     approvedDrivers: () => request('/contractor/enrollment/approved-drivers'),
@@ -796,6 +803,103 @@ export const transportOperations = {
       if (params.shift) q.set('shift', params.shift);
       const API = (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
       return `${API}/transport-operations/presentations/pptx${q.toString() ? `?${q.toString()}` : ''}`;
+    },
+  },
+};
+
+const acc = (path, options = {}) => request(`/accounting${path}`, options);
+
+export const accounting = {
+  companySettings: {
+    get: () => acc('/company-settings'),
+    update: (body) => acc('/company-settings', { method: 'PATCH', body: JSON.stringify(body) }),
+    uploadLogo: (file) => {
+      const formData = new FormData();
+      formData.append('logo', file);
+      return fetch(`${API}/accounting/company-settings/logo`, { method: 'POST', body: formData, credentials: 'include' })
+        .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+    logoUrl: () => `${API}/accounting/company-settings/logo`,
+  },
+  library: {
+    list: () => acc('/library'),
+    upload: (file) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return fetch(`${API}/accounting/library`, { method: 'POST', body: formData, credentials: 'include' })
+        .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+    viewUrl: (filename) => `${API}/accounting/library/${encodeURIComponent(filename)}`,
+  },
+  customers: {
+    list: () => acc('/customers'),
+    get: (id) => acc(`/customers/${id}`),
+    create: (body) => acc('/customers', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/customers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/customers/${id}`, { method: 'DELETE' }),
+  },
+  suppliers: {
+    list: () => acc('/suppliers'),
+    get: (id) => acc(`/suppliers/${id}`),
+    create: (body) => acc('/suppliers', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/suppliers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/suppliers/${id}`, { method: 'DELETE' }),
+  },
+  items: {
+    list: () => acc('/items'),
+    get: (id) => acc(`/items/${id}`),
+    create: (body) => acc('/items', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/items/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/items/${id}`, { method: 'DELETE' }),
+  },
+  quotations: {
+    list: () => acc('/quotations'),
+    get: (id) => acc(`/quotations/${id}`),
+    create: (body) => acc('/quotations', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/quotations/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/quotations/${id}`, { method: 'DELETE' }),
+    recipients: () => acc('/quotations/recipients'),
+    pdfUrl: (id) => `${API}/accounting/quotations/${id}/pdf`,
+    sendEmail: (id, body) => acc(`/quotations/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+    createInvoice: (id) => acc(`/quotations/${id}/create-invoice`, { method: 'POST' }),
+  },
+  invoices: {
+    list: () => acc('/invoices'),
+    get: (id) => acc(`/invoices/${id}`),
+    create: (body) => acc('/invoices', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/invoices/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    markPaid: (id, body) => acc(`/invoices/${id}/mark-paid`, { method: 'POST', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/invoices/${id}`, { method: 'DELETE' }),
+    recipients: () => acc('/invoices/recipients'),
+    pdfUrl: (id) => `${API}/accounting/invoices/${id}/pdf`,
+    sendEmail: (id, body) => acc(`/invoices/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+  },
+  purchaseOrders: {
+    list: () => acc('/purchase-orders'),
+    get: (id) => acc(`/purchase-orders/${id}`),
+    create: (body) => acc('/purchase-orders', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/purchase-orders/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/purchase-orders/${id}`, { method: 'DELETE' }),
+    recipients: () => acc('/purchase-orders/recipients'),
+    pdfUrl: (id) => `${API}/accounting/purchase-orders/${id}/pdf`,
+    sendEmail: (id, body) => acc(`/purchase-orders/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+  },
+  statements: {
+    list: () => acc('/statements'),
+    get: (id) => acc(`/statements/${id}`),
+    create: (body) => acc('/statements', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/statements/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/statements/${id}`, { method: 'DELETE' }),
+    recipients: () => acc('/statements/recipients'),
+    pdfUrl: (id) => `${API}/accounting/statements/${id}/pdf`,
+    excelUrl: (id) => `${API}/accounting/statements/${id}/excel`,
+    sendEmail: (id, body) => acc(`/statements/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+    importInvoices: (id, body) => acc(`/statements/${id}/import-invoices`, { method: 'POST', body: JSON.stringify(body) }),
+    previewCustomerInvoices: (params) => {
+      const q = new URLSearchParams(
+        Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== ''))
+      ).toString();
+      return acc(`/statements/preview/customer-invoices?${q}`);
     },
   },
 };

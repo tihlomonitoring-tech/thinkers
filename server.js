@@ -20,8 +20,10 @@ import progressReportsRoutes from './src/routes/progressReports.js';
 import actionPlansRoutes from './src/routes/actionPlans.js';
 import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
 import recruitmentRoutes from './src/routes/recruitment.js';
+import accountingRoutes from './src/routes/accounting.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
+import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -54,6 +56,7 @@ app.use('/api/progress-reports', progressReportsRoutes);
 app.use('/api/action-plans', actionPlansRoutes);
 app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
+app.use('/api/accounting', accountingRoutes);
 
 // Serve frontend (Vite build) when both run on same host (e.g. Render, Railway)
 const clientDist = path.join(__dirname, 'client', 'dist');
@@ -87,6 +90,11 @@ const server = app.listen(PORT, () => {
   setInterval(() => {
     runAutoReinstateSuspensions().catch((e) => console.error('[autoReinstate]', e?.message || e));
   }, AUTO_REINSTATE_MS);
+  // Pilot list distribution (Access Management schedules) — check every minute
+  const PILOT_DIST_MS = 60 * 1000;
+  setInterval(() => {
+    runPilotListDistributions().catch((e) => console.error('[pilot-distribution]', e?.message || e));
+  }, PILOT_DIST_MS);
 });
 
 server.on('error', (err) => {
