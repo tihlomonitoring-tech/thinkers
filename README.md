@@ -87,6 +87,7 @@ AWS migration implementation artifacts are now available in this repository:
 - Deploy helpers:
   - `scripts/aws/build-and-push-api.sh`
   - `scripts/aws/sync-frontend-to-s3.sh`
+- **CI:** `.github/workflows/deploy-aws.yml` — on push to `main`, builds `Dockerfile` and pushes to **Amazon ECR** (`thinkers-api` in `af-south-1` by default). Add GitHub secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (IAM with ECR push). Azure App Service workflow was removed.
 
 Start with:
 

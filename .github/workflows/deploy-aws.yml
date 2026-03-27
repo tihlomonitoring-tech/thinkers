@@ -1,0 +1,57 @@
+# Build API Docker image and push to Amazon ECR.
+# Create the ECR repository first (same name as ECR_REPOSITORY below, or change env).
+#
+# GitHub → Settings → Secrets and variables → Actions → Repository secrets:
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#   (IAM user or role with ecr:GetAuthorizationToken, ecr:BatchCheckLayerAvailability,
+#    ecr:PutImage, ecr:InitiateLayerUpload, ecr:UploadLayerPart, ecr:CompleteLayerUpload)
+#
+# Optional: use OIDC instead of long-lived keys — replace the "Configure AWS credentials"
+# step with aws-actions/configure-aws-credentials@v4 and role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+# after setting up IAM OIDC trust for GitHub in AWS.
+
+name: Deploy to AWS (ECR)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: af-south-1
+  ECR_REPOSITORY: thinkers-api
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REPO="${{ env.ECR_REPOSITORY }}"
+          docker build -t "$REGISTRY/$REPO:$IMAGE_TAG" -t "$REGISTRY/$REPO:latest" .
+          docker push "$REGISTRY/$REPO:$IMAGE_TAG"
+          docker push "$REGISTRY/$REPO:latest"
+          echo "Pushed $REGISTRY/$REPO:$IMAGE_TAG and :latest"
