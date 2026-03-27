@@ -4,20 +4,36 @@ import 'dotenv/config';
 const firstNonEmpty = (...values) => values.find((v) => typeof v === 'string' && v.trim().length > 0);
 
 const getConfig = () => {
-  // Prefer AWS-specific vars for RDS deployments, fallback to existing Azure vars.
-  const server = firstNonEmpty(process.env.AWS_SQL_SERVER, process.env.AZURE_SQL_SERVER);
-  const database = firstNonEmpty(process.env.AWS_SQL_DATABASE, process.env.AZURE_SQL_DATABASE);
-  const user = firstNonEmpty(process.env.AWS_SQL_USER, process.env.AZURE_SQL_USER);
-  const password = firstNonEmpty(process.env.AWS_SQL_PASSWORD, process.env.AZURE_SQL_PASSWORD);
-  const portRaw = firstNonEmpty(process.env.AWS_SQL_PORT, process.env.AZURE_SQL_PORT, '1433');
+  // SQLSERVER_* = preferred on AWS (many hosts forbid env vars prefixed AWS_).
+  // Legacy: AWS_SQL_* then AZURE_SQL_*.
+  const server = firstNonEmpty(
+    process.env.SQLSERVER_HOST,
+    process.env.AWS_SQL_SERVER,
+    process.env.AZURE_SQL_SERVER
+  );
+  const database = firstNonEmpty(
+    process.env.SQLSERVER_DATABASE,
+    process.env.AWS_SQL_DATABASE,
+    process.env.AZURE_SQL_DATABASE
+  );
+  const user = firstNonEmpty(process.env.SQLSERVER_USER, process.env.AWS_SQL_USER, process.env.AZURE_SQL_USER);
+  const password = firstNonEmpty(
+    process.env.SQLSERVER_PASSWORD,
+    process.env.AWS_SQL_PASSWORD,
+    process.env.AZURE_SQL_PASSWORD
+  );
+  const portRaw = firstNonEmpty(process.env.SQLSERVER_PORT, process.env.AWS_SQL_PORT, process.env.AZURE_SQL_PORT, '1433');
   const connectionString = firstNonEmpty(
+    process.env.SQLSERVER_CONNECTION_STRING,
     process.env.AWS_SQL_CONNECTION_STRING,
     process.env.AZURE_SQL_CONNECTION_STRING
   );
   const haveAllVars = server && database && user && password;
 
-  // RDS + Node often needs this without NODE_EXTRA_CA_CERTS (TLS chain verification).
-  const trustCertEnv = process.env.AWS_SQL_TRUST_SERVER_CERTIFICATE;
+  const trustCertEnv = firstNonEmpty(
+    process.env.SQLSERVER_TRUST_SERVER_CERTIFICATE,
+    process.env.AWS_SQL_TRUST_SERVER_CERTIFICATE
+  );
   const trustServerCertificate =
     trustCertEnv === 'true' ||
     trustCertEnv === '1' ||
@@ -46,7 +62,7 @@ const getConfig = () => {
     return connectionString;
   }
   throw new Error(
-    'Set AWS_SQL_SERVER/AWS_SQL_DATABASE/AWS_SQL_USER/AWS_SQL_PASSWORD (or AZURE_SQL_* equivalents), or use AWS_SQL_CONNECTION_STRING/AZURE_SQL_CONNECTION_STRING.'
+    'Set SQLSERVER_HOST/SQLSERVER_DATABASE/SQLSERVER_USER/SQLSERVER_PASSWORD (or legacy AWS_SQL_* / AZURE_SQL_*), or SQLSERVER_CONNECTION_STRING.'
   );
 };
 

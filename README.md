@@ -77,6 +77,8 @@ Planned follow-ups (telematics jobs, maps, secret encryption, SA provider connec
 
 ## AWS migration assets
 
+**Database env vars on AWS:** use `SQLSERVER_HOST`, `SQLSERVER_DATABASE`, etc. — not `AWS_SQL_*`, because many AWS services reject customer variables whose names start with `AWS_`.
+
 AWS migration implementation artifacts are now available in this repository:
 
 - Architecture and migration docs in `docs/aws-*.md`

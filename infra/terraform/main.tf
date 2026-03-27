@@ -218,11 +218,12 @@ resource "aws_secretsmanager_secret" "app_env" {
 resource "aws_secretsmanager_secret_version" "app_env" {
   secret_id = aws_secretsmanager_secret.app_env.id
   secret_string = jsonencode({
-    AWS_SQL_SERVER             = aws_db_instance.sqlserver.address
-    AWS_SQL_DATABASE           = var.app_sql_database_name
-    AWS_SQL_USER               = var.db_master_username
-    AWS_SQL_PASSWORD           = var.db_master_password
-    AWS_SQL_PORT               = "1433"
+    # Use SQLSERVER_* not AWS_* — many AWS services forbid customer env vars starting with AWS_
+    SQLSERVER_HOST             = aws_db_instance.sqlserver.address
+    SQLSERVER_DATABASE         = var.app_sql_database_name
+    SQLSERVER_USER             = var.db_master_username
+    SQLSERVER_PASSWORD         = var.db_master_password
+    SQLSERVER_PORT             = "1433"
     SESSION_SECRET             = var.session_secret
     FRONTEND_ORIGIN            = var.frontend_origin
     EMAIL_USER                 = var.email_user

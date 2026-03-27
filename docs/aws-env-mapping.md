@@ -1,25 +1,25 @@
 # Environment Variable Mapping (Azure -> AWS)
 
-Use this mapping during deployment. Azure keys stay supported for rollback parity; AWS keys are preferred for AWS runtime.
+Use this mapping during deployment. Azure keys stay supported for rollback parity. On **AWS-hosted runtimes** (App Runner, Amplify hosting env, Lambda, etc.), **do not** use environment variable names starting with `AWS_` — that prefix is **reserved** by the platform. Use **`SQLSERVER_*`** instead.
 
-| Current key | AWS runtime key | Notes |
+| Azure / legacy | Preferred on AWS | Notes |
 |---|---|---|
-| `AZURE_SQL_SERVER` | `AWS_SQL_SERVER` | RDS endpoint hostname |
-| `AZURE_SQL_DATABASE` | `AWS_SQL_DATABASE` | Database name on RDS SQL Server |
-| `AZURE_SQL_USER` | `AWS_SQL_USER` | SQL login |
-| `AZURE_SQL_PASSWORD` | `AWS_SQL_PASSWORD` | SQL password |
-| `AZURE_SQL_PORT` | `AWS_SQL_PORT` | Default `1433` |
-| `AZURE_SQL_CONNECTION_STRING` | `AWS_SQL_CONNECTION_STRING` | Optional alternative to discrete vars |
-| `SESSION_SECRET` | `SESSION_SECRET` | Keep same key name |
+| `AZURE_SQL_SERVER` | `SQLSERVER_HOST` | RDS endpoint hostname |
+| `AZURE_SQL_DATABASE` | `SQLSERVER_DATABASE` | Database name on RDS SQL Server |
+| `AZURE_SQL_USER` | `SQLSERVER_USER` | SQL login |
+| `AZURE_SQL_PASSWORD` | `SQLSERVER_PASSWORD` | SQL password |
+| `AZURE_SQL_PORT` | `SQLSERVER_PORT` | Default `1433` |
+| `AZURE_SQL_CONNECTION_STRING` | `SQLSERVER_CONNECTION_STRING` | Optional alternative to discrete vars |
+
+**Deprecated (still read by the app):** `AWS_SQL_*` — use only for local `.env` if needed; **not** in AWS console environment variables.
+
+| Other | Same name | Notes |
+|---|---|---|
+| `SESSION_SECRET` | `SESSION_SECRET` | |
 | `FRONTEND_ORIGIN` | `FRONTEND_ORIGIN` | CloudFront/app domain |
 | `APP_URL` | `APP_URL` | Public URL for links |
-| `EMAIL_USER` | `EMAIL_USER` | SMTP user |
-| `EMAIL_PASS` | `EMAIL_PASS` | SMTP password/app password |
-| `EMAIL_FROM_NAME` | `EMAIL_FROM_NAME` | Sender display name |
-| `EMAIL_HOST` | `EMAIL_HOST` | Optional SMTP host |
-| `EMAIL_PORT` | `EMAIL_PORT` | Optional SMTP port |
-| `EMAIL_SECURE` | `EMAIL_SECURE` | Optional SMTP TLS flag |
+| `EMAIL_*` | `EMAIL_*` | SMTP (not `AWS_*` reserved) |
 
 ## Secret Layout Recommendation
 
-Store one JSON secret in AWS Secrets Manager (example key: `thinkers/<env>/app-env`) containing all runtime keys consumed by the API container.
+Store one JSON secret in AWS Secrets Manager (example key: `thinkers/<env>/app-env`) with keys such as `SQLSERVER_HOST`, `SQLSERVER_DATABASE`, `SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_PORT`, matching what [`infra/terraform/main.tf`](../infra/terraform/main.tf) outputs for the app container.

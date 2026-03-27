@@ -55,10 +55,11 @@ Already in use:
 - `FRONTEND_ORIGIN`, `APP_URL`
 - `EMAIL_*` variables for SMTP
 
-AWS migration enhancement added in `src/db.js`:
+RDS / SQL Server connection in `src/db.js` (do **not** use `AWS_*` env names in AWS-hosted consoles — reserved):
 
-- `AWS_SQL_SERVER`, `AWS_SQL_DATABASE`, `AWS_SQL_USER`, `AWS_SQL_PASSWORD`, `AWS_SQL_PORT`
-- `AWS_SQL_CONNECTION_STRING`
+- `SQLSERVER_HOST`, `SQLSERVER_DATABASE`, `SQLSERVER_USER`, `SQLSERVER_PASSWORD`, `SQLSERVER_PORT`
+- `SQLSERVER_CONNECTION_STRING`, `SQLSERVER_TRUST_SERVER_CERTIFICATE`
+- Legacy: `AWS_SQL_*`, `AZURE_SQL_*`
 
 ## Migration Guardrails
 

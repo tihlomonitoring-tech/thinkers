@@ -2,7 +2,7 @@
 /**
  * Create application database on SQL Server (e.g. RDS). Connects to `master`, then CREATE DATABASE.
  * Usage: APP_DB_NAME=thinkers node scripts/create-app-database.js
- * Requires same env as src/db.js (AWS_SQL_* or AZURE_SQL_*).
+ * Requires same env as src/db.js (SQLSERVER_* or legacy AWS_SQL_* / AZURE_SQL_*).
  */
 import 'dotenv/config';
 import sql from 'mssql';
@@ -15,16 +15,19 @@ if (!/^[a-zA-Z0-9_]+$/.test(dbName)) {
   process.exit(1);
 }
 
-const server = firstNonEmpty(process.env.AWS_SQL_SERVER, process.env.AZURE_SQL_SERVER);
-const user = firstNonEmpty(process.env.AWS_SQL_USER, process.env.AZURE_SQL_USER);
-const password = firstNonEmpty(process.env.AWS_SQL_PASSWORD, process.env.AZURE_SQL_PASSWORD);
-const port = parseInt(firstNonEmpty(process.env.AWS_SQL_PORT, process.env.AZURE_SQL_PORT, '1433'), 10);
+const server = firstNonEmpty(process.env.SQLSERVER_HOST, process.env.AWS_SQL_SERVER, process.env.AZURE_SQL_SERVER);
+const user = firstNonEmpty(process.env.SQLSERVER_USER, process.env.AWS_SQL_USER, process.env.AZURE_SQL_USER);
+const password = firstNonEmpty(process.env.SQLSERVER_PASSWORD, process.env.AWS_SQL_PASSWORD, process.env.AZURE_SQL_PASSWORD);
+const port = parseInt(firstNonEmpty(process.env.SQLSERVER_PORT, process.env.AWS_SQL_PORT, process.env.AZURE_SQL_PORT, '1433'), 10);
+const trustCertEnv = firstNonEmpty(
+  process.env.SQLSERVER_TRUST_SERVER_CERTIFICATE,
+  process.env.AWS_SQL_TRUST_SERVER_CERTIFICATE
+);
 const trustCert =
-  process.env.AWS_SQL_TRUST_SERVER_CERTIFICATE === 'true' ||
-  process.env.AWS_SQL_TRUST_SERVER_CERTIFICATE === '1';
+  trustCertEnv === 'true' || trustCertEnv === '1' || trustCertEnv === 'yes';
 
 if (!server || !user || !password) {
-  console.error('Set AWS_SQL_SERVER, AWS_SQL_USER, AWS_SQL_PASSWORD (or AZURE_* equivalents).');
+  console.error('Set SQLSERVER_HOST, SQLSERVER_USER, SQLSERVER_PASSWORD (or legacy AWS_SQL_* / AZURE_*).');
   process.exit(1);
 }
 
@@ -56,4 +59,4 @@ try {
   await pool.close();
 }
 
-console.log(`Set AWS_SQL_DATABASE=${dbName} in .env and run migrations.`);
+console.log(`Set SQLSERVER_DATABASE=${dbName} in .env and run migrations.`);
