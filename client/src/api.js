@@ -902,4 +902,105 @@ export const accounting = {
       return acc(`/statements/preview/customer-invoices?${q}`);
     },
   },
+  documentation: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(
+        Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== ''))
+      ).toString();
+      return acc(`/documentation${q ? `?${q}` : ''}`);
+    },
+    recipients: () => acc('/documentation/recipients'),
+    get: (id) => acc(`/documentation/${id}`),
+    create: (body) => acc('/documentation', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/documentation/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => acc(`/documentation/${id}`, { method: 'DELETE' }),
+    pdfUrl: (id) => `${API}/accounting/documentation/${id}/pdf`,
+    pdfDownloadUrl: (id) => `${API}/accounting/documentation/${id}/pdf-download`,
+    wordTemplateDownloadUrl: (id) => `${API}/accounting/documentation/${id}/word-template-download`,
+    sendEmail: (id, body) => acc(`/documentation/${id}/send-email`, { method: 'POST', body: JSON.stringify(body) }),
+    versions: (id) => acc(`/documentation/${id}/versions`),
+    getVersion: (id, versionId) => acc(`/documentation/${id}/versions/${versionId}`),
+    restoreVersion: (id, versionId) => acc(`/documentation/${id}/restore-version/${versionId}`, { method: 'POST' }),
+    uploadFigure: (file) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return fetch(`${API}/accounting/documentation/figures/upload`, { method: 'POST', body: formData, credentials: 'include' })
+        .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+  },
+};
+
+function trk(path, options = {}) {
+  return request(`/tracking${path}`, options);
+}
+
+/** Tracking & integration — fleet providers, weighbridges, live trips, alarms. */
+export const tracking = {
+  dashboard: () => trk('/dashboard'),
+  /** Moves MOCK-* trips only; use with Live mode after db:tracking-mock */
+  demo: {
+    tick: () => trk('/demo/tick', { method: 'POST' }),
+  },
+  /** Fleet trucks from Contractor page (same tenant). */
+  contractorTrucks: {
+    list: () => trk('/contractor-trucks'),
+  },
+  providers: {
+    list: () => trk('/providers'),
+    create: (body) => trk('/providers', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => trk(`/providers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => trk(`/providers/${id}`, { method: 'DELETE' }),
+  },
+  vehicles: {
+    list: () => trk('/vehicles'),
+    create: (body) => trk('/vehicles', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => trk(`/vehicles/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => trk(`/vehicles/${id}`, { method: 'DELETE' }),
+  },
+  weighbridges: {
+    list: () => trk('/weighbridges'),
+    create: (body) => trk('/weighbridges', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => trk(`/weighbridges/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => trk(`/weighbridges/${id}`, { method: 'DELETE' }),
+  },
+  routes: {
+    list: () => trk('/routes'),
+    create: (body) => trk('/routes', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => trk(`/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => trk(`/routes/${id}`, { method: 'DELETE' }),
+  },
+  geofences: {
+    list: () => trk('/geofences'),
+    create: (body) => trk('/geofences', { method: 'POST', body: JSON.stringify(body) }),
+    delete: (id) => trk(`/geofences/${id}`, { method: 'DELETE' }),
+  },
+  settings: {
+    get: () => trk('/settings'),
+    update: (body) => trk('/settings', { method: 'PATCH', body: JSON.stringify(body) }),
+  },
+  trips: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return trk(`/trips${q ? `?${q}` : ''}`);
+    },
+    create: (body) => trk('/trips', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => trk(`/trips/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    activateDelivery: (id) => trk(`/trips/${id}/activate-delivery`, { method: 'POST' }),
+    telemetry: (id, body) => trk(`/trips/${id}/telemetry`, { method: 'POST', body: JSON.stringify(body) }),
+    complete: (id, body) => trk(`/trips/${id}/complete`, { method: 'POST', body: JSON.stringify(body) }),
+    deviation: (id, body) => trk(`/trips/${id}/deviation`, { method: 'POST', body: JSON.stringify(body) }),
+  },
+  deliveries: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return trk(`/deliveries${q ? `?${q}` : ''}`);
+    },
+  },
+  alarms: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return trk(`/alarms${q ? `?${q}` : ''}`);
+    },
+    acknowledge: (id) => trk(`/alarms/${id}/ack`, { method: 'PATCH' }),
+  },
 };

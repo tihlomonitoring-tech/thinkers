@@ -1,7 +1,21 @@
 import nodemailer from "nodemailer";
 
+function emailExplicitlyDisabled() {
+    const v = (process.env.EMAIL_ENABLED || '').trim().toLowerCase();
+    return v === 'false' || v === '0' || v === 'no';
+}
+
+function skipSmtpVerify() {
+    const v = (process.env.EMAIL_SKIP_SMTP_VERIFY || '').trim().toLowerCase();
+    return v === 'true' || v === '1' || v === 'yes';
+}
+
 export async function sendEmail({ to, subject, body, html = true, text, cc, attachments }) {
     try {
+        if (emailExplicitlyDisabled()) {
+            console.warn('📧 EmailService: EMAIL_ENABLED is false — skipping send.');
+            return null;
+        }
         console.log('📧 EmailService: Starting email send...', { 
             to: to, 
             subject: subject.substring(0, 50),
@@ -54,33 +68,36 @@ export async function sendEmail({ to, subject, body, html = true, text, cc, atta
         }
         const transporter = nodemailer.createTransport(transportOptions);
 
-        // Verify transporter configuration with timeout
-        console.log('📧 EmailService: Verifying transporter...');
-        try {
-            const verifyPromise = transporter.verify();
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('Transporter verification timeout')), 15000)
-            );
-            await Promise.race([verifyPromise, timeoutPromise]);
-            console.log('✅ EmailService: Transporter verified successfully');
-        } catch (verifyError) {
-            // Log exact server response to diagnose (no passwords)
-            const code = verifyError.responseCode || verifyError.code;
-            const response = verifyError.response || (typeof verifyError.response === 'string' ? verifyError.response : '');
-            console.error('❌ SMTP server response:', { code, response: String(response).slice(0, 500), command: verifyError.command });
-            const msg = (verifyError.message || '').toLowerCase();
-            const fullResponse = String(response).toLowerCase();
-            if (msg.includes('invalid login') || msg.includes('535') || msg.includes('authentication') || fullResponse.includes('535') || fullResponse.includes('5.7.139')) {
-                console.error('❌ SMTP Authentication Error.');
-                if (isOutlook) {
-                    console.error('   • 535 5.7.139 = Tenant policy: enable "Authenticated SMTP" for this mailbox in Microsoft 365 admin (Mailbox → Mail flow settings), or allow in Azure AD Security defaults.');
-                    console.error('   • Wrong password = Use the account password, or an App Password if MFA is on (https://account.microsoft.com/security).');
-                } else {
-                    console.error('   • Gmail: Use an App Password from https://myaccount.google.com/apppasswords');
+        // Optional verify (some hosts accept SEND but reject VERIFY; Office 365 can be flaky)
+        if (skipSmtpVerify()) {
+            console.log('📧 EmailService: Skipping SMTP verify (EMAIL_SKIP_SMTP_VERIFY=true).');
+        } else {
+            console.log('📧 EmailService: Verifying transporter...');
+            try {
+                const verifyPromise = transporter.verify();
+                const timeoutPromise = new Promise((_, reject) =>
+                  setTimeout(() => reject(new Error('Transporter verification timeout')), 15000)
+                );
+                await Promise.race([verifyPromise, timeoutPromise]);
+                console.log('✅ EmailService: Transporter verified successfully');
+            } catch (verifyError) {
+                const code = verifyError.responseCode || verifyError.code;
+                const response = verifyError.response || (typeof verifyError.response === 'string' ? verifyError.response : '');
+                console.error('❌ SMTP server response:', { code, response: String(response).slice(0, 500), command: verifyError.command });
+                const msg = (verifyError.message || '').toLowerCase();
+                const fullResponse = String(response).toLowerCase();
+                if (msg.includes('invalid login') || msg.includes('535') || msg.includes('authentication') || fullResponse.includes('535') || fullResponse.includes('5.7.139')) {
+                    console.error('❌ SMTP Authentication Error.');
+                    if (isOutlook) {
+                        console.error('   • 535 5.7.139 = Tenant policy: enable "Authenticated SMTP" for this mailbox in Microsoft 365 admin (Mailbox → Mail flow settings), or allow in Azure AD Security defaults.');
+                        console.error('   • Wrong password = Use the account password, or an App Password if MFA is on (https://account.microsoft.com/security).');
+                    } else {
+                        console.error('   • Gmail: Use an App Password from https://myaccount.google.com/apppasswords');
+                    }
+                    throw new Error('SMTP authentication failed. Check server response above and EMAIL_USER/EMAIL_PASS (or tenant SMTP policy).');
                 }
-                throw new Error('SMTP authentication failed. Check server response above and EMAIL_USER/EMAIL_PASS (or tenant SMTP policy).');
+                throw verifyError;
             }
-            throw verifyError;
         }
 
         // Process attachments if provided
@@ -164,8 +181,9 @@ export async function sendEmail({ to, subject, body, html = true, text, cc, atta
     }
 }
 
-/** Returns true if EMAIL_USER and EMAIL_PASS are set (for alerts/emails). */
+/** Returns true if outbound email is allowed (credentials set and EMAIL_ENABLED not false). */
 export function isEmailConfigured() {
+    if (emailExplicitlyDisabled()) return false;
     const user = (process.env.EMAIL_USER || '').trim();
     const pass = (process.env.EMAIL_PASS || '').trim();
     return !!user && !!pass;

@@ -76,6 +76,7 @@ export default function Rector() {
   const [suspensions, setSuspensions] = useState([]);
   const [fleetFilterRoute, setFleetFilterRoute] = useState('');
   const [fleetSearch, setFleetSearch] = useState('');
+  const [fleetSubTab, setFleetSubTab] = useState('trucks');
   const [routes, setRoutes] = useState([]);
   const [routeEnrollments, setRouteEnrollments] = useState({}); // routeId -> { trucks: [], drivers: [] }
 
@@ -738,59 +739,82 @@ export default function Rector() {
                   </button>
                 </div>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
-                  <h4 className="px-4 py-3 bg-surface-50 font-medium text-surface-800 border-b">Trucks ({fleetTrucks.length})</h4>
-                  <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-surface-50 sticky top-0">
-                        <tr>
-                          <th className="text-left p-2">Registration</th>
-                          <th className="text-left p-2">Make/Model</th>
-                          <th className="text-left p-2">Fleet No</th>
-                          <th className="text-left p-2">Trailers</th>
-                          <th className="text-left p-2">Capacity</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {fleetTrucks.map((t) => (
-                          <tr key={t.id} className="border-t border-surface-100 hover:bg-surface-50">
-                            <td className="p-2 font-medium">{t.registration || '—'}</td>
-                            <td className="p-2">{t.make_model || '—'}</td>
-                            <td className="p-2">{t.fleet_no || '—'}</td>
-                            <td className="p-2">{(t.trailer_1_reg_no || '') + (t.trailer_2_reg_no ? ` / ${t.trailer_2_reg_no}` : '') || '—'}</td>
-                            <td className="p-2">{t.capacity_tonnes ?? t.capacity_tonnes ?? '—'}</td>
+              <div className="mb-3 inline-flex rounded-lg border border-surface-200 bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setFleetSubTab('trucks')}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                    fleetSubTab === 'trucks' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'
+                  }`}
+                >
+                  Trucks ({fleetTrucks.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFleetSubTab('drivers')}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                    fleetSubTab === 'drivers' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'
+                  }`}
+                >
+                  Drivers ({fleetDrivers.length})
+                </button>
+              </div>
+              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+                {fleetSubTab === 'trucks' ? (
+                  <>
+                    <h4 className="px-4 py-3 bg-surface-50 font-medium text-surface-800 border-b">Trucks ({fleetTrucks.length})</h4>
+                    <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-surface-50 sticky top-0">
+                          <tr>
+                            <th className="text-left p-2">Registration</th>
+                            <th className="text-left p-2">Make/Model</th>
+                            <th className="text-left p-2">Fleet No</th>
+                            <th className="text-left p-2">Trailers</th>
+                            <th className="text-left p-2">Capacity</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-                <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
-                  <h4 className="px-4 py-3 bg-surface-50 font-medium text-surface-800 border-b">Drivers ({fleetDrivers.length})</h4>
-                  <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-surface-50 sticky top-0">
-                        <tr>
-                          <th className="text-left p-2">Name</th>
-                          <th className="text-left p-2">License</th>
-                          <th className="text-left p-2">Phone</th>
-                          <th className="text-left p-2">ID Number</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {fleetDrivers.map((d) => (
-                          <tr key={d.id} className="border-t border-surface-100 hover:bg-surface-50">
-                            <td className="p-2 font-medium">{d.full_name || '—'}</td>
-                            <td className="p-2">{d.license_number || '—'}</td>
-                            <td className="p-2">{d.phone || '—'}</td>
-                            <td className="p-2">{d.id_number || '—'}</td>
+                        </thead>
+                        <tbody>
+                          {fleetTrucks.map((t) => (
+                            <tr key={t.id} className="border-t border-surface-100 hover:bg-surface-50">
+                              <td className="p-2 font-medium">{t.registration || '—'}</td>
+                              <td className="p-2">{t.make_model || '—'}</td>
+                              <td className="p-2">{t.fleet_no || '—'}</td>
+                              <td className="p-2">{(t.trailer_1_reg_no || '') + (t.trailer_2_reg_no ? ` / ${t.trailer_2_reg_no}` : '') || '—'}</td>
+                              <td className="p-2">{t.capacity_tonnes ?? t.capacity_tonnes ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <h4 className="px-4 py-3 bg-surface-50 font-medium text-surface-800 border-b">Drivers ({fleetDrivers.length})</h4>
+                    <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-surface-50 sticky top-0">
+                          <tr>
+                            <th className="text-left p-2">Name</th>
+                            <th className="text-left p-2">License</th>
+                            <th className="text-left p-2">Phone</th>
+                            <th className="text-left p-2">ID Number</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                        </thead>
+                        <tbody>
+                          {fleetDrivers.map((d) => (
+                            <tr key={d.id} className="border-t border-surface-100 hover:bg-surface-50">
+                              <td className="p-2 font-medium">{d.full_name || '—'}</td>
+                              <td className="p-2">{d.license_number || '—'}</td>
+                              <td className="p-2">{d.phone || '—'}</td>
+                              <td className="p-2">{d.id_number || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}

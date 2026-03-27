@@ -3,3 +3,11 @@ node_modules/
 *.log
 .DS_Store
 uploads/
+
+# Build output and local tooling
+client/dist/
+.tools/
+
+# Terraform: local plugins and secrets
+infra/terraform/.terraform/
+infra/terraform/terraform.tfvars

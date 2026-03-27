@@ -68,3 +68,28 @@ npm start      # run DB connection test once
 ```
 
 The app runs a quick connection test on startup (`SELECT 1`). Use `src/db.js` for `getPool()`, `query()`, and `close()` in your code.
+
+## Tracking & integration (roadmap)
+
+Planned follow-ups (telematics jobs, maps, secret encryption, SA provider connectors such as Car Track, FleetCam, Nestar, Tracker, Bitrack, Ctrack, etc.) are described in **`docs/TRACKING-INTEGRATION-ROADMAP.md`**. Apply DB objects with `npm run db:tracking-setup` after pulling changes.
+
+**Tracking demo:** after `db:tracking-setup`, run `npm run db:tracking-mock` to seed three mock trucks; open **Tracking → Fleet movement** for the Leaflet map and optional **Live updates** (MOCK trips only).
+
+## AWS migration assets
+
+AWS migration implementation artifacts are now available in this repository:
+
+- Architecture and migration docs in `docs/aws-*.md`
+- Terraform bootstrap in `infra/terraform`
+- API container build in `Dockerfile`
+- Deploy helpers:
+  - `scripts/aws/build-and-push-api.sh`
+  - `scripts/aws/sync-frontend-to-s3.sh`
+
+Start with:
+
+1. `docs/aws-system-inventory.md`
+2. `docs/aws-target-architecture.md`
+3. `docs/aws-cost-estimates.md`
+4. `docs/aws-db-migration-runbook.md`
+5. `docs/aws-cutover-and-rollback.md`

@@ -5,6 +5,7 @@ import { jsPDF } from 'jspdf';
 
 const STORAGE_KEY = 'thinkers-letters-settings';
 const STORAGE_KEY_LETTERS = 'thinkers-letters-drafts';
+const STORAGE_KEY_WORKING = 'thinkers-letters-working-draft';
 const DEFAULT_LOGO_URL = '/logos/tihlo-logo.png';
 
 function hexToRgb(hex) {
@@ -56,6 +57,14 @@ const ACCENT_COLOURS = [
   { id: 'amber', hex: '#b45309', name: 'Amber' },
 ];
 
+const QUICK_INSERTS = [
+  { id: 'hearing', label: 'Disciplinary hearing notice', text: 'You are hereby requested to attend a disciplinary hearing on [date] at [time] at [venue]. You may be assisted by a representative in line with company policy.' },
+  { id: 'appeal', label: 'Appeal process', text: 'If you wish to appeal this decision, submit your written appeal to HR within [x] working days of receiving this letter.' },
+  { id: 'ack', label: 'Acknowledgement line', text: 'Please acknowledge receipt of this letter by signing and returning a copy.' },
+];
+
+const MERGE_FIELDS = ['[Employee Full Name]', '[ID Number]', '[Position]', '[Department]', '[Manager]', '[Date]', '[Case Reference]'];
+
 const defaultCompany = {
   logoUrl: '',
   companyName: 'Tihlo',
@@ -101,6 +110,9 @@ export default function Letters() {
   const [logoPreview, setLogoPreview] = useState(null);
   const [savedLetters, setSavedLetters] = useState(loadSavedLetters);
   const [editingDraftId, setEditingDraftId] = useState(null);
+  const [draftSearch, setDraftSearch] = useState('');
+  const [previewZoom, setPreviewZoom] = useState(100);
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState('');
   const previewRef = useRef(null);
   const signatureCanvasRef = useRef(null);
   const sigDrawingRef = useRef(false);
@@ -121,6 +133,28 @@ export default function Letters() {
   useEffect(() => {
     saveStored(company);
   }, [company]);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(STORAGE_KEY_WORKING);
+    if (!raw) return;
+    try {
+      const d = JSON.parse(raw);
+      skipLetterTypeTemplateRef.current = true;
+      if (d.letterType) setLetterType(d.letterType);
+      if (d.theme) setTheme(d.theme);
+      if (d.layout) setLayout(d.layout);
+      if (d.accentId) setAccentId(d.accentId);
+      if (d.recipientName != null) setRecipientName(d.recipientName);
+      if (d.recipientAddress != null) setRecipientAddress(d.recipientAddress);
+      if (d.date != null) setDate(d.date);
+      if (d.subject != null) setSubject(d.subject);
+      if (d.body != null) setBody(d.body);
+      if (d.signatoryName != null) setSignatoryName(d.signatoryName);
+      if (d.signatoryTitle != null) setSignatoryTitle(d.signatoryTitle);
+      if (d.signatureDataUrl != null) setSignatureDataUrl(d.signatureDataUrl);
+      if (d.previewZoom != null) setPreviewZoom(d.previewZoom);
+    } catch (_) {}
+  }, []);
 
   useEffect(() => {
     if (!logoFile) {
@@ -144,6 +178,15 @@ export default function Letters() {
 
   const accentHex = ACCENT_COLOURS.find((c) => c.id === accentId)?.hex || ACCENT_COLOURS[0].hex;
   const themeFont = THEMES.find((t) => t.id === theme)?.font || 'DM Sans';
+  const headerAlign = layout === 'logo-center' ? 'center' : layout === 'logo-right' ? 'right' : 'left';
+  const headerFlex = layout === 'logo-center' ? 'justify-center' : layout === 'logo-right' ? 'justify-end' : 'justify-start';
+  const compact = layout === 'compact';
+  const bodyTextClass = theme === 'minimal' ? 'text-surface-800' : (theme === 'classic' || theme === 'professional' ? 'text-justify text-surface-800' : 'text-surface-800');
+  const previewShellClass = theme === 'minimal'
+    ? 'border border-surface-200'
+    : theme === 'professional'
+      ? 'ring-1 ring-surface-100'
+      : 'shadow-lg';
 
   const handleLogoChange = (e) => {
     const file = e.target?.files?.[0];
@@ -248,6 +291,14 @@ export default function Letters() {
     signatureDataUrl,
   }), [letterType, theme, layout, accentId, recipientName, recipientAddress, date, subject, body, signatoryName, signatoryTitle, signatureDataUrl]);
 
+  useEffect(() => {
+    const payload = { ...getCurrentDraft(), previewZoom, autoSavedAt: new Date().toISOString() };
+    try {
+      localStorage.setItem(STORAGE_KEY_WORKING, JSON.stringify(payload));
+      setLastAutoSavedAt(payload.autoSavedAt);
+    } catch (_) {}
+  }, [getCurrentDraft, previewZoom]);
+
   const saveDraft = () => {
     const draft = { ...getCurrentDraft(), id: editingDraftId || `draft-${Date.now()}`, savedAt: new Date().toISOString(), title: subject || recipientName || letterType || 'Untitled' };
     let next = savedLetters.filter((d) => d.id !== draft.id);
@@ -307,9 +358,24 @@ export default function Letters() {
     setSignatoryName(user?.full_name || '');
     setSignatoryTitle('');
     setSignatureDataUrl('');
+    setPreviewZoom(100);
     setEditingDraftId(null);
     clearSignature();
   };
+
+  const insertIntoBody = (text) => {
+    const prefix = body.trim() ? '\n\n' : '';
+    setBody((prev) => `${prev}${prefix}${text}`);
+  };
+
+  const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
+  const readMinutes = Math.max(1, Math.ceil(wordCount / 180));
+  const filteredSavedLetters = savedLetters.filter((d) => {
+    const q = draftSearch.trim().toLowerCase();
+    if (!q) return true;
+    const hay = `${d.title || ''} ${d.subject || ''} ${d.recipientName || ''}`.toLowerCase();
+    return hay.includes(q);
+  });
 
   const exportPdf = async () => {
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
@@ -349,13 +415,14 @@ export default function Letters() {
       doc.setFontSize(fontSize);
       doc.setFont('helvetica', opts.bold ? 'bold' : 'normal');
       const lines = doc.splitTextToSize(text || '', contentW);
-      const x = margin + (opts.indent || 0);
+      const align = opts.align || 'left';
+      const x = align === 'center' ? pageW / 2 : align === 'right' ? pageW - margin : margin + (opts.indent || 0);
       lines.forEach((line) => {
         if (y > pageH - margin) {
           doc.addPage();
           y = margin;
         }
-        doc.text(line, x, y);
+        doc.text(line, x, y, { align });
         y += fontSize * 0.45;
       });
       return y;
@@ -365,7 +432,8 @@ export default function Letters() {
     if (logoDataUrl) {
       try {
         const size = await getLogoSizeForPdf(logoDataUrl, 50, 18);
-        doc.addImage(logoDataUrl, 'PNG', margin, y, size.width, size.height);
+        const lx = headerAlign === 'center' ? (pageW - size.width) / 2 : headerAlign === 'right' ? pageW - margin - size.width : margin;
+        doc.addImage(logoDataUrl, 'PNG', lx, y, size.width, size.height);
         y += size.height + 4;
       } catch (_) {
         y += 2;
@@ -376,15 +444,21 @@ export default function Letters() {
       doc.setFontSize(16);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(accentHex);
-      doc.text(company.companyName, margin, y);
+      doc.text(company.companyName, headerAlign === 'center' ? pageW / 2 : headerAlign === 'right' ? pageW - margin : margin, y, { align: headerAlign });
       y += 8;
+    }
+    if (theme === 'professional') {
+      const [r, g, b] = hexToRgb(accentHex);
+      doc.setDrawColor(r, g, b);
+      doc.setLineWidth(0.5);
+      doc.line(margin, y - 2, margin + Math.min(34, contentW), y - 2);
     }
     if (company.address) {
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(80, 80, 80);
       doc.splitTextToSize(company.address, contentW).forEach((line) => {
-        doc.text(line, margin, y);
+        doc.text(line, headerAlign === 'center' ? pageW / 2 : headerAlign === 'right' ? pageW - margin : margin, y, { align: headerAlign });
         y += 4;
       });
       y += 2;
@@ -392,28 +466,28 @@ export default function Letters() {
     if (company.phone || company.email) {
       const contact = [company.phone, company.email].filter(Boolean).join(' · ');
       doc.setFontSize(9);
-      doc.text(contact, margin, y);
+      doc.text(contact, headerAlign === 'center' ? pageW / 2 : headerAlign === 'right' ? pageW - margin : margin, y, { align: headerAlign });
       y += 6;
     }
     doc.setTextColor(0, 0, 0);
-    y += layout === 'compact' ? 6 : 10;
+    y += compact ? 6 : 10;
 
-    addText(date, 10);
-    y += layout === 'compact' ? 4 : 6;
+    addText(date, 10, { align: 'left' });
+    y += compact ? 4 : 6;
     if (recipientName || recipientAddress) {
-      addText(recipientName, 10);
-      if (recipientAddress) addText(recipientAddress.replace(/\n/g, ' '), 10);
-      y += layout === 'compact' ? 4 : 6;
+      addText(recipientName, 10, { align: 'left' });
+      if (recipientAddress) addText(recipientAddress.replace(/\n/g, ' '), 10, { align: 'left' });
+      y += compact ? 4 : 6;
     }
     if (subject) {
-      addText(`Re: ${subject}`, 11, { bold: true });
-      y += 6;
+      addText(`Re: ${subject}`, theme === 'minimal' ? 11 : 11.5, { bold: true, align: 'left' });
+      y += compact ? 4 : 6;
     }
-    y += 4;
-    addText(body, 11);
-    y += 12;
-    addText(signatoryName, 11, { bold: true });
-    if (signatoryTitle) addText(signatoryTitle, 10);
+    y += compact ? 2 : 4;
+    addText(body, compact ? 10.5 : 11, { align: 'left' });
+    y += compact ? 8 : 12;
+    addText(signatoryName, 11, { bold: true, align: 'left' });
+    if (signatoryTitle) addText(signatoryTitle, 10, { align: 'left' });
     if (signatureDataUrl) {
       try {
         y += 4;
@@ -438,14 +512,24 @@ export default function Letters() {
   function buildWordHtml() {
     const h = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const lines = (t) => (t || '').trim().split(/\n/).map((l) => h(l)).join('<br />');
-    const bodyAlign = layout === 'logo-center' ? 'center' : layout === 'logo-right' ? 'right' : 'left';
+    const bodyAlign = headerAlign;
+    const paragraphAlign = theme === 'minimal' ? 'left' : 'justify';
+    const fontStack = theme === 'modern' ? '"DM Sans", Arial, sans-serif' : theme === 'minimal' ? 'Arial, sans-serif' : 'Georgia, serif';
+    const topBar = theme === 'editorial'
+      ? `<div style="height: 6px; background: ${accentHex}; width: 100%; margin: -20px 0 18px 0;"></div>`
+      : '';
+    const accentRule = theme === 'professional'
+      ? `<div style="height: 2px; width: 120px; background: ${accentHex}; margin: 2px 0 10px 0;"></div>`
+      : '';
     const marginCm = '2.54cm'; // 1 inch for proper Word alignment
     return [
       '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">',
       '<head><meta charset="utf-8"/><title>Letter</title>',
-      '<style>body { margin: ' + marginCm + '; font-family: Georgia, serif; font-size: 11pt; line-height: 1.5; text-align: left; } .letter-body { text-align: justify; }</style></head>',
-      '<body style="margin: ' + marginCm + '; font-family: Georgia, serif; font-size: 11pt; line-height: 1.5;">',
+      `<style>body { margin: ${marginCm}; font-family: ${fontStack}; font-size: 11pt; line-height: ${compact ? 1.35 : 1.5}; text-align: left; } .letter-body { text-align: ${paragraphAlign}; }</style></head>`,
+      `<body style="margin: ${marginCm}; font-family: ${fontStack}; font-size: 11pt; line-height: ${compact ? 1.35 : 1.5};">`,
+      topBar,
       company.companyName ? `<p style="font-size: 14pt; font-weight: bold; color: ${accentHex}; text-align: ${bodyAlign};">${h(company.companyName)}</p>` : '',
+      accentRule,
       company.address ? `<p style="font-size: 9pt; color: #555; text-align: ${bodyAlign};">${lines(company.address)}</p>` : '',
       company.phone || company.email ? `<p style="font-size: 9pt; color: #555; text-align: ${bodyAlign};">${h([company.phone, company.email].filter(Boolean).join(' · '))}</p>` : '',
       '<p>&nbsp;</p>',
@@ -454,7 +538,7 @@ export default function Letters() {
       recipientAddress ? `<p>${lines(recipientAddress)}</p>` : '',
       subject ? `<p><strong>Re: ${h(subject)}</strong></p>` : '',
       '<p>&nbsp;</p>',
-      `<p class="letter-body" style="text-align: justify; white-space: pre-wrap;">${lines(body)}</p>`,
+      `<p class="letter-body" style="text-align: ${paragraphAlign}; white-space: pre-wrap;">${lines(body)}</p>`,
       '<p>&nbsp;</p>',
       signatoryName ? `<p><strong>${h(signatoryName)}</strong></p>` : '',
       signatoryTitle ? `<p>${h(signatoryTitle)}</p>` : '',
@@ -468,7 +552,12 @@ export default function Letters() {
       <div className="flex items-center justify-between gap-4 mb-4">
         <div>
           <h1 className="text-xl font-semibold text-surface-900">Letters</h1>
-          <p className="text-sm text-surface-500 mt-0.5">Create suspension, warning and other formal letters with your logo and company details.</p>
+          <p className="text-sm text-surface-500 mt-0.5">Create suspension, warning and formal letters with enterprise-ready drafting, autosave, and polished exports.</p>
+        </div>
+        <div className="hidden md:flex items-center gap-2 text-xs">
+          <span className="px-2 py-1 rounded-md bg-surface-100 text-surface-700">{wordCount} words</span>
+          <span className="px-2 py-1 rounded-md bg-surface-100 text-surface-700">{readMinutes} min read</span>
+          {lastAutoSavedAt && <span className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">Autosaved {new Date(lastAutoSavedAt).toLocaleTimeString()}</span>}
         </div>
       </div>
 
@@ -636,6 +725,24 @@ export default function Letters() {
               <span className="text-xs font-medium text-surface-600 block mb-1">Body</span>
               <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm font-mono" placeholder="Letter body text…" />
             </label>
+            <div className="rounded-lg border border-surface-200 bg-surface-50 p-3">
+              <p className="text-xs font-medium text-surface-700 mb-2">Quick inserts</p>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {QUICK_INSERTS.map((item) => (
+                  <button key={item.id} type="button" onClick={() => insertIntoBody(item.text)} className="px-2.5 py-1.5 rounded-md border border-surface-300 bg-white text-xs text-surface-700 hover:bg-surface-100">
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-surface-500 mb-1">Merge fields</p>
+              <div className="flex flex-wrap gap-2">
+                {MERGE_FIELDS.map((field) => (
+                  <button key={field} type="button" onClick={() => insertIntoBody(field)} className="px-2 py-1 rounded-md bg-brand-50 text-brand-700 text-[11px] border border-brand-200 hover:bg-brand-100">
+                    {field}
+                  </button>
+                ))}
+              </div>
+            </div>
             <label className="block">
               <span className="text-xs font-medium text-surface-600 block mb-1">Signatory name</span>
               <input type="text" value={signatoryName} onChange={(e) => setSignatoryName(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -672,11 +779,18 @@ export default function Letters() {
               <button type="button" onClick={saveDraft} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">Save draft</button>
               <button type="button" onClick={newLetter} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm font-medium hover:bg-surface-50">New letter</button>
             </div>
+            <input
+              type="text"
+              value={draftSearch}
+              onChange={(e) => setDraftSearch(e.target.value)}
+              placeholder="Search drafts by title, subject, recipient…"
+              className="w-full mb-2 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            />
             {savedLetters.length === 0 ? (
               <p className="text-surface-500 text-xs">No saved drafts. Click &quot;Save draft&quot; to save and edit later.</p>
             ) : (
               <ul className="space-y-1 max-h-40 overflow-y-auto">
-                {savedLetters.map((d) => (
+                {filteredSavedLetters.map((d) => (
                   <li key={d.id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded border border-surface-100 group">
                     <span className="text-sm text-surface-700 truncate flex-1 min-w-0">{(d.title || d.subject || 'Untitled').slice(0, 30)}{(d.title || d.subject || '').length > 30 ? '…' : ''}</span>
                     <span className="text-xs text-surface-400 shrink-0">{d.savedAt ? new Date(d.savedAt).toLocaleDateString() : ''}</span>
@@ -696,7 +810,10 @@ export default function Letters() {
           <section className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm flex flex-col flex-1 min-h-0">
             <div className="p-3 border-b border-surface-200 flex items-center justify-between bg-surface-50">
               <span className="text-sm font-medium text-surface-700">Preview</span>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
+                <button type="button" onClick={() => setPreviewZoom((z) => Math.max(75, z - 10))} className="px-2 py-1 rounded border border-surface-300 text-xs">-</button>
+                <span className="text-xs text-surface-600 w-10 text-center">{previewZoom}%</span>
+                <button type="button" onClick={() => setPreviewZoom((z) => Math.min(150, z + 10))} className="px-2 py-1 rounded border border-surface-300 text-xs">+</button>
                 <button type="button" onClick={exportPdf} className="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-700">
                   Export PDF
                 </button>
@@ -708,12 +825,14 @@ export default function Letters() {
             <div className="flex-1 overflow-auto p-4 bg-surface-50" style={{ fontFamily: themeFont }}>
               <div
                 ref={previewRef}
-                className={`mx-auto bg-white shadow-lg rounded-lg max-w-lg overflow-hidden ${layout === 'compact' ? 'p-5' : 'p-8'}`}
+                className={`mx-auto bg-white rounded-lg max-w-lg overflow-hidden ${compact ? 'p-5' : 'p-8'} ${previewShellClass}`}
                 style={{
                   fontFamily: themeFont,
                   fontSize: '11pt',
-                  lineHeight: layout === 'compact' ? 1.35 : 1.5,
+                  lineHeight: compact ? 1.35 : 1.5,
                   color: '#171717',
+                  transform: `scale(${previewZoom / 100})`,
+                  transformOrigin: 'top center',
                 }}
               >
                 {theme === 'editorial' && (
@@ -724,7 +843,7 @@ export default function Letters() {
                 )}
                 <div className={`${layout === 'logo-center' ? 'text-center' : layout === 'logo-right' ? 'text-right' : 'text-left'}`}>
                   {logoPreview && (
-                    <div className={`mb-4 ${layout === 'logo-center' ? 'flex justify-center' : layout === 'logo-right' ? 'flex justify-end' : ''}`}>
+                    <div className={`mb-4 flex ${headerFlex}`}>
                       <img src={logoPreview} alt="" className="h-12 w-auto max-w-[200px] object-contain" />
                     </div>
                   )}
@@ -753,7 +872,7 @@ export default function Letters() {
                       Re: {subject}
                     </p>
                   )}
-                  <div className="mt-4 whitespace-pre-wrap text-surface-800 text-justify">{body || '—'}</div>
+                  <div className={`mt-4 whitespace-pre-wrap ${bodyTextClass}`}>{body || '—'}</div>
                   <div className="mt-8">
                     {signatoryName && <p className="font-semibold">{signatoryName}</p>}
                     {signatoryTitle && <p className="text-sm text-surface-600">{signatoryTitle}</p>}

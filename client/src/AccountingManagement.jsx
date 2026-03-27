@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
-import { accounting as accountingApi, openAttachmentWithAuth } from './api';
+import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 
 const NAV_SECTIONS = [
   {
@@ -2184,6 +2184,986 @@ function StatementsTab() {
   );
 }
 
+const DOC_TEMPLATE_DEFS = [
+  { id: 'company_employment_contract', label: 'Company employment contract' },
+  { id: 'normal_contract', label: 'Normal contract' },
+  { id: 'agreement', label: 'Agreement' },
+  { id: 'termination_letter', label: 'Termination letter' },
+  { id: 'nda', label: 'NDA' },
+  { id: 'letter_of_intent', label: 'Letter of intent' },
+  { id: 'generic_report', label: 'Generic report' },
+  { id: 'generic_letter', label: 'Generic letter' },
+];
+
+const EMPLOYMENT_CONTRACT_TEMPLATE = `
+<h1>EMPLOYMENT CONTRACT</h1>
+<p><strong>Between:</strong> [Company Name] ("Employer") and <strong>[Employee Name]</strong> ("Employee").</p>
+<h2>1. Appointment</h2>
+<p>The Employer appoints the Employee as <strong>[Job Title]</strong> effective from <strong>[Start Date]</strong>.</p>
+<h2>2. Duties and Reporting</h2>
+<p>The Employee reports to <strong>[Manager Name]</strong> and performs duties assigned from time to time.</p>
+<h2>3. Place of Work</h2>
+<p>Primary place of work: <strong>[Location]</strong>. Reasonable travel may be required.</p>
+<h2>4. Working Hours</h2>
+<p>Standard hours: <strong>[Hours]</strong> per week. Overtime applies in line with policy and law.</p>
+<h2>5. Remuneration and Benefits</h2>
+<p>Salary: <strong>[Amount]</strong> per month before deductions. Benefits: <strong>[Benefits]</strong>.</p>
+<h2>6. Leave</h2>
+<p>Annual, sick, and family responsibility leave apply according to policy and applicable legislation.</p>
+<h2>7. Confidentiality and IP</h2>
+<p>The Employee will maintain confidentiality and all work product remains property of the Employer.</p>
+<h2>8. Termination</h2>
+<p>Either party may terminate with notice per policy and law. Serious misconduct may lead to summary dismissal.</p>
+<h2>9. Governing Law</h2>
+<p>This contract is governed by the laws of South Africa.</p>
+<p>Signed at [City] on [Date].</p>
+<p>Employer: ____________________ &nbsp;&nbsp;&nbsp; Employee: ____________________</p>
+`;
+
+const SECTION_SNIPPETS = [
+  { id: 'scope', label: 'Scope of services', html: '<h2>Scope of Services</h2><p>[Describe deliverables, responsibilities, and limits.]</p>' },
+  { id: 'payment', label: 'Payment terms', html: '<h2>Payment Terms</h2><p>[State amount, invoicing cycle, due dates, penalties.]</p>' },
+  { id: 'termination', label: 'Termination clause', html: '<h2>Termination</h2><p>[Notice period, breach handling, obligations after termination.]</p>' },
+  { id: 'confidentiality', label: 'Confidentiality clause', html: '<h2>Confidentiality</h2><p>[Define confidential information and allowed disclosures.]</p>' },
+  { id: 'signoff', label: 'Signature block', html: '<p>Signed at [City] on [Date].</p><p>Employer: ____________________ &nbsp;&nbsp;&nbsp; Employee/Counterparty: ____________________</p>' },
+];
+
+const PAGE_BREAK_MARKER_HTML = '<div data-page-break="true" class="doc-page-break-marker"><span>Page break</span></div><p><br /></p>';
+
+function DocumentationTab() {
+  const editorRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const chartCanvasRef = useRef(null);
+  const paginationMeasureRef = useRef(null);
+  const [list, setList] = useState([]);
+  const [recipients, setRecipients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
+  const [query, setQuery] = useState('');
+  const [emailModal, setEmailModal] = useState(null);
+  const [versions, setVersions] = useState([]);
+  const [showVersions, setShowVersions] = useState(false);
+  const [chartType, setChartType] = useState('bar');
+  const [chartPalette, setChartPalette] = useState('corporate');
+  const [chartLabels, setChartLabels] = useState('Q1,Q2,Q3,Q4');
+  const [chartValues, setChartValues] = useState('120,180,160,240');
+  const [printLayout, setPrintLayout] = useState(false);
+  const [layout, setLayout] = useState({
+    marginMm: 20,
+    fontSizePt: 11,
+    letterheadStyle: 'executive',
+    brandTheme: 'executive_red',
+    showDocTitle: true,
+    showDocDate: true,
+    showDocRecipient: true,
+    showDocSubject: true,
+  });
+  const [diffState, setDiffState] = useState({ leftVersionId: '', rightVersionId: '', leftHtml: '', rightHtml: '' });
+  const [companyDetails, setCompanyDetails] = useState({ company_name: '', address: '', website: '', email: '', phone: '' });
+  const [form, setForm] = useState({
+    title: 'Employment contract',
+    document_type: 'company_employment_contract',
+    status: 'draft',
+    tags: 'employment,hr',
+    subject: 'Employment contract',
+    recipient_name: '',
+    recipient_email: '',
+    cc_emails: '',
+    is_template: true,
+    content_html: EMPLOYMENT_CONTRACT_TEMPLATE,
+    metadata_json: JSON.stringify({ headerTheme: 'world-class', letterhead: true }, null, 2),
+  });
+
+  const load = useCallback(() => {
+    setLoading(true);
+    Promise.all([
+      accountingApi.documentation.list({ q: query || undefined }),
+      accountingApi.documentation.recipients(),
+      accountingApi.companySettings.get().catch(() => ({})),
+    ])
+      .then(([d, r, c]) => {
+        setList(d.documents || []);
+        setRecipients(r.recipients || []);
+        setCompanyDetails({
+          company_name: c?.company_name || '',
+          address: c?.address || '',
+          website: c?.website || '',
+          email: c?.email || '',
+          phone: c?.phone || '',
+        });
+      })
+      .catch(() => {
+        setList([]);
+        setRecipients([]);
+        setCompanyDetails({ company_name: '', address: '', website: '', email: '', phone: '' });
+      })
+      .finally(() => setLoading(false));
+  }, [query]);
+
+  useEffect(() => load(), [load]);
+
+  const applyHtmlToEditor = (html) => {
+    if (editorRef.current) editorRef.current.innerHTML = html || '';
+  };
+
+  useEffect(() => {
+    // Prevent cursor jumps while typing: sync editor only when content actually differs
+    // and the editor is not the active element.
+    if (!editorRef.current) return;
+    const incoming = form.content_html || '';
+    if (document.activeElement === editorRef.current) return;
+    if (editorRef.current.innerHTML !== incoming) applyHtmlToEditor(incoming);
+  }, [form.content_html]);
+
+  const command = (cmd, value = null) => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
+    document.execCommand(cmd, false, value);
+    setForm((f) => ({ ...f, content_html: editorRef.current.innerHTML }));
+  };
+
+  const insertSection = (snippet) => {
+    command('insertHTML', `${snippet.html}<p><br /></p>`);
+  };
+
+  const moveBlock = (direction) => {
+    if (!editorRef.current) return;
+    const blocks = Array.from(editorRef.current.querySelectorAll('h1,h2,h3,p,table,ul,ol,img,hr'));
+    if (blocks.length < 2) return;
+    const target = blocks[blocks.length - 1];
+    if (!target?.parentNode) return;
+    if (direction === 'up' && target.previousElementSibling) {
+      target.parentNode.insertBefore(target, target.previousElementSibling);
+    } else if (direction === 'down' && target.nextElementSibling) {
+      target.parentNode.insertBefore(target.nextElementSibling, target);
+    }
+    onEditorInput();
+  };
+
+  const renderChartFigure = () => {
+    const canvas = chartCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const labels = chartLabels.split(',').map((s) => s.trim()).filter(Boolean);
+    const values = chartValues.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
+    if (!labels.length || !values.length) return;
+    canvas.width = 900;
+    canvas.height = 420;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#111827';
+    ctx.font = 'bold 20px serif';
+    ctx.fillText('Business Figure', 24, 32);
+    const chartX = 70;
+    const chartY = 60;
+    const chartW = 780;
+    const chartH = 280;
+    const max = Math.max(...values, 1);
+    ctx.strokeStyle = '#d1d5db';
+    ctx.strokeRect(chartX, chartY, chartW, chartH);
+    const paletteMap = {
+      corporate: ['#1d4ed8', '#0f766e', '#b45309', '#7c3aed', '#dc2626'],
+      mono: ['#111827', '#374151', '#4b5563', '#6b7280', '#9ca3af'],
+      vibrant: ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6'],
+    };
+    const palette = paletteMap[chartPalette] || paletteMap.corporate;
+    if (chartType === 'bar') {
+      const bw = chartW / values.length * 0.6;
+      values.forEach((v, i) => {
+        const h = (v / max) * (chartH - 20);
+        const x = chartX + i * (chartW / values.length) + (chartW / values.length - bw) / 2;
+        const y = chartY + chartH - h;
+        ctx.fillStyle = palette[i % palette.length];
+        ctx.fillRect(x, y, bw, h);
+        ctx.fillStyle = '#374151';
+        ctx.font = '12px sans-serif';
+        ctx.fillText(labels[i] || `#${i + 1}`, x, chartY + chartH + 16);
+      });
+    } else if (chartType === 'line') {
+      ctx.strokeStyle = '#0f766e';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = chartX + (i * chartW) / Math.max(values.length - 1, 1);
+        const y = chartY + chartH - (v / max) * (chartH - 20);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    } else {
+      const total = values.reduce((a, b) => a + b, 0) || 1;
+      const cx = chartX + chartW / 2;
+      const cy = chartY + chartH / 2;
+      const r = Math.min(chartW, chartH) / 2 - 16;
+      let a = -Math.PI / 2;
+      values.forEach((v, i) => {
+        const sweep = (v / total) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, r, a, a + sweep);
+        ctx.closePath();
+        ctx.fillStyle = palette[i % palette.length];
+        ctx.fill();
+        a += sweep;
+      });
+    }
+    const dataUrl = canvas.toDataURL('image/png');
+    command('insertImage', dataUrl);
+  };
+
+  const insertTemplate = (id) => {
+    const templateMap = {
+      company_employment_contract: EMPLOYMENT_CONTRACT_TEMPLATE,
+      normal_contract: '<h1>SERVICE CONTRACT</h1><p>Parties: [Party A] and [Party B] ...</p>',
+      agreement: '<h1>AGREEMENT</h1><p>This agreement is entered into by ...</p>',
+      termination_letter: '<h1>NOTICE OF TERMINATION</h1><p>This letter confirms termination effective [Date] ...</p>',
+      nda: '<h1>NON-DISCLOSURE AGREEMENT</h1><p>The receiving party agrees to keep confidential information private ...</p>',
+      letter_of_intent: '<h1>LETTER OF INTENT</h1><p>This letter confirms intention to ...</p>',
+      generic_report: '<h1>REPORT TITLE</h1><p>Executive summary...</p><h2>Findings</h2><p>...</p>',
+      generic_letter: '<h1>LETTER</h1><p>Dear [Name],</p><p>...</p>',
+    };
+    const html = templateMap[id] || '<p></p>';
+    setForm((f) => ({ ...f, document_type: id, content_html: html }));
+    applyHtmlToEditor(html);
+  };
+
+  const onEditorInput = () => {
+    if (!editorRef.current) return;
+    setForm((f) => ({ ...f, content_html: editorRef.current.innerHTML }));
+  };
+
+  const onEditorPaste = (e) => {
+    // Keep copied rich formatting (bold headings/lists/underline) when pasting.
+    const html = e.clipboardData?.getData('text/html');
+    if (!html) return;
+    e.preventDefault();
+    if (editorRef.current) editorRef.current.focus();
+    document.execCommand('insertHTML', false, html);
+    onEditorInput();
+  };
+
+  const onEditorKeyDown = (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    const k = String(e.key || '').toLowerCase();
+    if (k === 'b') { e.preventDefault(); command('bold'); return; }
+    if (k === 'u') { e.preventDefault(); command('underline'); return; }
+    if (k === 'i') { e.preventDefault(); command('italic'); return; }
+    if (k === '7') { e.preventDefault(); command('insertOrderedList'); return; }
+    if (k === '8') { e.preventDefault(); command('insertUnorderedList'); }
+  };
+
+  const saveDoc = () => {
+    setSaving(true);
+    const mergedMetadata = (() => {
+      try {
+        const parsed = JSON.parse(form.metadata_json || '{}');
+        return JSON.stringify({ ...parsed, pageLayout: layout }, null, 2);
+      } catch {
+        return JSON.stringify({ pageLayout: layout }, null, 2);
+      }
+    })();
+    const payload = { ...form, content_html: editorRef.current?.innerHTML || form.content_html, metadata_json: mergedMetadata };
+    const req = selectedId ? accountingApi.documentation.update(selectedId, payload) : accountingApi.documentation.create(payload);
+    req
+      .then((res) => {
+        if (!selectedId && res?.id) setSelectedId(res.id);
+        load();
+      })
+      .catch((err) => alert(err?.message || 'Save failed'))
+      .finally(() => setSaving(false));
+  };
+
+  const openDoc = (id) => {
+    accountingApi.documentation.get(id).then((d) => {
+      const doc = d.document || d;
+      setSelectedId(doc.id);
+      setForm({
+        title: doc.title || '',
+        document_type: doc.document_type || 'generic_letter',
+        status: doc.status || 'draft',
+        tags: doc.tags || '',
+        subject: doc.subject || '',
+        recipient_name: doc.recipient_name || '',
+        recipient_email: doc.recipient_email || '',
+        cc_emails: doc.cc_emails || '',
+        is_template: !!doc.is_template,
+        content_html: doc.content_html || '',
+        metadata_json: doc.metadata_json || '{}',
+      });
+      try {
+        const p = JSON.parse(doc.metadata_json || '{}');
+        if (p?.pageLayout) setLayout((prev) => ({ ...prev, ...p.pageLayout }));
+      } catch {}
+      applyHtmlToEditor(doc.content_html || '');
+    }).catch((err) => alert(err?.message || 'Open failed'));
+  };
+
+  const removeDoc = (id) => {
+    if (!window.confirm('Delete this document?')) return;
+    accountingApi.documentation.delete(id).then(() => {
+      if (selectedId === id) setSelectedId(null);
+      load();
+    }).catch((err) => alert(err?.message || 'Delete failed'));
+  };
+
+  const uploadFigure = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    accountingApi.documentation.uploadFigure(file)
+      .then((r) => command('insertImage', r.url))
+      .catch((err) => alert(err?.message || 'Upload failed'))
+      .finally(() => { if (fileInputRef.current) fileInputRef.current.value = ''; });
+  };
+
+  const sendEmail = () => {
+    if (!emailModal || !selectedId) return;
+    const splitEmails = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const payload = {
+      ...emailModal,
+      to_emails: [...(emailModal.to_emails || []), ...splitEmails(emailModal.manual_to)],
+      cc_emails: [...(emailModal.cc_emails || []), ...splitEmails(emailModal.manual_cc)],
+    };
+    accountingApi.documentation.sendEmail(selectedId, payload)
+      .then(() => setEmailModal(null))
+      .catch((err) => alert(err?.message || 'Send failed'));
+  };
+
+  const openVersions = () => {
+    if (!selectedId) return;
+    accountingApi.documentation.versions(selectedId)
+      .then((r) => { setVersions(r.versions || []); setShowVersions(true); })
+      .catch((err) => alert(err?.message || 'Could not load versions'));
+  };
+
+  const loadDiffSide = (side, versionId) => {
+    if (!selectedId || !versionId) return;
+    accountingApi.documentation.getVersion(selectedId, versionId)
+      .then((r) => {
+        const html = r?.version?.content_html || '';
+        setDiffState((d) => (side === 'left'
+          ? { ...d, leftVersionId: versionId, leftHtml: html }
+          : { ...d, rightVersionId: versionId, rightHtml: html }));
+      })
+      .catch((err) => alert(err?.message || 'Could not load version content'));
+  };
+
+  const stripHtml = (html) => String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<\/(p|div|h1|h2|h3|h4|h5|h6|li|tr|table)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const diffRows = useMemo(() => {
+    const left = stripHtml(diffState.leftHtml).split('\n');
+    const right = stripHtml(diffState.rightHtml).split('\n');
+    const max = Math.max(left.length, right.length);
+    const out = [];
+    for (let i = 0; i < max; i++) {
+      const l = left[i] || '';
+      const r = right[i] || '';
+      let kind = 'same';
+      if (l && !r) kind = 'removed';
+      else if (!l && r) kind = 'added';
+      else if (l !== r) kind = 'changed';
+      out.push({ i, l, r, kind });
+    }
+    return out;
+  }, [diffState.leftHtml, diffState.rightHtml]);
+
+  const plainEditorText = useMemo(() => stripHtml(form.content_html || ''), [form.content_html]);
+  const [pagedHtmlMeasured, setPagedHtmlMeasured] = useState(['']);
+
+  const paginateHtmlFallback = useCallback((html, opts) => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${html || ''}</div>`, 'text/html');
+    const root = doc.body.firstElementChild;
+    if (!root) return [''];
+    const blocks = Array.from(root.children);
+    if (!blocks.length) return [root.innerHTML || ''];
+    const margin = Number(opts.marginMm || 20);
+    const fontPt = Number(opts.fontSizePt || 11);
+    const capacity = Math.max(2200, Math.round((9200 - margin * 120) * (11 / fontPt)));
+    const pages = [];
+    let current = '';
+    let used = 0;
+    for (const el of blocks) {
+      if (el.nodeType === 1 && el.hasAttribute('data-page-break')) {
+        if (current.trim()) pages.push(current);
+        current = '';
+        used = 0;
+        continue;
+      }
+      const chunk = el.outerHTML || '';
+      const text = (el.textContent || '').trim();
+      const weight = Math.max(120, chunk.length + text.length * 0.6);
+      if (used > 0 && used + weight > capacity) {
+        pages.push(current);
+        current = '';
+        used = 0;
+      }
+      current += chunk;
+      used += weight;
+    }
+    if (current.trim()) pages.push(current);
+    return pages.length ? pages : [root.innerHTML || ''];
+  }, []);
+
+  const measurePaginateHtml = useCallback((html, opts) => {
+    const host = paginationMeasureRef.current;
+    if (!host) return paginateHtmlFallback(html, opts);
+    const mm = Number(opts.marginMm || 20);
+    const fsPt = Number(opts.fontSizePt || 11);
+    const pageWidth = 794; // A4 at ~96dpi
+    const pageHeight = 1123;
+    const pad = Math.round(mm * 3.78);
+    const maxContentHeight = Math.max(280, pageHeight - pad * 2);
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${html || ''}</div>`, 'text/html');
+    const root = doc.body.firstElementChild;
+    const sourceNodes = root ? Array.from(root.childNodes) : [];
+    if (!sourceNodes.length) return ['<p><br /></p>'];
+
+    const createMeasurePage = () => {
+      const page = document.createElement('div');
+      page.style.width = `${pageWidth}px`;
+      page.style.boxSizing = 'border-box';
+      page.style.padding = `${pad}px`;
+      page.style.fontFamily = '"Times New Roman", Georgia, serif';
+      page.style.fontSize = `${fsPt}pt`;
+      page.style.lineHeight = '1.5';
+      page.style.position = 'absolute';
+      page.style.left = '-20000px';
+      page.style.top = '0';
+      page.style.visibility = 'hidden';
+      page.style.background = '#fff';
+      return page;
+    };
+
+    const makeEmptyPageHtml = () => '<p><br /></p>';
+    const pages = [];
+    let page = createMeasurePage();
+    host.appendChild(page);
+
+    const fits = () => page.scrollHeight <= maxContentHeight;
+    const commit = () => {
+      const htmlOut = page.innerHTML.trim() || makeEmptyPageHtml();
+      pages.push(htmlOut);
+      host.removeChild(page);
+      page = createMeasurePage();
+      host.appendChild(page);
+    };
+
+    const splitParagraphByWords = (node) => {
+      const text = (node.textContent || '').trim();
+      if (!text) return [node.cloneNode(true)];
+      const tag = (node.nodeType === 1 ? node.nodeName.toLowerCase() : 'p');
+      const words = text.split(/\s+/);
+      const chunks = [];
+      let idx = 0;
+      while (idx < words.length) {
+        const chunkEl = document.createElement(tag);
+        if (node.nodeType === 1 && node.attributes) {
+          for (const attr of node.attributes) chunkEl.setAttribute(attr.name, attr.value);
+        }
+        chunkEl.textContent = '';
+        while (idx < words.length) {
+          const next = chunkEl.textContent ? `${chunkEl.textContent} ${words[idx]}` : words[idx];
+          chunkEl.textContent = next;
+          page.appendChild(chunkEl);
+          const ok = fits();
+          page.removeChild(chunkEl);
+          if (!ok && chunkEl.textContent !== words[idx]) break;
+          if (!ok) return chunks.length ? chunks : [node.cloneNode(true)];
+          idx += 1;
+        }
+        chunks.push(chunkEl.cloneNode(true));
+      }
+      return chunks.length ? chunks : [node.cloneNode(true)];
+    };
+
+    const appendNodeWithTableSplit = (node) => {
+      const isElement = node.nodeType === 1;
+      const tag = isElement ? node.nodeName.toLowerCase() : '';
+
+      if (isElement && tag === 'table') {
+        if (page.childNodes.length > 0) {
+          const fullTry = node.cloneNode(true);
+          page.appendChild(fullTry);
+          const ok = fits();
+          page.removeChild(fullTry);
+          if (!ok) commit();
+        }
+
+        const table = node;
+        const thead = table.querySelector('thead');
+        const bodyRows = Array.from(table.querySelectorAll('tbody tr'));
+        const looseRows = bodyRows.length ? bodyRows : Array.from(table.querySelectorAll('tr')).filter((r) => !r.closest('thead'));
+        const headerHtml = thead ? thead.outerHTML : '';
+        const openAttrs = Array.from(table.attributes || []).map((a) => `${a.name}="${a.value}"`).join(' ');
+        let idx = 0;
+        while (idx < looseRows.length) {
+          const tempTable = document.createElement('table');
+          if (openAttrs) {
+            for (const a of table.attributes) tempTable.setAttribute(a.name, a.value);
+          }
+          if (thead) tempTable.appendChild(thead.cloneNode(true));
+          const tb = document.createElement('tbody');
+          tempTable.appendChild(tb);
+          let startIdx = idx;
+          while (idx < looseRows.length) {
+            tb.appendChild(looseRows[idx].cloneNode(true));
+            page.appendChild(tempTable);
+            const ok = fits();
+            page.removeChild(tempTable);
+            if (!ok) {
+              tb.removeChild(tb.lastChild);
+              if (idx === startIdx) {
+                // Single row too large; force it
+                tb.appendChild(looseRows[idx].cloneNode(true));
+                idx += 1;
+              }
+              break;
+            }
+            idx += 1;
+          }
+          page.appendChild(tempTable.cloneNode(true));
+          if (idx < looseRows.length) commit();
+        }
+        return;
+      }
+
+      const clone = node.cloneNode(true);
+      page.appendChild(clone);
+      if (fits()) return;
+      page.removeChild(clone);
+      if (page.childNodes.length > 0) {
+        commit();
+        page.appendChild(clone.cloneNode(true));
+        if (fits()) return;
+        page.removeChild(page.lastChild);
+      }
+
+      if (isElement && ['p', 'li', 'div', 'span'].includes(tag)) {
+        const chunks = splitParagraphByWords(node);
+        for (const c of chunks) {
+          page.appendChild(c.cloneNode(true));
+          if (!fits()) {
+            page.removeChild(page.lastChild);
+            commit();
+            page.appendChild(c.cloneNode(true));
+          }
+        }
+        return;
+      }
+
+      // Large image/other block: place on its own page and constrain visual overflow in render CSS.
+      page.appendChild(clone);
+      commit();
+    };
+
+    for (const n of sourceNodes) {
+      if (n.nodeType === 3 && !String(n.textContent || '').trim()) continue;
+      if (n.nodeType === 1 && n.hasAttribute && n.hasAttribute('data-page-break')) {
+        if (page.innerHTML.trim()) commit();
+        continue;
+      }
+      if (n.nodeType === 3) {
+        const p = document.createElement('p');
+        p.textContent = String(n.textContent || '').trim();
+        appendNodeWithTableSplit(p);
+      } else {
+        appendNodeWithTableSplit(n);
+      }
+    }
+    const tail = page.innerHTML.trim();
+    if (tail) pages.push(tail);
+    host.removeChild(page);
+    return pages.length ? pages : [makeEmptyPageHtml()];
+  }, [paginateHtmlFallback]);
+
+  useLayoutEffect(() => {
+    const html = form.content_html || '';
+    try {
+      const next = measurePaginateHtml(html, layout);
+      setPagedHtmlMeasured(next);
+    } catch {
+      setPagedHtmlMeasured(paginateHtmlFallback(html, layout));
+    }
+  }, [form.content_html, layout, measurePaginateHtml, paginateHtmlFallback]);
+
+  const pagedHtml = pagedHtmlMeasured;
+
+  const estimatedPages = Math.max(1, pagedHtml.length || Math.ceil((plainEditorText.length || 0) / 3200));
+
+  const renderPrintLetterheadOverlay = () => {
+    const theme = { dark: '#7F1D1D', mid: '#991B1B' };
+    return (
+      <>
+        <div className="absolute inset-x-0 top-0 h-[86px] bg-white" />
+        <div className="absolute right-[12px] top-[18px] w-[34px] bottom-[110px]" style={{ background: theme.dark }} />
+        <div className="absolute right-[46px] top-[170px] w-[2px] bottom-[20px]" style={{ background: theme.mid }} />
+        <div className="absolute left-[20px] bottom-[20px] w-[34px] h-[112px]" style={{ background: theme.mid }} />
+        <div className="absolute left-[20px] top-[20px] w-[156px] h-[96px] border border-slate-200/50 bg-white/70" />
+        <div className="absolute left-[20px] top-[20px] w-[156px] h-[96px] flex items-center justify-center text-[11px] font-bold text-black">LOGO</div>
+        <div
+          className="absolute text-[10px] font-semibold text-white"
+          style={{ right: '24px', top: '50%', transform: 'translateY(-50%) rotate(-90deg)', transformOrigin: 'center' }}
+        >
+          Think differently
+        </div>
+      </>
+    );
+  };
+
+  const restoreVersion = (versionId) => {
+    if (!selectedId) return;
+    if (!window.confirm('Restore this version? Current draft will be replaced.')) return;
+    accountingApi.documentation.restoreVersion(selectedId, versionId)
+      .then(() => { setShowVersions(false); openDoc(selectedId); load(); })
+      .catch((err) => alert(err?.message || 'Restore failed'));
+  };
+
+  const previewAddressLines = String(companyDetails.address || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const previewLeftBlockLines = [
+    ...previewAddressLines,
+    companyDetails.phone ? `TEL: ${companyDetails.phone}` : '',
+    companyDetails.email ? `Email: ${companyDetails.email}` : '',
+  ].filter(Boolean);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold text-surface-900">Documentation</h2>
+        <div className="flex gap-2 flex-wrap">
+          <button type="button" onClick={() => { setSelectedId(null); insertTemplate('company_employment_contract'); setForm((f) => ({ ...f, title: 'Employment contract draft', is_template: true })); }} className="px-3 py-2 rounded-lg border border-surface-300 text-sm">New from employment template</button>
+          <button type="button" onClick={saveDoc} disabled={saving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">{saving ? 'Saving…' : 'Save'}</button>
+          <button type="button" onClick={() => selectedId && openAttachmentWithAuth(accountingApi.documentation.pdfUrl(selectedId))} disabled={!selectedId} className="px-4 py-2 rounded-lg border border-surface-300 text-sm disabled:opacity-50">View PDF</button>
+          <button type="button" onClick={() => selectedId && openAttachmentWithAuth(accountingApi.documentation.pdfDownloadUrl(selectedId))} disabled={!selectedId} className="px-4 py-2 rounded-lg border border-surface-300 text-sm disabled:opacity-50">Download PDF</button>
+          <button type="button" onClick={() => selectedId && downloadAttachmentWithAuth(accountingApi.documentation.wordTemplateDownloadUrl(selectedId), `${(form.title || 'document-template').replace(/[^a-z0-9_-]/gi, '-')}.doc`)} disabled={!selectedId} className="px-4 py-2 rounded-lg border border-surface-300 text-sm disabled:opacity-50">Download Word Template</button>
+          <button type="button" onClick={openVersions} disabled={!selectedId} className="px-4 py-2 rounded-lg border border-surface-300 text-sm disabled:opacity-50">History</button>
+          <button type="button" onClick={() => setPrintLayout((v) => !v)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">{printLayout ? 'Exit print layout' : 'Print layout'}</button>
+          <button type="button" onClick={() => setEmailModal({ to_emails: [], cc_emails: [], subject: form.subject || form.title, message: 'Please find attached document.' })} disabled={!selectedId} className="px-4 py-2 rounded-lg border border-surface-300 text-sm disabled:opacity-50">Email</button>
+        </div>
+      </div>
+
+      <p className="text-sm text-surface-600">Create world-class contracts, agreements, NDAs, termination letters, letters of intent, and reports. Includes reusable templates, rich editing, figures/tables, PDF view, and email with CC.</p>
+
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
+        <div className="xl:col-span-1 rounded-xl border border-surface-200 bg-white p-4 shadow-sm space-y-3">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search documents..." className="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm" />
+          <button type="button" onClick={load} className="w-full px-3 py-2 rounded-lg bg-surface-900 text-white text-sm">Refresh</button>
+          <div className="space-y-2 max-h-[520px] overflow-auto">
+            {loading ? <p className="text-sm text-surface-500">Loading...</p> : list.map((d) => (
+              <div key={d.id} className={`rounded-lg border p-2 ${selectedId === d.id ? 'border-brand-400 bg-brand-50' : 'border-surface-200'}`}>
+                <button type="button" onClick={() => openDoc(d.id)} className="w-full text-left">
+                  <p className="text-sm font-medium text-surface-900 truncate">{d.title}</p>
+                  <p className="text-xs text-surface-500">{d.document_type} · {d.is_template ? 'Template' : 'Document'}</p>
+                </button>
+                <div className="mt-1 flex gap-2">
+                  <button type="button" onClick={() => openDoc(d.id)} className="text-xs text-brand-700">Open</button>
+                  <button type="button" onClick={() => removeDoc(d.id)} className="text-xs text-red-600">Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="xl:col-span-3 rounded-xl border border-surface-200 bg-white shadow-sm">
+          <div className="p-3 border-b border-surface-200 flex flex-wrap gap-2 items-center">
+            <select value={form.document_type} onChange={(e) => insertTemplate(e.target.value)} className="px-2 py-1.5 rounded border border-surface-300 text-sm">
+              {DOC_TEMPLATE_DEFS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+            <button type="button" onClick={() => command('bold')} className="px-2 py-1 border rounded text-sm">Bold</button>
+            <button type="button" onClick={() => command('italic')} className="px-2 py-1 border rounded text-sm">Italic</button>
+            <button type="button" onClick={() => command('underline')} className="px-2 py-1 border rounded text-sm">Underline</button>
+            <button type="button" onClick={() => command('justifyLeft')} className="px-2 py-1 border rounded text-sm">Left</button>
+            <button type="button" onClick={() => command('justifyCenter')} className="px-2 py-1 border rounded text-sm">Center</button>
+            <button type="button" onClick={() => command('justifyRight')} className="px-2 py-1 border rounded text-sm">Right</button>
+            <button type="button" onClick={() => command('insertUnorderedList')} className="px-2 py-1 border rounded text-sm">Bullets</button>
+            <button type="button" onClick={() => command('insertOrderedList')} className="px-2 py-1 border rounded text-sm">Numbered</button>
+            <button type="button" onClick={() => command('formatBlock', '<h2>')} className="px-2 py-1 border rounded text-sm">H2</button>
+            <button type="button" onClick={() => command('insertHTML', PAGE_BREAK_MARKER_HTML)} className="px-2 py-1 border rounded text-sm">Page break</button>
+            <button type="button" onClick={() => command('insertHTML', '<table border=\"1\" style=\"border-collapse:collapse;width:100%\"><tr><th>Item</th><th>Value</th></tr><tr><td>...</td><td>...</td></tr></table><p></p>')} className="px-2 py-1 border rounded text-sm">Table</button>
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={uploadFigure} />
+            <button type="button" onClick={() => fileInputRef.current?.click()} className="px-2 py-1 border rounded text-sm">Insert image/figure</button>
+            <button type="button" onClick={() => moveBlock('up')} className="px-2 py-1 border rounded text-sm">Move block up</button>
+            <button type="button" onClick={() => moveBlock('down')} className="px-2 py-1 border rounded text-sm">Move block down</button>
+          </div>
+          <div className="p-4 space-y-3">
+            <div className="grid md:grid-cols-2 gap-3">
+              <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Document title" className="px-3 py-2 rounded border border-surface-300 text-sm" />
+              <input value={form.subject} onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))} placeholder="Subject" className="px-3 py-2 rounded border border-surface-300 text-sm" />
+              <input value={form.recipient_name} onChange={(e) => setForm((f) => ({ ...f, recipient_name: e.target.value }))} placeholder="Recipient name" className="px-3 py-2 rounded border border-surface-300 text-sm" />
+              <input value={form.recipient_email} onChange={(e) => setForm((f) => ({ ...f, recipient_email: e.target.value }))} placeholder="Recipient email" className="px-3 py-2 rounded border border-surface-300 text-sm" />
+            </div>
+            <div className="rounded-lg border border-surface-200 p-3 bg-surface-50">
+              <p className="text-sm font-medium text-surface-800 mb-2">Page setup / letterhead polish</p>
+              <div className="grid md:grid-cols-4 gap-3">
+                <label className="text-xs text-surface-700">Margin (mm)
+                  <input type="number" min="8" max="40" value={layout.marginMm} onChange={(e) => setLayout((l) => ({ ...l, marginMm: Number(e.target.value || 20) }))} className="mt-1 w-full px-2 py-1 rounded border border-surface-300 text-sm" />
+                </label>
+                <label className="text-xs text-surface-700">Font size (pt)
+                  <input type="number" min="9" max="14" value={layout.fontSizePt} onChange={(e) => setLayout((l) => ({ ...l, fontSizePt: Number(e.target.value || 11) }))} className="mt-1 w-full px-2 py-1 rounded border border-surface-300 text-sm" />
+                </label>
+                <label className="text-xs text-surface-700">Letterhead style
+                  <select value={layout.letterheadStyle} onChange={(e) => setLayout((l) => ({ ...l, letterheadStyle: e.target.value }))} className="mt-1 w-full px-2 py-1 rounded border border-surface-300 text-sm">
+                    <option value="executive">Executive</option>
+                    <option value="clean">Clean</option>
+                    <option value="classic">Classic</option>
+                  </select>
+                </label>
+                <label className="text-xs text-surface-700">Brand theme
+                  <select value={layout.brandTheme || 'executive_red'} onChange={(e) => setLayout((l) => ({ ...l, brandTheme: e.target.value }))} className="mt-1 w-full px-2 py-1 rounded border border-surface-300 text-sm">
+                    <option value="executive_red">Executive Red</option>
+                    <option value="midnight_blue">Midnight Blue</option>
+                    <option value="monochrome_luxury">Monochrome Luxury</option>
+                  </select>
+                </label>
+              </div>
+              <div className="mt-3 grid md:grid-cols-4 gap-3">
+                <label className="inline-flex items-center gap-2 text-xs text-surface-700">
+                  <input type="checkbox" checked={layout.showDocTitle !== false} onChange={(e) => setLayout((l) => ({ ...l, showDocTitle: e.target.checked }))} />
+                  Show document title
+                </label>
+                <label className="inline-flex items-center gap-2 text-xs text-surface-700">
+                  <input type="checkbox" checked={layout.showDocDate !== false} onChange={(e) => setLayout((l) => ({ ...l, showDocDate: e.target.checked }))} />
+                  Show date
+                </label>
+                <label className="inline-flex items-center gap-2 text-xs text-surface-700">
+                  <input type="checkbox" checked={layout.showDocRecipient !== false} onChange={(e) => setLayout((l) => ({ ...l, showDocRecipient: e.target.checked }))} />
+                  Show recipient
+                </label>
+                <label className="inline-flex items-center gap-2 text-xs text-surface-700">
+                  <input type="checkbox" checked={layout.showDocSubject !== false} onChange={(e) => setLayout((l) => ({ ...l, showDocSubject: e.target.checked }))} />
+                  Show subject
+                </label>
+              </div>
+            </div>
+            <div className="rounded-lg border border-surface-200 p-3 bg-surface-50">
+              <p className="text-sm font-medium text-surface-800 mb-2">Section builder</p>
+              <div className="flex flex-wrap gap-2">
+                {SECTION_SNIPPETS.map((s) => (
+                  <button key={s.id} type="button" onClick={() => insertSection(s)} className="px-2 py-1 border border-surface-300 rounded text-xs bg-white">{s.label}</button>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-lg border border-surface-200 p-3 bg-surface-50">
+              <p className="text-sm font-medium text-surface-800 mb-2">Embed chart / graph as figure</p>
+              <div className="grid md:grid-cols-4 gap-2">
+                <select value={chartType} onChange={(e) => setChartType(e.target.value)} className="px-2 py-1 border border-surface-300 rounded text-sm">
+                  <option value="bar">Bar</option>
+                  <option value="line">Line</option>
+                  <option value="pie">Pie</option>
+                </select>
+                <select value={chartPalette} onChange={(e) => setChartPalette(e.target.value)} className="px-2 py-1 border border-surface-300 rounded text-sm">
+                  <option value="corporate">Corporate palette</option>
+                  <option value="mono">Monochrome</option>
+                  <option value="vibrant">Vibrant</option>
+                </select>
+                <input value={chartLabels} onChange={(e) => setChartLabels(e.target.value)} placeholder="Labels csv" className="px-2 py-1 border border-surface-300 rounded text-sm md:col-span-2" />
+                <input value={chartValues} onChange={(e) => setChartValues(e.target.value)} placeholder="Values csv" className="px-2 py-1 border border-surface-300 rounded text-sm md:col-span-4" />
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button type="button" onClick={renderChartFigure} className="px-3 py-1.5 rounded border border-surface-300 bg-white text-sm">Insert chart figure</button>
+                <span className="text-xs text-surface-500">Creates a chart image and inserts it into the document.</span>
+              </div>
+              <canvas ref={chartCanvasRef} className="hidden" />
+            </div>
+            <div className="rounded-xl border border-surface-200 overflow-hidden">
+              <div className="px-3 py-2 bg-surface-50 border-b border-surface-200 text-xs text-surface-600 flex items-center justify-between">
+                <span>World-class letterhead editor (WYSIWYG)</span>
+                <span>Estimated pages: {estimatedPages}</span>
+              </div>
+              {printLayout && (
+                <div className="h-6 border-b border-surface-200 bg-white relative overflow-hidden">
+                  <div className="absolute left-2 top-1 text-[10px] text-surface-500">mm ruler</div>
+                </div>
+              )}
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={onEditorInput}
+                onPaste={onEditorPaste}
+                onKeyDown={onEditorKeyDown}
+                className="min-h-[460px] focus:outline-none prose max-w-none"
+                style={{
+                  fontFamily: 'Georgia, "Times New Roman", serif',
+                  padding: `${layout.marginMm}px`,
+                  fontSize: `${layout.fontSizePt}pt`,
+                  lineHeight: 1.55,
+                  color: '#000000',
+                  background: '#ffffff',
+                }}
+              />
+            </div>
+            {printLayout && (
+              <div className="rounded-xl border border-surface-200 p-3 bg-surface-50">
+                <style>{`
+                  .documentation-page-content img { max-width: 100%; height: auto; max-height: 980px; object-fit: contain; }
+                  .documentation-page-content table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+                  .documentation-page-content table th,
+                  .documentation-page-content table td { word-break: break-word; }
+                  .documentation-page-content .doc-page-break-marker { display: none !important; }
+                  [contenteditable="true"] .doc-page-break-marker {
+                    display: block;
+                    border-top: 2px dashed #fb7185;
+                    border-bottom: 2px dashed #fb7185;
+                    padding: 6px 0;
+                    margin: 12px 0;
+                    text-align: center;
+                    color: #be123c;
+                    font-size: 11px;
+                    font-weight: 600;
+                    background: #fff1f2;
+                  }
+                `}</style>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-medium text-surface-900">Paginated WYSIWYG canvas (A4)</p>
+                  <p className="text-xs text-surface-500">{pagedHtml.length} page(s)</p>
+                </div>
+                <div className="space-y-4 max-h-[900px] overflow-auto pr-1">
+                  {pagedHtml.map((pageHtml, idx) => (
+                    <div key={`page-${idx}`} className="mx-auto bg-white border border-surface-200 relative overflow-hidden" style={{ width: '794px', minHeight: '1123px', boxShadow: '0 18px 50px rgba(15,23,42,0.10), 0 3px 10px rgba(15,23,42,0.06)' }}>
+                      {renderPrintLetterheadOverlay()}
+                      <div className="absolute left-[64px] bottom-[20px] text-[9.2px] leading-[1.35] text-black text-left whitespace-pre-line">
+                        {previewLeftBlockLines.join('\n')}
+                      </div>
+                      <div className="absolute right-[18px] bottom-[68px] text-[9px] text-black">{idx + 1}</div>
+                      <div
+                        className="prose max-w-none documentation-page-content"
+                        style={{
+                          paddingLeft: `${layout.marginMm * 3.78}px`,
+                          paddingRight: `${layout.marginMm * 3.78}px`,
+                          paddingBottom: `${layout.marginMm * 3.78}px`,
+                          paddingTop: `${Math.max(layout.marginMm * 3.78, 72)}px`,
+                          fontSize: `${layout.fontSizePt}pt`,
+                          fontFamily: '"Times New Roman", Times, serif',
+                          color: '#000000',
+                          lineHeight: 1.55,
+                        }}
+                        dangerouslySetInnerHTML={{ __html: pageHtml }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="grid md:grid-cols-2 gap-3">
+              <input value={form.tags} onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))} placeholder="Tags (comma-separated)" className="px-3 py-2 rounded border border-surface-300 text-sm" />
+              <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={!!form.is_template} onChange={(e) => setForm((f) => ({ ...f, is_template: e.target.checked }))} /> Save as reusable template</label>
+            </div>
+            <textarea value={form.metadata_json} onChange={(e) => setForm((f) => ({ ...f, metadata_json: e.target.value }))} rows={3} className="w-full px-3 py-2 rounded border border-surface-300 text-xs font-mono" placeholder="Metadata JSON" />
+          </div>
+        </div>
+      </div>
+
+      {emailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl max-w-xl w-full p-6 space-y-3">
+            <h3 className="font-semibold text-surface-900">Email document</h3>
+            <p className="text-sm text-surface-600">To:</p>
+            <div className="flex flex-wrap gap-2">
+              {recipients.map((r) => (
+                <label key={r.email} className="inline-flex items-center gap-1 px-2 py-1 rounded border border-surface-200">
+                  <input type="checkbox" checked={emailModal.to_emails.includes(r.email)} onChange={(e) => setEmailModal((m) => ({ ...m, to_emails: e.target.checked ? [...m.to_emails, r.email] : m.to_emails.filter((x) => x !== r.email) }))} />
+                  <span className="text-sm">{r.full_name || r.email}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-sm text-surface-600">CC:</p>
+            <div className="flex flex-wrap gap-2">
+              {recipients.map((r) => (
+                <label key={`cc-${r.email}`} className="inline-flex items-center gap-1 px-2 py-1 rounded border border-surface-200">
+                  <input type="checkbox" checked={emailModal.cc_emails.includes(r.email)} onChange={(e) => setEmailModal((m) => ({ ...m, cc_emails: e.target.checked ? [...m.cc_emails, r.email] : m.cc_emails.filter((x) => x !== r.email) }))} />
+                  <span className="text-sm">{r.full_name || r.email}</span>
+                </label>
+              ))}
+            </div>
+            <input value={emailModal.subject} onChange={(e) => setEmailModal((m) => ({ ...m, subject: e.target.value }))} className="w-full px-3 py-2 rounded border border-surface-300 text-sm" placeholder="Subject" />
+            <input
+              value={emailModal.manual_to || ''}
+              onChange={(e) => setEmailModal((m) => ({ ...m, manual_to: e.target.value }))}
+              className="w-full px-3 py-2 rounded border border-surface-300 text-sm"
+              placeholder="Manual To emails (comma-separated)"
+            />
+            <input
+              value={emailModal.manual_cc || ''}
+              onChange={(e) => setEmailModal((m) => ({ ...m, manual_cc: e.target.value }))}
+              className="w-full px-3 py-2 rounded border border-surface-300 text-sm"
+              placeholder="Manual CC emails (comma-separated)"
+            />
+            <textarea value={emailModal.message} onChange={(e) => setEmailModal((m) => ({ ...m, message: e.target.value }))} rows={4} className="w-full px-3 py-2 rounded border border-surface-300 text-sm" placeholder="Email body" />
+            <div className="flex gap-2">
+              <button type="button" onClick={sendEmail} className="px-4 py-2 rounded-lg bg-brand-600 text-white">Send</button>
+              <button type="button" onClick={() => setEmailModal(null)} className="px-4 py-2 rounded-lg border border-surface-300">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showVersions && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full p-6 space-y-3 max-h-[85vh] overflow-auto">
+            <h3 className="font-semibold text-surface-900">Version history</h3>
+            {versions.length === 0 ? <p className="text-sm text-surface-500">No versions available yet.</p> : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                <div className="space-y-2 lg:col-span-1">
+                  {versions.map((v) => (
+                    <div key={v.id} className="border border-surface-200 rounded-lg p-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-surface-900">v{v.version_no} · {v.title || 'Untitled'}</p>
+                        <p className="text-xs text-surface-500">{v.document_type} · {v.changed_by || 'user'} · {formatDate(v.created_at)}</p>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <button type="button" onClick={() => loadDiffSide('left', v.id)} className="px-2 py-1 rounded border border-surface-300 text-xs">Left</button>
+                        <button type="button" onClick={() => loadDiffSide('right', v.id)} className="px-2 py-1 rounded border border-surface-300 text-xs">Right</button>
+                        <button type="button" onClick={() => restoreVersion(v.id)} className="px-2 py-1 rounded border border-surface-300 text-xs">Restore</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="lg:col-span-2 border border-surface-200 rounded-lg overflow-hidden">
+                  <div className="px-3 py-2 bg-surface-50 border-b border-surface-200 text-xs text-surface-600">
+                    Side-by-side version diff
+                  </div>
+                  <div className="max-h-[60vh] overflow-auto divide-y divide-surface-100">
+                    {diffRows.map((r) => (
+                      <div key={r.i} className={`grid grid-cols-2 gap-0 text-xs ${r.kind === 'added' ? 'bg-emerald-50' : r.kind === 'removed' ? 'bg-red-50' : r.kind === 'changed' ? 'bg-amber-50' : ''}`}>
+                        <pre className="p-2 whitespace-pre-wrap border-r border-surface-100">{r.l || ' '}</pre>
+                        <pre className="p-2 whitespace-pre-wrap">{r.r || ' '}</pre>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="pt-2">
+              <button type="button" onClick={() => setShowVersions(false)} className="px-4 py-2 rounded-lg border border-surface-300">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div
+        ref={paginationMeasureRef}
+        style={{ position: 'fixed', left: '-30000px', top: 0, width: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }}
+        aria-hidden
+      />
+    </div>
+  );
+}
+
 function LibraryTab() {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2348,6 +3328,7 @@ export default function AccountingManagement() {
           {activeTab === 'purchase-orders' && <PurchaseOrdersTab />}
           {activeTab === 'statements' && <StatementsTab />}
           {activeTab === 'library' && <LibraryTab />}
+          {activeTab === 'documentation' && <DocumentationTab />}
         </div>
       </div>
     </div>

@@ -1923,6 +1923,670 @@ router.post('/statements/:id/send-email', async (req, res, next) => {
   }
 });
 
+const DOC_TYPES = new Set([
+  'company_employment_contract',
+  'normal_contract',
+  'agreement',
+  'termination_letter',
+  'nda',
+  'letter_of_intent',
+  'generic_report',
+  'generic_letter',
+]);
+
+function stripHtmlToText(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<\/(p|div|h1|h2|h3|h4|h5|h6|li|tr|table)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function saveDocumentationVersion(tenantId, documentationId, changedBy) {
+  const r = await query(
+    `SELECT title, document_type, content_html, metadata_json FROM accounting_documentation
+     WHERE id = @id AND tenant_id = @tenantId`,
+    { id: documentationId, tenantId }
+  );
+  const doc = r.recordset?.[0];
+  if (!doc) return;
+  const maxV = await query(
+    `SELECT ISNULL(MAX(version_no), 0) AS v FROM accounting_documentation_versions
+     WHERE documentation_id = @id AND tenant_id = @tenantId`,
+    { id: documentationId, tenantId }
+  );
+  const nextVersion = Number(get(maxV.recordset?.[0], 'v') || 0) + 1;
+  await query(
+    `INSERT INTO accounting_documentation_versions
+      (documentation_id, tenant_id, version_no, title, document_type, content_html, metadata_json, changed_by)
+     VALUES (@id, @tenantId, @version_no, @title, @document_type, @content_html, @metadata_json, @changed_by)`,
+    {
+      id: documentationId,
+      tenantId,
+      version_no: nextVersion,
+      title: get(doc, 'title') || null,
+      document_type: get(doc, 'document_type') || null,
+      content_html: get(doc, 'content_html') || null,
+      metadata_json: get(doc, 'metadata_json') || null,
+      changed_by: changedBy || null,
+    }
+  );
+}
+
+async function buildDocumentationPdf(tenantId, docRow) {
+  const settingsResult = await query(
+    `SELECT company_name, address, vat_number, company_registration, email, website, payment_terms, banking_details, logo_path FROM accounting_company_settings WHERE tenant_id = @tenantId`,
+    { tenantId }
+  );
+  const company = settingsResult.recordset?.[0] || {};
+  let logoBuffer = null;
+  if (company.logo_path) {
+    const fp = path.join(process.cwd(), (company.logo_path || '').replace(/\//g, path.sep));
+    if (fs.existsSync(fp) && fp.startsWith(uploadsRoot)) logoBuffer = fs.readFileSync(fp);
+  }
+  const metadataRaw = get(docRow, 'metadata_json');
+  let letterheadStyle = 'executive';
+  let brandTheme = 'executive_red';
+  let fontSizePt = 11;
+  // Keep PDF auto-population consistent and professional for all documents.
+  // (Header toggles remain available for Word export, but PDF always shows core metadata.)
+  const showDocTitle = true;
+  const showDocDate = true;
+  const showDocRecipient = true;
+  const showDocSubject = true;
+  try {
+    const m = metadataRaw ? JSON.parse(metadataRaw) : {};
+    letterheadStyle = m?.pageLayout?.letterheadStyle || m?.letterheadStyle || 'executive';
+    brandTheme = m?.pageLayout?.brandTheme || m?.brandTheme || 'executive_red';
+    if (m?.pageLayout?.fontSizePt) fontSizePt = Number(m.pageLayout.fontSizePt) || 11;
+  } catch {}
+
+  const html = String(get(docRow, 'content_html') || '');
+  const htmlWithBreakTokens = html.replace(/<div[^>]*data-page-break[^>]*>[\s\S]*?<\/div>/gi, '\n[[PAGE_BREAK]]\n');
+  const plainText = stripHtmlToText(htmlWithBreakTokens);
+  const title = get(docRow, 'title') || 'Documentation';
+  const dateText = formatDate(get(docRow, 'updated_at'));
+  const recipientName = get(docRow, 'recipient_name') || '';
+  const recipientEmail = get(docRow, 'recipient_email') || '';
+  const subject = get(docRow, 'subject') || '';
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 52, bufferPages: true, info: { Title: title } });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const pageW = doc.page.width;
+    const pageH = doc.page.height;
+    const margin = 52;
+    const bodyW = pageW - margin * 2;
+    const theme = { dark: '#7F1D1D', mid: '#991B1B', light: '#FFE4E6' };
+    let bottomReservedSpace = 122;
+
+    const drawLetterhead = () => {
+      // Side-only dark-red design (no top decoration).
+      doc.rect(pageW - 46, 18, 34, pageH - 110).fill(theme.dark);
+      doc.rect(pageW - 50, 170, 2, pageH - 190).fill(theme.mid);
+      doc.save();
+      doc.rotate(-90, { origin: [pageW - 29, pageH * 0.5] });
+      doc.font('Helvetica-Bold').fontSize(10).fillColor('#FFFFFF').text('Think differently', pageW - 29 - 120, pageH * 0.5 - 5, {
+        width: 240,
+        align: 'center',
+      });
+      doc.restore();
+
+      // Large logo at top-left.
+      if (logoBuffer) {
+        try {
+          // Align logo with far-left accent block start.
+          doc.image(logoBuffer, 20, 20, { fit: [156, 96], align: 'left', valign: 'top' });
+        } catch {}
+      } else {
+        doc.font('Helvetica-Bold').fontSize(16).fillColor('#000000').text((company.company_name || 'THINKERS AFRICA').toUpperCase(), 20, 38, { width: 280, align: 'left' });
+      }
+
+      // Bottom-left aligned contact block, line-by-line.
+      const leftBlockX = 20 + 34 + 10;
+      const leftTextWidth = 230;
+      const leftLineHeight = 12;
+      const addressLines = String(company.address || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const leftRawLines = [
+        ...addressLines,
+        company.phone ? `TEL: ${company.phone}` : '',
+        company.email ? `Email: ${company.email}` : '',
+      ].filter(Boolean);
+      const wrapLine = (line, maxW) => {
+        const words = String(line || '').trim().split(/\s+/).filter(Boolean);
+        if (!words.length) return [];
+        const out = [];
+        let cur = words[0];
+        for (let i = 1; i < words.length; i++) {
+          const next = `${cur} ${words[i]}`;
+          if (doc.widthOfString(next) <= maxW) cur = next;
+          else { out.push(cur); cur = words[i]; }
+        }
+        out.push(cur);
+        return out;
+      };
+      const wrapped = [];
+      for (const ln of leftRawLines) wrapped.push(...wrapLine(ln, leftTextWidth));
+      const leftTextHeight = Math.max(leftLineHeight, wrapped.length * leftLineHeight);
+      const leftAccentHeight = Math.max(64, leftTextHeight + 6);
+      const leftAccentY = pageH - 20 - leftAccentHeight;
+      doc.rect(20, leftAccentY, 34, leftAccentHeight).fill(theme.mid);
+      if (wrapped.length) {
+        bottomReservedSpace = Math.max(122, leftAccentHeight + 26);
+        doc.font('Helvetica').fontSize(9.2).fillColor('#000000');
+        doc.text(wrapped.join('\n'), leftBlockX, leftAccentY, {
+          width: leftTextWidth,
+          height: leftAccentHeight,
+          align: 'left',
+          lineGap: 1.6,
+        });
+      }
+
+      // Intentionally no right-side company details text.
+    };
+
+    const drawFooter = () => {
+      // Intentionally blank: company details are rendered bottom-right near the accent block.
+    };
+
+    let currentPageNumber = 1;
+    const drawPageNumber = () => {
+      // Bottom-right number below the right red design block, on white area.
+      doc.font('Helvetica').fontSize(9).fillColor('#000000').text(String(currentPageNumber), pageW - 34, pageH - 68, {
+        width: 24,
+        align: 'center',
+      });
+    };
+
+    const newPage = () => {
+      doc.addPage();
+      currentPageNumber += 1;
+      drawLetterhead();
+      drawFooter();
+      drawPageNumber();
+      doc.font('Times-Roman').fontSize(fontSizePt).fillColor('#000000');
+      return margin + 72;
+    };
+
+    drawLetterhead();
+    drawFooter();
+    drawPageNumber();
+    let y = margin + 72;
+
+    if (showDocTitle) {
+      doc.font('Helvetica-Bold').fontSize(18).fillColor('#000000').text(title, margin, y, { width: bodyW, align: 'left' });
+      y += 40;
+    }
+    if (showDocDate) {
+      doc.font('Helvetica').fontSize(10).fillColor('#000000');
+      doc.text(`Date: ${dateText}`, margin, y, { width: bodyW, align: 'right' });
+      y += 18;
+    }
+    if (showDocRecipient) {
+      if (recipientName) { doc.font('Helvetica-Bold').fontSize(10.4).fillColor('#000000').text(recipientName, margin, y, { width: bodyW }); y += 18; }
+      if (recipientEmail) { doc.font('Helvetica').fontSize(10).fillColor('#000000').text(recipientEmail, margin, y, { width: bodyW }); y += 18; }
+    }
+    if (showDocSubject && subject) {
+      doc.font('Helvetica-Bold').fontSize(10).fillColor('#000000').text('SUBJECT', margin, y, { width: bodyW });
+      y += 14;
+      doc.font('Helvetica-Bold').fontSize(11.3).fillColor('#000000').text(subject, margin, y, { width: bodyW });
+      y += 24;
+    }
+    if (showDocTitle || showDocDate || showDocRecipient || (showDocSubject && subject)) {
+      doc.moveTo(margin, y).lineTo(pageW - margin, y).lineWidth(0.9).strokeColor('#CBD5E1').stroke();
+      y += 18;
+    }
+
+    const blocks = plainText.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+    const bodyLineGap = Math.max(2, Number((fontSizePt * 0.5).toFixed(1)));
+    const bodyParagraphGap = Math.max(4, Number((fontSizePt * 0.5).toFixed(1)));
+    doc.font('Times-Roman').fontSize(fontSizePt).fillColor('#000000');
+    const contentBottomY = () => pageH - margin - bottomReservedSpace;
+    for (const block of blocks) {
+      const parts = String(block).split('[[PAGE_BREAK]]');
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i].trim();
+        if (part) {
+          const h = doc.heightOfString(part, { width: bodyW, align: 'justify', lineGap: bodyLineGap });
+          if (y + h > contentBottomY()) y = newPage();
+          doc.font('Times-Roman').fontSize(fontSizePt).fillColor('#000000').text(part, margin, y, { width: bodyW, align: 'justify', lineGap: bodyLineGap });
+          y += h + bodyParagraphGap;
+        }
+        if (i < parts.length - 1) y = newPage();
+      }
+    }
+
+    doc.end();
+  });
+}
+
+function buildDocumentationWordHtml(docRow, company = {}, logoDataUri = '') {
+  const title = String(get(docRow, 'title') || 'Document');
+  const subject = String(get(docRow, 'subject') || '');
+  const recipientName = String(get(docRow, 'recipient_name') || '');
+  const recipientEmail = String(get(docRow, 'recipient_email') || '');
+  const updatedAt = formatDate(get(docRow, 'updated_at'));
+  const rawContent = String(get(docRow, 'content_html') || '').trim();
+  const content = rawContent || '<p>[Type document content here]</p>';
+  const companyName = String(company.company_name || 'Thinkers Afrika (Pty) Ltd');
+  const companyAddress = String(company.address || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const companyPhone = String(company.phone || '').trim();
+  const companyEmail = String(company.email || '').trim();
+  let showDocTitle = true;
+  let showDocDate = true;
+  let showDocRecipient = true;
+  let showDocSubject = true;
+  try {
+    const m = JSON.parse(String(get(docRow, 'metadata_json') || '{}'));
+    if (m?.pageLayout?.showDocTitle === false) showDocTitle = false;
+    if (m?.pageLayout?.showDocDate === false) showDocDate = false;
+    if (m?.pageLayout?.showDocRecipient === false) showDocRecipient = false;
+    if (m?.pageLayout?.showDocSubject === false) showDocSubject = false;
+  } catch {}
+  const hasHeaderMeta = showDocTitle || showDocDate || showDocRecipient || (showDocSubject && !!subject);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${title.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</title>
+  <style>
+    @page { size: A4; margin: 20mm 18mm 22mm 18mm; }
+    body { font-family: "Times New Roman", Times, serif; font-size: 12pt; line-height: 1.5; color: #000; margin: 0; }
+    h1, h2, h3 { margin: 0 0 10px; }
+    h1 { font-size: 20pt; }
+    h2 { font-size: 16pt; }
+    h3 { font-size: 14pt; }
+    p { margin: 0 0 12px; text-align: justify; }
+    ul, ol { margin: 0 0 12px 26px; text-align: justify; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0 0 12px; }
+    th, td { border: 1px solid #222; padding: 6px 8px; vertical-align: top; word-break: break-word; }
+    img { max-width: 100%; height: auto; }
+    .page-shell { position: relative; min-height: 275mm; }
+    .brand-right-main { position: absolute; right: -2mm; top: 6mm; width: 9mm; height: 245mm; background: #7F1D1D; }
+    .brand-right-thin { position: absolute; right: 8mm; top: 46mm; width: 0.6mm; height: 214mm; background: #991B1B; }
+    .brand-left-block { position: absolute; left: -1mm; bottom: 10mm; width: 9mm; height: 26mm; background: #991B1B; }
+    .slogan { position: absolute; right: -0.5mm; top: 122mm; color: #fff; font-size: 9pt; font-weight: 700; writing-mode: vertical-rl; transform: rotate(180deg); }
+    .logo-wrap { margin: 2mm 0 14mm 0; }
+    .logo-wrap img { max-width: 48mm; max-height: 26mm; display: block; }
+    .logo-fallback { font-family: Arial, sans-serif; font-size: 14pt; font-weight: 700; }
+    .meta { margin-bottom: 18px; }
+    .meta p { margin: 0 0 4px; }
+    .separator { border-top: 1px solid #CBD5E1; margin: 14px 0 18px; }
+    .content-area { margin-right: 14mm; }
+    .address-block { position: absolute; left: 11mm; bottom: 10mm; width: 70mm; font-family: Arial, sans-serif; font-size: 9pt; line-height: 1.35; }
+    .address-line { margin: 0; }
+    .page-no { position: absolute; right: 5mm; bottom: 24mm; font-family: Arial, sans-serif; font-size: 9pt; }
+  </style>
+</head>
+<body>
+  <div class="page-shell">
+    <div class="brand-right-main"></div>
+    <div class="brand-right-thin"></div>
+    <div class="brand-left-block"></div>
+    <div class="slogan">Think differently</div>
+
+    <div class="content-area">
+      <div class="logo-wrap">
+        ${logoDataUri ? `<img src="${logoDataUri}" alt="Company logo" />` : `<div class="logo-fallback">${companyName.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`}
+      </div>
+      <div class="meta">
+        ${showDocTitle ? `<h1>${title.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h1>` : ''}
+        ${showDocDate ? `<p style="text-align:right;"><strong>Date:</strong> ${updatedAt.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : ''}
+        ${showDocRecipient && recipientName ? `<p>${recipientName.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : ''}
+        ${showDocRecipient && recipientEmail ? `<p>${recipientEmail.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : ''}
+        ${showDocSubject && subject ? `<p><strong>SUBJECT</strong></p><p><strong>${subject.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</strong></p>` : ''}
+      </div>
+      ${hasHeaderMeta ? '<div class="separator"></div>' : ''}
+      ${content}
+    </div>
+
+    <div class="address-block">
+      ${companyAddress.map((line) => `<p class="address-line">${line.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`).join('')}
+      ${companyPhone ? `<p class="address-line">TEL: ${companyPhone.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : ''}
+      ${companyEmail ? `<p class="address-line">Email: ${companyEmail.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : ''}
+    </div>
+    <div class="page-no">1</div>
+  </div>
+</body>
+</html>`;
+}
+
+router.use('/documentation', (_req, res) => {
+  res.status(410).json({ error: 'Documentation module has been removed from Accounting Management' });
+});
+
+router.get('/documentation', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const q = String(req.query.q || '').trim();
+    const type = String(req.query.type || '').trim();
+    const templatesOnly = String(req.query.templates_only || '') === 'true';
+    let sqlText = `SELECT id, title, document_type, status, tags, subject, recipient_name, recipient_email, cc_emails, is_template, created_by, updated_by, created_at, updated_at
+      FROM accounting_documentation WHERE tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (type) { sqlText += ` AND document_type = @type`; params.type = type; }
+    if (templatesOnly) sqlText += ` AND is_template = 1`;
+    if (q) {
+      sqlText += ` AND (title LIKE @q OR subject LIKE @q OR recipient_name LIKE @q OR tags LIKE @q)`;
+      params.q = `%${q}%`;
+    }
+    sqlText += ` ORDER BY is_template DESC, updated_at DESC`;
+    const result = await query(sqlText, params);
+    res.json({ documents: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/recipients', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const usersR = await query(`SELECT full_name, email FROM users WHERE tenant_id = @tenantId AND email IS NOT NULL`, { tenantId });
+    res.json({ recipients: (usersR.recordset || []).map((u) => ({ full_name: u.full_name, email: u.email })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/documentation', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const b = req.body || {};
+    const document_type = DOC_TYPES.has(String(b.document_type || '')) ? String(b.document_type) : 'generic_letter';
+    const ins = await query(
+      `INSERT INTO accounting_documentation
+      (tenant_id, title, document_type, status, tags, subject, recipient_name, recipient_email, cc_emails, content_html, metadata_json, is_template, created_by, updated_by)
+      OUTPUT INSERTED.id
+      VALUES (@tenantId, @title, @document_type, @status, @tags, @subject, @recipient_name, @recipient_email, @cc_emails, @content_html, @metadata_json, @is_template, @created_by, @updated_by)`,
+      {
+        tenantId,
+        title: String(b.title || 'Untitled document').slice(0, 300),
+        document_type,
+        status: String(b.status || 'draft').slice(0, 40),
+        tags: b.tags || null,
+        subject: b.subject || null,
+        recipient_name: b.recipient_name || null,
+        recipient_email: b.recipient_email || null,
+        cc_emails: b.cc_emails || null,
+        content_html: b.content_html || '',
+        metadata_json: b.metadata_json || null,
+        is_template: b.is_template ? 1 : 0,
+        created_by: req.user?.email || req.user?.full_name || 'user',
+        updated_by: req.user?.email || req.user?.full_name || 'user',
+      }
+    );
+    const newId = ins.recordset?.[0]?.id;
+    await saveDocumentationVersion(tenantId, newId, req.user?.email || req.user?.full_name || 'user');
+    res.status(201).json({ id: newId, ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/:id', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const r = await query(`SELECT * FROM accounting_documentation WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const docRow = r.recordset?.[0];
+    if (!docRow) return res.status(404).json({ error: 'Document not found' });
+    res.json({ document: docRow });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/documentation/:id', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const b = req.body || {};
+    const updates = [];
+    const params = { id: req.params.id, tenantId, updated_by: req.user?.email || req.user?.full_name || 'user' };
+    const fields = ['title', 'document_type', 'status', 'tags', 'subject', 'recipient_name', 'recipient_email', 'cc_emails', 'content_html', 'metadata_json', 'is_template'];
+    for (const f of fields) {
+      if (b[f] !== undefined) {
+        if (f === 'document_type') {
+          params[f] = DOC_TYPES.has(String(b[f] || '')) ? String(b[f]) : 'generic_letter';
+        } else if (f === 'is_template') {
+          params[f] = b[f] ? 1 : 0;
+        } else {
+          params[f] = b[f];
+        }
+        updates.push(`${f} = @${f}`);
+      }
+    }
+    updates.push(`updated_by = @updated_by`, `updated_at = SYSUTCDATETIME()`);
+    await query(`UPDATE accounting_documentation SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
+    await saveDocumentationVersion(tenantId, req.params.id, params.updated_by);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/:id/versions', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const r = await query(
+      `SELECT id, documentation_id, version_no, title, document_type, changed_by, created_at
+       FROM accounting_documentation_versions
+       WHERE documentation_id = @id AND tenant_id = @tenantId
+       ORDER BY version_no DESC`,
+      { id: req.params.id, tenantId }
+    );
+    res.json({ versions: r.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/:id/versions/:versionId', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const r = await query(
+      `SELECT * FROM accounting_documentation_versions
+       WHERE id = @versionId AND documentation_id = @id AND tenant_id = @tenantId`,
+      { versionId: req.params.versionId, id: req.params.id, tenantId }
+    );
+    const version = r.recordset?.[0];
+    if (!version) return res.status(404).json({ error: 'Version not found' });
+    res.json({ version });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/documentation/:id/restore-version/:versionId', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const vr = await query(
+      `SELECT * FROM accounting_documentation_versions
+       WHERE id = @versionId AND documentation_id = @id AND tenant_id = @tenantId`,
+      { versionId: req.params.versionId, id: req.params.id, tenantId }
+    );
+    const v = vr.recordset?.[0];
+    if (!v) return res.status(404).json({ error: 'Version not found' });
+    await query(
+      `UPDATE accounting_documentation
+       SET title = @title, document_type = @document_type, content_html = @content_html, metadata_json = @metadata_json,
+           updated_by = @updated_by, updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      {
+        id: req.params.id,
+        tenantId,
+        title: get(v, 'title') || null,
+        document_type: get(v, 'document_type') || 'generic_letter',
+        content_html: get(v, 'content_html') || '',
+        metadata_json: get(v, 'metadata_json') || null,
+        updated_by: req.user?.email || req.user?.full_name || 'user',
+      }
+    );
+    await saveDocumentationVersion(tenantId, req.params.id, req.user?.email || req.user?.full_name || 'user');
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/documentation/:id', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    await query(`DELETE FROM accounting_documentation WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/:id/pdf', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const r = await query(`SELECT * FROM accounting_documentation WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const docRow = r.recordset?.[0];
+    if (!docRow) return res.status(404).json({ error: 'Document not found' });
+    const pdf = await buildDocumentationPdf(tenantId, docRow);
+    res.setHeader('Content-Type', 'application/pdf');
+    const safeTitle = String(get(docRow, 'title') || 'document').replace(/[^a-z0-9_-]/gi, '-');
+    res.setHeader('Content-Disposition', `inline; filename="${safeTitle}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/:id/pdf-download', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const r = await query(`SELECT * FROM accounting_documentation WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const docRow = r.recordset?.[0];
+    if (!docRow) return res.status(404).json({ error: 'Document not found' });
+    const pdf = await buildDocumentationPdf(tenantId, docRow);
+    const safeTitle = String(get(docRow, 'title') || 'document').replace(/[^a-z0-9_-]/gi, '-');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/:id/word-template-download', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const r = await query(`SELECT * FROM accounting_documentation WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const docRow = r.recordset?.[0];
+    if (!docRow) return res.status(404).json({ error: 'Document not found' });
+    const settingsResult = await query(
+      `SELECT company_name, address, email, website, logo_path FROM accounting_company_settings WHERE tenant_id = @tenantId`,
+      { tenantId }
+    );
+    const company = settingsResult.recordset?.[0] || {};
+    let logoDataUri = '';
+    if (company.logo_path) {
+      const fp = path.join(process.cwd(), String(company.logo_path || '').replace(/\//g, path.sep));
+      if (fs.existsSync(fp) && fp.startsWith(uploadsRoot)) {
+        try {
+          const ext = path.extname(fp).toLowerCase();
+          const mime = ext === '.png' ? 'image/png'
+            : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+              : ext === '.gif' ? 'image/gif'
+                : ext === '.webp' ? 'image/webp'
+                  : 'image/png';
+          const b64 = fs.readFileSync(fp).toString('base64');
+          logoDataUri = `data:${mime};base64,${b64}`;
+        } catch {}
+      }
+    }
+    const safeTitle = String(get(docRow, 'title') || 'document-template').replace(/[^a-z0-9_-]/gi, '-');
+    const wordHtml = buildDocumentationWordHtml(docRow, company, logoDataUri);
+    res.setHeader('Content-Type', 'application/msword; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.doc"`);
+    res.send(Buffer.from(wordHtml, 'utf8'));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/documentation/:id/send-email', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const { to_emails = [], cc_emails = [], subject, message } = req.body || {};
+    const toList = Array.isArray(to_emails) ? to_emails : [].concat(to_emails ? [to_emails] : []);
+    const ccList = Array.isArray(cc_emails) ? cc_emails : [].concat(cc_emails ? [cc_emails] : []);
+    if (toList.length === 0) return res.status(400).json({ error: 'At least one To recipient required' });
+    const r = await query(`SELECT * FROM accounting_documentation WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const docRow = r.recordset?.[0];
+    if (!docRow) return res.status(404).json({ error: 'Document not found' });
+    const pdf = await buildDocumentationPdf(tenantId, docRow);
+    if (!isEmailConfigured()) return res.status(503).json({ error: 'Email is not configured' });
+    await sendEmail({
+      to: toList.join(', '),
+      cc: ccList.length ? ccList.join(', ') : undefined,
+      subject: subject || get(docRow, 'subject') || get(docRow, 'title') || 'Document',
+      body: message || `Please find attached ${get(docRow, 'title') || 'document'}.`,
+      html: false,
+      attachments: [{ filename: `${String(get(docRow, 'title') || 'document').replace(/[^a-z0-9_-]/gi, '-')}.pdf`, content: pdf }],
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/documentation/figures/upload', async (req, res, next) => {
+  try {
+    const multer = (await import('multer')).default;
+    const tenantId = req.user?.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const dir = path.join(uploadsRoot, String(tenantId), 'documentation', 'figures');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const upload = multer({
+      storage: multer.diskStorage({
+        destination: (_req, _file, cb) => cb(null, dir),
+        filename: (_req, file, cb) => cb(null, `${Date.now()}-${safeBasename(file.originalname) || 'figure.png'}`),
+      }),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }).single('file');
+    upload(req, res, (err) => {
+      if (err) return next(err);
+      if (!req.file) return res.status(400).json({ error: 'No file' });
+      const rel = `uploads/accounting/${tenantId}/documentation/figures/${req.file.filename}`;
+      res.json({ ok: true, url: `/api/accounting/documentation/figures/${encodeURIComponent(req.file.filename)}`, path: rel });
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/documentation/figures/:filename', (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    const filename = safeBasename(req.params.filename);
+    const filePath = path.join(uploadsRoot, String(tenantId), 'documentation', 'figures', filename);
+    if (!filePath.startsWith(path.join(uploadsRoot, String(tenantId))) || !fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.sendFile(filePath, (err) => { if (err && !res.headersSent) next(err); });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** Library: list documents in uploads/accounting/{tenantId}/library */
 const LIBRARY_ALLOWED_EXT = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
 function safeBasename(name) {

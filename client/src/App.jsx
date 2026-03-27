@@ -15,7 +15,6 @@ import Tasks from './Tasks';
 import Profile from './Profile';
 import Management from './Management';
 import ReportBreakdown from './ReportBreakdown';
-import TransportOperations from './TransportOperations';
 import Recruitment from './Recruitment';
 import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
@@ -56,7 +55,6 @@ function AppRoutes() {
         <Route path="tasks" element={<Tasks />} />
         <Route path="profile" element={<Profile />} />
         <Route path="management" element={<Management />} />
-        <Route path="transport-operations" element={<TransportOperations />} />
         <Route path="recruitment" element={<Recruitment />} />
         <Route path="letters" element={<Letters />} />
         <Route path="accounting-management" element={<AccountingManagement />} />

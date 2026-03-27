@@ -78,13 +78,6 @@ function IconManagement({ className }) {
   );
 }
 
-function IconTransport({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m0 0a2 2 0 104 0 2 2 0 00-4 0m-4 0a2 2 0 104 0 2 2 0 00-4 0m0-6h.01M12 16h.01M5 8h14l1.921 2.876c.075.113.129.24.16.373a2 2 0 01-.16 1.751L20 14v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2l-.921-1.376a2 2 0 01-.16-1.751 1.006 1.006 0 01.16-.373L5 8z" />
-    </svg>
-  );
-}
 
 function IconRecruitment({ className }) {
   return (
@@ -109,6 +102,7 @@ function IconAccounting({ className }) {
     </svg>
   );
 }
+
 
 function IconChevronLeft({ className }) {
   return (
@@ -176,12 +170,6 @@ const navSections = [
     ],
   },
   {
-    label: 'Transport',
-    items: [
-      { to: '/transport-operations', label: 'Transport operations', icon: IconTransport, shortcut: '⌘8', pageId: 'transport_operations' },
-    ],
-  },
-  {
     label: 'HR',
     items: [
       { to: '/recruitment', label: 'Recruitment', icon: IconRecruitment, shortcut: '⌘9', pageId: 'recruitment' },
@@ -217,7 +205,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
   useEffect(() => {
     function onKeyDown(e) {
       if (e.metaKey || e.ctrlKey) {
-        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '8': '/transport-operations', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
+        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
         const path = map[e.key];
         const pageId = path && PATH_PAGE_IDS[path];
         if (path && pageId && canAccessPage(user, pageId)) {

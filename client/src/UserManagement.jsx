@@ -18,6 +18,9 @@ const PAGE_ROLES = [
   { id: 'tasks', label: 'Tasks' },
   { id: 'transport_operations', label: 'Transport operations' },
   { id: 'recruitment', label: 'Recruitment' },
+  { id: 'letters', label: 'Letters' },
+  { id: 'accounting_management', label: 'Accounting management' },
+  { id: 'tracking_integration', label: 'Tracking & integration' },
 ];
 
 function formatDate(d) {

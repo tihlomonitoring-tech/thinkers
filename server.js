@@ -15,7 +15,6 @@ import reportBreakdownRoutes from './src/routes/reportBreakdown.js';
 import testEmailRoutes from './src/routes/testEmail.js';
 import tasksRoutes, { runOverdueTaskNotifications } from './src/routes/tasks.js';
 import profileManagementRoutes from './src/routes/profileManagement.js';
-import transportOperationsRoutes from './src/routes/transportOperations.js';
 import progressReportsRoutes from './src/routes/progressReports.js';
 import actionPlansRoutes from './src/routes/actionPlans.js';
 import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
@@ -51,7 +50,6 @@ app.use('/api/report-breakdown', reportBreakdownRoutes);
 app.use('/api/test-email', testEmailRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/profile-management', profileManagementRoutes);
-app.use('/api/transport-operations', transportOperationsRoutes);
 app.use('/api/progress-reports', progressReportsRoutes);
 app.use('/api/action-plans', actionPlansRoutes);
 app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
@@ -79,7 +77,16 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Thinkers API running at http://localhost:${PORT}`);
-  console.log('Email configured:', isEmailConfigured() ? 'yes' : 'no (set EMAIL_USER & EMAIL_PASS in .env)');
+  const emailOn = isEmailConfigured();
+  console.log(
+    'Email:',
+    emailOn
+      ? 'yes (SMTP via EMAIL_USER / EMAIL_PASS @ ' + (process.env.EMAIL_HOST || 'smtp.gmail.com').trim() + ')'
+      : 'no — set EMAIL_USER & EMAIL_PASS in .env (set EMAIL_ENABLED=false to force off)'
+  );
+  if (emailOn && !(process.env.FRONTEND_ORIGIN || process.env.APP_URL || '').trim()) {
+    console.warn('Email: set FRONTEND_ORIGIN (or APP_URL) so password-reset links are not localhost-only.');
+  }
   // Run overdue task emails every 24 hours
   const OVERDUE_INTERVAL_MS = 24 * 60 * 60 * 1000;
   setInterval(() => {

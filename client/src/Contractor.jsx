@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
+import { canAccessPage } from './lib/pageAccess.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { contractor as contractorApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
 import { parseExcelFile, downloadTruckTemplate, downloadDriverTemplate, downloadConsolidatedTemplate, parseConsolidatedFile } from './lib/excelImport.js';
@@ -1568,6 +1569,14 @@ export default function Contractor() {
               <div className="w-full">
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Fleet</h2>
+                  {canAccessPage(user, 'tracking_integration') && (
+                    <p className="text-sm text-surface-600 mb-3">
+                      <Link to="/tracking-integration" className="text-brand-600 font-medium hover:underline">
+                        Tracking & integration
+                      </Link>
+                      <span className="text-surface-500"> — link trucks to telematics providers and monitor trips (uses this fleet list).</span>
+                    </p>
+                  )}
                   <p className="text-xs text-surface-500 mb-3">Click a truck to view full details.</p>
                   <ul className="space-y-1 text-sm">
                     {trucksList.length === 0 ? <li className="text-surface-500">No trucks yet.</li> : trucksList.map((t) => (

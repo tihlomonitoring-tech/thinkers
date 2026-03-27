@@ -5,6 +5,7 @@ import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
 import { generateShiftReportPdf } from './lib/shiftReportPdf.js';
+import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 
@@ -86,6 +87,26 @@ const CC_TABS = [
   { id: 'contractors_details', label: 'Contractors details', icon: 'building', section: 'Operations' },
   { id: 'breakdowns', label: 'Reported breakdowns', icon: 'alert', section: 'Operations' },
   { id: 'delete_fleet_drivers', label: 'Delete contractors fleets/drivers', icon: 'trash', section: 'Operations' },
+];
+
+/** Rows in manual shift report template PDF for table sections (truck updates → communication log). */
+const SHIFT_REPORT_TEMPLATE_TABLE_ROWS = 8;
+
+const NON_COMPLIANCE_RULE_OPTIONS = [
+  'Excessive Speeding',
+  'Route deviation',
+  'Failure to wear a seat belt',
+  'Driver unreachable',
+  'Delayed to report breakdown',
+  'No documentation',
+  'Dangerous Driving & Traffic Flow Violations',
+  'Vehicle & Documentation Violation',
+  'Not wearing PPE',
+  'Coal temparing',
+  'Coal theft',
+  'Fleet camera obstruction',
+  'Cellphone Usage While Driving',
+  'Failure to report break',
 ];
 
 function CCIcon({ name, className }) {
@@ -1300,6 +1321,7 @@ function TabContractorsDetails({ list, loading }) {
 
 function TabReports() {
   const { user } = useAuth();
+  const [reportsSubTab, setReportsSubTab] = useState('compose');
   const [reportType, setReportType] = useState(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -1319,8 +1341,26 @@ function TabReports() {
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-900">Report composition</h2>
       <p className="text-sm text-surface-600">Document shifts, investigations and performance. Fleet monitoring & logistics industry standard.</p>
+      <div className="inline-flex rounded-lg border border-surface-200 bg-white p-1">
+        <button
+          type="button"
+          onClick={() => setReportsSubTab('compose')}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'compose' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'}`}
+        >
+          Compose report
+        </button>
+        <button
+          type="button"
+          onClick={() => setReportsSubTab('template')}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'template' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'}`}
+        >
+          Shift report template
+        </button>
+      </div>
       <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
-        {!reportType ? (
+        {reportsSubTab === 'template' ? (
+          <ShiftReportTemplateTab user={user} />
+        ) : !reportType ? (
           <div className="p-6 grid gap-4 sm:grid-cols-3">
             {reportTypes.map((r) => (
               <button
@@ -1369,6 +1409,145 @@ function TabReports() {
             setMessage={setMessage}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+function ShiftReportTemplateTab({ user }) {
+  const [routeName, setRouteName] = useState('');
+  const [downloading, setDownloading] = useState(false);
+  const [downloadingWord, setDownloadingWord] = useState(false);
+
+  const buildShiftTemplatePayload = () => {
+    const line = '____________________________';
+    const n = SHIFT_REPORT_TEMPLATE_TABLE_ROWS;
+    const repeat = (count, row) => Array.from({ length: count }, () => ({ ...row }));
+    return {
+      route: routeName.trim() || line,
+      report_date: '',
+      shift_date: '',
+      shift_start: '',
+      shift_end: '',
+      controller1_name: line,
+      controller1_email: line,
+      controller2_name: line,
+      controller2_email: line,
+      status: 'Template',
+      created_by_name: user?.full_name || 'Command Centre',
+      created_at: new Date().toISOString(),
+      total_trucks_scheduled: line,
+      balance_brought_down: line,
+      total_loads_dispatched: line,
+      total_pending_deliveries: line,
+      total_loads_delivered: line,
+      overall_performance: line,
+      key_highlights: line,
+      truck_updates: repeat(n, { time: line, summary: line, delays: line }),
+      incidents: repeat(n, { truck_reg: line, time_reported: line, driver_name: line, issue: line, status: line }),
+      non_compliance_calls: repeat(n, { driver_name: line, truck_reg: line, rule_violated: line, time_of_call: line, summary: line, driver_response: line }),
+      investigations: repeat(n, { truck_reg: line, time: line, location: line, issue_identified: line, findings: line }),
+      communication_log: repeat(n, { time: line, recipient: line, subject: line, method: line, action_required: line }),
+      outstanding_issues: line,
+      handover_key_info: line,
+      declaration: 'As the controller(s) on duty, I/we certify that the information in this shift report is accurate and complete to the best of my/our knowledge.',
+      shift_conclusion_time: '',
+    };
+  };
+
+  const loadTemplateLogoDataUrl = async () => {
+    let logoDataUrl = null;
+    const tenantId = user?.tenant_id;
+    if (tenantId) {
+      try {
+        const blob = await fetch(tenantsApi.logoUrl(tenantId), { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
+        if (blob) {
+          logoDataUrl = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onloadend = () => res(r.result);
+            r.onerror = rej;
+            r.readAsDataURL(blob);
+          });
+        }
+      } catch (_) {}
+    }
+    if (!logoDataUrl) {
+      const logoPaths = ['/logos/tihlo-logo.png', '/logos/tihlo-logo.jpg', '/logos/logo.png'];
+      for (const path of logoPaths) {
+        try {
+          const blob = await fetch(path, { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
+          if (blob) {
+            logoDataUrl = await new Promise((res, rej) => {
+              const r = new FileReader();
+              r.onloadend = () => res(r.result);
+              r.onerror = rej;
+              r.readAsDataURL(blob);
+            });
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+    return logoDataUrl;
+  };
+
+  const downloadTemplatePdf = async () => {
+    setDownloading(true);
+    try {
+      const template = buildShiftTemplatePayload();
+      const logoDataUrl = await loadTemplateLogoDataUrl();
+      const doc = generateShiftReportPdf(template, logoDataUrl ? { logoDataUrl } : {});
+      doc.save('shift-report-template.pdf');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const downloadTemplateWord = async () => {
+    setDownloadingWord(true);
+    try {
+      const template = buildShiftTemplatePayload();
+      const logoDataUrl = await loadTemplateLogoDataUrl();
+      const html = buildShiftReportTemplateWordHtml(template, logoDataUrl ? { logoDataUrl } : {});
+      downloadShiftReportTemplateWord(html, 'shift-report-template.doc');
+    } finally {
+      setDownloadingWord(false);
+    }
+  };
+
+  return (
+    <div className="p-6 space-y-4">
+      <h3 className="text-base font-semibold text-surface-900">Shift report template</h3>
+      <p className="text-sm text-surface-600">
+        Download a manual template as PDF or Word (.doc). Both match the system shift report layout, include the company logo when available, and use the same table sections with placeholder rows.
+      </p>
+      <div className="max-w-md">
+        <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Route (optional pre-fill)</label>
+        <input
+          type="text"
+          value={routeName}
+          onChange={(e) => setRouteName(e.target.value)}
+          placeholder="e.g. Majuba route"
+          className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+        />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={downloadTemplatePdf}
+          disabled={downloading || downloadingWord}
+          className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+        >
+          {downloading ? 'Generating PDF…' : 'Download PDF template'}
+        </button>
+        <button
+          type="button"
+          onClick={downloadTemplateWord}
+          disabled={downloadingWord || downloading}
+          className="px-4 py-2 text-sm rounded-lg border border-surface-300 bg-white text-surface-800 hover:bg-surface-50 disabled:opacity-50"
+        >
+          {downloadingWord ? 'Generating Word…' : 'Download Word template'}
+        </button>
       </div>
     </div>
   );
@@ -2679,12 +2858,23 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   const [trucksList, setTrucksList] = useState([]);
   const [driversList, setDriversList] = useState([]);
   const [routeList, setRouteList] = useState([]);
+  const [controller2Options, setController2Options] = useState([]);
+  const [reportedBreakdowns, setReportedBreakdowns] = useState([]);
+  const [selectedBreakdownToImport, setSelectedBreakdownToImport] = useState('');
   const [fleetLoadError, setFleetLoadError] = useState('');
   const [markingAddressed, setMarkingAddressed] = useState(null);
+  const [activeReportId, setActiveReportId] = useState(reportId || initialData?.id || null);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const autosaveTimerRef = useRef(null);
+  const lastAutoSavedSignatureRef = useRef('');
 
   useEffect(() => {
     if (reportId && initialData && String(initialData.id) === String(reportId)) setFormFields(initFormFields(initialData));
   }, [reportId, initialData]);
+
+  useEffect(() => {
+    setActiveReportId(reportId || initialData?.id || null);
+  }, [reportId, initialData?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2724,9 +2914,155 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       .catch(() => setRouteList([]));
   }, []);
 
+  useEffect(() => {
+    ccApi.breakdowns
+      .list()
+      .then((r) => setReportedBreakdowns(Array.isArray(r?.breakdowns) ? r.breakdowns : []))
+      .catch(() => setReportedBreakdowns([]));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    usersApi.list({ limit: 200 })
+      .then((r) => {
+        if (cancelled) return;
+        const list = Array.isArray(r?.users) ? r.users : [];
+        const withCommandCentre = list
+          .filter((u) => Array.isArray(u?.page_roles) && u.page_roles.includes('command_centre'))
+          .map((u) => ({
+            id: u.id,
+            full_name: u.full_name || '',
+            email: u.email || '',
+          }))
+          .filter((u) => u.full_name || u.email)
+          .sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+        setController2Options(withCommandCentre);
+      })
+      .catch(() => {
+        if (!cancelled) setController2Options([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const addRow = (setter, empty) => setter((prev) => [...prev, { ...empty }]);
   const updateRow = (setter, index, field, value) => setter((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
   const removeRow = (setter, index) => setter((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
+  const todayDate = () => new Date().toISOString().slice(0, 10);
+  const selectedController2 =
+    controller2Options.find((u) => {
+      const selectedEmail = String(formFields.controller2_email || '').trim().toLowerCase();
+      const selectedName = String(formFields.controller2_name || '').trim().toLowerCase();
+      return (
+        (selectedEmail && String(u.email || '').trim().toLowerCase() === selectedEmail) ||
+        (!selectedEmail && selectedName && String(u.full_name || '').trim().toLowerCase() === selectedName)
+      );
+    }) || null;
+  const handleController2Select = (selectedId) => {
+    if (!selectedId) {
+      setFormFields((f) => ({ ...f, controller2_name: '', controller2_email: '' }));
+      return;
+    }
+    const picked = controller2Options.find((u) => String(u.id) === String(selectedId));
+    if (!picked) return;
+    setFormFields((f) => ({
+      ...f,
+      controller2_name: picked.full_name || '',
+      controller2_email: picked.email || '',
+      report_date: f.report_date || todayDate(),
+      shift_date: f.shift_date || todayDate(),
+    }));
+  };
+  const selectedRoute = String(formFields.route || '').trim().toLowerCase();
+  const filteredBreakdowns = (reportedBreakdowns || []).filter((b) => {
+    if (!selectedRoute) return true;
+    const routeName = String(b?.route_name || '').trim().toLowerCase();
+    return routeName && routeName === selectedRoute;
+  });
+  const handleImportBreakdownToIncident = () => {
+    if (!selectedBreakdownToImport) return;
+    const b = (reportedBreakdowns || []).find((x) => String(x.id) === String(selectedBreakdownToImport));
+    if (!b) return;
+    const timeVal = b.reported_at ? String(b.reported_at).slice(11, 16) : '';
+    const incidentRow = {
+      truck_reg: b.truck_registration || '',
+      time_reported: timeVal,
+      driver_name: b.driver_name || '',
+      issue: b.title || b.description || b.type || '',
+      status: b.resolved_at ? 'Resolved' : 'Open',
+    };
+    setIncidents((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return [incidentRow];
+      const first = prev[0] || {};
+      const firstEmpty = !first.truck_reg && !first.time_reported && !first.driver_name && !first.issue && !first.status;
+      if (prev.length === 1 && firstEmpty) return [incidentRow];
+      return [incidentRow, ...prev];
+    });
+    setSelectedBreakdownToImport('');
+  };
+
+  const buildShiftPayload = () => {
+    const filteredTruckUpdates = truckUpdates.filter((u) => u.time || u.summary || u.delays);
+    const filteredIncidents = incidents.filter((i) => i.truck_reg || i.driver_name || i.issue);
+    const filteredNonCompliance = nonComplianceCalls.filter((n) => n.driver_name || n.truck_reg || n.rule_violated);
+    const filteredInvestigations = investigations.filter((inv) => inv.truck_reg || inv.issue_identified || inv.findings);
+    const filteredComms = commsLog.filter((c) => c.recipient || c.subject);
+    return {
+      ...formFields,
+      truck_updates: filteredTruckUpdates,
+      incidents: filteredIncidents,
+      non_compliance_calls: filteredNonCompliance,
+      investigations: filteredInvestigations,
+      communication_log: filteredComms,
+    };
+  };
+
+  const hasAnyShiftContent = (payload) => {
+    const keys = [
+      'route', 'report_date', 'shift_date', 'shift_start', 'shift_end',
+      'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email',
+      'overall_performance', 'key_highlights', 'outstanding_issues', 'handover_key_info', 'declaration',
+    ];
+    if (keys.some((k) => String(payload?.[k] || '').trim())) return true;
+    const arrays = ['truck_updates', 'incidents', 'non_compliance_calls', 'investigations', 'communication_log'];
+    return arrays.some((k) => Array.isArray(payload?.[k]) && payload[k].length > 0);
+  };
+
+  useEffect(() => {
+    const payload = buildShiftPayload();
+    const signature = JSON.stringify(payload);
+    if (!lastAutoSavedSignatureRef.current) {
+      lastAutoSavedSignatureRef.current = signature;
+      return;
+    }
+    if (signature === lastAutoSavedSignatureRef.current) return;
+    if (saving || readOnly) return;
+
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(async () => {
+      const latestPayload = buildShiftPayload();
+      if (!hasAnyShiftContent(latestPayload)) return;
+      try {
+        setAutoSaving(true);
+        const targetId = activeReportId || reportId;
+        if (targetId) {
+          await ccApi.shiftReports.update(targetId, latestPayload);
+        } else {
+          const res = await ccApi.shiftReports.create(latestPayload);
+          if (res?.report?.id) setActiveReportId(res.report.id);
+        }
+        lastAutoSavedSignatureRef.current = JSON.stringify(latestPayload);
+        setMessage?.('Auto-saved');
+      } catch (_) {
+        // silent fail to avoid interrupting typing flow
+      } finally {
+        setAutoSaving(false);
+      }
+    }, 1400);
+
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, [formFields, truckUpdates, incidents, nonComplianceCalls, investigations, commsLog, activeReportId, reportId, saving, readOnly]);
 
   const sections = [
     { id: 'info', label: 'Report information' },
@@ -2770,27 +3106,20 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     e.preventDefault();
     setSaving(true);
     setMessage('');
-    const filteredTruckUpdates = truckUpdates.filter((u) => u.time || u.summary || u.delays);
-    const filteredIncidents = incidents.filter((i) => i.truck_reg || i.driver_name || i.issue);
-    const filteredNonCompliance = nonComplianceCalls.filter((n) => n.driver_name || n.truck_reg || n.rule_violated);
-    const filteredInvestigations = investigations.filter((inv) => inv.truck_reg || inv.issue_identified || inv.findings);
-    const filteredComms = commsLog.filter((c) => c.recipient || c.subject);
-    const payload = {
-      ...formFields,
-      truck_updates: filteredTruckUpdates,
-      incidents: filteredIncidents,
-      non_compliance_calls: filteredNonCompliance,
-      investigations: filteredInvestigations,
-      communication_log: filteredComms,
-    };
-    if (reportId) {
-      ccApi.shiftReports.update(reportId, payload)
+    const payload = buildShiftPayload();
+    const targetId = activeReportId || reportId;
+    if (targetId) {
+      ccApi.shiftReports.update(targetId, payload)
         .then((r) => { onSaved(r.report); setMessage?.('Saved.'); })
         .catch((err) => setMessage?.(err?.message || 'Save failed'))
         .finally(() => setSaving(false));
     } else {
       ccApi.shiftReports.create(payload)
-        .then((r) => { onSaved(r.report); setMessage?.('Saved. Go to View saved shift reports to submit for approval.'); })
+        .then((r) => {
+          if (r?.report?.id) setActiveReportId(r.report.id);
+          onSaved(r.report);
+          setMessage?.('Saved. Go to View saved shift reports to submit for approval.');
+        })
         .catch((err) => setMessage?.(err?.message || 'Save failed'))
         .finally(() => setSaving(false));
     }
@@ -2813,6 +3142,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       </div>
 
       {message && <div className="px-6 py-3 bg-green-50 text-green-800 text-sm">{message}</div>}
+      {autoSaving && <div className="px-6 py-2 bg-blue-50 text-blue-800 text-xs">Auto-saving…</div>}
       {fleetLoadError && <div className="px-6 py-2 bg-amber-50 text-amber-800 text-sm">{fleetLoadError}</div>}
       {trucksList.length > 0 || driversList.length > 0 ? (
         <p className="px-6 py-1 text-xs text-surface-500">Trucks and drivers loaded from Contractor portal fleet and driver register. Use search to select.</p>
@@ -2890,7 +3220,16 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Controller 2 (optional)</label>
-              <input name="controller2_name" type="text" value={formFields.controller2_name} onChange={set('controller2_name')} placeholder="Full name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-1" />
+              <select
+                value={selectedController2 ? String(selectedController2.id) : ''}
+                onChange={(e) => handleController2Select(e.target.value)}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-1"
+              >
+                <option value="">Select controller 2</option>
+                {controller2Options.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email} {u.email ? `(${u.email})` : ''}</option>
+                ))}
+              </select>
               <input name="controller2_email" type="email" value={formFields.controller2_email} onChange={set('controller2_email')} placeholder="Email" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
           </div>
@@ -2950,6 +3289,36 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
 
         {/* 4. Incidents/breakdowns & non-compliance */}
         <SectionBlock title="Incidents/breakdowns & non-compliance" open={openSection === 'incidents'} onToggle={() => setOpenSection((p) => (p === 'incidents' ? null : 'incidents'))}>
+          <div className="mb-4 rounded-lg border border-surface-200 bg-surface-50 p-3">
+            <p className="text-xs font-semibold text-surface-600 mb-2">Import from Reported breakdowns</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={selectedBreakdownToImport}
+                onChange={(e) => setSelectedBreakdownToImport(e.target.value)}
+                className="min-w-[280px] flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              >
+                <option value="">
+                  {selectedRoute ? 'Select latest breakdown for this route' : 'Select latest breakdown'}
+                </option>
+                {filteredBreakdowns.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {`${b.reported_at ? new Date(b.reported_at).toLocaleString() : 'No date'} - ${b.title || b.type || 'Incident'}${b.truck_registration ? ` - ${b.truck_registration}` : ''}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleImportBreakdownToIncident}
+                disabled={!selectedBreakdownToImport}
+                className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Add to incidents
+              </button>
+            </div>
+            {selectedRoute && filteredBreakdowns.length === 0 && (
+              <p className="mt-2 text-xs text-surface-500">No reported breakdowns found for the selected route. Clear or change route to see more.</p>
+            )}
+          </div>
           <p className="text-xs font-semibold text-surface-600 mb-2">Incidents/breakdowns</p>
           {incidents.map((row, i) => (
             <div key={i} className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2">
@@ -2976,7 +3345,26 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
               <div className="relative">
                 <TruckSearchSelect value={row.truck_reg} onChange={(v) => updateRow(setNonComplianceCalls, i, 'truck_reg', v)} trucksList={trucksList} placeholder="Search truck…" id={`nocomp-truck-${i}`} />
               </div>
-              <input type="text" value={row.rule_violated} onChange={(e) => updateRow(setNonComplianceCalls, i, 'rule_violated', e.target.value)} placeholder="Rule violated" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+              <select
+                value={NON_COMPLIANCE_RULE_OPTIONS.includes(row.rule_violated) ? row.rule_violated : '__other__'}
+                onChange={(e) => updateRow(setNonComplianceCalls, i, 'rule_violated', e.target.value === '__other__' ? '' : e.target.value)}
+                className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
+              >
+                <option value="">Select rule violated</option>
+                {NON_COMPLIANCE_RULE_OPTIONS.map((rule) => (
+                  <option key={rule} value={rule}>{rule}</option>
+                ))}
+                <option value="__other__">Other</option>
+              </select>
+              {!NON_COMPLIANCE_RULE_OPTIONS.includes(row.rule_violated) && (
+                <input
+                  type="text"
+                  value={row.rule_violated || ''}
+                  onChange={(e) => updateRow(setNonComplianceCalls, i, 'rule_violated', e.target.value)}
+                  placeholder="Type other rule violated"
+                  className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
+                />
+              )}
               <input type="text" value={row.time_of_call} onChange={(e) => updateRow(setNonComplianceCalls, i, 'time_of_call', e.target.value)} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
               <input type="text" value={row.summary} onChange={(e) => updateRow(setNonComplianceCalls, i, 'summary', e.target.value)} placeholder="Summary" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
               <input type="text" value={row.driver_response} onChange={(e) => updateRow(setNonComplianceCalls, i, 'driver_response', e.target.value)} placeholder="Driver response" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
