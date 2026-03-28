@@ -39,7 +39,7 @@ function wrapNetworkError(err) {
   if (err?.message === 'Failed to fetch') {
     if (import.meta.env.DEV) {
       return new Error(
-        'Cannot reach the API. (1) Start the backend in the project root: npm run server (or npm start). (2) Wrong port: set VITE_API_BASE in client/.env, e.g. VITE_API_BASE=http://localhost:3001/api, then restart the Vite dev server. (3) If the browser console shows a CORS error, restart the API after changing root .env and ensure NODE_ENV is not production locally unless you intend strict CORS.'
+        'Cannot reach the API (local dev). (1) Start the backend in the project root: npm run server or npm start. (2) If the API uses another port, set VITE_API_BASE in client/.env and restart Vite. (3) This text only appears while running Vite (npm run dev)—it is not shown by the production build. If you see it on https://your live domain, you are not running the deployed bundle; use the production build on Azure and fix server env (FRONTEND_ORIGIN), not localhost.'
       );
     }
     return new Error(

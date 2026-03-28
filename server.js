@@ -50,9 +50,9 @@ function canonicalOrigin(o) {
   }
 }
 
-// CORS: browser Origin must match exactly (scheme + host; www vs apex are different).
-// Production (NODE_ENV=production): only listed origins. Local API (NODE_ENV unset or not production):
-// allow any http(s)://localhost or 127.0.0.1 with any port so Vite on a different port / preview (4173) works.
+// CORS: public origins must match FRONTEND_ORIGIN / FRONTEND_ORIGINS (canonical host, etc.).
+// Loopback browser origins (localhost / 127.0.0.1 / ::1, any port) are always allowed so local dev works
+// even when root .env sets NODE_ENV=production.
 // Split FRONTEND_ORIGIN on commas too (some portals paste multiple URLs into one field).
 const extraFromEnv = [
   ...(process.env.FRONTEND_ORIGIN ? process.env.FRONTEND_ORIGIN.split(',') : []),
@@ -65,13 +65,12 @@ const corsOriginSet = new Set(
 function isLoopbackOrigin(o) {
   try {
     const u = new URL(o);
-    return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    const h = u.hostname.toLowerCase();
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1';
   } catch {
     return false;
   }
 }
-
-const corsStrictProduction = process.env.NODE_ENV === 'production';
 
 app.use(
   cors({
@@ -79,7 +78,9 @@ app.use(
       if (!origin) return callback(null, true);
       const n = canonicalOrigin(origin);
       if (corsOriginSet.has(n)) return callback(null, true);
-      if (!corsStrictProduction && isLoopbackOrigin(origin)) return callback(null, true);
+      // Always allow browser loopback origins. Real users on https://your-domain never send these;
+      // this avoids breaking local dev when root .env has NODE_ENV=production (strict prod CORS otherwise blocks non-5173 Vite ports).
+      if (isLoopbackOrigin(origin)) return callback(null, true);
       if (process.env.LOG_CORS_REJECTIONS === '1' || process.env.LOG_CORS_REJECTIONS === 'true') {
         console.warn('[cors] blocked Origin:', origin, '→ canonical:', n, '| allowed count:', corsOriginSet.size);
       }
