@@ -132,11 +132,23 @@ app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
 
-// Serve frontend (Vite build) when both run on same host (e.g. Render, Railway)
+// Serve frontend (Vite build) when both run on same host (e.g. Render, Railway, Azure)
 const clientDist = path.join(__dirname, 'client', 'dist');
-app.use(express.static(clientDist));
+const noCacheHtml = (res, filePath) => {
+  if (filePath.endsWith('index.html')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+  }
+};
+app.use(
+  express.static(clientDist, {
+    setHeaders: (res, pathName) => noCacheHtml(res, pathName),
+  })
+);
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api')) return next();
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 

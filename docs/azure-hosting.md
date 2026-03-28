@@ -123,7 +123,7 @@ The workflow **`.github/workflows/main_tihlo.yml`** builds on push to `main` and
 - Build the client: `cd client && npm run build`.
 - Serve the contents of `client/dist` from your Express app (e.g. `express.static('client/dist')` and a catch‑all for SPA routing).
 - Deploy the repo including `client/dist` (or run the build in your deployment pipeline).  
-Then one URL serves both API and frontend; no `VITE_API_BASE` needed if the app calls the same origin.
+Then one URL serves both API and frontend; no `VITE_API_BASE` needed if the app calls the same origin (the production client defaults to same-origin `/api`). The server sends **no-cache** headers for `index.html` so browsers pick up new JS after deploy—if users still see old behavior, have them hard-refresh or clear site data once.
 
 ### Option B – Frontend on Azure Static Web Apps
 

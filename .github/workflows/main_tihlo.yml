@@ -39,7 +39,11 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
+      # Same App Service for UI + API: keep VITE_API_BASE empty so the client uses same-origin /api.
+      # If you ever split the frontend to another host, set VITE_API_BASE here (or via secrets) to https://your-api/api.
       - name: Install, build client, shrink package for App Service
+        env:
+          VITE_API_BASE: ''
         run: |
           npm ci
           npm run build --if-present
