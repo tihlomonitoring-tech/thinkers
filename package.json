@@ -10,6 +10,7 @@
     "dev": "node --watch server.js",
     "db:ping": "node index.js",
     "db:create-app-db": "node scripts/create-app-database.js",
+    "db:migrate-all": "node scripts/run-all-migrations.js",
     "server": "node server.js",
     "server:dev": "node --watch server.js",
     "db:schema": "node scripts/run-schema.js",
