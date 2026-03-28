@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Light mode must match pre–dark-mode: explicit scheme so OS dark mode does not tint scrollbars/UI chrome */
+html {
+  color-scheme: light;
+}
+
 body {
   @apply bg-surface-50 text-surface-900 font-sans antialiased;
 }

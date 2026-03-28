@@ -9,9 +9,7 @@ function readStoredTheme() {
     const v = localStorage.getItem(STORAGE_KEY);
     if (v === 'dark' || v === 'light') return v;
   } catch (_) {}
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
-    return 'dark';
-  }
+  // Default light — matches the app before dark mode existed (do not follow OS preference).
   return 'light';
 }
 

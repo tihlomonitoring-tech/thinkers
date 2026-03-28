@@ -10,10 +10,7 @@
     <script>
       (function () {
         try {
-          var t = localStorage.getItem('thinkers-theme');
-          if (t === 'dark') document.documentElement.classList.add('dark');
-          else if (t !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
-            document.documentElement.classList.add('dark');
+          if (localStorage.getItem('thinkers-theme') === 'dark') document.documentElement.classList.add('dark');
         } catch (e) {}
       })();
     </script>
