@@ -36,6 +36,20 @@ function normalizeOrigin(o) {
   return o.trim().replace(/\/$/, '');
 }
 
+/** Normalize scheme + host + port for CORS (host lowercased; avoids www vs WWW mismatches). */
+function canonicalOrigin(o) {
+  const n = normalizeOrigin(o);
+  if (!n) return '';
+  try {
+    const u = new URL(n);
+    const host = u.hostname.toLowerCase();
+    const port = u.port ? `:${u.port}` : '';
+    return `${u.protocol}//${host}${port}`;
+  } catch {
+    return n;
+  }
+}
+
 // CORS: browser Origin must match exactly (scheme + host; www vs apex are different).
 // Production (NODE_ENV=production): only listed origins. Local API (NODE_ENV unset or not production):
 // allow any http(s)://localhost or 127.0.0.1 with any port so Vite on a different port / preview (4173) works.
@@ -43,9 +57,9 @@ function normalizeOrigin(o) {
 const extraFromEnv = [
   ...(process.env.FRONTEND_ORIGIN ? process.env.FRONTEND_ORIGIN.split(',') : []),
   ...(process.env.FRONTEND_ORIGINS ? process.env.FRONTEND_ORIGINS.split(',') : []),
-];
+].map((s) => s.trim());
 const corsOriginSet = new Set(
-  ['http://localhost:5173', 'http://127.0.0.1:5173', ...extraFromEnv].map(normalizeOrigin).filter(Boolean)
+  ['http://localhost:5173', 'http://127.0.0.1:5173', ...extraFromEnv].map(canonicalOrigin).filter(Boolean)
 );
 
 function isLoopbackOrigin(o) {
@@ -63,22 +77,40 @@ app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      const n = normalizeOrigin(origin);
+      const n = canonicalOrigin(origin);
       if (corsOriginSet.has(n)) return callback(null, true);
       if (!corsStrictProduction && isLoopbackOrigin(origin)) return callback(null, true);
+      if (process.env.LOG_CORS_REJECTIONS === '1' || process.env.LOG_CORS_REJECTIONS === 'true') {
+        console.warn('[cors] blocked Origin:', origin, '→ canonical:', n, '| allowed count:', corsOriginSet.size);
+      }
       callback(null, false);
     },
     credentials: true,
   })
 );
 app.use(express.json({ limit: '50mb' })); // allow large payloads e.g. progress report PDF send-email
+
+// Same-site default is Lax. If the SPA is on a different host than the API (cross-site), set
+// SESSION_COOKIE_SAMESITE=none in App Service so the browser sends the session cookie on credentialed fetches (requires HTTPS / secure cookie).
+const rawSameSite = (process.env.SESSION_COOKIE_SAMESITE || 'lax').toLowerCase();
+const sessionSameSite = rawSameSite === 'none' || rawSameSite === 'lax' || rawSameSite === 'strict' ? rawSameSite : 'lax';
+const sessionSecure = process.env.NODE_ENV === 'production';
+if (sessionSameSite === 'none' && !sessionSecure) {
+  console.warn('[session] SESSION_COOKIE_SAMESITE=none requires HTTPS; using secure=false in non-production may break cookies.');
+}
+
 app.use(
   session({
     name: 'thinkers.sid',
     secret: process.env.SESSION_SECRET || 'thinkers-dev-secret-change-in-production',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 },
+    cookie: {
+      secure: sessionSecure,
+      httpOnly: true,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      sameSite: sessionSameSite,
+    },
   })
 );
 

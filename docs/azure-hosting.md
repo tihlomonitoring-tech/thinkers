@@ -77,7 +77,9 @@ The app accepts either **`AZURE_SQL_*`** or **`SQLSERVER_*`** (same semantics).
 |------|--------|--------------|
 | `SESSION_SECRET` | A long random string (e.g. 32+ chars) | ✓ |
 | `FRONTEND_ORIGIN` | Your site URL, e.g. `https://your-app.azurewebsites.net` or `https://your-domain.com` (no trailing slash) | ✓ |
-| `FRONTEND_ORIGINS` | Optional. Comma-separated **extra** origins if users reach the app at more than one URL. Must match the browser address bar exactly (scheme + host, no path; no trailing slash). | |
+| `FRONTEND_ORIGINS` | Optional. Comma-separated **extra** origins if users reach the app at more than one URL. Must match the browser address bar (scheme + host, no path; no trailing slash). Spaces after commas are trimmed. | |
+| `SESSION_COOKIE_SAMESITE` | Optional. Default `lax`. Use `none` only if the **browser’s page URL host** is different from the **API host** (cross-origin SPA + API); requires HTTPS. | |
+| `LOG_CORS_REJECTIONS` | Optional. Set to `1` temporarily to log blocked `Origin` values to App Service logs (see troubleshooting below). | |
 
 The API sets **trust proxy** for Azure’s load balancer so `secure` session cookies work over HTTPS.
 
@@ -92,7 +94,14 @@ That covers `www.wiseapp.co.za`, `wiseapp.co.za`, and the regional Azure default
 
 **Do not** add spaces after commas in `FRONTEND_ORIGINS`. Use **https** for all three if the site is served over HTTPS.
 
-If the UI shows “Cannot reach the API” in production, the browser is blocking the request (wrong `VITE_API_BASE`, or CORS: set `FRONTEND_ORIGIN` / `FRONTEND_ORIGINS` to the exact origin you use in the browser).
+If the UI shows “Cannot reach the API” in production, the browser is blocking the request or the API URL is wrong. Check in order:
+
+1. **Same App Service for UI + API** – Open **https://your-domain/** and confirm `https://your-domain/api/health` returns `{"ok":true}` in the browser. If that 404s, the deploy is missing `client/dist` or the start command is wrong.
+2. **CORS** – `FRONTEND_ORIGIN` and `FRONTEND_ORIGINS` must list **every** URL users type in the address bar (`https://www…`, `https://…` apex, and `https://….azurewebsites.net` if used). No spaces after commas. Restart the Web App after saving.
+3. **Debug CORS** – Add Application setting `LOG_CORS_REJECTIONS` = `1`, restart, reproduce the issue, then read **Log stream** / **Logs**. You will see `[cors] blocked Origin: …` with the exact `Origin` the browser sent; add that string (scheme + host, no path) to `FRONTEND_ORIGIN` or `FRONTEND_ORIGINS`, then remove `LOG_CORS_REJECTIONS`.
+4. **SPA on a different host than the API** – Rebuild the client with `VITE_API_BASE=https://your-api-host/api` and set `SESSION_COOKIE_SAMESITE` = `none` (session cookies on cross-site requests require `SameSite=None` and HTTPS).
+
+If it works locally but not online, the online build is almost always **wrong API base URL**, **missing env on App Service**, or **CORS** (wrong or missing origin).
 
 **Optional – email:**  
 If you use the app’s email features, add `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM_NAME`, and optionally `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_SECURE` as in your `.env.example`.
