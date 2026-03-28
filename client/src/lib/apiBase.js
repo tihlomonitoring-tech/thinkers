@@ -1,8 +1,10 @@
 /**
  * Resolved API base URL (includes `/api`).
  *
- * Production: defaults to same-origin `/api` so any hostname (custom domain, Azure) works without
- * baking URLs. Only uses VITE_API_BASE when it points to a real remote API (split hosting).
+ * Build-time env can wrongly embed http://localhost:3001 (old CI or client/.env). Browsers on
+ * https://wiseapp.co.za cannot reach that. We therefore resolve at RUNTIME first: if the page is
+ * not opened on localhost/127.0.0.1, never use loopback — use same-origin /api (or a valid remote
+ * VITE_API_BASE for split hosting).
  */
 
 function isUnsafeProductionApiHost(hostname) {
@@ -15,7 +17,7 @@ function isUnsafeProductionApiHost(hostname) {
   return false;
 }
 
-/** True if VITE_API_BASE is safe to use in a production build. */
+/** True if VITE_API_BASE is safe to use as a remote API (split hosting). */
 function isUsableProductionViteApiBase(raw) {
   if (!raw) return false;
   const t = raw.trim();
@@ -36,34 +38,60 @@ function absoluteApiBaseFromRemoteUrl(raw) {
   return `${u.origin}${p}/api`;
 }
 
+function bakedViteApiBase() {
+  return typeof import.meta.env?.VITE_API_BASE === 'string' ? import.meta.env.VITE_API_BASE.trim() : '';
+}
+
 export function getApiBase() {
+  const baked = bakedViteApiBase();
+
+  // --- Runtime (browser): fixes bad bundles that still point at localhost on real domains ---
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host && host !== 'localhost' && host !== '127.0.0.1') {
+      if (!baked || /localhost|127\.0\.0\.1/i.test(baked)) {
+        return `${window.location.origin}/api`;
+      }
+      if (isUsableProductionViteApiBase(baked)) {
+        try {
+          return absoluteApiBaseFromRemoteUrl(baked);
+        } catch {
+          return `${window.location.origin}/api`;
+        }
+      }
+      // Dev on LAN: VITE_API_BASE may point at another machine (private IP) — keep as-is
+      if (import.meta.env.DEV && /^https?:\/\//i.test(baked)) {
+        return baked;
+      }
+      return `${window.location.origin}/api`;
+    }
+  }
+
+  // --- Vite dev on localhost / 127.0.0.1 ---
   if (import.meta.env.DEV) {
-    const raw = typeof import.meta.env?.VITE_API_BASE === 'string' ? import.meta.env.VITE_API_BASE.trim() : '';
-    if (raw) return raw;
+    if (baked) return baked;
     return 'http://localhost:3001/api';
   }
 
-  const raw = typeof import.meta.env?.VITE_API_BASE === 'string' ? import.meta.env.VITE_API_BASE.trim() : '';
-
-  if (raw.startsWith('/')) {
-    if (raw === '/api' || raw.endsWith('/api')) return raw;
-    console.warn('[api] VITE_API_BASE should be /api or end with /api; using /api');
+  // --- Production build, no window (SSR) or edge ---
+  if (baked.startsWith('/')) {
+    if (baked === '/api' || baked.endsWith('/api')) return baked;
     return '/api';
   }
 
-  if (raw && isUsableProductionViteApiBase(raw)) {
+  if (baked && isUsableProductionViteApiBase(baked)) {
     try {
-      return absoluteApiBaseFromRemoteUrl(raw);
+      return absoluteApiBaseFromRemoteUrl(baked);
     } catch {
       return '/api';
     }
   }
 
-  if (raw) {
+  if (baked) {
     console.warn(
-      '[api] Ignoring VITE_API_BASE for production (loopback, LAN, or invalid):',
-      raw,
-      '→ using same-origin /api. For split hosting set VITE_API_BASE=https://your-api-host/api at build time.'
+      '[api] Ignoring VITE_API_BASE for production:',
+      baked,
+      '→ using /api. For split hosting set VITE_API_BASE=https://your-api-host/api at build time.'
     );
   }
   return '/api';
