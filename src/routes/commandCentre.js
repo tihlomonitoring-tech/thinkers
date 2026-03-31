@@ -36,6 +36,7 @@ export const CC_TAB_IDS = [
   'truck_update_records',
   'shift_items',
   'shift_report_exports',
+  'messages',
   'requests',
   'library',
   'compliance',
@@ -2126,6 +2127,117 @@ router.get('/trends', async (req, res, next) => {
         avg_loads_delivered_per_report: n ? Math.round((totalLoadsDelivered / n) * 10) / 10 : 0,
       },
       insights,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET delivery timeline: completed deliveries by route for recent N days (default 30). */
+router.get('/delivery-timeline', async (req, res, next) => {
+  try {
+    const daysRaw = parseInt(String(req.query?.days || '30'), 10);
+    const days = Number.isFinite(daysRaw) ? Math.max(7, Math.min(365, daysRaw)) : 30;
+
+    const baseSelectWithApprovedAt = `
+      SELECT
+        r.route,
+        r.report_date,
+        r.shift_date,
+        r.created_at,
+        r.approved_at,
+        r.total_loads_delivered,
+        r.total_loads_dispatched,
+        r.total_pending_deliveries,
+        COALESCE(
+          TRY_CONVERT(FLOAT, NULLIF(LTRIM(RTRIM(r.total_loads_delivered)), N'')),
+          TRY_CONVERT(FLOAT, NULLIF(LTRIM(RTRIM(r.total_loads_dispatched)), N'')) - TRY_CONVERT(FLOAT, NULLIF(LTRIM(RTRIM(r.total_pending_deliveries)), N'')),
+          0
+        ) AS completed_per_shift
+      FROM command_centre_shift_reports r
+      WHERE LOWER(LTRIM(RTRIM(ISNULL(r.status, N'')))) = N'approved'
+        AND COALESCE(CONVERT(date, r.approved_at), r.report_date, r.shift_date, CONVERT(date, r.created_at)) >= DATEADD(day, -(@days - 1), CONVERT(date, GETUTCDATE()))
+    `;
+    const baseSelectWithoutApprovedAt = `
+      SELECT
+        r.route,
+        r.report_date,
+        r.shift_date,
+        r.created_at,
+        NULL AS approved_at,
+        r.total_loads_delivered,
+        r.total_loads_dispatched,
+        r.total_pending_deliveries,
+        COALESCE(
+          TRY_CONVERT(FLOAT, NULLIF(LTRIM(RTRIM(r.total_loads_delivered)), N'')),
+          TRY_CONVERT(FLOAT, NULLIF(LTRIM(RTRIM(r.total_loads_dispatched)), N'')) - TRY_CONVERT(FLOAT, NULLIF(LTRIM(RTRIM(r.total_pending_deliveries)), N'')),
+          0
+        ) AS completed_per_shift
+      FROM command_centre_shift_reports r
+      WHERE LOWER(LTRIM(RTRIM(ISNULL(r.status, N'')))) = N'approved'
+        AND COALESCE(r.report_date, r.shift_date, CONVERT(date, r.created_at)) >= DATEADD(day, -(@days - 1), CONVERT(date, GETUTCDATE()))
+    `;
+    const params = { days };
+    let sql = `${baseSelectWithApprovedAt} ORDER BY COALESCE(CONVERT(date, r.approved_at), r.report_date, r.shift_date, CONVERT(date, r.created_at)) ASC, r.route ASC`;
+    let result;
+    try {
+      result = await query(sql, params);
+    } catch (e) {
+      const msg = String(e?.message || '').toLowerCase();
+      if (msg.includes('approved_at') || msg.includes('invalid column name')) {
+        sql = `${baseSelectWithoutApprovedAt} ORDER BY COALESCE(r.report_date, r.shift_date, CONVERT(date, r.created_at)) ASC, r.route ASC`;
+        result = await query(sql, params);
+      } else {
+        throw e;
+      }
+    }
+    const rows = result.recordset || [];
+
+    const today = new Date();
+    const dayKeys = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      dayKeys.push(d.toISOString().slice(0, 10));
+    }
+    const daySet = new Set(dayKeys);
+    const byRoute = {};
+    const totalsByDay = Object.fromEntries(dayKeys.map((k) => [k, 0]));
+
+    const toNum = (v) => {
+      const n = parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    for (const row of rows) {
+      const route = String(row.route || 'Unspecified').trim() || 'Unspecified';
+      const day = String((row.approved_at || row.report_date || row.shift_date || row.created_at || '')).slice(0, 10);
+      if (!daySet.has(day)) continue;
+      const delivered = Math.max(0, toNum(row.completed_per_shift));
+      if (!byRoute[route]) byRoute[route] = Object.fromEntries(dayKeys.map((k) => [k, 0]));
+      byRoute[route][day] += delivered;
+      totalsByDay[day] += delivered;
+    }
+
+    const routes = Object.keys(byRoute)
+      .map((route) => ({
+        route,
+        points: dayKeys.map((d) => ({ date: d, delivered: byRoute[route][d] || 0 })),
+        total: dayKeys.reduce((s, d) => s + (byRoute[route][d] || 0), 0),
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    const totalCompleted = routes.reduce((s, r) => s + r.total, 0);
+
+    res.json({
+      days,
+      dates: dayKeys,
+      routes,
+      totals: dayKeys.map((d) => ({ date: d, delivered: totalsByDay[d] || 0 })),
+      summary: {
+        total_completed_deliveries: totalCompleted,
+        routes_count: routes.length,
+      },
     });
   } catch (err) {
     next(err);

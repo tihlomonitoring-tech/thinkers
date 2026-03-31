@@ -31,8 +31,13 @@ const complianceRespondUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 }).array('attachments', 10);
+const messageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+}).array('attachments', 10);
 
 const contractorLibraryDir = path.join(process.cwd(), 'uploads', 'contractor-library');
+const messageAttachmentsDir = path.join(process.cwd(), 'uploads', 'contractor-messages');
 const contractorLibraryUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -48,6 +53,41 @@ const contractorLibraryUpload = multer({
   }),
   limits: { fileSize: 25 * 1024 * 1024 },
 }).single('file');
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function isCommandCentreUser(req) {
+  const pageRoles = Array.isArray(req.user?.page_roles) ? req.user.page_roles : [];
+  return req.user?.role === 'super_admin' || pageRoles.includes('command_centre');
+}
+
+async function listMessageAttachments(tenantId, messageIds = []) {
+  if (!messageIds.length) return {};
+  try {
+    const placeholders = messageIds.map((_, i) => `@m${i}`).join(',');
+    const params = { tenantId };
+    messageIds.forEach((id, i) => { params[`m${i}`] = id; });
+    const result = await query(
+      `SELECT id, message_id, file_name, stored_path, file_size_bytes, mime_type, created_at
+       FROM contractor_message_attachments
+       WHERE tenant_id = @tenantId AND message_id IN (${placeholders})
+       ORDER BY created_at ASC`,
+      params
+    );
+    const grouped = {};
+    for (const row of result.recordset || []) {
+      const key = row.message_id;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(row);
+    }
+    return grouped;
+  } catch (err) {
+    if (String(err?.message || '').includes('contractor_message_attachments')) return {};
+    throw err;
+  }
+}
 
 router.use(requireAuth);
 router.use(loadUser);
@@ -1722,7 +1762,7 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const allowed = await getAllowedContractorIds(req);
-    let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access
+    let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access, t.created_at, t.updated_at
        FROM contractor_trucks t
        WHERE t.tenant_id = @tenantId AND t.facility_access = 1
          AND NOT EXISTS (
@@ -3931,28 +3971,43 @@ router.get('/library/:id/download', async (req, res, next) => {
   }
 });
 
-// Messages; scoped by contractor
+// Messages; scoped by contractor (contractor users) or full tenant (command centre)
 router.get('/messages', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const allowed = await getAllowedContractorIds(req);
+    const canSeeAll = isCommandCentreUser(req);
+    const requestedContractorId = req.query?.contractor_id ? String(req.query.contractor_id) : '';
+    const allowed = canSeeAll ? null : await getAllowedContractorIds(req);
     if (allowed && allowed.length === 0) {
       return res.json({ messages: [] });
     }
     let whereClause = ' WHERE m.tenant_id = @tenantId';
     const params = { tenantId };
+    if (canSeeAll) {
+      if (!requestedContractorId) {
+        return res.status(400).json({ error: 'contractor_id is required for company-private chats.' });
+      }
+      whereClause += ' AND m.contractor_id = @contractorId';
+      params.contractorId = requestedContractorId;
+    }
     if (allowed && allowed.length > 0) {
       const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
       whereClause += ` AND m.contractor_id IN (${placeholders})`;
       allowed.forEach((id, i) => { params[`c${i}`] = id; });
     }
     const result = await query(
-      `SELECT m.*, u.full_name AS sender_name FROM contractor_messages m
+      `SELECT m.*, u.full_name AS sender_name, c.name AS contractor_name
+       FROM contractor_messages m
        JOIN users u ON u.id = m.sender_id
+       LEFT JOIN contractors c ON c.id = m.contractor_id AND c.tenant_id = m.tenant_id
        ${whereClause} ORDER BY m.created_at DESC`,
       params
     );
-    res.json({ messages: result.recordset || [] });
+    const messages = result.recordset || [];
+    const attachmentsByMessage = await listMessageAttachments(tenantId, messages.map((m) => m.id));
+    res.json({
+      messages: messages.map((m) => ({ ...m, attachments: attachmentsByMessage[m.id] || [] })),
+    });
   } catch (err) {
     if (err.message && err.message.includes('contractor_id')) {
       const fallback = await query(
@@ -3966,30 +4021,60 @@ router.get('/messages', async (req, res, next) => {
     next(err);
   }
 });
-router.post('/messages', async (req, res, next) => {
+router.post('/messages', messageUpload, async (req, res, next) => {
   try {
     const { subject, body } = req.body || {};
     const contractorId = await resolveContractorIdForCreate(req, req.body?.contractor_id);
+    if (!contractorId) return res.status(400).json({ error: 'Please select a contractor company before sending a message.' });
+    const senderScope = isCommandCentreUser(req) ? 'command_centre' : 'contractor';
     const result = await query(
-      `INSERT INTO contractor_messages (tenant_id, contractor_id, sender_id, subject, body)
-       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @senderId, @subject, @body)`,
+      `INSERT INTO contractor_messages (tenant_id, contractor_id, sender_id, sender_scope, subject, body)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @senderId, @senderScope, @subject, @body)`,
       {
         tenantId: req.user.tenant_id,
         contractorId: contractorId ?? null,
         senderId: req.user.id,
+        senderScope,
         subject: subject || '',
         body: body || null,
       }
     );
-    res.status(201).json({ message: result.recordset[0] });
+    const messageRow = result.recordset[0];
+    const files = Array.isArray(req.files) ? req.files : [];
+    let attachments = [];
+    if (files.length > 0) {
+      ensureDir(messageAttachmentsDir);
+      const tenantDir = path.join(messageAttachmentsDir, String(req.user?.tenant_id || 'anon'));
+      ensureDir(tenantDir);
+      const messageDir = path.join(tenantDir, String(messageRow.id));
+      ensureDir(messageDir);
+      for (const file of files) {
+        const ext = (path.extname(file.originalname || '') || '').replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+        const diskName = `${randomUUID()}${ext}`;
+        const absolutePath = path.join(messageDir, diskName);
+        fs.writeFileSync(absolutePath, file.buffer);
+        const storedPath = path.relative(path.join(process.cwd(), 'uploads'), absolutePath).split(path.sep).join('/');
+        const inserted = await query(
+          `INSERT INTO contractor_message_attachments (message_id, tenant_id, file_name, stored_path, file_size_bytes, mime_type)
+           OUTPUT INSERTED.*
+           VALUES (@messageId, @tenantId, @fileName, @storedPath, @size, @mimeType)`,
+          {
+            messageId: messageRow.id,
+            tenantId: req.user.tenant_id,
+            fileName: file.originalname || 'attachment',
+            storedPath,
+            size: file.size || null,
+            mimeType: file.mimetype || null,
+          }
+        );
+        const attachmentRow = inserted.recordset?.[0];
+        if (attachmentRow) attachments.push(attachmentRow);
+      }
+    }
+    res.status(201).json({ message: { ...messageRow, attachments } });
   } catch (err) {
-    if (err.message && err.message.includes('contractor_id')) {
-      const fallback = await query(
-        `INSERT INTO contractor_messages (tenant_id, sender_id, subject, body)
-         OUTPUT INSERTED.* VALUES (@tenantId, @senderId, @subject, @body)`,
-        { tenantId: req.user.tenant_id, senderId: req.user.id, subject: (req.body?.subject || ''), body: req.body?.body ?? null }
-      );
-      return res.status(201).json({ message: fallback.recordset[0] });
+    if (String(err.message || '').includes('sender_scope')) {
+      return res.status(503).json({ error: 'Messages schema needs migration. Run: npm run db:contractor-messages-platform' });
     }
     next(err);
   }
@@ -4002,6 +4087,37 @@ router.patch('/messages/:id/read', async (req, res, next) => {
       { id, tenantId: req.user.tenant_id }
     );
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/messages/:id/attachments/:attachmentId', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const canSeeAll = isCommandCentreUser(req);
+    const allowed = canSeeAll ? null : await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) return res.status(404).json({ error: 'Attachment not found' });
+
+    const params = { tenantId, id: req.params.id, attachmentId: req.params.attachmentId };
+    let where = ' WHERE m.tenant_id = @tenantId AND m.id = @id AND a.id = @attachmentId';
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      where += ` AND m.contractor_id IN (${placeholders})`;
+      allowed.forEach((v, i) => { params[`c${i}`] = v; });
+    }
+    const result = await query(
+      `SELECT a.file_name, a.stored_path
+       FROM contractor_message_attachments a
+       JOIN contractor_messages m ON m.id = a.message_id
+       ${where}`,
+      params
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Attachment not found' });
+    const fullPath = path.join(process.cwd(), 'uploads', row.stored_path.split('/').join(path.sep));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found on server' });
+    res.download(fullPath, row.file_name || 'attachment');
   } catch (err) {
     next(err);
   }

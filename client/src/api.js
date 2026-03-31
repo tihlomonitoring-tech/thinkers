@@ -238,9 +238,28 @@ export const contractor = {
     attachmentUrl: (inspectionId, attachmentId) => `${API}/contractor/compliance-records/${inspectionId}/attachments/${attachmentId}`,
   },
   messages: {
-    list: () => request('/contractor/messages'),
-    create: (body) => request('/contractor/messages', { method: 'POST', body: JSON.stringify(body) }),
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
+      return request(`/contractor/messages${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    create: (body, files = null) => {
+      if (files && files.length > 0) {
+        const formData = new FormData();
+        if (body?.subject != null) formData.append('subject', body.subject);
+        if (body?.body != null) formData.append('body', body.body);
+        if (body?.contractor_id != null) formData.append('contractor_id', body.contractor_id);
+        for (let i = 0; i < files.length; i++) formData.append('attachments', files[i]);
+        return fetch(`${API}/contractor/messages`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+        }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+      }
+      return request('/contractor/messages', { method: 'POST', body: JSON.stringify(body) });
+    },
     markRead: (id) => request(`/contractor/messages/${id}/read`, { method: 'PATCH' }),
+    attachmentUrl: (messageId, attachmentId) => `${API}/contractor/messages/${messageId}/attachments/${attachmentId}`,
   },
   routes: {
     list: () => request('/contractor/routes'),
@@ -361,6 +380,7 @@ export const commandCentre = {
     if (params.route) q.set('route', params.route);
     return request(`/command-centre/trends${q.toString() ? `?${q.toString()}` : ''}`);
   },
+  deliveryTimeline: (days = 30) => request(`/command-centre/delivery-timeline?days=${encodeURIComponent(days)}`),
   shiftReports: {
     list: (requestsOnly) => request(`/command-centre/shift-reports${requestsOnly ? '?requests=1' : ''}`),
     listDecidedByMe: () => request('/command-centre/shift-reports?decidedByMe=1'),
@@ -394,6 +414,12 @@ export const commandCentre = {
     return request(`/command-centre/shift-report-export${q.toString() ? `?${q.toString()}` : ''}`);
   },
   library: () => request('/command-centre/library'),
+  messages: {
+    list: (params = {}) => contractor.messages.list(params),
+    create: (body, files = null) => contractor.messages.create(body, files),
+    markRead: (id) => request(`/contractor/messages/${id}/read`, { method: 'PATCH' }),
+    attachmentUrl: (messageId, attachmentId) => `${API}/contractor/messages/${messageId}/attachments/${attachmentId}`,
+  },
   libraryDocuments: {
     list: () => request('/command-centre/library/documents'),
     upload: (file) => {

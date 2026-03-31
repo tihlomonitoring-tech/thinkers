@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
+import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
@@ -81,6 +82,7 @@ const CC_TABS = [
   { id: 'handed_over_analysis', label: 'Handed over analysis', icon: 'send', section: 'Analytics' },
   { id: 'shift_items', label: 'Shift by route', icon: 'route', section: 'Operations' },
   { id: 'shift_report_exports', label: 'Export sections', icon: 'download', section: 'Operations' },
+  { id: 'messages', label: 'Messages platform', icon: 'inbox', section: 'Operations' },
   { id: 'requests', label: 'Requests', icon: 'inbox', section: 'Operations' },
   { id: 'library', label: 'Library', icon: 'library', section: 'Operations' },
   { id: 'compliance', label: 'Fleet and driver compliance', icon: 'shield', section: 'Operations' },
@@ -297,6 +299,15 @@ export default function CommandCentre() {
   }, [allowedTabs]);
 
   useEffect(() => {
+    const requested = (() => {
+      try { return sessionStorage.getItem('cc-global-target-tab'); } catch (_) { return null; }
+    })();
+    if (!requested) return;
+    if (allowedTabs.includes(requested)) setActiveTab(requested);
+    try { sessionStorage.removeItem('cc-global-target-tab'); } catch (_) {}
+  }, [allowedTabs]);
+
+  useEffect(() => {
     if (activeTab !== 'contractors_details' || !allowedTabs.includes('contractors_details')) return;
     let cancelled = false;
     setContractorsDetailsLoading(true);
@@ -311,7 +322,6 @@ export default function CommandCentre() {
   const sections = [...new Set(navTabs.map((t) => t.section))];
   const canSeeTab = (id) => allowedTabs.includes(id);
   const hasAccess = allowedTabs.length > 0 || isSuperAdmin;
-
   if (loading) {
     return (
       <div className="max-w-7xl mx-auto p-6">
@@ -439,6 +449,7 @@ export default function CommandCentre() {
           )}
           {activeTab === 'shift_items' && canSeeTab('shift_items') && <TabShiftItems setActiveTab={setActiveTab} />}
           {activeTab === 'shift_report_exports' && canSeeTab('shift_report_exports') && <TabShiftReportExports />}
+          {activeTab === 'messages' && canSeeTab('messages') && <TabMessages />}
           {activeTab === 'requests' && canSeeTab('requests') && <TabRequests />}
           {activeTab === 'library' && canSeeTab('library') && <TabLibrary />}
           {activeTab === 'compliance' && canSeeTab('compliance') && <TabCompliance user={user} inspections={inspections} setInspections={setInspections} />}
@@ -466,6 +477,8 @@ export default function CommandCentre() {
 }
 
 function TabDashboard({ setActiveTab, canSeeTab }) {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
   const [loading, setLoading] = useState(true);
   const [pendingApplications, setPendingApplications] = useState(0);
   const [unresolvedBreakdowns, setUnresolvedBreakdowns] = useState([]);
@@ -473,6 +486,58 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
   const [underAppealCount, setUnderAppealCount] = useState(0);
   const [inspections, setInspections] = useState([]);
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
+  const [timelineDays, setTimelineDays] = useState(30);
+  const [deliveryTimeline, setDeliveryTimeline] = useState({ dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } });
+
+  const buildTimelineFromReports = (reports, days = timelineDays) => {
+    const toNum = (v) => {
+      const n = parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const today = new Date();
+    const dayKeys = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      dayKeys.push(d.toISOString().slice(0, 10));
+    }
+    const daySet = new Set(dayKeys);
+    const byRoute = {};
+    const totalsByDay = Object.fromEntries(dayKeys.map((k) => [k, 0]));
+
+    (reports || []).forEach((r) => {
+      const status = String(r?.status || '').trim().toLowerCase();
+      if (status !== 'approved') return;
+      const day = String(r?.approved_at || r?.approvedAt || r?.report_date || r?.reportDate || r?.shift_date || r?.shiftDate || r?.created_at || r?.createdAt || '').slice(0, 10);
+      if (!daySet.has(day)) return;
+      const route = String(r?.route || 'Unspecified').trim() || 'Unspecified';
+      const delivered = Math.max(
+        0,
+        toNum(r?.total_loads_delivered ?? r?.totalLoadsDelivered)
+        || (toNum(r?.total_loads_dispatched ?? r?.totalLoadsDispatched) - toNum(r?.total_pending_deliveries ?? r?.totalPendingDeliveries))
+      );
+      if (!byRoute[route]) byRoute[route] = Object.fromEntries(dayKeys.map((k) => [k, 0]));
+      byRoute[route][day] += delivered;
+      totalsByDay[day] += delivered;
+    });
+
+    const routes = Object.keys(byRoute)
+      .map((route) => ({
+        route,
+        points: dayKeys.map((d) => ({ date: d, delivered: byRoute[route][d] || 0 })),
+        total: dayKeys.reduce((s, d) => s + (byRoute[route][d] || 0), 0),
+      }))
+      .sort((a, b) => b.total - a.total);
+    return {
+      dates: dayKeys,
+      routes,
+      totals: dayKeys.map((d) => ({ date: d, delivered: totalsByDay[d] || 0 })),
+      summary: {
+        total_completed_deliveries: routes.reduce((s, r) => s + (r.total || 0), 0),
+        routes_count: routes.length,
+      },
+    };
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -487,6 +552,8 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
     promises.push(ccApi.suspensions.list('under_appeal').then((r) => ({ underAppeal: (r.suspensions || []).length })).catch(() => ({ underAppeal: 0 })));
     promises.push(ccApi.complianceInspections.list().then((r) => ({ inspections: r.inspections || [] })).catch(() => ({ inspections: [] })));
     promises.push(ccApi.shiftReports.list(true).then((r) => ({ requests: (r.reports || []).length })).catch(() => ({ requests: 0 })));
+    promises.push(ccApi.deliveryTimeline(timelineDays).then((r) => ({ timeline: r })).catch(() => ({ timeline: { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } } })));
+    promises.push(ccApi.shiftReports.list(false).then((r) => ({ allReports: r.reports || [] })).catch(() => ({ allReports: [] })));
 
     Promise.all(promises).then((results) => {
       if (cancelled) return;
@@ -495,12 +562,16 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
       let appealCount = 0;
       let inspList = [];
       let reqCount = 0;
+      let timeline = { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } };
+      let allReports = [];
       results.forEach((r) => {
         if (r.applications !== undefined) appCount = r.applications;
         if (r.breakdowns) breakdownsList = r.breakdowns;
         if (r.underAppeal !== undefined) appealCount = r.underAppeal;
         if (r.inspections) inspList = r.inspections;
         if (r.requests !== undefined) reqCount = r.requests;
+        if (r.timeline) timeline = r.timeline;
+        if (r.allReports) allReports = r.allReports;
       });
       setPendingApplications(appCount);
       setUnresolvedBreakdowns(breakdownsList);
@@ -508,9 +579,11 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
       setUnderAppealCount(appealCount);
       setInspections(inspList);
       setPendingRequestsCount(reqCount);
+      const hasTimelineData = Array.isArray(timeline?.routes) && timeline.routes.length > 0;
+      setDeliveryTimeline(hasTimelineData ? timeline : buildTimelineFromReports(allReports, timelineDays));
     }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [canSeeTab]);
+  }, [canSeeTab, timelineDays]);
 
   const pendingCompliance = inspections.filter((i) => i.status === 'pending_response' || i.status === 'auto_suspended').length;
   const formatDashboardTime = (d) => d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—';
@@ -565,6 +638,35 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
               ))}
             </div>
           )}
+        </section>
+
+        {/* Delivery timeline by route (30 days) */}
+        <section className="bg-white dark:!bg-surface-900 rounded-xl border border-surface-200 dark:!border-surface-700 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-surface-100 dark:border-surface-700 bg-gradient-to-r from-brand-50/70 to-white dark:from-surface-900 dark:to-surface-950 flex items-center justify-between">
+            <div>
+              <h2 className="font-semibold text-surface-900 dark:text-surface-50">Completed deliveries timeline ({timelineDays} days)</h2>
+              <p className="text-xs text-surface-500 dark:text-surface-400 mt-0.5">Each route has its own line</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <select
+                value={timelineDays}
+                onChange={(e) => setTimelineDays(parseInt(e.target.value, 10))}
+                className="rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-2.5 py-1.5 text-xs text-surface-700 dark:text-surface-100"
+              >
+                <option value={7}>Weekly</option>
+                <option value={30}>Monthly</option>
+                <option value={90}>Quarterly</option>
+                <option value={365}>Yearly</option>
+              </select>
+              <div className="text-right">
+              <p className="text-xs text-surface-500 dark:text-surface-400 uppercase tracking-wider">Total completed</p>
+              <p className="text-lg font-bold text-brand-700 tabular-nums">{deliveryTimeline?.summary?.total_completed_deliveries || 0}</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-4">
+            <DeliveryTimelineChart timeline={deliveryTimeline} loading={loading} isDark={isDark} />
+          </div>
         </section>
 
         {/* Quick actions */}
@@ -712,6 +814,189 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           <span className="text-surface-600">Inspections: {inspections.length} total</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DeliveryTimelineChart({ timeline, loading, isDark }) {
+  const [hiddenRoutes, setHiddenRoutes] = useState(new Set());
+  const [tooltip, setTooltip] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const svgRef = useRef(null);
+  if (loading) return <div className="h-72 rounded-lg bg-surface-100 animate-pulse" />;
+  const dates = Array.isArray(timeline?.dates) ? timeline.dates : [];
+  const routes = Array.isArray(timeline?.routes) ? timeline.routes : [];
+  if (!dates.length || !routes.length) return <div className="h-72 flex items-center justify-center text-sm text-surface-500">No delivery timeline data in the last 30 days.</div>;
+
+  const seriesAll = routes.slice(0, 8); // keep chart readable
+  const series = seriesAll.filter((r) => !hiddenRoutes.has(r.route));
+  const allValues = series.flatMap((r) => (r.points || []).map((p) => Number(p.delivered || 0)));
+  const yMaxRaw = Math.max(1, ...(allValues.length ? allValues : [1]));
+  const yMax = Math.ceil(yMaxRaw / 5) * 5;
+
+  const W = 980;
+  const H = 320;
+  const P = { t: 20, r: 24, b: 42, l: 48 };
+  const innerW = W - P.l - P.r;
+  const innerH = H - P.t - P.b;
+  const x = (i) => P.l + (i * innerW) / Math.max(1, dates.length - 1);
+  const y = (v) => P.t + innerH - (Math.max(0, v) / yMax) * innerH;
+  const colors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+  const colorByRoute = Object.fromEntries(seriesAll.map((r, i) => [r.route, colors[i % colors.length]]));
+  const chartBgTop = isDark ? '#0b1220' : '#fff7ed';
+  const chartBgBottom = isDark ? '#0f172a' : '#ffffff';
+  const gridStroke = isDark ? '#334155' : '#e5e7eb';
+  const axisText = isDark ? '#94a3b8' : '#6b7280';
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((k) => Math.round(k * yMax));
+  const shortDate = (d) => {
+    const dt = new Date(d);
+    return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+
+  const toggleRoute = (routeName) => {
+    setHiddenRoutes((prev) => {
+      const next = new Set(prev);
+      if (next.has(routeName)) next.delete(routeName);
+      else next.add(routeName);
+      return next;
+    });
+  };
+
+  const exportPng = async () => {
+    if (!svgRef.current || exporting) return;
+    setExporting(true);
+    try {
+      const serializer = new XMLSerializer();
+      const svgText = serializer.serializeToString(svgRef.current);
+      const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+      const blobUrl = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, W, H);
+          ctx.drawImage(img, 0, 0, W, H);
+          const a = document.createElement('a');
+          a.href = canvas.toDataURL('image/png');
+          a.download = `completed-deliveries-timeline-${new Date().toISOString().slice(0, 10)}.png`;
+          a.click();
+        }
+        URL.revokeObjectURL(blobUrl);
+        setExporting(false);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(blobUrl);
+        setExporting(false);
+      };
+      img.src = blobUrl;
+    } catch (_) {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-surface-500 dark:text-surface-400">Toggle routes to focus lines; hover points for details.</p>
+        <button type="button" onClick={exportPng} disabled={exporting} className="px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 text-xs font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-60">
+          {exporting ? 'Exporting...' : 'Export PNG'}
+        </button>
+      </div>
+      <div className="w-full overflow-x-auto">
+        <div className="relative min-w-[780px]">
+          <svg key={`timeline-${isDark ? 'dark' : 'light'}`} ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" onMouseLeave={() => setTooltip(null)}>
+            <defs>
+              <linearGradient id="ccTimelineBg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={chartBgTop} />
+                <stop offset="100%" stopColor={chartBgBottom} />
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width={W} height={H} fill="url(#ccTimelineBg)" />
+
+            {yTicks.map((tick) => (
+              <g key={tick}>
+                <line x1={P.l} x2={W - P.r} y1={y(tick)} y2={y(tick)} stroke={gridStroke} strokeDasharray="4 6" />
+                <text x={P.l - 8} y={y(tick) + 4} textAnchor="end" fontSize="11" fill={axisText}>{tick}</text>
+              </g>
+            ))}
+
+            {series.map((route) => {
+              const color = colorByRoute[route.route] || '#ef4444';
+              const points = (route.points || []).map((p, i) => `${x(i)},${y(Number(p.delivered || 0))}`).join(' ');
+              return (
+                <g key={route.route}>
+                  <polyline fill="none" stroke={color} strokeWidth="2.6" points={points} />
+                  {(route.points || []).map((p, i) => (
+                    <circle
+                      key={`${route.route}-${i}`}
+                      cx={x(i)}
+                      cy={y(Number(p.delivered || 0))}
+                      r="4.5"
+                      fill={color}
+                      fillOpacity="0.001"
+                      onMouseEnter={(e) => {
+                        const svgRect = e.currentTarget.ownerSVGElement.getBoundingClientRect();
+                        setTooltip({
+                          left: e.clientX - svgRect.left,
+                          top: e.clientY - svgRect.top,
+                          route: route.route,
+                          date: dates[i],
+                          delivered: Number(p.delivered || 0),
+                          color,
+                        });
+                      }}
+                    />
+                  ))}
+                </g>
+              );
+            })}
+
+            {dates.filter((_, i) => i % 5 === 0 || i === dates.length - 1).map((d, i) => {
+              const originalIdx = dates.indexOf(d);
+              return <text key={`${d}-${i}`} x={x(originalIdx)} y={H - 14} textAnchor="middle" fontSize="11" fill={axisText}>{shortDate(d)}</text>;
+            })}
+          </svg>
+          {tooltip && (
+            <div
+              className="absolute z-20 pointer-events-none bg-surface-900 dark:bg-surface-800 text-white text-xs rounded-md px-2.5 py-2 shadow-lg border border-surface-700"
+              style={{ left: Math.max(8, tooltip.left + 10), top: Math.max(8, tooltip.top - 10), transform: 'translateY(-100%)' }}
+            >
+              <div className="font-semibold flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: tooltip.color }} />
+                {tooltip.route}
+              </div>
+              <div className="text-surface-200 mt-0.5">{shortDate(tooltip.date)}</div>
+              <div className="text-surface-100 mt-0.5">Deliveries: {tooltip.delivered}</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        {seriesAll.map((r) => {
+          const hidden = hiddenRoutes.has(r.route);
+          const color = colorByRoute[r.route] || '#ef4444';
+          return (
+            <button
+              key={r.route}
+              type="button"
+              onClick={() => toggleRoute(r.route)}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-left ${hidden ? 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 text-surface-400 dark:text-surface-500' : 'border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800 text-surface-700 dark:text-surface-200'}`}
+              title={hidden ? 'Show route line' : 'Hide route line'}
+            >
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color, opacity: hidden ? 0.35 : 1 }} />
+              <span className="text-xs font-medium">{r.route}</span>
+              <span className="text-xs text-surface-500">({r.total || 0})</span>
+            </button>
+          );
+        })}
+      </div>
+      {series.length === 0 && <p className="text-xs text-surface-500 dark:text-surface-400">All routes are hidden. Enable at least one route to display lines.</p>}
     </div>
   );
 }
@@ -1590,6 +1875,8 @@ function TabSavedReports() {
   const [deletingReport, setDeletingReport] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [forceEditMode, setForceEditMode] = useState(false);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   const loadList = () => {
     setLoading(true);
@@ -1640,6 +1927,19 @@ function TabSavedReports() {
   const canMarkAddressed = report && isCreator && report.status === 'provisional';
   const statusAllowsEdit = report && ['draft', 'provisional', 'rejected'].includes(String(report.status || '').toLowerCase().trim());
   const actuallyReadOnly = !statusAllowsEdit;
+  const filteredReports = reports.filter((r) => {
+    if (statusFilter && String(r.status || '').toLowerCase() !== statusFilter) return false;
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(r.route || '').toLowerCase().includes(q) ||
+      String(r.controller1_name || '').toLowerCase().includes(q) ||
+      String(r.controller2_name || '').toLowerCase().includes(q) ||
+      String(r.created_by_name || '').toLowerCase().includes(q) ||
+      String(r.status || '').toLowerCase().includes(q) ||
+      String(r.report_date || '').toLowerCase().includes(q)
+    );
+  });
 
   if (selectedId && report && String(report.id) === String(selectedId)) {
     return (
@@ -1731,10 +2031,31 @@ function TabSavedReports() {
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-900">View saved shift reports</h2>
       <p className="text-sm text-surface-600">Open a report to view, edit, submit for approval, or download (when approved).</p>
+      <div className="rounded-xl border border-surface-200 bg-white p-4">
+        <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search route, controllers, creator, status, date..."
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          />
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+            <option value="">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="pending_approval">Pending approval</option>
+            <option value="provisional">Provisional</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <button type="button" onClick={() => { setSearch(''); setStatusFilter(''); }} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Clear filters</button>
+        </div>
+      </div>
       {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
       {loading ? (
         <p className="text-surface-500">Loading…</p>
-      ) : reports.length === 0 ? (
+      ) : filteredReports.length === 0 ? (
         <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-600">No shift reports yet. Create one from Report composition.</div>
       ) : (
         <div className="rounded-xl border border-surface-200 overflow-hidden">
@@ -1749,7 +2070,7 @@ function TabSavedReports() {
               </tr>
             </thead>
             <tbody>
-              {reports.map((r) => {
+              {filteredReports.map((r) => {
                 const savedAt = r.created_at ? new Date(r.created_at) : null;
                 const dateStr = savedAt ? savedAt.toLocaleDateString() : '—';
                 const timeStr = savedAt ? savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
@@ -2420,6 +2741,149 @@ function ControllerEvaluationForm({ reportId, existingEvaluation, onSaved, savin
   );
 }
 
+function TabMessages() {
+  const [messages, setMessages] = useState([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [search, setSearch] = useState('');
+  const [contractorId, setContractorId] = useState('');
+  const [contractors, setContractors] = useState([]);
+
+  const loadMessages = async () => {
+    if (!contractorId) {
+      setMessages([]);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const r = await ccApi.messages.list({ contractor_id: contractorId });
+      setMessages(r.messages || []);
+    } catch (e) {
+      setError(e?.message || 'Failed to load messages');
+      setMessages([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    contractorApi.contractors.list()
+      .then((r) => {
+        if (cancelled) return;
+        const list = r.contractors || [];
+        setContractors(list);
+        if (!contractorId && list.length === 1) setContractorId(list[0].id);
+      })
+      .catch(() => { if (!cancelled) setContractors([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => { loadMessages(); }, [contractorId]);
+
+  const filteredMessages = messages.filter((m) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    const haystack = [m.subject, m.body, m.sender_name, m.contractor_name].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(q);
+  });
+
+  const sendMessage = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const subject = form.subject.value.trim();
+    const body = form.body.value.trim();
+    const toContractor = form.contractor_id.value || null;
+    if (!subject || !toContractor) {
+      setError('Please select a contractor company and enter a subject.');
+      return;
+    }
+    setSending(true);
+    setError('');
+    try {
+      await ccApi.messages.create({
+        subject,
+        body: body || null,
+        contractor_id: toContractor,
+      }, form.attachments?.files || null);
+      form.reset();
+      await loadMessages();
+    } catch (e2) {
+      setError(e2?.message || 'Failed to send message');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="bg-white rounded-xl border border-surface-200 p-4">
+          <h3 className="font-medium text-surface-900">New message (commodity operations)</h3>
+          <p className="text-sm text-surface-500 mt-1">Two-way communication is private per company. Select one contractor company per chat.</p>
+          <form onSubmit={sendMessage} className="mt-3 space-y-3">
+            <select name="contractor_id" value={contractorId} onChange={(e) => setContractorId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <option value="">Select contractor company</option>
+              {contractors.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <input name="subject" placeholder="Subject" required className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <textarea name="body" rows={4} placeholder="Type your message..." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <input name="attachments" type="file" multiple className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <button type="submit" disabled={sending} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+              {sending ? 'Sending…' : 'Send message'}
+            </button>
+          </form>
+        </div>
+        <div className="bg-white rounded-xl border border-surface-200 p-4">
+          <h3 className="font-medium text-surface-900">Messages</h3>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_200px]">
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search subject, body, sender, contractor" className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <select value={contractorId} onChange={(e) => setContractorId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <option value="">Select contractor</option>
+              {contractors.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+          <ul className="mt-3 divide-y divide-surface-200">
+            {loading ? <li className="py-3 text-sm text-surface-500">Loading...</li> : null}
+            {!loading && !contractorId ? <li className="py-3 text-sm text-surface-500">Select a contractor company to load private chat history.</li> : null}
+            {!loading && contractorId && filteredMessages.length === 0 ? <li className="py-3 text-sm text-surface-500">No messages found.</li> : null}
+            {!loading && filteredMessages.map((m) => (
+              <li key={m.id} className="py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-surface-900">{m.subject || '(No subject)'}</p>
+                  <span className={`text-xs rounded-full px-2 py-0.5 ${m.sender_scope === 'command_centre' ? 'bg-brand-50 text-brand-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                    {m.sender_scope === 'command_centre' ? 'Command Centre' : 'Contractor'}
+                  </span>
+                </div>
+                <p className="text-xs text-surface-500 mt-0.5">
+                  {m.sender_name || 'Unknown'} {m.contractor_name ? `• ${m.contractor_name}` : ''} • {formatDate(m.created_at)}
+                </p>
+                {m.body ? <p className="text-sm text-surface-700 mt-2 whitespace-pre-wrap">{m.body}</p> : null}
+                {Array.isArray(m.attachments) && m.attachments.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {m.attachments.map((a) => (
+                      <button type="button" key={a.id} onClick={() => openAttachmentWithAuth(ccApi.messages.attachmentUrl(m.id, a.id)).catch((e) => window.alert(e?.message || 'Could not open'))} className="text-xs font-medium text-brand-600 hover:text-brand-700">
+                        {a.file_name || 'Attachment'}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TabRequests() {
   const { user } = useAuth();
   const [reports, setReports] = useState([]);
@@ -2437,6 +2901,8 @@ function TabRequests() {
   const [overrideRequested, setOverrideRequested] = useState(false);
   const [overrideCode, setOverrideCode] = useState('');
   const [requestingOverride, setRequestingOverride] = useState(false);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   const loadList = () => {
     setLoading(true);
@@ -2511,6 +2977,24 @@ function TabRequests() {
   const canAct = report && (report.status === 'pending_approval' || report.status === 'provisional' || needsOverrideToAct) && (isAssignedApprover || isSuperAdmin);
   const canShowActions = canAct && (evaluation || needsOverrideToAct);
   const showEvalForm = canAct && !needsOverrideToAct;
+  const matchReport = (r) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(r.route || '').toLowerCase().includes(q) ||
+      String(r.created_by_name || '').toLowerCase().includes(q) ||
+      String(r.status || '').toLowerCase().includes(q) ||
+      String(r.report_date || '').toLowerCase().includes(q)
+    );
+  };
+  const pendingFiltered = reports.filter((r) => {
+    if (statusFilter && String(r.status || '').toLowerCase() !== statusFilter) return false;
+    return matchReport(r);
+  });
+  const decidedFiltered = decidedByMe.filter((r) => {
+    if (statusFilter && String(r.status || '').toLowerCase() !== statusFilter) return false;
+    return matchReport(r);
+  });
 
   if (selectedId && report) {
     return (
@@ -2610,18 +3094,38 @@ function TabRequests() {
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-900">Requests</h2>
       <p className="text-sm text-surface-600">Shift reports submitted to you for approval. Complete the controller evaluation, then approve, reject, or grant provisional approval. To change a decision you already made, open the report under “Recently decided by you” and request an override code.</p>
+      <div className="rounded-xl border border-surface-200 bg-white p-4">
+        <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search route, submitter, status, report date..."
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          />
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+            <option value="">All statuses</option>
+            <option value="pending_approval">Pending approval</option>
+            <option value="provisional">Provisional</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <button type="button" onClick={() => { setSearch(''); setStatusFilter(''); }} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Clear filters</button>
+        </div>
+      </div>
       {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
       {loading ? (
         <p className="text-surface-500">Loading…</p>
       ) : (
         <>
-          {reports.length === 0 ? (
+          {pendingFiltered.length === 0 ? (
             <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-600">No pending requests.</div>
           ) : (
             <div className="rounded-xl border border-surface-200 overflow-hidden">
               <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 bg-surface-50 border-b border-surface-100">Pending your review</h3>
               <ul className="divide-y divide-surface-100">
-                {reports.map((r) => (
+                {pendingFiltered.map((r) => (
                   <li key={r.id}>
                     <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-surface-50 flex items-center justify-between gap-4">
                       <span className="font-medium text-surface-900">{r.route || 'Shift report'} — from {r.created_by_name} · {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}</span>
@@ -2632,12 +3136,12 @@ function TabRequests() {
               </ul>
             </div>
           )}
-          {decidedByMe.length > 0 && (
+          {decidedFiltered.length > 0 && (
             <div className="rounded-xl border border-surface-200 overflow-hidden">
               <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 bg-surface-50 border-b border-surface-100">Recently decided by you</h3>
               <p className="px-4 py-2 text-xs text-surface-500">Open a report to request an override code and change your decision.</p>
               <ul className="divide-y divide-surface-100">
-                {decidedByMe.map((r) => (
+                {decidedFiltered.map((r) => (
                   <li key={r.id}>
                     <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-surface-50 flex items-center justify-between gap-4">
                       <span className="font-medium text-surface-900">{r.route || 'Shift report'} — {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}</span>
@@ -5260,6 +5764,7 @@ function TabDeleteFleetDrivers() {
   const [selectedDriverIds, setSelectedDriverIds] = useState(new Set());
   const [selectedBreakdownIds, setSelectedBreakdownIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(false);
+  const [search, setSearch] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -5393,6 +5898,37 @@ function TabDeleteFleetDrivers() {
   };
 
   const formatBreakdownDate = (d) => (d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
+  const q = search.trim().toLowerCase();
+  const filteredTrucks = trucks.filter((t) => {
+    if (!q) return true;
+    return (
+      String(t.registration || '').toLowerCase().includes(q) ||
+      String(t.makeModel || '').toLowerCase().includes(q) ||
+      String(t.contractorName || '').toLowerCase().includes(q) ||
+      String(t.tenantName || '').toLowerCase().includes(q) ||
+      String(t.status || '').toLowerCase().includes(q)
+    );
+  });
+  const filteredDrivers = drivers.filter((d) => {
+    if (!q) return true;
+    return (
+      String([d.fullName, d.surname].filter(Boolean).join(' ') || '').toLowerCase().includes(q) ||
+      String(d.idNumber || '').toLowerCase().includes(q) ||
+      String(d.licenseNumber || '').toLowerCase().includes(q) ||
+      String(d.contractorName || '').toLowerCase().includes(q) ||
+      String(d.tenantName || '').toLowerCase().includes(q)
+    );
+  });
+  const filteredBreakdowns = breakdowns.filter((b) => {
+    if (!q) return true;
+    return (
+      String(b.title || '').toLowerCase().includes(q) ||
+      String(b.type || '').toLowerCase().includes(q) ||
+      String(b.contractorName || '').toLowerCase().includes(q) ||
+      String(b.tenantName || '').toLowerCase().includes(q) ||
+      String(b.resolvedAt ? 'resolved' : 'open').includes(q)
+    );
+  });
 
   return (
     <div className="space-y-6">
@@ -5431,6 +5967,13 @@ function TabDeleteFleetDrivers() {
           </select>
         </label>
         <button type="button" onClick={load} className="px-3 py-1.5 text-sm rounded-lg bg-surface-200 text-surface-800 hover:bg-surface-300">Refresh</button>
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Advanced search: registration, name, ID, contractor, status, breakdown..."
+          className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[280px]"
+        />
       </div>
 
       {!loading && totalSelected > 0 && (
@@ -5457,12 +6000,14 @@ function TabDeleteFleetDrivers() {
                 <h3 className="font-medium text-surface-900 mb-3">Fleet (trucks)</h3>
                 {trucks.length === 0 ? (
                   <p className="text-sm text-surface-500">No trucks match the filters.</p>
+                ) : filteredTrucks.length === 0 ? (
+                  <p className="text-sm text-surface-500">No trucks match your search.</p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-surface-200">
                         <th className="p-2 w-10">
-                          <input type="checkbox" checked={trucks.length > 0 && selectedTruckIds.size === trucks.length} onChange={(e) => toggleAllTrucks(e.target.checked)} className="rounded border-surface-300" aria-label="Select all trucks" />
+                          <input type="checkbox" checked={filteredTrucks.length > 0 && filteredTrucks.every((t) => selectedTruckIds.has(t.id))} onChange={(e) => setSelectedTruckIds((prev) => { const next = new Set(prev); if (e.target.checked) filteredTrucks.forEach((t) => next.add(t.id)); else filteredTrucks.forEach((t) => next.delete(t.id)); return next; })} className="rounded border-surface-300" aria-label="Select all trucks" />
                         </th>
                         <th className="text-left p-2 font-medium text-surface-700">Registration</th>
                         <th className="text-left p-2 font-medium text-surface-700">Make / model</th>
@@ -5473,7 +6018,7 @@ function TabDeleteFleetDrivers() {
                       </tr>
                     </thead>
                     <tbody>
-                      {trucks.map((t) => (
+                      {filteredTrucks.map((t) => (
                         <tr key={t.id} className="border-b border-surface-100 hover:bg-surface-50/50">
                           <td className="p-2">
                             <input type="checkbox" checked={selectedTruckIds.has(t.id)} onChange={() => toggleTruck(t.id)} className="rounded border-surface-300" aria-label={`Select ${t.registration || t.id}`} />
@@ -5498,12 +6043,14 @@ function TabDeleteFleetDrivers() {
                 <h3 className="font-medium text-surface-900 mb-3">Drivers</h3>
                 {drivers.length === 0 ? (
                   <p className="text-sm text-surface-500">No drivers match the filters.</p>
+                ) : filteredDrivers.length === 0 ? (
+                  <p className="text-sm text-surface-500">No drivers match your search.</p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-surface-200">
                         <th className="p-2 w-10">
-                          <input type="checkbox" checked={drivers.length > 0 && selectedDriverIds.size === drivers.length} onChange={(e) => toggleAllDrivers(e.target.checked)} className="rounded border-surface-300" aria-label="Select all drivers" />
+                          <input type="checkbox" checked={filteredDrivers.length > 0 && filteredDrivers.every((d) => selectedDriverIds.has(d.id))} onChange={(e) => setSelectedDriverIds((prev) => { const next = new Set(prev); if (e.target.checked) filteredDrivers.forEach((d) => next.add(d.id)); else filteredDrivers.forEach((d) => next.delete(d.id)); return next; })} className="rounded border-surface-300" aria-label="Select all drivers" />
                         </th>
                         <th className="text-left p-2 font-medium text-surface-700">Name</th>
                         <th className="text-left p-2 font-medium text-surface-700">ID / licence</th>
@@ -5513,7 +6060,7 @@ function TabDeleteFleetDrivers() {
                       </tr>
                     </thead>
                     <tbody>
-                      {drivers.map((d) => (
+                      {filteredDrivers.map((d) => (
                         <tr key={d.id} className="border-b border-surface-100 hover:bg-surface-50/50">
                           <td className="p-2">
                             <input type="checkbox" checked={selectedDriverIds.has(d.id)} onChange={() => toggleDriver(d.id)} className="rounded border-surface-300" aria-label={`Select ${[d.fullName, d.surname].filter(Boolean).join(' ') || d.id}`} />
@@ -5537,12 +6084,14 @@ function TabDeleteFleetDrivers() {
                 <h3 className="font-medium text-surface-900 mb-3">Breakdowns (reported incidents)</h3>
                 {breakdowns.length === 0 ? (
                   <p className="text-sm text-surface-500">No breakdowns match the filters.</p>
+                ) : filteredBreakdowns.length === 0 ? (
+                  <p className="text-sm text-surface-500">No breakdowns match your search.</p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-surface-200">
                         <th className="p-2 w-10">
-                          <input type="checkbox" checked={breakdowns.length > 0 && selectedBreakdownIds.size === breakdowns.length} onChange={(e) => toggleAllBreakdowns(e.target.checked)} className="rounded border-surface-300" aria-label="Select all breakdowns" />
+                          <input type="checkbox" checked={filteredBreakdowns.length > 0 && filteredBreakdowns.every((b) => selectedBreakdownIds.has(b.id))} onChange={(e) => setSelectedBreakdownIds((prev) => { const next = new Set(prev); if (e.target.checked) filteredBreakdowns.forEach((b) => next.add(b.id)); else filteredBreakdowns.forEach((b) => next.delete(b.id)); return next; })} className="rounded border-surface-300" aria-label="Select all breakdowns" />
                         </th>
                         <th className="text-left p-2 font-medium text-surface-700">Title / type</th>
                         <th className="text-left p-2 font-medium text-surface-700">Reported</th>
@@ -5553,7 +6102,7 @@ function TabDeleteFleetDrivers() {
                       </tr>
                     </thead>
                     <tbody>
-                      {breakdowns.map((b) => (
+                      {filteredBreakdowns.map((b) => (
                         <tr key={b.id} className="border-b border-surface-100 hover:bg-surface-50/50">
                           <td className="p-2">
                             <input type="checkbox" checked={selectedBreakdownIds.has(b.id)} onChange={() => toggleBreakdown(b.id)} className="rounded border-surface-300" aria-label={`Select ${b.title || b.id}`} />
@@ -5584,6 +6133,8 @@ function TabContractorBlock() {
   const [suspensions, setSuspensions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState(''); // '' | 'under_appeal' | 'suspended'
+  const [entityTypeFilter, setEntityTypeFilter] = useState(''); // '' | 'truck' | 'driver'
+  const [search, setSearch] = useState('');
   const [reinstatingId, setReinstatingId] = useState(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -5600,6 +6151,18 @@ function TabContractorBlock() {
   useEffect(() => { load(); }, [statusFilter]);
 
   const formatDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
+  const filteredSuspensions = suspensions.filter((s) => {
+    if (entityTypeFilter && s.entity_type !== entityTypeFilter) return false;
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(s.entity_label || '').toLowerCase().includes(q) ||
+      String(s.tenant_name || '').toLowerCase().includes(q) ||
+      String(s.status || '').toLowerCase().includes(q) ||
+      String(s.appeal_notes || '').toLowerCase().includes(q) ||
+      String(s.reason || '').toLowerCase().includes(q)
+    );
+  });
 
   const handleReinstate = async (s) => {
     if (!window.confirm(`Reinstate this ${s.entity_type === 'truck' ? 'truck' : 'driver'}? The contractor and rector will be notified.`)) return;
@@ -5640,12 +6203,24 @@ function TabContractorBlock() {
         <button type="button" onClick={() => setStatusFilter('')} className={`px-3 py-1.5 text-sm rounded-lg ${statusFilter === '' ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-700 hover:bg-surface-200'}`}>All</button>
         <button type="button" onClick={() => setStatusFilter('under_appeal')} className={`px-3 py-1.5 text-sm rounded-lg ${statusFilter === 'under_appeal' ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-700 hover:bg-surface-200'}`}>Under appeal</button>
         <button type="button" onClick={() => setStatusFilter('suspended')} className={`px-3 py-1.5 text-sm rounded-lg ${statusFilter === 'suspended' ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-700 hover:bg-surface-200'}`}>Suspended</button>
+        <select value={entityTypeFilter} onChange={(e) => setEntityTypeFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm">
+          <option value="">Fleet + Driver</option>
+          <option value="truck">Fleet only</option>
+          <option value="driver">Driver only</option>
+        </select>
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Advanced search: fleet/driver, contractor, reason..."
+          className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[260px]"
+        />
       </div>
 
       <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
         {loading ? (
           <p className="p-6 text-surface-500">Loading…</p>
-        ) : suspensions.length === 0 ? (
+        ) : filteredSuspensions.length === 0 ? (
           <p className="p-6 text-surface-500">No suspensions match the filter.</p>
         ) : (
           <table className="w-full text-sm">
@@ -5661,7 +6236,7 @@ function TabContractorBlock() {
               </tr>
             </thead>
             <tbody>
-              {suspensions.map((s) => (
+              {filteredSuspensions.map((s) => (
                 <tr key={s.id} className="border-b border-surface-100 hover:bg-surface-50/50">
                   <td className="p-3">
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${s.entity_type === 'truck' ? 'bg-blue-100 text-blue-800' : 'bg-violet-100 text-violet-800'}`}>
@@ -5703,6 +6278,9 @@ function TabApplications() {
   const [decliningId, setDecliningId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [searchContractor, setSearchContractor] = useState('');
+  const [searchAdvanced, setSearchAdvanced] = useState('');
+  const [filterTruckOnly, setFilterTruckOnly] = useState('');
+  const [filterDriverOnly, setFilterDriverOnly] = useState('');
   const [filterType, setFilterType] = useState(''); // '' | 'truck' | 'driver'
   const [filterSource, setFilterSource] = useState(''); // '' | 'manual' | 'import'
   const [showExportExcelModal, setShowExportExcelModal] = useState(false);
@@ -5840,8 +6418,41 @@ function TabApplications() {
 
   const filteredApplications = applications.filter((app) => {
     if (searchContractor.trim() && !(app.contractorName || '').toLowerCase().includes(searchContractor.trim().toLowerCase())) return false;
+    const q = searchAdvanced.trim().toLowerCase();
+    if (q) {
+      const haystack = [
+        app.contractorName,
+        app.entityType,
+        app.status,
+        app.source,
+        app.truckRegistration,
+        app.truckMakeModel,
+        app.truckFleetNo,
+        app.truckMainContractor,
+        app.truckSubContractor,
+        app.driverName,
+        app.driverSurname,
+        app.driverIdNumber,
+        app.driverLicenseNumber,
+        app.driverPhone,
+        app.driverEmail,
+      ].map((v) => String(v || '').toLowerCase()).join(' ');
+      if (!haystack.includes(q)) return false;
+    }
     if (filterType && app.entityType !== filterType) return false;
     if (filterSource && (app.source || 'manual') !== filterSource) return false;
+    if (app.entityType === 'truck' && filterTruckOnly.trim()) {
+      const tq = filterTruckOnly.trim().toLowerCase();
+      const truckMatch = [app.truckRegistration, app.truckMakeModel, app.truckFleetNo, app.truckMainContractor, app.truckSubContractor]
+        .some((v) => String(v || '').toLowerCase().includes(tq));
+      if (!truckMatch) return false;
+    }
+    if (app.entityType === 'driver' && filterDriverOnly.trim()) {
+      const dq = filterDriverOnly.trim().toLowerCase();
+      const driverMatch = [app.driverName, app.driverSurname, app.driverIdNumber, app.driverLicenseNumber, app.driverPhone, app.driverEmail]
+        .some((v) => String(v || '').toLowerCase().includes(dq));
+      if (!driverMatch) return false;
+    }
     return true;
   });
   const pendingInList = filteredApplications.filter((a) => a.status === 'pending');
@@ -6087,6 +6698,13 @@ function TabApplications() {
             placeholder="Search contractor…"
             className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
           />
+          <input
+            type="search"
+            value={searchAdvanced}
+            onChange={(e) => setSearchAdvanced(e.target.value)}
+            placeholder="Advanced search (truck reg/model/fleet, driver, status, source)..."
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[320px]"
+          />
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
             <option value="">All types</option>
             <option value="truck">Truck</option>
@@ -6097,6 +6715,27 @@ function TabApplications() {
             <option value="manual">Manual</option>
             <option value="import">Import</option>
           </select>
+          <input
+            type="search"
+            value={filterTruckOnly}
+            onChange={(e) => setFilterTruckOnly(e.target.value)}
+            placeholder="Truck-only filter..."
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
+          />
+          <input
+            type="search"
+            value={filterDriverOnly}
+            onChange={(e) => setFilterDriverOnly(e.target.value)}
+            placeholder="Driver-only filter..."
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
+          />
+          <button
+            type="button"
+            onClick={() => { setSearchContractor(''); setSearchAdvanced(''); setFilterType(''); setFilterSource(''); setFilterTruckOnly(''); setFilterDriverOnly(''); }}
+            className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+          >
+            Clear filters
+          </button>
           <button type="button" onClick={exportCsv} disabled={applicationsToExport.length === 0} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50">
             Export CSV{selectedIds.size > 0 ? ` (${applicationsToExport.length})` : ''}
           </button>

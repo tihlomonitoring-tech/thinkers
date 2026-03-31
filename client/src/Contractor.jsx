@@ -189,6 +189,7 @@ export default function Contractor() {
   const { user, loading: authLoading } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('contractor');
   const [activeTab, setActiveTab] = useState('dashboard');
+  const contractorTabIds = CONTRACTOR_NAV.flatMap((s) => s.items.map((i) => i.id));
   const [data, setData] = useState({ trucks: [], drivers: [], incidents: [], expiries: [], suspensions: [], messages: [], complianceRecords: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -264,6 +265,13 @@ export default function Contractor() {
   const [enrollmentSelectedDriverIds, setEnrollmentSelectedDriverIds] = useState([]);
   const [enrollmentEnrollingDrivers, setEnrollmentEnrollingDrivers] = useState(false);
   const [enrollmentDownloading, setEnrollmentDownloading] = useState(null);
+  const [fleetListSearch, setFleetListSearch] = useState('');
+  const [driverRegisterSearch, setDriverRegisterSearch] = useState('');
+  const [incidentsListSearch, setIncidentsListSearch] = useState('');
+  const [enrollmentRouteTruckSearch, setEnrollmentRouteTruckSearch] = useState('');
+  const [enrollmentRouteDriverSearch, setEnrollmentRouteDriverSearch] = useState('');
+  const [enrollmentApprovedTruckSearch, setEnrollmentApprovedTruckSearch] = useState('');
+  const [enrollmentApprovedDriverSearch, setEnrollmentApprovedDriverSearch] = useState('');
   // Contractor information tabs
   const [contractorInfo, setContractorInfo] = useState(null);
   const [contractorInfoLoading, setContractorInfoLoading] = useState(false);
@@ -284,6 +292,15 @@ export default function Contractor() {
   const libraryFileRef = useRef(null);
 
   const hasTenant = user?.tenant_id;
+
+  useEffect(() => {
+    const requested = (() => {
+      try { return sessionStorage.getItem('contractor-global-target-tab'); } catch (_) { return null; }
+    })();
+    if (!requested) return;
+    if (contractorTabIds.includes(requested)) setActiveTab(requested);
+    try { sessionStorage.removeItem('contractor-global-target-tab'); } catch (_) {}
+  }, []);
 
   // Fetch full incident when panel opens; show list data immediately so the form is never empty
   useEffect(() => {
@@ -716,6 +733,93 @@ export default function Contractor() {
       (t.main_contractor || '').toLowerCase().includes(driverLinkedTruckSearch.toLowerCase())
   );
 
+  const filteredFleetList = trucksList.filter((t) => {
+    const q = fleetListSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      (t.registration || '').toLowerCase().includes(q) ||
+      (t.main_contractor || '').toLowerCase().includes(q) ||
+      (t.sub_contractor || '').toLowerCase().includes(q) ||
+      (t.make_model || '').toLowerCase().includes(q) ||
+      (t.fleet_no || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredDriverRegisterList = driversList.filter((d) => {
+    const q = driverRegisterSearch.trim().toLowerCase();
+    if (!q) return true;
+    const full = (d.full_name || [d.name, d.surname].filter(Boolean).join(' ')).toLowerCase();
+    return (
+      full.includes(q) ||
+      (d.surname || '').toLowerCase().includes(q) ||
+      (d.id_number || '').toLowerCase().includes(q) ||
+      (d.license_number || '').toLowerCase().includes(q) ||
+      (d.phone || '').toLowerCase().includes(q) ||
+      (d.email || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredIncidentsList = incidentsList.filter((i) => {
+    const q = incidentsListSearch.trim().toLowerCase();
+    if (!q) return true;
+    const typeLabel = incidentTypeLabel(i.type).toLowerCase();
+    return (
+      incidentRef(i).toLowerCase().includes(q) ||
+      String(i.title || '').toLowerCase().includes(q) ||
+      typeLabel.includes(q) ||
+      String(i.description || '').toLowerCase().includes(q) ||
+      String(i.severity || '').toLowerCase().includes(q) ||
+      String(i.location_text || i.location || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredEnrollmentRouteTrucks = (enrollmentRouteDetail?.trucks || []).filter((t) => {
+    const q = enrollmentRouteTruckSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(t.registration || '').toLowerCase().includes(q) ||
+      String(t.make_model || '').toLowerCase().includes(q) ||
+      String(t.fleet_no || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredEnrollmentRouteDrivers = (enrollmentRouteDetail?.drivers || []).filter((d) => {
+    const q = enrollmentRouteDriverSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(d.full_name || '').toLowerCase().includes(q) ||
+      String(d.license_number || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredEnrollmentApprovedTrucks = enrollmentApprovedTrucks.filter((t) => {
+    const q = enrollmentApprovedTruckSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(t.registration || '').toLowerCase().includes(q) ||
+      String(t.make_model || '').toLowerCase().includes(q) ||
+      String(t.fleet_no || '').toLowerCase().includes(q)
+    );
+  });
+
+  const filteredEnrollmentApprovedDrivers = enrollmentApprovedDrivers.filter((d) => {
+    const q = enrollmentApprovedDriverSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(d.full_name || '').toLowerCase().includes(q) ||
+      String(d.license_number || '').toLowerCase().includes(q)
+    );
+  });
+
+  const isRecentlyApprovedTruck = (truck) => {
+    const approvedAt = truck?.facility_access_at || truck?.approved_at || truck?.updated_at || truck?.created_at;
+    if (!approvedAt) return false;
+    const ts = new Date(approvedAt).getTime();
+    if (Number.isNaN(ts)) return false;
+    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+    return Date.now() - ts <= threeDaysMs;
+  };
+
   // Expiry reference search: trucks + drivers, filter by search term
   const expiryRefOptions = (() => {
     const q = (expiryRefSearch || '').trim().toLowerCase();
@@ -764,6 +868,7 @@ export default function Contractor() {
       if (contractors.length === 1 && !selectedContractorId) setSelectedContractorId(contractors[0].id);
 
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out. Check your connection and retry.')), 20000));
+      const messageContractorId = selectedContractorId || (contractors.length === 1 ? contractors[0].id : null);
       const results = await Promise.race([
         Promise.allSettled([
           contractorApi.trucks.list().then((r) => r.trucks || []),
@@ -771,7 +876,7 @@ export default function Contractor() {
           contractorApi.incidents.list().then((r) => r.incidents || []),
           contractorApi.expiries.list().then((r) => r.expiries || []),
           contractorApi.suspensions.list().then((r) => r.suspensions || []),
-          contractorApi.messages.list().then((r) => r.messages || []),
+          messageContractorId ? contractorApi.messages.list({ contractor_id: messageContractorId }).then((r) => r.messages || []) : Promise.resolve([]),
           contractorApi.complianceRecords.list().then((r) => r.records || []),
           contractorApi.routes.list().then((r) => r.routes || []),
         ]),
@@ -816,6 +921,17 @@ export default function Contractor() {
     if (hasTenant) load();
     else setLoading(false);
   }, [hasTenant]);
+
+  useEffect(() => {
+    if (!hasTenant || !selectedContractorId) return;
+    contractorApi.messages.list({ contractor_id: selectedContractorId })
+      .then((r) => {
+        setData((prev) => ({ ...prev, messages: r.messages || [] }));
+      })
+      .catch(() => {
+        setData((prev) => ({ ...prev, messages: [] }));
+      });
+  }, [hasTenant, selectedContractorId]);
 
   if (authLoading) {
     return (
@@ -1294,7 +1410,8 @@ export default function Contractor() {
       await contractorApi.messages.create({
         subject: form.subject.value.trim(),
         body: form.body.value.trim() || null,
-      });
+        contractor_id: selectedContractorId || undefined,
+      }, form.attachments?.files || null);
       form.reset();
       load();
     } catch (err) {
@@ -1578,8 +1695,15 @@ export default function Contractor() {
                     </p>
                   )}
                   <p className="text-xs text-surface-500 mb-3">Click a truck to view full details.</p>
+                  <input
+                    type="search"
+                    value={fleetListSearch}
+                    onChange={(e) => setFleetListSearch(e.target.value)}
+                    placeholder="Search fleet by registration, contractor, make/model, fleet no…"
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                  />
                   <ul className="space-y-1 text-sm">
-                    {trucksList.length === 0 ? <li className="text-surface-500">No trucks yet.</li> : trucksList.map((t) => (
+                    {filteredFleetList.length === 0 ? <li className="text-surface-500">{trucksList.length === 0 ? 'No trucks yet.' : 'No fleet matches your search.'}</li> : filteredFleetList.map((t) => (
                       <li
                         key={t.id}
                         role="button"
@@ -1768,8 +1892,15 @@ export default function Contractor() {
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Driver register</h2>
                   <p className="text-xs text-surface-500 mb-3">Click a driver to view full details.</p>
+                  <input
+                    type="search"
+                    value={driverRegisterSearch}
+                    onChange={(e) => setDriverRegisterSearch(e.target.value)}
+                    placeholder="Search drivers by name, ID, license, phone, email…"
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                  />
                   <ul className="space-y-1 text-sm">
-                    {driversList.length === 0 ? <li className="text-surface-500">No drivers yet.</li> : driversList.map((d) => (
+                    {filteredDriverRegisterList.length === 0 ? <li className="text-surface-500">{driversList.length === 0 ? 'No drivers yet.' : 'No drivers match your search.'}</li> : filteredDriverRegisterList.map((d) => (
                       <li
                         key={d.id}
                         role="button"
@@ -2134,8 +2265,15 @@ export default function Contractor() {
                 <div className="bg-white rounded-xl border border-surface-200 p-4">
                   <h2 className="font-medium text-surface-900 mb-3">Breakdowns & incidents</h2>
                   <p className="text-xs text-surface-500 mb-2">Click an incident to view details and resolve it.</p>
+                  <input
+                    type="search"
+                    value={incidentsListSearch}
+                    onChange={(e) => setIncidentsListSearch(e.target.value)}
+                    placeholder="Search incidents by ref, title, type, severity, location…"
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                  />
                   <ul className="space-y-1 text-sm">
-                    {incidentsList.length === 0 ? <li className="text-surface-500 py-2">No reports yet.</li> : incidentsList.map((i) => {
+                    {filteredIncidentsList.length === 0 ? <li className="text-surface-500 py-2">{incidentsList.length === 0 ? 'No reports yet.' : 'No incidents match your search.'}</li> : filteredIncidentsList.map((i) => {
                       const truckId = i.truck_id ?? i.truckId;
                       const driverId = i.driver_id ?? i.driverId;
                       const truck = truckId && trucksList.find((t) => String(t.id || '').toLowerCase() === String(truckId).toLowerCase());
@@ -2833,7 +2971,11 @@ export default function Contractor() {
                       <button
                         key={r.id}
                         type="button"
-                        onClick={() => setEnrollmentRouteId(r.id)}
+                        onClick={() => {
+                          setEnrollmentRouteId(r.id);
+                          setEnrollmentRouteTruckSearch('');
+                          setEnrollmentRouteDriverSearch('');
+                        }}
                         className={`px-3 py-1.5 text-sm rounded-lg ${enrollmentRouteId === r.id ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-700 hover:bg-surface-200'}`}
                       >
                         {r.name}
@@ -2857,11 +2999,20 @@ export default function Contractor() {
                           Enrol truck(s)
                         </button>
                       </div>
+                      <input
+                        type="search"
+                        value={enrollmentRouteTruckSearch}
+                        onChange={(e) => setEnrollmentRouteTruckSearch(e.target.value)}
+                        placeholder="Search trucks on this route…"
+                        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                      />
                       <ul className="space-y-1.5 text-sm">
                         {(!enrollmentRouteDetail?.trucks || enrollmentRouteDetail.trucks.length === 0) ? (
                           <li className="text-surface-500">No trucks enrolled on this route.</li>
+                        ) : filteredEnrollmentRouteTrucks.length === 0 ? (
+                          <li className="text-surface-500">No route trucks match your search.</li>
                         ) : (
-                          enrollmentRouteDetail.trucks.map((t) => (
+                          filteredEnrollmentRouteTrucks.map((t) => (
                             <li key={t.truck_id} className="flex items-center justify-between py-1 border-b border-surface-100">
                               <span>{t.registration} {t.make_model ? ` · ${t.make_model}` : ''} {t.fleet_no ? ` · #${t.fleet_no}` : ''}</span>
                               <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollTruck(enrollmentRouteId, t.truck_id); const r = await contractorApi.routes.get(enrollmentRouteId); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
@@ -2881,11 +3032,20 @@ export default function Contractor() {
                           Enrol driver(s)
                         </button>
                       </div>
+                      <input
+                        type="search"
+                        value={enrollmentRouteDriverSearch}
+                        onChange={(e) => setEnrollmentRouteDriverSearch(e.target.value)}
+                        placeholder="Search drivers on this route…"
+                        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                      />
                       <ul className="space-y-1.5 text-sm">
                         {(!enrollmentRouteDetail?.drivers || enrollmentRouteDetail.drivers.length === 0) ? (
                           <li className="text-surface-500">No drivers enrolled on this route.</li>
+                        ) : filteredEnrollmentRouteDrivers.length === 0 ? (
+                          <li className="text-surface-500">No route drivers match your search.</li>
                         ) : (
-                          enrollmentRouteDetail.drivers.map((d) => (
+                          filteredEnrollmentRouteDrivers.map((d) => (
                             <li key={d.driver_id} className="flex items-center justify-between py-1 border-b border-surface-100">
                               <span>{d.full_name} {d.license_number ? ` · ${d.license_number}` : ''}</span>
                               <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollDriver(enrollmentRouteId, d.driver_id); const r = await contractorApi.routes.get(enrollmentRouteId); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
@@ -2897,11 +3057,11 @@ export default function Contractor() {
                   </div>
                 )}
                 {enrollmentAddTruckOpen && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); }}>
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); setEnrollmentApprovedTruckSearch(''); }}>
                     <div className="bg-white rounded-xl shadow-lg max-w-md w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
                       <div className="p-4 border-b border-surface-200 flex justify-between items-center">
                         <h3 className="font-medium text-surface-900">Enrol trucks on route</h3>
-                        <button type="button" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); }} className="text-surface-500 hover:text-surface-700">×</button>
+                        <button type="button" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); setEnrollmentApprovedTruckSearch(''); }} className="text-surface-500 hover:text-surface-700">×</button>
                       </div>
                       <div className="p-4 overflow-auto flex-1">
                         {enrollmentApprovedTrucks.length === 0 ? (
@@ -2933,8 +3093,17 @@ export default function Contractor() {
                                 {enrollmentSelectedTruckIds.length} selected
                               </span>
                             </div>
+                            <input
+                              type="search"
+                              value={enrollmentApprovedTruckSearch}
+                              onChange={(e) => setEnrollmentApprovedTruckSearch(e.target.value)}
+                              placeholder="Search approved trucks…"
+                              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                            />
                             <ul className="space-y-2">
-                              {enrollmentApprovedTrucks.map((t) => {
+                              {filteredEnrollmentApprovedTrucks.length === 0 ? (
+                                <li className="text-sm text-surface-500 py-2">No approved trucks match your search.</li>
+                              ) : filteredEnrollmentApprovedTrucks.map((t) => {
                                 const enrolled = enrollmentRouteDetail?.trucks?.some((e) => String(e.truck_id) === String(t.id));
                                 const selected = enrollmentSelectedTruckIds.includes(t.id);
                                 return (
@@ -2951,7 +3120,14 @@ export default function Contractor() {
                                       }}
                                       className="rounded border-surface-300 text-brand-600"
                                     />
-                                    <span className="text-sm flex-1">{t.registration} {t.make_model ? ` · ${t.make_model}` : ''} {t.fleet_no ? ` #${t.fleet_no}` : ''}</span>
+                                    <span className="text-sm flex-1">
+                                      {t.registration} {t.make_model ? ` · ${t.make_model}` : ''} {t.fleet_no ? ` #${t.fleet_no}` : ''}
+                                    </span>
+                                    {isRecentlyApprovedTruck(t) && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                        Recently approved
+                                      </span>
+                                    )}
                                     {enrolled && <span className="text-xs text-surface-500">Enrolled</span>}
                                   </li>
                                 );
@@ -2988,11 +3164,11 @@ export default function Contractor() {
                   </div>
                 )}
                 {enrollmentAddDriverOpen && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setEnrollmentAddDriverOpen(false); setEnrollmentSelectedDriverIds([]); }}>
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setEnrollmentAddDriverOpen(false); setEnrollmentSelectedDriverIds([]); setEnrollmentApprovedDriverSearch(''); }}>
                     <div className="bg-white rounded-xl shadow-lg max-w-md w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
                       <div className="p-4 border-b border-surface-200 flex justify-between items-center">
                         <h3 className="font-medium text-surface-900">Enrol drivers on route</h3>
-                        <button type="button" onClick={() => { setEnrollmentAddDriverOpen(false); setEnrollmentSelectedDriverIds([]); }} className="text-surface-500 hover:text-surface-700">×</button>
+                        <button type="button" onClick={() => { setEnrollmentAddDriverOpen(false); setEnrollmentSelectedDriverIds([]); setEnrollmentApprovedDriverSearch(''); }} className="text-surface-500 hover:text-surface-700">×</button>
                       </div>
                       <div className="p-4 overflow-auto flex-1">
                         {enrollmentApprovedDrivers.length === 0 ? (
@@ -3024,8 +3200,17 @@ export default function Contractor() {
                                 {enrollmentSelectedDriverIds.length} selected
                               </span>
                             </div>
+                            <input
+                              type="search"
+                              value={enrollmentApprovedDriverSearch}
+                              onChange={(e) => setEnrollmentApprovedDriverSearch(e.target.value)}
+                              placeholder="Search approved drivers…"
+                              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                            />
                             <ul className="space-y-2">
-                              {enrollmentApprovedDrivers.map((d) => {
+                              {filteredEnrollmentApprovedDrivers.length === 0 ? (
+                                <li className="text-sm text-surface-500 py-2">No approved drivers match your search.</li>
+                              ) : filteredEnrollmentApprovedDrivers.map((d) => {
                                 const enrolled = enrollmentRouteDetail?.drivers?.some((e) => String(e.driver_id) === String(d.id));
                                 const selected = enrollmentSelectedDriverIds.includes(d.id);
                                 return (
@@ -3359,6 +3544,7 @@ export default function Contractor() {
                   <form onSubmit={addMessage} className="space-y-3">
                     <input name="subject" placeholder="Subject" required className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <textarea name="body" placeholder="Message (e.g. route change, load schedule)" rows={4} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                    <input name="attachments" type="file" multiple className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Send</button>
                   </form>
                 </div>
@@ -3370,6 +3556,16 @@ export default function Contractor() {
                         <span className="font-medium">{m.subject}</span>
                         <span className="text-surface-500 ml-2">· {m.sender_name}</span>
                         <p className="text-surface-500 text-xs mt-0.5">{formatDate(m.created_at)}</p>
+                        {m.body ? <p className="text-surface-700 mt-1 whitespace-pre-wrap">{m.body}</p> : null}
+                        {Array.isArray(m.attachments) && m.attachments.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {m.attachments.map((a) => (
+                              <a key={a.id} href={contractorApi.messages.attachmentUrl(m.id, a.id)} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 hover:underline">
+                                {a.file_name || 'Attachment'}
+                              </a>
+                            ))}
+                          </div>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

@@ -71,6 +71,7 @@ const SCRIPTS = [
   'db:contractors-multi',
   'db:backfill-contractor-id',
   'db:contractor-driver-linked-truck',
+  'db:contractor-messages-platform',
   'db:profile-management',
   'db:profile-missing-tables',
   'db:recruitment',

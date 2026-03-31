@@ -285,6 +285,15 @@ export default function AccessManagement() {
 
   const hasTenant = user?.tenant_id;
 
+  useEffect(() => {
+    const requested = (() => {
+      try { return sessionStorage.getItem('access-management-global-target-tab'); } catch (_) { return null; }
+    })();
+    if (!requested) return;
+    if (TABS.some((t) => t.id === requested)) setActiveTab(requested);
+    try { sessionStorage.removeItem('access-management-global-target-tab'); } catch (_) {}
+  }, []);
+
   const insertAtFocusedMonthlyPerfText = (prefix) => {
     const cur = monthlyPerfCursor;
     if (!cur) return;

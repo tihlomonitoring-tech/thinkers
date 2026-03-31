@@ -133,6 +133,15 @@ export default function Rector() {
 
   const hasTenant = user?.tenant_id;
 
+  useEffect(() => {
+    const requested = (() => {
+      try { return sessionStorage.getItem('rector-global-target-tab'); } catch (_) { return null; }
+    })();
+    if (!requested) return;
+    if (TABS.some((t) => t.id === requested)) setActiveTab(requested);
+    try { sessionStorage.removeItem('rector-global-target-tab'); } catch (_) {}
+  }, []);
+
   // Rector route assignment: when set, user only sees data for these routes
   const [rectorRouteIds, setRectorRouteIds] = useState([]);
 

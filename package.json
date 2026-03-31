@@ -76,6 +76,7 @@
     "db:contractors-multi": "node scripts/run-contractors-multi-schema.js",
     "db:backfill-contractor-id": "node scripts/run-backfill-contractor-id.js",
     "db:contractor-driver-linked-truck": "node scripts/run-contractor-driver-linked-truck.js",
+    "db:contractor-messages-platform": "node scripts/run-contractor-messages-platform.js",
     "db:profile-management": "node scripts/run-profile-management-schema.js",
     "db:profile-missing-tables": "node scripts/run-create-missing-profile-tables.js",
     "db:recruitment": "node scripts/run-recruitment-schema.js",
