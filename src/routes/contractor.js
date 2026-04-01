@@ -107,39 +107,108 @@ function getTenantId(req) {
   return u.tenant_id ?? u.tenant_Id ?? (u.tenant_id !== undefined ? u.tenant_id : undefined);
 }
 
+/** Normalise page_id values from DB (case / whitespace can vary). */
+function pageRolesNorm(req) {
+  return (req.user?.page_roles || []).map((p) => String(p || '').trim().toLowerCase()).filter(Boolean);
+}
+
+/**
+ * Contractor companies explicitly linked to this user (User management → contractor checkboxes).
+ * Fallback: single contractor row under tenant (legacy). If several companies exist and this is empty, [].
+ */
+async function getHaulierContractorIdsFromDb(req, tenantId) {
+  const result = await query(
+    `SELECT contractor_id FROM user_contractors WHERE user_id = @userId`,
+    { userId: req.user?.id }
+  );
+  const rows = result.recordset || [];
+  const ids = [...new Set(rows.map((r) => r.contractor_id ?? r.contractor_Id).filter(Boolean))];
+  if (ids.length > 0) return ids;
+  if (rows.length > 0) return [];
+
+  const countResult = await query(
+    `SELECT id FROM contractors WHERE tenant_id = @tenantId`,
+    { tenantId }
+  );
+  const tenantContractors = countResult.recordset || [];
+  if (tenantContractors.length === 0) return [];
+  if (tenantContractors.length === 1) return [tenantContractors[0].id ?? tenantContractors[0].Id];
+  return [];
+}
+
 /** Allowed contractor IDs for current user. Returns null = all contractors under tenant (no restriction); [] = none; [...] = only these. */
 async function getAllowedContractorIds(req) {
   const tenantId = getTenantId(req);
   if (!tenantId) return null;
   try {
-    // Super_admin or users with Command Centre, Access Management, or Rector page access see all trucks/drivers in the tenant (e.g. shift report)
+    // Super_admin, Command Centre, and Access Management see all contractors under the tenant.
+    // Rector-only users see all (fleet per route / oversight). Users who also have the contractor page
+    // role are hauliers: they must stay scoped to their company/companies via user_contractors so they
+    // never see other hauliers' fleet or enrollment on the contractor portal.
     if (req.user?.role === 'super_admin') return null;
-    const pageRoles = req.user?.page_roles || [];
-    const canSeeAllContractors = ['command_centre', 'access_management', 'rector'].some((p) => pageRoles.includes(p));
+    const pr = pageRolesNorm(req);
+    const hasContractorPortal = pr.includes('contractor');
+    const canSeeAllContractors =
+      pr.includes('command_centre') ||
+      pr.includes('access_management') ||
+      (pr.includes('rector') && !hasContractorPortal);
     if (canSeeAllContractors) return null;
 
-    const result = await query(
-      `SELECT contractor_id FROM user_contractors WHERE user_id = @userId`,
-      { userId: req.user?.id }
-    );
-    const rows = result.recordset || [];
-    const ids = rows.map((r) => r.contractor_id ?? r.contractor_Id).filter(Boolean);
-    if (ids.length > 0) return ids;
-    if (rows.length > 0) return [];
-
-    // No user_contractors rows: contractor user not yet assigned
-    const countResult = await query(
-      `SELECT id FROM contractors WHERE tenant_id = @tenantId`,
-      { tenantId }
-    );
-    const tenantContractors = countResult.recordset || [];
-    if (tenantContractors.length === 0) return null;
-    if (tenantContractors.length === 1) return [tenantContractors[0].id ?? tenantContractors[0].Id];
-    return [];
+    return getHaulierContractorIdsFromDb(req, tenantId);
   } catch (e) {
     if (e.message && (e.message.includes('user_contractors') || e.message.includes('Invalid object'))) return null;
     throw e;
   }
+}
+
+/**
+ * enrollmentPortal=1: Contractor app “Fleet and driver enrollment” only — never tenant-wide for hauliers,
+ * even if they also have Rector access. Rector UI keeps calling the same URLs without this flag.
+ * Optionally narrowed by ?contractor_id= (staff may narrow when allowed === null).
+ */
+async function allowedContractorIdsWithOptionalNarrow(req) {
+  const tenantId = getTenantId(req);
+  const portalStrict = String(req.query.enrollmentPortal || '') === '1' || String(req.query.enrollmentPortal || '').toLowerCase() === 'true';
+  let allowed;
+  if (portalStrict) {
+    if (req.user?.role === 'super_admin') {
+      allowed = null;
+    } else {
+      const pr = pageRolesNorm(req);
+      if (pr.includes('command_centre') || pr.includes('access_management')) {
+        allowed = await getAllowedContractorIds(req);
+      } else {
+        allowed = await getHaulierContractorIdsFromDb(req, tenantId);
+      }
+    }
+  } else {
+    allowed = await getAllowedContractorIds(req);
+  }
+  const raw = req.query.contractor_id;
+  const narrowId = raw != null && String(raw).trim() ? String(raw).trim() : null;
+  if (!narrowId) return { allowed };
+  const matches = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+  if (allowed === null) {
+    const chk = await query(`SELECT 1 AS ok FROM contractors WHERE id = @id AND tenant_id = @tenantId`, { id: narrowId, tenantId });
+    if (!chk.recordset?.length) return { error: { status: 400, message: 'Invalid contractor' } };
+    return { allowed: [narrowId] };
+  }
+  if (allowed.length === 0) return { allowed: [] };
+  if (!allowed.some((id) => matches(id, narrowId))) return { error: { status: 403, message: 'Not permitted for this contractor' } };
+  return { allowed: [narrowId] };
+}
+
+/** POST/DELETE route enrollment: use with ?enrollmentPortal=1 from contractor app (hauliers never get tenant-wide here). */
+async function getAllowedForEnrollmentMutation(req) {
+  const tenantId = getTenantId(req);
+  const portalStrict = String(req.query.enrollmentPortal || '') === '1' || String(req.query.enrollmentPortal || '').toLowerCase() === 'true';
+  if (!portalStrict) return getAllowedContractorIds(req);
+  if (req.user?.role === 'super_admin') return null;
+  const pr = pageRolesNorm(req);
+  if (pr.includes('command_centre') || pr.includes('access_management')) {
+    return getAllowedContractorIds(req);
+  }
+  return getHaulierContractorIdsFromDb(req, tenantId);
 }
 
 /** Get contractor company name by id (for emails). Returns null if not found. */
@@ -1761,7 +1830,9 @@ router.delete('/routes/:id', async (req, res, next) => {
 router.get('/enrollment/approved-trucks', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const allowed = await getAllowedContractorIds(req);
+    const scope = await allowedContractorIdsWithOptionalNarrow(req);
+    if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
+    const allowed = scope.allowed;
     let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access, t.created_at, t.updated_at
        FROM contractor_trucks t
        WHERE t.tenant_id = @tenantId AND t.facility_access = 1
@@ -1791,7 +1862,9 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
 router.get('/enrollment/approved-drivers', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const allowed = await getAllowedContractorIds(req);
+    const scope = await allowedContractorIdsWithOptionalNarrow(req);
+    if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
+    const allowed = scope.allowed;
     let sql = `SELECT d.id, d.full_name, d.license_number, d.phone, d.facility_access
        FROM contractor_drivers d
        WHERE d.tenant_id = @tenantId AND d.facility_access = 1
@@ -1822,11 +1895,25 @@ router.get('/routes/enrolled-by-truck/:truckId', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { truckId } = req.params;
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) {
+      return res.json({ routes: [] });
+    }
+    const params = { truckId, tenantId };
+    let truckScope = '';
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@eb${i}`).join(',');
+      allowed.forEach((cid, i) => { params[`eb${i}`] = cid; });
+      truckScope = ` AND EXISTS (
+        SELECT 1 FROM contractor_trucks t
+        WHERE t.id = @truckId AND t.tenant_id = @tenantId AND t.contractor_id IN (${ph})
+      )`;
+    }
     const result = await query(
       `SELECT r.id, r.name FROM contractor_routes r
        INNER JOIN contractor_route_trucks rt ON rt.route_id = r.id AND rt.truck_id = @truckId
-       WHERE r.tenant_id = @tenantId ORDER BY r.name`,
-      { truckId, tenantId }
+       WHERE r.tenant_id = @tenantId${truckScope} ORDER BY r.name`,
+      params
     );
     res.json({ routes: result.recordset || [] });
   } catch (err) {
@@ -1834,32 +1921,48 @@ router.get('/routes/enrolled-by-truck/:truckId', async (req, res, next) => {
   }
 });
 
-/** GET single route with enrolled trucks and drivers. All enrolled rows are returned (tenant-scoped); route enrollment is authoritative for who is on the route. */
+/** GET single route with enrolled trucks and drivers. Tenant-scoped; trucks/drivers filtered by company when user is contractor-scoped (not Access Management / Rector / Command Centre). */
 router.get('/routes/:id', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { id } = req.params;
+    const scope = await allowedContractorIdsWithOptionalNarrow(req);
+    if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
+    const allowed = scope.allowed;
     const routeResult = await query(
       `SELECT * FROM contractor_routes WHERE id = @id AND tenant_id = @tenantId`,
       { id, tenantId }
     );
     if (!routeResult.recordset?.[0]) return res.status(404).json({ error: 'Route not found' });
     const route = routeResult.recordset[0];
-    const trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no, t.contractor_id,
+    if (allowed && allowed.length === 0) {
+      return res.json({ route, trucks: [], drivers: [] });
+    }
+    const trucksParams = { id, tenantId };
+    let trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no, t.contractor_id,
        t.main_contractor, t.sub_contractor,
        co.name AS contractor_company_name
        FROM contractor_route_trucks rt
-       JOIN contractor_trucks t ON t.id = rt.truck_id
+       JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
        LEFT JOIN contractors co ON co.id = t.contractor_id AND co.tenant_id = @tenantId
-       WHERE rt.route_id = @id
-       ORDER BY t.registration`;
-    const driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
+       WHERE rt.route_id = @id`;
+    if (allowed && allowed.length > 0) {
+      const tPlaceholders = allowed.map((_, i) => `@tc${i}`).join(',');
+      trucksSql += ` AND t.contractor_id IN (${tPlaceholders})`;
+      allowed.forEach((cid, i) => { trucksParams[`tc${i}`] = cid; });
+    }
+    trucksSql += ` ORDER BY t.registration`;
+    const driversParams = { id, tenantId };
+    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
        FROM contractor_route_drivers rd
-       JOIN contractor_drivers d ON d.id = rd.driver_id
-       WHERE rd.route_id = @id
-       ORDER BY d.full_name`;
-    const trucksParams = { id, tenantId };
-    const driversParams = { id };
+       JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
+       WHERE rd.route_id = @id`;
+    if (allowed && allowed.length > 0) {
+      const dPlaceholders = allowed.map((_, i) => `@dc${i}`).join(',');
+      driversSql += ` AND d.contractor_id IN (${dPlaceholders})`;
+      allowed.forEach((cid, i) => { driversParams[`dc${i}`] = cid; });
+    }
+    driversSql += ` ORDER BY d.full_name`;
     const trucksResult = await query(trucksSql, trucksParams);
     const driversResult = await query(driversSql, driversParams);
     res.json({
@@ -1883,7 +1986,7 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
     const routeRow = await query(`SELECT id, name FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
     if (!routeRow.recordset?.length) return res.status(404).json({ error: 'Route not found' });
     const routeName = routeRow.recordset[0].name;
-    const allowed = await getAllowedContractorIds(req);
+    const allowed = await getAllowedForEnrollmentMutation(req);
     const addedTruckIds = [];
     for (const truckId of ids) {
       let truckSql = `SELECT 1 FROM contractor_trucks t
@@ -1947,11 +2050,28 @@ router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { id: routeId, truckId } = req.params;
-    await query(
-      `DELETE FROM contractor_route_trucks WHERE route_id = @routeId AND truck_id = @truckId
-       AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`,
-      { routeId, truckId, tenantId }
-    );
+    const allowed = await getAllowedForEnrollmentMutation(req);
+    if (allowed && allowed.length === 0) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
+    const params = { routeId, truckId, tenantId };
+    let sql;
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@uc${i}`).join(',');
+      allowed.forEach((cid, i) => { params[`uc${i}`] = cid; });
+      sql = `DELETE rt FROM contractor_route_trucks rt
+        INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
+        WHERE rt.route_id = @routeId AND rt.truck_id = @truckId
+          AND rt.route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)
+          AND t.contractor_id IN (${ph})`;
+    } else {
+      sql = `DELETE FROM contractor_route_trucks WHERE route_id = @routeId AND truck_id = @truckId
+        AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`;
+    }
+    const result = await query(sql, params);
+    if (allowed && allowed.length > 0 && (result.rowsAffected?.[0] ?? 0) === 0) {
+      return res.status(404).json({ error: 'Enrollment not found or not permitted' });
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -1968,7 +2088,7 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
     if (ids.length === 0) return res.status(400).json({ error: 'driverIds array is required' });
     const routeCheck = await query(`SELECT 1 FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
     if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
-    const allowed = await getAllowedContractorIds(req);
+    const allowed = await getAllowedForEnrollmentMutation(req);
     let added = 0;
     for (const driverId of ids) {
       let driverSql = `SELECT 1 FROM contractor_drivers d
@@ -2003,11 +2123,28 @@ router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { id: routeId, driverId } = req.params;
-    await query(
-      `DELETE FROM contractor_route_drivers WHERE route_id = @routeId AND driver_id = @driverId
-       AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`,
-      { routeId, driverId, tenantId }
-    );
+    const allowed = await getAllowedForEnrollmentMutation(req);
+    if (allowed && allowed.length === 0) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
+    const params = { routeId, driverId, tenantId };
+    let sql;
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@ud${i}`).join(',');
+      allowed.forEach((cid, i) => { params[`ud${i}`] = cid; });
+      sql = `DELETE rd FROM contractor_route_drivers rd
+        INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
+        WHERE rd.route_id = @routeId AND rd.driver_id = @driverId
+          AND rd.route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)
+          AND d.contractor_id IN (${ph})`;
+    } else {
+      sql = `DELETE FROM contractor_route_drivers WHERE route_id = @routeId AND driver_id = @driverId
+        AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`;
+    }
+    const result = await query(sql, params);
+    if (allowed && allowed.length > 0 && (result.rowsAffected?.[0] ?? 0) === 0) {
+      return res.status(404).json({ error: 'Enrollment not found or not permitted' });
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -2018,7 +2155,9 @@ router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
 router.get('/enrollment/fleet-list', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const allowed = await getAllowedContractorIds(req);
+    const scope = await allowedContractorIdsWithOptionalNarrow(req);
+    if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
+    const allowed = scope.allowed;
     const wantExcel = (req.query.format || '').toLowerCase() === 'excel';
     if (allowed && allowed.length === 0) {
       if (wantExcel) {
@@ -2108,7 +2247,9 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
 router.get('/enrollment/driver-list', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const allowed = await getAllowedContractorIds(req);
+    const scope = await allowedContractorIdsWithOptionalNarrow(req);
+    if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
+    const allowed = scope.allowed;
     const wantExcel = (req.query.format || '').toLowerCase() === 'excel';
     if (allowed && allowed.length === 0) {
       if (wantExcel) {

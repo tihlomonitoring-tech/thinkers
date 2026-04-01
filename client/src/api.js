@@ -264,14 +264,20 @@ export const contractor = {
   routes: {
     list: () => request('/contractor/routes'),
     enrolledByTruck: (truckId) => request(`/contractor/routes/enrolled-by-truck/${encodeURIComponent(truckId)}`),
-    get: (id) => request(`/contractor/routes/${id}`),
+    get: (id, params = {}) => {
+      const q = new URLSearchParams();
+      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
+      if (params.enrollmentPortal) q.set('enrollmentPortal', params.enrollmentPortal);
+      const qs = q.toString();
+      return request(`/contractor/routes/${id}${qs ? `?${qs}` : ''}`);
+    },
     create: (body) => request('/contractor/routes', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => request(`/contractor/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/contractor/routes/${id}`, { method: 'DELETE' }),
-    enrollTrucks: (routeId, truckIds) => request(`/contractor/routes/${routeId}/trucks`, { method: 'POST', body: JSON.stringify({ truckIds }) }),
-    enrollDrivers: (routeId, driverIds) => request(`/contractor/routes/${routeId}/drivers`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
-    unenrollTruck: (routeId, truckId) => request(`/contractor/routes/${routeId}/trucks/${truckId}`, { method: 'DELETE' }),
-    unenrollDriver: (routeId, driverId) => request(`/contractor/routes/${routeId}/drivers/${driverId}`, { method: 'DELETE' }),
+    enrollTrucks: (routeId, truckIds) => request(`/contractor/routes/${routeId}/trucks?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ truckIds }) }),
+    enrollDrivers: (routeId, driverIds) => request(`/contractor/routes/${routeId}/drivers?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
+    unenrollTruck: (routeId, truckId) => request(`/contractor/routes/${routeId}/trucks/${truckId}?enrollmentPortal=1`, { method: 'DELETE' }),
+    unenrollDriver: (routeId, driverId) => request(`/contractor/routes/${routeId}/drivers/${driverId}?enrollmentPortal=1`, { method: 'DELETE' }),
   },
   rectorMyRoutes: () => request('/contractor/rector-my-routes'),
   routeFactors: {
@@ -302,11 +308,27 @@ export const contractor = {
     delete: (id) => request(`/contractor/pilot-distribution/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
   enrollment: {
-    approvedTrucks: () => request('/contractor/enrollment/approved-trucks'),
-    approvedDrivers: () => request('/contractor/enrollment/approved-drivers'),
-    downloadFleetList: (routeId) => {
-      const q = routeId ? `?routeId=${encodeURIComponent(routeId)}` : '';
-      return fetch(`${API}/contractor/enrollment/fleet-list${q}`, { credentials: 'include' })
+    approvedTrucks: (contractorId, opts = {}) => {
+      const q = new URLSearchParams();
+      if (contractorId) q.set('contractor_id', contractorId);
+      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
+      const qs = q.toString();
+      return request(`/contractor/enrollment/approved-trucks${qs ? `?${qs}` : ''}`);
+    },
+    approvedDrivers: (contractorId, opts = {}) => {
+      const q = new URLSearchParams();
+      if (contractorId) q.set('contractor_id', contractorId);
+      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
+      const qs = q.toString();
+      return request(`/contractor/enrollment/approved-drivers${qs ? `?${qs}` : ''}`);
+    },
+    downloadFleetList: (routeId, contractorId, opts = {}) => {
+      const q = new URLSearchParams();
+      if (routeId) q.set('routeId', routeId);
+      if (contractorId) q.set('contractor_id', contractorId);
+      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
+      const qs = q.toString();
+      return fetch(`${API}/contractor/enrollment/fleet-list${qs ? `?${qs}` : ''}`, { credentials: 'include' })
         .then((res) => {
           if (!res.ok) throw new Error('Failed to download fleet list');
           return res.blob();
@@ -319,9 +341,13 @@ export const contractor = {
           URL.revokeObjectURL(a.href);
         });
     },
-    downloadDriverList: (routeId) => {
-      const q = routeId ? `?routeId=${encodeURIComponent(routeId)}` : '';
-      return fetch(`${API}/contractor/enrollment/driver-list${q}`, { credentials: 'include' })
+    downloadDriverList: (routeId, contractorId, opts = {}) => {
+      const q = new URLSearchParams();
+      if (routeId) q.set('routeId', routeId);
+      if (contractorId) q.set('contractor_id', contractorId);
+      if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
+      const qs = q.toString();
+      return fetch(`${API}/contractor/enrollment/driver-list${qs ? `?${qs}` : ''}`, { credentials: 'include' })
         .then((res) => {
           if (!res.ok) throw new Error('Failed to download driver list');
           return res.blob();

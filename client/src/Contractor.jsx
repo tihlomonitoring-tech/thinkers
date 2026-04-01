@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { canAccessPage } from './lib/pageAccess.js';
@@ -264,7 +264,6 @@ export default function Contractor() {
   const [enrollmentAddDriverOpen, setEnrollmentAddDriverOpen] = useState(false);
   const [enrollmentSelectedDriverIds, setEnrollmentSelectedDriverIds] = useState([]);
   const [enrollmentEnrollingDrivers, setEnrollmentEnrollingDrivers] = useState(false);
-  const [enrollmentDownloading, setEnrollmentDownloading] = useState(null);
   const [fleetListSearch, setFleetListSearch] = useState('');
   const [driverRegisterSearch, setDriverRegisterSearch] = useState('');
   const [incidentsListSearch, setIncidentsListSearch] = useState('');
@@ -272,6 +271,8 @@ export default function Contractor() {
   const [enrollmentRouteDriverSearch, setEnrollmentRouteDriverSearch] = useState('');
   const [enrollmentApprovedTruckSearch, setEnrollmentApprovedTruckSearch] = useState('');
   const [enrollmentApprovedDriverSearch, setEnrollmentApprovedDriverSearch] = useState('');
+  /** Route picker: search first — matches are not shown until user types (privacy). */
+  const [enrollmentRoutePickerQuery, setEnrollmentRoutePickerQuery] = useState('');
   // Contractor information tabs
   const [contractorInfo, setContractorInfo] = useState(null);
   const [contractorInfoLoading, setContractorInfoLoading] = useState(false);
@@ -302,14 +303,22 @@ export default function Contractor() {
     try { sessionStorage.removeItem('contractor-global-target-tab'); } catch (_) {}
   }, []);
 
-  // Fetch full incident when panel opens; show list data immediately so the form is never empty
+  /** Query params for contractor-app enrollment only (strict privacy; never tenant-wide for hauliers). */
+  const enrollmentContractorQuery = () => ({
+    enrollmentPortal: '1',
+    ...(selectedContractorId ? { contractor_id: selectedContractorId } : {}),
+  });
+
+  // Enrollment tab: approved fleet/drivers for picklists (scoped server-side; optional contractor filter)
   useEffect(() => {
     if (activeTab !== 'enrollment') return;
     let cancelled = false;
     setEnrollmentLoading(true);
+    const cOpt = selectedContractorId || undefined;
+    const portalOpts = { enrollmentPortal: '1' };
     Promise.all([
-      contractorApi.enrollment.approvedTrucks().then((r) => r.trucks || []),
-      contractorApi.enrollment.approvedDrivers().then((r) => r.drivers || []),
+      contractorApi.enrollment.approvedTrucks(cOpt, portalOpts).then((r) => r.trucks || []),
+      contractorApi.enrollment.approvedDrivers(cOpt, portalOpts).then((r) => r.drivers || []),
     ])
       .then(([trucks, drivers]) => {
         if (!cancelled) {
@@ -320,12 +329,7 @@ export default function Contractor() {
       .catch(() => { if (!cancelled) setEnrollmentApprovedTrucks([]); setEnrollmentApprovedDrivers([]); })
       .finally(() => { if (!cancelled) setEnrollmentLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab]);
-
-  useEffect(() => {
-    const routes = data.routes || [];
-    if (activeTab === 'enrollment' && routes.length > 0 && !enrollmentRouteId) setEnrollmentRouteId(routes[0].id);
-  }, [activeTab, data.routes, enrollmentRouteId]);
+  }, [activeTab, selectedContractorId]);
 
   useEffect(() => {
     if (activeTab !== 'enrollment' || !enrollmentRouteId) {
@@ -333,11 +337,11 @@ export default function Contractor() {
       return;
     }
     let cancelled = false;
-    contractorApi.routes.get(enrollmentRouteId)
+    contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery())
       .then((r) => { if (!cancelled) setEnrollmentRouteDetail(r); })
       .catch(() => { if (!cancelled) setEnrollmentRouteDetail(null); });
     return () => { cancelled = true; };
-  }, [activeTab, enrollmentRouteId]);
+  }, [activeTab, enrollmentRouteId, selectedContractorId]);
 
   // Contractor info: load when tab is active and sync form from API
   useEffect(() => {
@@ -503,6 +507,26 @@ export default function Contractor() {
   const complianceRecordsList = byContractor(data.complianceRecords);
   const messagesList = byContractor(data.messages);
   const routesList = data.routes || [];
+  const enrollmentRouteSearchMinChars = 2;
+  const enrollmentRouteMatches = useMemo(() => {
+    const q = enrollmentRoutePickerQuery.trim().toLowerCase();
+    let list = [];
+    if (q.length >= enrollmentRouteSearchMinChars) {
+      list = (routesList || []).filter((r) => {
+        const name = String(r.name || '').toLowerCase();
+        const start = String(r.starting_point || '').toLowerCase();
+        const end = String(r.destination || '').toLowerCase();
+        return name.includes(q) || start.includes(q) || end.includes(q);
+      });
+    }
+    if (enrollmentRouteId) {
+      const selected = (routesList || []).find((r) => String(r.id) === String(enrollmentRouteId));
+      if (selected && !list.some((r) => String(r.id) === String(enrollmentRouteId))) {
+        list = [selected, ...list];
+      }
+    }
+    return list;
+  }, [routesList, enrollmentRoutePickerQuery, enrollmentRouteId]);
   const [expirySearch, setExpirySearch] = useState('');
   const filteredExpiriesList = (() => {
     const q = (expirySearch || '').trim().toLowerCase();
@@ -2940,49 +2964,79 @@ export default function Contractor() {
 
             {activeTab === 'enrollment' && (
               <div className="w-full space-y-6">
-                <div className="flex flex-wrap items-center gap-3">
+                <div>
                   <h2 className="font-medium text-surface-900">Fleet and driver enrollment</h2>
-                  <span className="text-sm text-surface-500">Approved fleet only; suspended trucks/drivers are excluded.</span>
-                  <div className="ml-auto flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={enrollmentDownloading}
-                      onClick={() => { setEnrollmentDownloading('fleet'); contractorApi.enrollment.downloadFleetList(enrollmentRouteId || undefined).catch((e) => setError(e?.message)).finally(() => setEnrollmentDownloading(null)); }}
-                      className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-                    >
-                      {enrollmentDownloading === 'fleet' ? 'Downloading…' : 'Download fleet list'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={enrollmentDownloading}
-                      onClick={() => { setEnrollmentDownloading('driver'); contractorApi.enrollment.downloadDriverList(enrollmentRouteId || undefined).catch((e) => setError(e?.message)).finally(() => setEnrollmentDownloading(null)); }}
-                      className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-                    >
-                      {enrollmentDownloading === 'driver' ? 'Downloading…' : 'Download driver list'}
-                    </button>
-                  </div>
+                  <p className="text-sm text-surface-500 mt-1">Approved fleet only; suspended trucks/drivers are excluded. Search for a route by name (or start/end point), select it, then enrol trucks or drivers.</p>
                 </div>
-                <div className="flex flex-wrap gap-2 items-center">
-                  <span className="text-sm text-surface-600">Route:</span>
-                  {routesList.length === 0 ? (
-                    <span className="text-sm text-surface-500">No routes yet. Routes are created in Access Management.</span>
-                  ) : (
-                    routesList.map((r) => (
-                      <button
-                        key={r.id}
-                        type="button"
-                        onClick={() => {
-                          setEnrollmentRouteId(r.id);
+                {routesList.length === 0 ? (
+                  <p className="text-sm text-surface-500">No routes yet. Routes are created in Access Management.</p>
+                ) : (
+                  <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3 max-w-2xl">
+                    <label className="block text-sm font-medium text-surface-700" htmlFor="enrollment-route-search">Search routes</label>
+                    <p className="text-xs text-surface-500">Route names are not listed until you type at least {enrollmentRouteSearchMinChars} characters — this limits exposure of other operations.</p>
+                    <input
+                      id="enrollment-route-search"
+                      type="search"
+                      autoComplete="off"
+                      value={enrollmentRoutePickerQuery}
+                      onChange={(e) => {
+                        setEnrollmentRoutePickerQuery(e.target.value);
+                        setEnrollmentRouteId(null);
+                        setEnrollmentRouteDetail(null);
+                        setEnrollmentRouteTruckSearch('');
+                        setEnrollmentRouteDriverSearch('');
+                      }}
+                      placeholder="Type part of route name, start, or destination…"
+                      className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    />
+                    <div>
+                      <label className="block text-xs font-medium text-surface-600 mb-1" htmlFor="enrollment-route-select">Select route</label>
+                      <select
+                        id="enrollment-route-select"
+                        value={enrollmentRouteId || ''}
+                        disabled={enrollmentRouteMatches.length === 0}
+                        onChange={(e) => {
+                          const id = e.target.value || null;
+                          setEnrollmentRouteId(id);
                           setEnrollmentRouteTruckSearch('');
                           setEnrollmentRouteDriverSearch('');
                         }}
-                        className={`px-3 py-1.5 text-sm rounded-lg ${enrollmentRouteId === r.id ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-700 hover:bg-surface-200'}`}
+                        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white disabled:bg-surface-50 disabled:text-surface-400"
                       >
-                        {r.name}
-                      </button>
-                    ))
-                  )}
-                </div>
+                        <option value="">
+                          {enrollmentRoutePickerQuery.trim().length < enrollmentRouteSearchMinChars
+                            ? `Type at least ${enrollmentRouteSearchMinChars} characters to search…`
+                            : enrollmentRouteMatches.length === 0
+                              ? 'No routes match — try different words'
+                              : 'Choose a route…'}
+                        </option>
+                        {enrollmentRouteMatches.map((r) => (
+                          <option key={r.id} value={r.id}>{r.name || 'Unnamed route'}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {enrollmentRouteId && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <span className="text-xs text-surface-600">
+                          Working on: <strong className="text-surface-800">{routesList.find((x) => String(x.id) === String(enrollmentRouteId))?.name || 'Route'}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-brand-600 hover:text-brand-800"
+                          onClick={() => {
+                            setEnrollmentRouteId(null);
+                            setEnrollmentRouteDetail(null);
+                            setEnrollmentRoutePickerQuery('');
+                            setEnrollmentRouteTruckSearch('');
+                            setEnrollmentRouteDriverSearch('');
+                          }}
+                        >
+                          Clear and search again
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {enrollmentLoading && (
                   <p className="text-sm text-surface-500">Loading approved fleet…</p>
                 )}
@@ -3015,7 +3069,7 @@ export default function Contractor() {
                           filteredEnrollmentRouteTrucks.map((t) => (
                             <li key={t.truck_id} className="flex items-center justify-between py-1 border-b border-surface-100">
                               <span>{t.registration} {t.make_model ? ` · ${t.make_model}` : ''} {t.fleet_no ? ` · #${t.fleet_no}` : ''}</span>
-                              <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollTruck(enrollmentRouteId, t.truck_id); const r = await contractorApi.routes.get(enrollmentRouteId); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
+                              <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollTruck(enrollmentRouteId, t.truck_id); const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery()); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
                             </li>
                           ))
                         )}
@@ -3048,7 +3102,7 @@ export default function Contractor() {
                           filteredEnrollmentRouteDrivers.map((d) => (
                             <li key={d.driver_id} className="flex items-center justify-between py-1 border-b border-surface-100">
                               <span>{d.full_name} {d.license_number ? ` · ${d.license_number}` : ''}</span>
-                              <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollDriver(enrollmentRouteId, d.driver_id); const r = await contractorApi.routes.get(enrollmentRouteId); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
+                              <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollDriver(enrollmentRouteId, d.driver_id); const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery()); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
                             </li>
                           ))
                         )}
@@ -3143,7 +3197,7 @@ export default function Contractor() {
                                   setError('');
                                   try {
                                     await contractorApi.routes.enrollTrucks(enrollmentRouteId, enrollmentSelectedTruckIds);
-                                    const r = await contractorApi.routes.get(enrollmentRouteId);
+                                    const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery());
                                     setEnrollmentRouteDetail(r);
                                     setEnrollmentSelectedTruckIds([]);
                                   } catch (e) {
@@ -3243,7 +3297,7 @@ export default function Contractor() {
                                   setError('');
                                   try {
                                     await contractorApi.routes.enrollDrivers(enrollmentRouteId, enrollmentSelectedDriverIds);
-                                    const r = await contractorApi.routes.get(enrollmentRouteId);
+                                    const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery());
                                     setEnrollmentRouteDetail(r);
                                     setEnrollmentSelectedDriverIds([]);
                                   } catch (e) {
