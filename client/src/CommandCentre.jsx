@@ -682,6 +682,9 @@ function TabNotesReminders({ onClose }) {
   );
 }
 
+const CC_DASHBOARD_NO_TAB_HINT =
+  'You do not have access to open this section. A super admin can grant it under Command Centre → Manage tab access.';
+
 function TabDashboard({ setActiveTab, canSeeTab }) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -749,11 +752,8 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
     let cancelled = false;
     setLoading(true);
     const promises = [];
-    if (canSeeTab?.('applications')) {
-      promises.push(ccApi.fleetApplications.list('pending').then((r) => ({ applications: (r.applications || []).length })).catch(() => ({ applications: 0 })));
-    } else {
-      promises.push(Promise.resolve({ applications: 0 }));
-    }
+    // Load the same metrics for every dashboard viewer (tab grants only control navigation to detail tabs).
+    promises.push(ccApi.fleetApplications.list('pending').then((r) => ({ applications: (r.applications || []).length })).catch(() => ({ applications: 0 })));
     promises.push(ccApi.breakdowns.list({ resolved: 'false' }).then((r) => ({ breakdowns: r.breakdowns || [] })).catch(() => ({ breakdowns: [] })));
     promises.push(ccApi.suspensions.list('under_appeal').then((r) => ({ underAppeal: (r.suspensions || []).length })).catch(() => ({ underAppeal: 0 })));
     promises.push(ccApi.complianceInspections.list().then((r) => ({ inspections: r.inspections || [] })).catch(() => ({ inspections: [] })));
@@ -789,29 +789,29 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
       setDeliveryTimeline(hasTimelineData ? timeline : buildTimelineFromReports(allReports, timelineDays));
     }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [canSeeTab, timelineDays]);
+  }, [timelineDays]);
 
   const pendingCompliance = inspections.filter((i) => i.status === 'pending_response' || i.status === 'auto_suspended').length;
   const formatDashboardTime = (d) => d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—';
 
   const kpiCards = [
-    canSeeTab?.('applications') && { label: 'Pending applications', value: pendingApplications, sub: 'Fleet & driver', tab: 'applications', icon: 'tick', color: 'amber', bg: 'bg-amber-500/10', border: 'border-amber-200', text: 'text-amber-700' },
+    { label: 'Pending applications', value: pendingApplications, sub: 'Fleet & driver', tab: 'applications', icon: 'tick', color: 'amber', bg: 'bg-amber-500/10', border: 'border-amber-200', text: 'text-amber-700' },
     { label: 'Unresolved breakdowns', value: unresolvedBreakdowns.length, sub: 'Reported incidents', tab: 'breakdowns', icon: 'alert', color: 'red', bg: 'bg-red-500/10', border: 'border-red-200', text: 'text-red-700' },
     { label: 'Under appeal', value: underAppealCount, sub: 'Reinstatement requests', tab: 'contractor_block', icon: 'ban', color: 'violet', bg: 'bg-violet-500/10', border: 'border-violet-200', text: 'text-violet-700' },
     { label: 'Compliance pending', value: pendingCompliance, sub: 'Inspections / response due', tab: 'compliance', icon: 'shield', color: 'blue', bg: 'bg-blue-500/10', border: 'border-blue-200', text: 'text-blue-700' },
     { label: 'Report requests', value: pendingRequestsCount, sub: 'Awaiting approval', tab: 'requests', icon: 'inbox', color: 'emerald', bg: 'bg-emerald-500/10', border: 'border-emerald-200', text: 'text-emerald-700' },
-  ].filter(Boolean);
+  ];
 
-  const quickActions = [
-    canSeeTab?.('reports') && { label: 'Report composition', tab: 'reports', desc: 'Create shift reports' },
-    canSeeTab?.('saved_reports') && { label: 'Saved shift reports', tab: 'saved_reports', desc: 'View and approve reports' },
-    canSeeTab?.('compliance') && { label: 'Fleet & driver compliance', tab: 'compliance', desc: 'Run inspections' },
-    canSeeTab?.('inspected') && { label: 'Inspected trucks & drivers', tab: 'inspected', desc: 'Review inspection records' },
-    canSeeTab?.('breakdowns') && { label: 'Reported breakdowns', tab: 'breakdowns', desc: 'Incidents and resolutions' },
-    canSeeTab?.('applications') && { label: 'Fleet & driver applications', tab: 'applications', desc: 'Approve or decline' },
-    canSeeTab?.('contractor_block') && { label: 'Contractor block', tab: 'contractor_block', desc: 'Suspend / reinstate' },
-    canSeeTab?.('trends') && { label: 'Trends', tab: 'trends', desc: 'Analytics' },
-  ].filter(Boolean);
+  const quickActionDefs = [
+    { label: 'Report composition', tab: 'reports', desc: 'Create shift reports', icon: 'file' },
+    { label: 'Saved shift reports', tab: 'saved_reports', desc: 'View and approve reports', icon: 'folder' },
+    { label: 'Fleet & driver compliance', tab: 'compliance', desc: 'Run inspections', icon: 'shield' },
+    { label: 'Inspected trucks & drivers', tab: 'inspected', desc: 'Review inspection records', icon: 'clipboard' },
+    { label: 'Reported breakdowns', tab: 'breakdowns', desc: 'Incidents and resolutions', icon: 'alert' },
+    { label: 'Fleet & driver applications', tab: 'applications', desc: 'Approve or decline', icon: 'tick' },
+    { label: 'Contractor block', tab: 'contractor_block', desc: 'Suspend / reinstate', icon: 'ban' },
+    { label: 'Trends', tab: 'trends', desc: 'Analytics', icon: 'chart' },
+  ];
 
   return (
     <div className="space-y-6">
@@ -829,31 +829,45 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
             </div>
           ) : (
             <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
-              {kpiCards.map((k) => (
-                <button
-                  key={k.tab}
-                  type="button"
-                  onClick={() => setActiveTab?.(k.tab)}
-                  className={`text-left bg-white rounded-xl border ${k.border} p-5 shadow-sm hover:shadow-md hover:border-surface-300 transition-all duration-200 group`}
-                >
-                  <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{k.label}</p>
-                  <p className="mt-2 text-3xl font-bold text-surface-900 tabular-nums">{k.value}</p>
-                  <p className="text-sm text-surface-500 mt-0.5">{k.sub}</p>
-                  <span className="inline-block mt-2 text-xs font-medium text-brand-600 group-hover:text-brand-700">View →</span>
-                </button>
-              ))}
+              {kpiCards.map((k) => {
+                const navigable = canSeeTab?.(k.tab);
+                const body = (
+                  <>
+                    <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{k.label}</p>
+                    <p className="mt-2 text-3xl font-bold text-surface-900 tabular-nums">{k.value}</p>
+                    <p className="text-sm text-surface-500 mt-0.5">{k.sub}</p>
+                    {navigable ? (
+                      <span className="inline-block mt-2 text-xs font-medium text-brand-600 group-hover:text-brand-700">View →</span>
+                    ) : (
+                      <span className="inline-block mt-2 text-xs text-surface-400" title={CC_DASHBOARD_NO_TAB_HINT}>No tab access</span>
+                    )}
+                  </>
+                );
+                const shell = navigable
+                  ? 'text-left bg-white rounded-xl border p-5 shadow-sm hover:shadow-md hover:border-surface-300 transition-all duration-200 group cursor-pointer'
+                  : 'text-left bg-white rounded-xl border border-dashed border-surface-200 p-5 shadow-sm transition-all duration-200 cursor-default';
+                return navigable ? (
+                  <button key={k.tab} type="button" onClick={() => setActiveTab?.(k.tab)} className={`${shell} ${k.border}`}>
+                    {body}
+                  </button>
+                ) : (
+                  <div key={k.tab} className={shell} title={CC_DASHBOARD_NO_TAB_HINT}>
+                    {body}
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>
 
         {/* Delivery timeline by route (30 days) */}
         <section className="bg-white dark:!bg-surface-900 rounded-xl border border-surface-200 dark:!border-surface-700 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-surface-100 dark:border-surface-700 bg-gradient-to-r from-brand-50/70 to-white dark:from-surface-900 dark:to-surface-950 flex items-center justify-between">
+          <div className="px-4 py-3 border-b border-surface-100 dark:border-surface-700 bg-gradient-to-r from-brand-50/70 to-white dark:from-surface-900 dark:to-surface-950 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-semibold text-surface-900 dark:text-surface-50">Completed deliveries timeline ({timelineDays} days)</h2>
               <p className="text-xs text-surface-500 dark:text-surface-400 mt-0.5">Each route has its own line</p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-end gap-3 shrink-0">
               <select
                 value={timelineDays}
                 onChange={(e) => setTimelineDays(parseInt(e.target.value, 10))}
@@ -879,22 +893,39 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
         <section>
           <h2 className="text-sm font-semibold text-surface-500 uppercase tracking-wider mb-3">Quick actions</h2>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {quickActions.map((a) => (
-              <button
-                key={a.tab}
-                type="button"
-                onClick={() => setActiveTab?.(a.tab)}
-                className="flex items-center gap-4 bg-white rounded-xl border border-surface-200 p-4 text-left shadow-sm hover:shadow-md hover:border-brand-200 hover:bg-brand-50/30 transition-all duration-200 group"
-              >
-                <div className="w-10 h-10 rounded-lg bg-brand-100 text-brand-600 flex items-center justify-center shrink-0 group-hover:bg-brand-200">
-                  <CCIcon name={a.tab === 'reports' ? 'file' : a.tab === 'saved_reports' ? 'folder' : a.tab === 'compliance' ? 'shield' : a.tab === 'inspected' ? 'clipboard' : a.tab === 'breakdowns' ? 'alert' : a.tab === 'applications' ? 'tick' : a.tab === 'contractor_block' ? 'ban' : 'chart'} className="w-5 h-5" />
+            {quickActionDefs.map((a) => {
+              const ok = canSeeTab?.(a.tab);
+              const inner = (
+                <>
+                  <div className={`w-10 h-10 rounded-lg bg-brand-100 text-brand-600 flex items-center justify-center shrink-0 ${ok ? 'group-hover:bg-brand-200' : ''}`}>
+                    <CCIcon name={a.icon} className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className={`font-semibold text-surface-900 ${ok ? 'group-hover:text-brand-700' : ''}`}>{a.label}</p>
+                    <p className="text-xs text-surface-500 truncate">{a.desc}</p>
+                    {!ok && <p className="text-[11px] text-surface-400 mt-1">Tab not granted</p>}
+                  </div>
+                </>
+              );
+              return ok ? (
+                <button
+                  key={a.tab}
+                  type="button"
+                  onClick={() => setActiveTab?.(a.tab)}
+                  className="flex items-center gap-4 bg-white rounded-xl border border-surface-200 p-4 text-left shadow-sm hover:shadow-md hover:border-brand-200 hover:bg-brand-50/30 transition-all duration-200 group"
+                >
+                  {inner}
+                </button>
+              ) : (
+                <div
+                  key={a.tab}
+                  className="flex items-center gap-4 bg-surface-50/80 rounded-xl border border-dashed border-surface-200 p-4 text-left shadow-sm cursor-not-allowed opacity-90"
+                  title={CC_DASHBOARD_NO_TAB_HINT}
+                >
+                  {inner}
                 </div>
-                <div className="min-w-0">
-                  <p className="font-semibold text-surface-900 group-hover:text-brand-700">{a.label}</p>
-                  <p className="text-xs text-surface-500 truncate">{a.desc}</p>
-                </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </section>
 
@@ -904,9 +935,11 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           <section className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 bg-surface-50/80 flex items-center justify-between">
               <h2 className="font-semibold text-surface-900">Recent unresolved breakdowns</h2>
-              {recentBreakdowns.length > 0 && (
+              {recentBreakdowns.length > 0 && (canSeeTab?.('breakdowns') ? (
                 <button type="button" onClick={() => setActiveTab?.('breakdowns')} className="text-sm font-medium text-brand-600 hover:text-brand-700">View all</button>
-              )}
+              ) : (
+                <span className="text-xs text-surface-400" title={CC_DASHBOARD_NO_TAB_HINT}>View all</span>
+              ))}
             </div>
             <div className="divide-y divide-surface-100">
               {loading ? (
@@ -916,22 +949,33 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
               ) : recentBreakdowns.length === 0 ? (
                 <div className="p-8 text-center text-surface-500 text-sm">No unresolved breakdowns</div>
               ) : (
-                recentBreakdowns.map((b) => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    onClick={() => setActiveTab?.('breakdowns')}
-                    className="w-full px-4 py-3 text-left hover:bg-surface-50/80 transition-colors flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-medium text-surface-900 truncate">{b.title || b.type || 'Breakdown'}</p>
-                      <p className="text-xs text-surface-500">{b.truck_registration || b.driver_name || '—'} · {formatDashboardTime(b.reported_at)}</p>
+                recentBreakdowns.map((b) => {
+                  const row = (
+                    <>
+                      <div className="min-w-0">
+                        <p className="font-medium text-surface-900 truncate">{b.title || b.type || 'Breakdown'}</p>
+                        <p className="text-xs text-surface-500">{b.truck_registration || b.driver_name || '—'} · {formatDashboardTime(b.reported_at)}</p>
+                      </div>
+                      <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${(b.severity || '').toLowerCase() === 'critical' ? 'bg-red-100 text-red-800' : (b.severity || '').toLowerCase() === 'high' ? 'bg-amber-100 text-amber-800' : 'bg-surface-100 text-surface-600'}`}>
+                        {b.severity || '—'}
+                      </span>
+                    </>
+                  );
+                  return canSeeTab?.('breakdowns') ? (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => setActiveTab?.('breakdowns')}
+                      className="w-full px-4 py-3 text-left hover:bg-surface-50/80 transition-colors flex items-center justify-between gap-3"
+                    >
+                      {row}
+                    </button>
+                  ) : (
+                    <div key={b.id} className="w-full px-4 py-3 text-left flex items-center justify-between gap-3" title={CC_DASHBOARD_NO_TAB_HINT}>
+                      {row}
                     </div>
-                    <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${(b.severity || '').toLowerCase() === 'critical' ? 'bg-red-100 text-red-800' : (b.severity || '').toLowerCase() === 'high' ? 'bg-amber-100 text-amber-800' : 'bg-surface-100 text-surface-600'}`}>
-                      {b.severity || '—'}
-                    </span>
-                  </button>
-                ))
+                  );
+                })
               )}
             </div>
           </section>
@@ -940,9 +984,11 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           <section className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 bg-surface-50/80 flex items-center justify-between">
               <h2 className="font-semibold text-surface-900">Compliance & alerts</h2>
-              {pendingCompliance > 0 && (
+              {pendingCompliance > 0 && (canSeeTab?.('compliance') ? (
                 <button type="button" onClick={() => setActiveTab?.('compliance')} className="text-sm font-medium text-brand-600 hover:text-brand-700">Open compliance</button>
-              )}
+              ) : (
+                <span className="text-xs text-surface-400" title={CC_DASHBOARD_NO_TAB_HINT}>Open compliance</span>
+              ))}
             </div>
             <div className="p-4 space-y-3">
               {loading ? (
@@ -967,13 +1013,13 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
                       <span className="text-lg font-bold text-amber-900 tabular-nums">{pendingRequestsCount}</span>
                     </div>
                   )}
-                  {pendingApplications > 0 && canSeeTab?.('applications') && (
+                  {pendingApplications > 0 && (
                     <div className="flex items-center justify-between rounded-lg bg-emerald-50 border border-emerald-100 p-3">
                       <span className="text-sm font-medium text-emerald-800">Fleet & driver applications</span>
                       <span className="text-lg font-bold text-emerald-900 tabular-nums">{pendingApplications}</span>
                     </div>
                   )}
-                  {!loading && pendingCompliance === 0 && underAppealCount === 0 && pendingRequestsCount === 0 && (pendingApplications === 0 || !canSeeTab?.('applications')) && (
+                  {!loading && pendingCompliance === 0 && underAppealCount === 0 && pendingRequestsCount === 0 && pendingApplications === 0 && (
                     <p className="text-sm text-surface-500 py-2">No pending alerts</p>
                   )}
                 </>
@@ -1020,6 +1066,35 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           <span className="text-surface-600">Inspections: {inspections.length} total</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Fixed-position tooltip so it is not clipped by overflow on chart ancestors. */
+function TimelinePointTooltip({ tooltip, shortDate }) {
+  const pad = 10;
+  const estW = 220;
+  const estH = 82;
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  let left = tooltip.x + pad;
+  let top = tooltip.y + pad;
+  if (left + estW > vw - pad) left = tooltip.x - estW - pad;
+  if (top + estH > vh - pad) top = tooltip.y - estH - pad;
+  left = Math.max(pad, Math.min(left, vw - estW - pad));
+  top = Math.max(pad, Math.min(top, vh - estH - pad));
+  return (
+    <div
+      className="fixed z-[200] pointer-events-none bg-surface-900 dark:bg-surface-800 text-white text-xs rounded-md px-2.5 py-2 shadow-lg border border-surface-700 max-w-[min(240px,calc(100vw-24px))]"
+      style={{ left, top }}
+      role="tooltip"
+    >
+      <div className="font-semibold flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tooltip.color }} />
+        <span className="truncate">{tooltip.route}</span>
+      </div>
+      <div className="text-surface-200 mt-0.5">{shortDate(tooltip.date)}</div>
+      <div className="text-surface-100 mt-0.5 tabular-nums">Deliveries: {tooltip.delivered}</div>
     </div>
   );
 }
@@ -1107,14 +1182,14 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-surface-500 dark:text-surface-400">Toggle routes to focus lines; hover points for details.</p>
-        <button type="button" onClick={exportPng} disabled={exporting} className="px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 text-xs font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-60">
+      <div className="flex flex-wrap items-center justify-between gap-3 pr-28 sm:pr-32">
+        <p className="text-xs text-surface-500 dark:text-surface-400 min-w-0 flex-1">Toggle routes to focus lines; hover points for details.</p>
+        <button type="button" onClick={exportPng} disabled={exporting} className="shrink-0 px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 text-xs font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-60">
           {exporting ? 'Exporting...' : 'Export PNG'}
         </button>
       </div>
-      <div className="w-full overflow-x-auto">
-        <div className="relative min-w-[780px]">
+      <div className="w-full overflow-x-auto overflow-y-visible">
+        <div className="relative min-w-[780px] min-h-[320px]">
           <svg key={`timeline-${isDark ? 'dark' : 'light'}`} ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" onMouseLeave={() => setTooltip(null)}>
             <defs>
               <linearGradient id="ccTimelineBg" x1="0" y1="0" x2="0" y2="1">
@@ -1146,14 +1221,20 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
                       fill={color}
                       fillOpacity="0.001"
                       onMouseEnter={(e) => {
-                        const svgRect = e.currentTarget.ownerSVGElement.getBoundingClientRect();
                         setTooltip({
-                          left: e.clientX - svgRect.left,
-                          top: e.clientY - svgRect.top,
+                          x: e.clientX,
+                          y: e.clientY,
                           route: route.route,
+                          pointIndex: i,
                           date: dates[i],
                           delivered: Number(p.delivered || 0),
                           color,
+                        });
+                      }}
+                      onMouseMove={(e) => {
+                        setTooltip((prev) => {
+                          if (!prev || prev.route !== route.route || prev.pointIndex !== i) return prev;
+                          return { ...prev, x: e.clientX, y: e.clientY };
                         });
                       }}
                     />
@@ -1168,17 +1249,7 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
             })}
           </svg>
           {tooltip && (
-            <div
-              className="absolute z-20 pointer-events-none bg-surface-900 dark:bg-surface-800 text-white text-xs rounded-md px-2.5 py-2 shadow-lg border border-surface-700"
-              style={{ left: Math.max(8, tooltip.left + 10), top: Math.max(8, tooltip.top - 10), transform: 'translateY(-100%)' }}
-            >
-              <div className="font-semibold flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: tooltip.color }} />
-                {tooltip.route}
-              </div>
-              <div className="text-surface-200 mt-0.5">{shortDate(tooltip.date)}</div>
-              <div className="text-surface-100 mt-0.5">Deliveries: {tooltip.delivered}</div>
-            </div>
+            <TimelinePointTooltip tooltip={tooltip} shortDate={shortDate} />
           )}
         </div>
       </div>

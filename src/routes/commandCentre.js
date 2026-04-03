@@ -1865,7 +1865,7 @@ router.get('/approvers', async (req, res, next) => {
   }
 });
 
-/** GET shift reports: created by me, or assigned to me for approval. Query ?requests=1 for only assigned to me. ?decidedByMe=1 for reports you approved/rejected (for override flow). Super_admin sees all requests and all reports. */
+/** GET shift reports: full list for all Command Centre users (same scope as breakdowns). Query ?requests=1 = assigned to me for approval. ?decidedByMe=1 = reports you approved/rejected (override flow). */
 router.get('/shift-reports', async (req, res, next) => {
   try {
     const isSuperAdmin = req.user?.role === 'super_admin';
@@ -1895,11 +1895,6 @@ router.get('/shift-reports', async (req, res, next) => {
       if (!isSuperAdmin) sql += ` AND r.submitted_to_user_id = @userId AND r.status IN ('pending_approval', 'provisional')`;
       else sql += ` AND r.status IN ('pending_approval', 'provisional')`;
       if (!isSuperAdmin) params.userId = req.user.id;
-    } else {
-      if (!isSuperAdmin) {
-        sql += ` AND (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)`;
-        params.userId = req.user.id;
-      }
     }
     sql += ` ORDER BY r.updated_at DESC`;
     const result = await query(sql, params);
@@ -1937,10 +1932,6 @@ router.get('/shift-items', async (req, res, next) => {
         AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) >= @dateFrom
         AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) <= @dateTo`;
     const params = { dateFrom: dateFromStr, dateTo: dateToStr };
-    if (req.user?.role !== 'super_admin') {
-      params.userId = req.user.id;
-      sql = sql.replace('WHERE 1=1', `WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)`);
-    }
     if (routeFilter) {
       sql += ` AND LOWER(LTRIM(RTRIM(ISNULL(r.route, N'')))) = LOWER(LTRIM(RTRIM(@routeFilter)))`;
       params.routeFilter = routeFilter;
@@ -2002,10 +1993,6 @@ router.get('/shift-report-export', async (req, res, next) => {
       FROM command_centre_shift_reports r
       WHERE 1=1`;
     const params = {};
-    if (req.user?.role !== 'super_admin') {
-      sql = sql.replace('WHERE 1=1', 'WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId)');
-      params.userId = req.user.id;
-    }
     if (dateFrom) { sql += ` AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) >= @dateFrom`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND COALESCE(r.report_date, r.shift_date, CAST(r.created_at AS DATE)) <= @dateTo`; params.dateTo = dateTo; }
     if (routeFilter) { sql += ` AND LOWER(LTRIM(RTRIM(ISNULL(r.route, N'')))) = LOWER(LTRIM(RTRIM(@routeFilter)))`; params.routeFilter = routeFilter; }
@@ -2183,10 +2170,6 @@ router.get('/trends', async (req, res, next) => {
       FROM command_centre_shift_reports r
       WHERE r.status = N'approved'`;
     const params = {};
-    if (req.user?.role !== 'super_admin') {
-      sql = sql.replace('WHERE r.status', 'WHERE (r.created_by_user_id = @userId OR r.submitted_to_user_id = @userId) AND r.status');
-      params.userId = req.user.id;
-    }
     if (dateFrom) { sql += ` AND (r.report_date >= @dateFrom OR r.shift_date >= @dateFrom)`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND (r.report_date <= @dateTo OR r.shift_date <= @dateTo)`; params.dateTo = dateTo; }
     if (routeFilter) { sql += ` AND LOWER(LTRIM(RTRIM(ISNULL(r.route, N'')))) = LOWER(LTRIM(RTRIM(@routeFilter)))`; params.routeFilter = routeFilter; }
