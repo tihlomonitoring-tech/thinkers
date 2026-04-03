@@ -4,6 +4,7 @@ import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import Sidebar, { useSidebarState } from './components/Sidebar';
 import ThemeToggle from './components/ThemeToggle';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 import { tenants as tenantsApi, commandCentre as ccApi } from './api';
 import { PATH_PAGE_IDS, canAccessPage, getFirstAllowedPath } from './lib/pageAccess.js';
 
@@ -316,6 +317,13 @@ export default function Layout() {
         >
           <Outlet key={dataRefreshKey} />
         </main>
+        <AppAttributionFooter
+          className={
+            isDark
+              ? 'text-surface-500 border-t border-surface-800 bg-surface-950'
+              : 'text-surface-400 border-t border-surface-200 bg-surface-50'
+          }
+        />
       </div>
     </div>
   );

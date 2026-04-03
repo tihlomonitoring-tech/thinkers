@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { auth } from './api';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -30,7 +31,8 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-[#0f0f0f]">
+    <div className="min-h-screen flex flex-col bg-[#0f0f0f]">
+      <div className="flex flex-1 flex-col md:flex-row min-h-0">
       <div
         className="hidden md:flex md:w-1/2 p-10 flex-col justify-center"
         style={{ background: 'linear-gradient(135deg, #0a0a0a 0%, #450a0a 50%, #1c0a0a 100%)' }}
@@ -116,6 +118,8 @@ export default function ForgotPassword() {
           <p className="mt-1 text-center text-[10px] text-[#525252]">For support, please contact the application developer: Vincent Mogashoa on: <a href="mailto:vincent@thinkersafrika.co.za" className="text-[#737373] hover:text-[#a3a3a3] underline">vincent@thinkersafrika.co.za</a></p>
         </div>
       </div>
+      </div>
+      <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#0f0f0f]" />
     </div>
   );
 }

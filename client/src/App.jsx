@@ -20,11 +20,24 @@ import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 import { canAccessPage, getFirstAllowedPath, PATH_PAGE_IDS } from './lib/pageAccess.js';
+
+const loadingShellFooterClass =
+  'text-surface-500 dark:text-surface-400 border-t border-surface-200 dark:border-surface-800 bg-surface-100 dark:bg-surface-950';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center bg-surface-100 dark:bg-surface-950"><div className="animate-pulse text-surface-500 dark:text-surface-400">Loading…</div></div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex flex-col bg-surface-100 dark:bg-surface-950">
+        <div className="flex-1 flex items-center justify-center">
+          <div className="animate-pulse text-surface-500 dark:text-surface-400">Loading…</div>
+        </div>
+        <AppAttributionFooter className={loadingShellFooterClass} />
+      </div>
+    );
+  }
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
@@ -42,8 +55,11 @@ function PageGate({ pathKey, children }) {
   const pageId = PATH_PAGE_IDS[pathKey];
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-100 dark:bg-surface-950">
-        <div className="animate-pulse text-surface-500 dark:text-surface-400">Loading…</div>
+      <div className="min-h-screen flex flex-col bg-surface-100 dark:bg-surface-950">
+        <div className="flex-1 flex items-center justify-center">
+          <div className="animate-pulse text-surface-500 dark:text-surface-400">Loading…</div>
+        </div>
+        <AppAttributionFooter className={loadingShellFooterClass} />
       </div>
     );
   }

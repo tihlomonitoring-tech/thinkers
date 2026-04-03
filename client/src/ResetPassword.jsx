@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { auth } from './api';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams();
@@ -44,21 +45,25 @@ export default function ResetPassword() {
 
   if (!tokenFromUrl) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#171717] p-6">
-        <div className="w-full max-w-[340px] bg-[#262626]/90 rounded-xl border border-[#404040]/80 p-6 text-center">
-          <h2 className="text-lg font-semibold text-white">Invalid reset link</h2>
-          <p className="mt-2 text-sm text-[#a3a3a3]">This link is missing the reset token. Use the link from your email or request a new one.</p>
-          <Link to="/forgot-password" className="mt-4 inline-block text-sm font-medium text-[#f87171] hover:text-[#fca5a5]">Request new reset link</Link>
-          <p className="mt-4">
-            <Link to="/login" className="text-xs text-[#a3a3a3] hover:text-white">← Back to sign in</Link>
-          </p>
+      <div className="min-h-screen flex flex-col bg-[#171717]">
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="w-full max-w-[340px] bg-[#262626]/90 rounded-xl border border-[#404040]/80 p-6 text-center">
+            <h2 className="text-lg font-semibold text-white">Invalid reset link</h2>
+            <p className="mt-2 text-sm text-[#a3a3a3]">This link is missing the reset token. Use the link from your email or request a new one.</p>
+            <Link to="/forgot-password" className="mt-4 inline-block text-sm font-medium text-[#f87171] hover:text-[#fca5a5]">Request new reset link</Link>
+            <p className="mt-4">
+              <Link to="/login" className="text-xs text-[#a3a3a3] hover:text-white">← Back to sign in</Link>
+            </p>
+          </div>
         </div>
+        <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#171717]" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-[#0f0f0f]">
+    <div className="min-h-screen flex flex-col bg-[#0f0f0f]">
+      <div className="flex flex-1 flex-col md:flex-row min-h-0">
       <div
         className="hidden md:flex md:w-1/2 p-10 flex-col justify-center"
         style={{ background: 'linear-gradient(135deg, #0a0a0a 0%, #450a0a 50%, #1c0a0a 100%)' }}
@@ -160,6 +165,8 @@ export default function ResetPassword() {
           <p className="mt-1 text-center text-[10px] text-[#525252]">For support, please contact the application developer: Vincent Mogashoa on: <a href="mailto:vincent@thinkersafrika.co.za" className="text-[#737373] hover:text-[#a3a3a3] underline">vincent@thinkersafrika.co.za</a></p>
         </div>
       </div>
+      </div>
+      <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#0f0f0f]" />
     </div>
   );
 }

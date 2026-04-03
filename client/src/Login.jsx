@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { getFirstAllowedPath } from './lib/pageAccess.js';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -65,8 +66,8 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0f0f0f]">
-      <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2">
+    <div className="min-h-screen bg-[#0f0f0f] flex flex-col">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 min-h-0">
         <div className="relative hidden lg:flex overflow-hidden">
           <img
             src={heroImage}
@@ -80,9 +81,8 @@ export default function Login() {
             <div />
             <div className="max-w-xl">
               <h1 className="text-4xl xl:text-5xl font-black tracking-tight text-white leading-tight">
-                Thinkers Afrika
+                Operations workspace
               </h1>
-              <p className="text-[#fecaca] text-xl mt-2 font-semibold">Smart Administration System</p>
               <p className="text-[#fca5a5]/90 mt-5 text-base leading-relaxed max-w-lg">
                 Run high-impact mining operations from a single platform designed for fleet oversight,
                 contractor coordination, and safety-first decision making.
@@ -129,8 +129,7 @@ export default function Login() {
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_20%,rgba(185,28,28,0.23),transparent_45%),radial-gradient(circle_at_85%_80%,rgba(127,29,29,0.22),transparent_45%)]" />
           <div className="w-full max-w-[420px] relative z-10">
             <div className="lg:hidden text-center mb-6">
-              <h1 className="text-2xl font-bold text-white">Thinkers Afrika</h1>
-              <p className="text-[#f87171] text-sm font-medium mt-0.5">Smart Administration System</p>
+              <h1 className="text-2xl font-bold text-white">Operations workspace</h1>
             </div>
 
             <div className="bg-[#262626]/90 rounded-2xl shadow-2xl shadow-black/45 border border-[#404040]/90 backdrop-blur-md overflow-hidden">
@@ -208,19 +207,17 @@ export default function Login() {
             </div>
 
             <div className="mt-4 rounded-xl border border-[#525252]/80 bg-black/45 px-4 py-3 text-center backdrop-blur-sm">
-              <p className="text-xs text-[#f5f5f5] font-semibold">
-                Thinkers Afrika Smart Administration System
-              </p>
-              <p className="mt-1 text-[11px] text-[#d4d4d4]">
+              <p className="text-[11px] text-[#d4d4d4]">
                 For support, please contact the application developer: Vincent Mogashoa on:{' '}
-                <a href="mailto:vincent@thinkersafrika.co.za" className="text-[#fca5a5] hover:text-[#fecaca] underline">
-                  vincent@thinkersafrika.co.za
+                <a href="tel:+27720934212" className="text-[#fca5a5] hover:text-[#fecaca] underline">
+                  0720934212
                 </a>
               </p>
             </div>
           </div>
         </div>
       </div>
+      <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#0f0f0f]" />
     </div>
   );
 }

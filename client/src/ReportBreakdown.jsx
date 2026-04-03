@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { getApiBase } from './lib/apiBase.js';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 const API_BASE = getApiBase();
 
@@ -544,8 +545,9 @@ export default function ReportBreakdown() {
           </div>
         </div>
 
-        <p className="text-center text-surface-500 text-xs mt-6">This page is for drivers who do not have login access. Your report is recorded in the same system as the main portal.</p>
+        <p className="text-center text-surface-500 dark:text-surface-400 text-xs mt-6">This page is for drivers who do not have login access. Your report is recorded in the same system as the main portal.</p>
       </div>
+      <AppAttributionFooter className="mt-auto text-surface-500 dark:text-surface-400 border-t border-surface-200 dark:border-surface-800 bg-surface-100 dark:bg-surface-950 py-3" />
     </div>
   );
 }

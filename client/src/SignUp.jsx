@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { auth } from './api';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 export default function SignUp() {
   const [full_name, setFullName] = useState('');
@@ -27,28 +28,32 @@ export default function SignUp() {
 
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-50 px-4">
-        <div className="w-full max-w-md bg-white rounded-2xl shadow-xl shadow-surface-200/50 border border-surface-100 p-8 text-center">
-          <h1 className="text-xl font-semibold text-surface-900">Request submitted</h1>
-          <p className="mt-3 text-surface-600 text-sm">
-            Thank you. Your request has been submitted for approval. You will receive an email with your login details once an administrator has approved your account.
-          </p>
-          <Link
-            to="/login"
-            className="mt-6 inline-block text-brand-600 font-medium hover:text-brand-700 focus:outline-none focus:underline"
-          >
-            ← Back to sign in
-          </Link>
+      <div className="min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950">
+        <div className="flex-1 flex items-center justify-center px-4 py-8">
+          <div className="w-full max-w-md bg-white dark:bg-surface-900 rounded-2xl shadow-xl shadow-surface-200/50 dark:shadow-none border border-surface-100 dark:border-surface-800 p-8 text-center">
+            <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">Request submitted</h1>
+            <p className="mt-3 text-surface-600 dark:text-surface-400 text-sm">
+              Thank you. Your request has been submitted for approval. You will receive an email with your login details once an administrator has approved your account.
+            </p>
+            <Link
+              to="/login"
+              className="mt-6 inline-block text-brand-600 font-medium hover:text-brand-700 focus:outline-none focus:underline"
+            >
+              ← Back to sign in
+            </Link>
+          </div>
         </div>
+        <AppAttributionFooter className="text-surface-500 dark:text-surface-400 border-t border-surface-200 dark:border-surface-800" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-surface-50 px-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-xl shadow-surface-200/50 border border-surface-100 p-8">
-        <h1 className="text-xl font-semibold text-surface-900">Sign up</h1>
-        <p className="mt-1 text-surface-500 text-sm">Complete the form below. Your account will be created after approval.</p>
+    <div className="min-h-screen flex flex-col bg-surface-50 dark:bg-surface-950">
+      <div className="flex-1 flex items-center justify-center px-4 py-8">
+      <div className="w-full max-w-md bg-white dark:bg-surface-900 rounded-2xl shadow-xl shadow-surface-200/50 dark:shadow-none border border-surface-100 dark:border-surface-800 p-8">
+        <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">Sign up</h1>
+        <p className="mt-1 text-surface-500 dark:text-surface-400 text-sm">Complete the form below. Your account will be created after approval.</p>
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           {error && (
             <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
@@ -117,11 +122,13 @@ export default function SignUp() {
             </Link>
           </div>
         </form>
-        <p className="mt-4 text-center text-surface-500 text-sm">
+        <p className="mt-4 text-center text-surface-500 dark:text-surface-400 text-sm">
           Already have an account?{' '}
           <Link to="/login" className="text-brand-600 font-medium hover:text-brand-700">Sign in</Link>
         </p>
       </div>
+      </div>
+      <AppAttributionFooter className="text-surface-500 dark:text-surface-400 border-t border-surface-200 dark:border-surface-800" />
     </div>
   );
 }

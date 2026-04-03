@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { recruitmentApply } from './api';
+import AppAttributionFooter from './components/AppAttributionFooter.jsx';
+
+const jobAppFooterClass =
+  'text-surface-500 dark:text-surface-400 border-t border-surface-200 dark:border-surface-800 bg-surface-100 dark:bg-surface-950';
 
 export default function JobApplication() {
   const { token } = useParams();
@@ -76,30 +80,39 @@ export default function JobApplication() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-surface-100 flex items-center justify-center p-4">
-        <p className="text-surface-600">Loading application form…</p>
+      <div className="min-h-screen bg-surface-100 dark:bg-surface-950 flex flex-col">
+        <div className="flex-1 flex items-center justify-center p-4">
+          <p className="text-surface-600 dark:text-surface-400">Loading application form…</p>
+        </div>
+        <AppAttributionFooter className={jobAppFooterClass} />
       </div>
     );
   }
 
   if (error && !invite) {
     return (
-      <div className="min-h-screen bg-surface-100 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-xl shadow-lg border border-surface-200 p-6 text-center">
-          <h1 className="text-lg font-semibold text-surface-900 mb-2">Job application</h1>
-          <p className="text-red-600">{error}</p>
+      <div className="min-h-screen bg-surface-100 dark:bg-surface-950 flex flex-col">
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white dark:bg-surface-900 rounded-xl shadow-lg border border-surface-200 dark:border-surface-800 p-6 text-center">
+            <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-100 mb-2">Job application</h1>
+            <p className="text-red-600">{error}</p>
+          </div>
         </div>
+        <AppAttributionFooter className={jobAppFooterClass} />
       </div>
     );
   }
 
   if (submitted) {
     return (
-      <div className="min-h-screen bg-surface-100 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-xl shadow-lg border border-surface-200 p-6 text-center">
-          <h1 className="text-lg font-semibold text-surface-900 mb-2">Application submitted</h1>
-          <p className="text-surface-600">Thank you. Your application has been received and will be reviewed by our team.</p>
+      <div className="min-h-screen bg-surface-100 dark:bg-surface-950 flex flex-col">
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white dark:bg-surface-900 rounded-xl shadow-lg border border-surface-200 dark:border-surface-800 p-6 text-center">
+            <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-100 mb-2">Application submitted</h1>
+            <p className="text-surface-600 dark:text-surface-400">Thank you. Your application has been received and will be reviewed by our team.</p>
+          </div>
         </div>
+        <AppAttributionFooter className={jobAppFooterClass} />
       </div>
     );
   }
@@ -112,8 +125,8 @@ export default function JobApplication() {
   const reqsExcerpt = reqs.length > 200 ? `${reqs.slice(0, 200).trim()}…` : reqs;
 
   return (
-    <div className="min-h-screen bg-surface-100 py-8 px-4">
-      <div className="max-w-2xl mx-auto space-y-4">
+    <div className="min-h-screen bg-surface-100 dark:bg-surface-950 flex flex-col py-8 px-4">
+      <div className="max-w-2xl mx-auto space-y-4 flex-1 w-full">
         <div className="bg-white rounded-xl shadow-lg border border-surface-200 overflow-hidden">
           <div className="bg-brand-600 text-white px-6 py-4">
             <h1 className="text-xl font-semibold">Job application</h1>
@@ -207,6 +220,7 @@ export default function JobApplication() {
           </form>
         </div>
       </div>
+      <AppAttributionFooter className={`${jobAppFooterClass} mt-4`} />
 
       {showFullJob && vacancy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowFullJob(false)}>
