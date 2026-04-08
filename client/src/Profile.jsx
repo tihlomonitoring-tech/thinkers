@@ -3,11 +3,14 @@ import { useAuth } from './AuthContext';
 import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
+import ShiftClockPanel from './components/ShiftClockPanel.jsx';
+import ShiftActivityTab from './components/ShiftActivityTab.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
+  { id: 'shift_activity', label: 'Shift activity' },
   { id: 'leave', label: 'Leave application' },
   { id: 'documents', label: 'Employee documents' },
   { id: 'disciplinary', label: 'Disciplinary & rewards' },
@@ -17,6 +20,14 @@ const TABS = [
 
 const SHIFT_DAY = '06:00 – 18:00';
 const SHIFT_NIGHT = '18:00 – 06:00';
+
+const COLLEAGUE_FILTER_STORAGE_KEY = 'profile.workSchedule.colleagueFilter';
+const COLLEAGUE_VIEW_MODE_KEY = 'profile.workSchedule.colleagueViewMode';
+
+function shortFirstName(name) {
+  const p = (name || '').trim().split(/\s+/).filter(Boolean);
+  return p[0] || '—';
+}
 
 function getDaysInMonth(year, month) {
   const first = new Date(year, month, 1);
@@ -61,10 +72,34 @@ export default function Profile() {
   const [myTasks, setMyTasks] = useState([]);
   const [selectedScheduleDate, setSelectedScheduleDate] = useState(null);
   const [tenantUsers, setTenantUsers] = useState([]);
+  const [commandCentrePeerUsers, setCommandCentrePeerUsers] = useState([]);
   const [swapRequests, setSwapRequests] = useState([]);
   const [swapModal, setSwapModal] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [colleagueFilterIds, setColleagueFilterIds] = useState(() => {
+    try {
+      const s = localStorage.getItem(COLLEAGUE_FILTER_STORAGE_KEY);
+      if (s) {
+        const arr = JSON.parse(s);
+        return Array.isArray(arr) ? arr : [];
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
+  const [colleagueSchedules, setColleagueSchedules] = useState([]);
+  const [colleagueFilterSearch, setColleagueFilterSearch] = useState('');
+  const [colleagueViewMode, setColleagueViewMode] = useState(() => {
+    try {
+      const s = localStorage.getItem(COLLEAGUE_VIEW_MODE_KEY);
+      if (s === 'all_shifts' || s === 'same_shift') return s;
+    } catch {
+      /* ignore */
+    }
+    return 'same_shift';
+  });
 
   const calendar = useMemo(() => getDaysInMonth(calendarYear, calendarMonth), [calendarYear, calendarMonth]);
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -91,6 +126,84 @@ export default function Profile() {
     return m;
   }, [swapRequests]);
 
+  /** Per date: selected colleagues — same shift as you, other shift, or anyone (for days you are off). */
+  const colleagueCalendarByDate = useMemo(() => {
+    const map = {};
+    for (const c of colleagueSchedules) {
+      for (const ent of c.entries || []) {
+        const d = isoDate(ent.work_date);
+        if (!d) continue;
+        const st = ent.shift_type === 'night' ? 'night' : 'day';
+        const name = (c.full_name && String(c.full_name).trim()) || c.email || 'Colleague';
+        const row = { user_id: c.user_id, name, shift_type: st };
+        if (!map[d]) map[d] = { same: [], other: [], any: [] };
+        if (!map[d].any.some((x) => String(x.user_id) === String(c.user_id))) {
+          map[d].any.push(row);
+        }
+        const mine = scheduleByDate[d];
+        if (mine) {
+          const mySt = mine.shift_type === 'night' ? 'night' : 'day';
+          if (st === mySt) {
+            if (!map[d].same.some((x) => String(x.user_id) === String(c.user_id))) {
+              map[d].same.push({ user_id: c.user_id, name });
+            }
+          } else if (!map[d].other.some((x) => String(x.user_id) === String(c.user_id))) {
+            map[d].other.push(row);
+          }
+        }
+      }
+    }
+    return map;
+  }, [scheduleByDate, colleagueSchedules]);
+
+  /** Lines to paint in each calendar cell (same typography as your Day/Night row). */
+  const peerLinesByDate = useMemo(() => {
+    const out = {};
+    for (const [dateStr, ccDay] of Object.entries(colleagueCalendarByDate)) {
+      const mine = scheduleByDate[dateStr];
+      let lines = [];
+      if (colleagueViewMode === 'all_shifts') {
+        lines = (ccDay.any || []).map((row) => ({
+          key: row.user_id,
+          label: shortFirstName(row.name),
+          shiftType: row.shift_type === 'night' ? 'night' : 'day',
+        }));
+      } else if (mine) {
+        const st = mine.shift_type === 'night' ? 'night' : 'day';
+        lines = (ccDay.same || []).map((row) => ({
+          key: row.user_id,
+          label: shortFirstName(row.name),
+          shiftType: st,
+        }));
+      } else {
+        lines = (ccDay.any || []).map((row) => ({
+          key: row.user_id,
+          label: shortFirstName(row.name),
+          shiftType: row.shift_type === 'night' ? 'night' : 'day',
+        }));
+      }
+      out[dateStr] = lines;
+    }
+    return out;
+  }, [colleagueCalendarByDate, scheduleByDate, colleagueViewMode]);
+
+  const commandCentrePeers = useMemo(
+    () => (commandCentrePeerUsers || []).filter((u) => String(u.id) !== String(user?.id)),
+    [commandCentrePeerUsers, user?.id]
+  );
+
+  const filteredPeersForPicker = useMemo(() => {
+    const q = colleagueFilterSearch.trim().toLowerCase();
+    if (!q) return commandCentrePeers;
+    return commandCentrePeers.filter(
+      (u) =>
+        (u.full_name && u.full_name.toLowerCase().includes(q)) ||
+        (u.email && u.email.toLowerCase().includes(q))
+    );
+  }, [commandCentrePeers, colleagueFilterSearch]);
+
+  const colleagueFilterKey = colleagueFilterIds.slice().sort().join('|');
+
   const activeTenantId = user?.tenant_id;
 
   const loadMySchedule = useCallback(() => {
@@ -110,6 +223,7 @@ export default function Profile() {
       loadMySchedule();
       refreshSwapRequests();
       pm.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
+      pm.commandCentreSchedulePeers().then((d) => setCommandCentrePeerUsers(d.users || [])).catch(() => setCommandCentrePeerUsers([]));
       pm.scheduleEvents.list(calendarMonth, calendarYear).then((d) => setScheduleEvents(d.events || [])).catch(() => setScheduleEvents([]));
       tasksApi.list({ assigned_to_me: 'true', limit: 100 }).then((d) => setMyTasks(d.tasks || [])).catch(() => setMyTasks([]));
     }
@@ -144,6 +258,55 @@ export default function Profile() {
       pm.pip.list().then((d) => setPipPlans(d.plans || [])).catch(() => setPipPlans([]));
     }
   }, [activeTab, activeTenantId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLEAGUE_FILTER_STORAGE_KEY, JSON.stringify(colleagueFilterIds));
+    } catch {
+      /* ignore */
+    }
+  }, [colleagueFilterIds]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLEAGUE_VIEW_MODE_KEY, colleagueViewMode);
+    } catch {
+      /* ignore */
+    }
+  }, [colleagueViewMode]);
+
+  useEffect(() => {
+    if (activeTab !== 'schedule') return;
+    if (colleagueFilterIds.length === 0) {
+      setColleagueSchedules([]);
+      return;
+    }
+    let cancelled = false;
+    pm.myScheduleColleagues({
+      month: calendarMonth,
+      year: calendarYear,
+      user_ids: colleagueFilterIds,
+    })
+      .then((d) => {
+        if (!cancelled) setColleagueSchedules(d.colleagues || []);
+      })
+      .catch(() => {
+        if (!cancelled) setColleagueSchedules([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, calendarMonth, calendarYear, colleagueFilterKey]);
+
+  useEffect(() => {
+    if (commandCentrePeers.length === 0) return;
+    setColleagueFilterIds((prev) => {
+      const valid = new Set(commandCentrePeers.map((u) => String(u.id)));
+      const next = prev.filter((id) => valid.has(String(id)));
+      if (next.length === prev.length) return prev;
+      return next;
+    });
+  }, [commandCentrePeers]);
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
@@ -183,7 +346,7 @@ export default function Profile() {
             Show navigation
           </button>
         )}
-        <div className="w-full max-w-7xl mx-auto flex-1">
+        <div className="w-full max-w-7xl mx-auto">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2 flex justify-between items-center">
               <span>{error}</span>
@@ -198,8 +361,108 @@ export default function Profile() {
                 <h1 className="text-xl font-semibold text-surface-900">Work schedule</h1>
                 <InfoHint
                   title="Work schedule help"
-                  text="Click a date for shift details, tasks, and events. Request a shift swap from the side panel when you have a scheduled shift. Pending swaps appear on the calendar; colleagues can approve or decline on their schedule before management finalizes."
+                  text="The list below is limited to people in your organization who can access Command Centre (page or tab). Tick who to compare; their shifts appear in each day cell the same way as your Day or Night row. Same shift only lists people on your shift type when you are scheduled; All selected shifts shows everyone you selected, including the opposite shift. Your selection is saved on this device."
                 />
+              </div>
+              <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-surface-900">Command Centre team on my calendar</p>
+                    <p className="text-xs text-surface-500 mt-0.5">
+                      Only people with Command Centre access appear here. Search, tick names, then their Day or Night shifts show inside each day like yours.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setColleagueFilterIds(commandCentrePeers.map((u) => u.id))}
+                      className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setColleagueFilterIds([])}
+                      className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 text-sm">
+                  <span className="text-surface-600 font-medium shrink-0">Calendar shows:</span>
+                  <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
+                    <input
+                      type="radio"
+                      name="colleagueViewMode"
+                      checked={colleagueViewMode === 'same_shift'}
+                      onChange={() => setColleagueViewMode('same_shift')}
+                      className="text-brand-600 focus:ring-brand-500"
+                    />
+                    Same shift as me only
+                  </label>
+                  <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
+                    <input
+                      type="radio"
+                      name="colleagueViewMode"
+                      checked={colleagueViewMode === 'all_shifts'}
+                      onChange={() => setColleagueViewMode('all_shifts')}
+                      className="text-brand-600 focus:ring-brand-500"
+                    />
+                    All selected colleagues (same + other shift)
+                  </label>
+                </div>
+                <input
+                  type="search"
+                  value={colleagueFilterSearch}
+                  onChange={(e) => setColleagueFilterSearch(e.target.value)}
+                  placeholder="Search by name or email…"
+                  className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+                <div className="max-h-40 overflow-y-auto rounded-lg border border-surface-100 bg-surface-50/80 p-2 space-y-1">
+                  {filteredPeersForPicker.length === 0 ? (
+                    <p className="text-sm text-surface-500 px-1">
+                      {commandCentrePeers.length === 0
+                        ? 'No other Command Centre users in your tenant, or still loading.'
+                        : 'No matches.'}
+                    </p>
+                  ) : (
+                    filteredPeersForPicker.map((u) => {
+                      const checked = colleagueFilterIds.some((id) => String(id) === String(u.id));
+                      return (
+                        <label
+                          key={u.id}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white cursor-pointer text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setColleagueFilterIds((prev) => {
+                                const idStr = String(u.id);
+                                if (prev.some((id) => String(id) === idStr)) {
+                                  return prev.filter((id) => String(id) !== idStr);
+                                }
+                                return [...prev, u.id];
+                              });
+                            }}
+                            className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          <span className="text-surface-800">{u.full_name || u.email}</span>
+                          {u.full_name && u.email && <span className="text-surface-500 text-xs truncate">{u.email}</span>}
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+                {colleagueFilterIds.length > 0 && (
+                  <p className="text-xs text-surface-500">
+                    Showing shifts for {colleagueFilterIds.length} selected user{colleagueFilterIds.length === 1 ? '' : 's'}.
+                    {colleagueViewMode === 'same_shift'
+                      ? ' Day cells list only people on the same shift type as you when you are scheduled; if you are off, everyone selected who is working that day is listed.'
+                      : ' Day cells list each selected person’s Day or Night, same style as your row.'}
+                  </p>
+                )}
               </div>
               <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
@@ -239,7 +502,7 @@ export default function Profile() {
                   </div>
                   <div className="grid grid-cols-7 gap-1">
                     {Array.from({ length: calendar.startPad }, (_, i) => (
-                      <div key={`pad-${i}`} className="aspect-square rounded-lg bg-surface-50" />
+                      <div key={`pad-${i}`} className="min-h-[6.75rem] rounded-lg bg-surface-50" />
                     ))}
                     {Array.from({ length: calendar.days }, (_, i) => {
                       const day = i + 1;
@@ -251,16 +514,19 @@ export default function Profile() {
                         date.getMonth() === new Date().getMonth() &&
                         date.getFullYear() === new Date().getFullYear();
                       const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-                      const shiftLabel = shift?.shift_type === 'night' ? SHIFT_NIGHT : shift?.shift_type === 'day' ? SHIFT_DAY : null;
                       const isSelected = selectedScheduleDate === dateStr;
                       const daySwaps = swapBadgesByDate[dateStr] || [];
                       const hasSwap = daySwaps.length > 0;
+                      const peerLines = peerLinesByDate[dateStr] || [];
+                      const maxPeerLines = 5;
+                      const peerLinesShown = peerLines.slice(0, maxPeerLines);
+                      const peerOverflow = peerLines.length - peerLinesShown.length;
                       return (
                         <button
                           key={day}
                           type="button"
                           onClick={() => setSelectedScheduleDate((prev) => (prev === dateStr ? null : dateStr))}
-                          className={`aspect-square rounded-lg border p-1 flex flex-col items-center justify-center text-xs cursor-pointer transition-colors relative ${
+                          className={`min-h-[6.75rem] rounded-lg border p-1 flex flex-col items-stretch justify-start text-left text-xs cursor-pointer transition-colors relative gap-0.5 overflow-hidden ${
                             isToday ? 'border-brand-500 bg-brand-50' : 'border-surface-200 bg-white'
                           } ${isWeekend ? 'bg-surface-50' : ''} ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1' : ''} ${hasSwap ? 'border-violet-300' : ''} hover:bg-surface-50`}
                         >
@@ -276,11 +542,23 @@ export default function Profile() {
                               ))}
                             </span>
                           )}
-                          <span className="text-surface-700 font-medium">{day}</span>
-                          {shiftLabel && (
-                            <span className={`text-[10px] mt-0.5 ${shift?.shift_type === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}>
-                              {shift?.shift_type === 'day' ? 'Day' : 'Night'}
+                          <span className="text-surface-700 font-medium text-center w-full shrink-0">{day}</span>
+                          {shift && (
+                            <span className={`text-[10px] leading-tight w-full truncate ${shift.shift_type === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}>
+                              {shift.shift_type === 'day' ? 'Day' : 'Night'}
                             </span>
+                          )}
+                          {peerLinesShown.map((pl) => (
+                            <span
+                              key={pl.key}
+                              className={`text-[10px] leading-tight w-full truncate ${pl.shiftType === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}
+                              title={`${pl.label} · ${pl.shiftType === 'day' ? 'Day' : 'Night'}`}
+                            >
+                              {pl.label} · {pl.shiftType === 'day' ? 'Day' : 'Night'}
+                            </span>
+                          ))}
+                          {peerOverflow > 0 && (
+                            <span className="text-[9px] text-surface-500 leading-tight">+{peerOverflow} more</span>
                           )}
                         </button>
                       );
@@ -290,6 +568,7 @@ export default function Profile() {
                 <div className="px-4 py-2 border-t border-surface-100 flex flex-wrap gap-3 text-xs text-surface-500">
                   <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day: {SHIFT_DAY}</span>
                   <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night: {SHIFT_NIGHT}</span>
+                  <span>Extra lines: Command Centre teammates (Name · Day/Night), same style as your row.</span>
                   <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap: peer pending</span>
                   <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap: management</span>
                 </div>
@@ -304,6 +583,9 @@ export default function Profile() {
                 pipPlans={pipPlans}
                 swapRequests={swapRequests}
                 currentUserId={user?.id}
+                colleagueDay={
+                  selectedScheduleDate && colleagueFilterIds.length > 0 ? colleagueCalendarByDate[selectedScheduleDate] : null
+                }
                 onOpenSwapModal={(shift) => setSwapModal({ shift })}
                 onSwapHandled={() => {
                   refreshSwapRequests();
@@ -331,6 +613,8 @@ export default function Profile() {
               onError={setError}
             />
           )}
+
+          {activeTab === 'shift_activity' && <ShiftActivityTab />}
 
           {activeTab === 'leave' && (
             <LeaveTab
@@ -607,6 +891,8 @@ function ScheduleSidePanel({
   pipPlans,
   swapRequests = [],
   currentUserId,
+  /** { same, other, any } from colleague overlay for this day */
+  colleagueDay = null,
   onOpenSwapModal,
   onSwapHandled,
   onError,
@@ -690,6 +976,26 @@ function ScheduleSidePanel({
             <p className="text-surface-500">No shift this day</p>
           )}
         </div>
+
+        {colleagueDay && colleagueDay.any?.length > 0 && (
+          <div>
+            <p className="text-xs font-medium text-surface-500 uppercase mb-1">Command Centre team (selected)</p>
+            <ul className="space-y-1.5 text-surface-800">
+              {colleagueDay.any.map((row) => (
+                <li key={row.user_id} className="text-sm flex flex-wrap gap-x-1">
+                  <span className="font-medium">{row.name}</span>
+                  <span className="text-surface-600">
+                    — {row.shift_type === 'night' ? 'Night' : 'Day'} ({row.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {shift?.entry_id && (
+          <ShiftClockPanel shift={shift} selectedDate={selectedDate} onError={onError} />
+        )}
 
         {swapsToday.length > 0 && (
           <div className="rounded-lg border border-violet-100 bg-violet-50/50 p-3 space-y-3">

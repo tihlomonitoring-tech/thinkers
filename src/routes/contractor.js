@@ -4025,6 +4025,44 @@ const LIBRARY_DOCUMENT_TYPES = [
   'vehicle_registrations', 'driver_licences', 'contracts', 'permits', 'other',
 ];
 
+/** Validate optional link to truck/driver; returns { ok, linked_entity_type, linked_entity_id } or { error }. */
+async function assertLibraryEntityLink(req, tenantId, entityTypeRaw, entityIdRaw) {
+  const et = entityTypeRaw != null && String(entityTypeRaw).trim() ? String(entityTypeRaw).trim().toLowerCase() : '';
+  const eid = entityIdRaw != null && String(entityIdRaw).trim() ? String(entityIdRaw).trim() : '';
+  if (!et && !eid) return { ok: true, linked_entity_type: null, linked_entity_id: null };
+  if (!et || !eid) return { error: 'Provide both linked_entity_type (truck or driver) and linked_entity_id, or leave both empty.' };
+  if (et !== 'truck' && et !== 'driver') return { error: 'linked_entity_type must be truck or driver' };
+  const allowed = await getAllowedContractorIds(req);
+  if (et === 'truck') {
+    const r = await query(
+      `SELECT id, contractor_id FROM contractor_trucks WHERE id = @id AND tenant_id = @tenantId`,
+      { id: eid, tenantId }
+    );
+    const row = r.recordset?.[0];
+    if (!row) return { error: 'Truck not found for this tenant' };
+    const cid = getRow(row, 'contractor_id');
+    if (allowed && allowed.length > 0) {
+      if (!cid || !allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+        return { error: 'You cannot link to this truck' };
+      }
+    }
+  } else {
+    const r = await query(
+      `SELECT id, contractor_id FROM contractor_drivers WHERE id = @id AND tenant_id = @tenantId`,
+      { id: eid, tenantId }
+    );
+    const row = r.recordset?.[0];
+    if (!row) return { error: 'Driver not found for this tenant' };
+    const cid = getRow(row, 'contractor_id');
+    if (allowed && allowed.length > 0) {
+      if (!cid || !allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+        return { error: 'You cannot link to this driver' };
+      }
+    }
+  }
+  return { ok: true, linked_entity_type: et, linked_entity_id: eid };
+}
+
 router.get('/library/document-types', (req, res) => {
   res.json({ documentTypes: LIBRARY_DOCUMENT_TYPES });
 });
@@ -4032,12 +4070,39 @@ router.get('/library/document-types', (req, res) => {
 router.get('/library', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
-    const result = await query(
-      `SELECT id, document_type, file_name, stored_path, file_size, mime_type, created_at FROM contractor_library_documents WHERE tenant_id = @tenantId ORDER BY document_type ASC, created_at DESC`,
-      { tenantId }
-    );
+    const filterType = req.query?.linked_entity_type ? String(req.query.linked_entity_type).trim().toLowerCase() : '';
+    const filterId = req.query?.linked_entity_id ? String(req.query.linked_entity_id).trim() : '';
+    let sql = `
+      SELECT d.id, d.document_type, d.file_name, d.stored_path, d.file_size, d.mime_type, d.created_at,
+        d.linked_entity_type, d.linked_entity_id,
+        tr.registration AS linked_truck_registration,
+        dr.full_name AS linked_driver_name, dr.surname AS linked_driver_surname
+      FROM contractor_library_documents d
+      LEFT JOIN contractor_trucks tr ON tr.id = d.linked_entity_id AND d.linked_entity_type = N'truck' AND tr.tenant_id = d.tenant_id
+      LEFT JOIN contractor_drivers dr ON dr.id = d.linked_entity_id AND d.linked_entity_type = N'driver' AND dr.tenant_id = d.tenant_id
+      WHERE d.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (filterType && filterId && (filterType === 'truck' || filterType === 'driver')) {
+      sql += ` AND d.linked_entity_type = @filterType AND d.linked_entity_id = @filterId`;
+      params.filterType = filterType;
+      params.filterId = filterId;
+    }
+    sql += ` ORDER BY d.document_type ASC, d.created_at DESC`;
+    const result = await query(sql, params);
     res.json({ documents: result.recordset || [] });
   } catch (err) {
+    if (String(err.message || '').includes('linked_entity')) {
+      try {
+        const tenantId = getTenantId(req);
+        const result = await query(
+          `SELECT id, document_type, file_name, stored_path, file_size, mime_type, created_at FROM contractor_library_documents WHERE tenant_id = @tenantId ORDER BY document_type ASC, created_at DESC`,
+          { tenantId }
+        );
+        return res.json({ documents: result.recordset || [], migrationRequired: true });
+      } catch (e2) {
+        /* fall through */
+      }
+    }
     if (err.message?.includes('Invalid object name')) return res.json({ documents: [] });
     next(err);
   }
@@ -4053,23 +4118,104 @@ router.post('/library', (req, res, next) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded. Use field name "file" and optionally "document_type".' });
     const tenantId = getTenantId(req);
     const documentType = (req.body?.document_type || 'other').trim() || 'other';
+    const linkCheck = await assertLibraryEntityLink(req, tenantId, req.body?.linked_entity_type, req.body?.linked_entity_id);
+    if (linkCheck.error) return res.status(400).json({ error: linkCheck.error });
     const relativePath = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).split(path.sep).join('/');
-    await query(
-      `INSERT INTO contractor_library_documents (tenant_id, document_type, file_name, stored_path, file_size, mime_type) VALUES (@tenantId, @document_type, @file_name, @stored_path, @file_size, @mime_type)`,
-      {
-        tenantId,
-        document_type: documentType,
-        file_name: req.file.originalname || req.file.filename,
-        stored_path: relativePath,
-        file_size: req.file.size || null,
-        mime_type: req.file.mimetype || null,
+    let insertSql = `INSERT INTO contractor_library_documents (tenant_id, document_type, file_name, stored_path, file_size, mime_type`;
+    const insParams = {
+      tenantId,
+      document_type: documentType,
+      file_name: req.file.originalname || req.file.filename,
+      stored_path: relativePath,
+      file_size: req.file.size || null,
+      mime_type: req.file.mimetype || null,
+    };
+    if (linkCheck.linked_entity_type && linkCheck.linked_entity_id) {
+      insertSql += `, linked_entity_type, linked_entity_id) VALUES (@tenantId, @document_type, @file_name, @stored_path, @file_size, @mime_type, @linked_entity_type, @linked_entity_id)`;
+      insParams.linked_entity_type = linkCheck.linked_entity_type;
+      insParams.linked_entity_id = linkCheck.linked_entity_id;
+    } else {
+      insertSql += `) VALUES (@tenantId, @document_type, @file_name, @stored_path, @file_size, @mime_type)`;
+    }
+    try {
+      await query(insertSql, insParams);
+    } catch (e) {
+      if (String(e.message || '').includes('linked_entity')) {
+        await query(
+          `INSERT INTO contractor_library_documents (tenant_id, document_type, file_name, stored_path, file_size, mime_type) VALUES (@tenantId, @document_type, @file_name, @stored_path, @file_size, @mime_type)`,
+          {
+            tenantId: insParams.tenantId,
+            document_type: insParams.document_type,
+            file_name: insParams.file_name,
+            stored_path: insParams.stored_path,
+            file_size: insParams.file_size,
+            mime_type: insParams.mime_type,
+          }
+        );
+      } else {
+        throw e;
       }
-    );
+    }
     const getResult = await query(
-      `SELECT TOP 1 id, document_type, file_name, stored_path, file_size, mime_type, created_at FROM contractor_library_documents WHERE tenant_id = @tenantId ORDER BY created_at DESC`,
+      `SELECT TOP 1 d.id, d.document_type, d.file_name, d.stored_path, d.file_size, d.mime_type, d.created_at,
+        d.linked_entity_type, d.linked_entity_id,
+        tr.registration AS linked_truck_registration,
+        dr.full_name AS linked_driver_name, dr.surname AS linked_driver_surname
+       FROM contractor_library_documents d
+       LEFT JOIN contractor_trucks tr ON tr.id = d.linked_entity_id AND d.linked_entity_type = N'truck' AND tr.tenant_id = d.tenant_id
+       LEFT JOIN contractor_drivers dr ON dr.id = d.linked_entity_id AND d.linked_entity_type = N'driver' AND dr.tenant_id = d.tenant_id
+       WHERE d.tenant_id = @tenantId ORDER BY d.created_at DESC`,
       { tenantId }
     );
     res.status(201).json({ document: getResult.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH link (or clear link) for an existing library document */
+router.patch('/library/:id/link', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const existing = await query(`SELECT id FROM contractor_library_documents WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    if (!existing.recordset?.[0]) return res.status(404).json({ error: 'Document not found' });
+    const clear = req.body?.clear === true || req.body?.linked_entity_type === '' || req.body?.linked_entity_type === null;
+    let linkCheck;
+    if (clear) {
+      linkCheck = { ok: true, linked_entity_type: null, linked_entity_id: null };
+    } else {
+      linkCheck = await assertLibraryEntityLink(req, tenantId, req.body?.linked_entity_type, req.body?.linked_entity_id);
+    }
+    if (linkCheck.error) return res.status(400).json({ error: linkCheck.error });
+    try {
+      await query(
+        `UPDATE contractor_library_documents SET linked_entity_type = @lt, linked_entity_id = @lid WHERE id = @id AND tenant_id = @tenantId`,
+        {
+          id,
+          tenantId,
+          lt: linkCheck.linked_entity_type || null,
+          lid: linkCheck.linked_entity_id || null,
+        }
+      );
+    } catch (e) {
+      if (String(e.message || '').includes('linked_entity')) {
+        return res.status(503).json({ error: 'Database migration required. Run: npm run db:contractor-library-entity-links' });
+      }
+      throw e;
+    }
+    const getResult = await query(
+      `SELECT TOP 1 d.id, d.document_type, d.file_name, d.stored_path, d.file_size, d.mime_type, d.created_at,
+        d.linked_entity_type, d.linked_entity_id,
+        tr.registration AS linked_truck_registration,
+        dr.full_name AS linked_driver_name, dr.surname AS linked_driver_surname
+       FROM contractor_library_documents d
+       LEFT JOIN contractor_trucks tr ON tr.id = d.linked_entity_id AND d.linked_entity_type = N'truck' AND tr.tenant_id = d.tenant_id
+       LEFT JOIN contractor_drivers dr ON dr.id = d.linked_entity_id AND d.linked_entity_type = N'driver' AND dr.tenant_id = d.tenant_id
+       WHERE d.id = @id AND d.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    res.json({ document: getResult.recordset?.[0] });
   } catch (err) {
     next(err);
   }

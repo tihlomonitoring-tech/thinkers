@@ -65,7 +65,10 @@ export default function UserManagement() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkAction, setBulkAction] = useState('');
   const [detailUser, setDetailUser] = useState(null);
+  const [detailTab, setDetailTab] = useState('audit');
   const [activity, setActivity] = useState([]);
+  const [loginActivityRows, setLoginActivityRows] = useState([]);
+  const [loginActivitySel, setLoginActivitySel] = useState(new Set());
   const [modal, setModal] = useState(null); // 'create' | 'edit' | null
   const [formUser, setFormUser] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -209,11 +212,53 @@ export default function UserManagement() {
 
   const openDetail = async (u) => {
     setDetailUser(u);
+    setDetailTab('audit');
     setActivity([]);
+    setLoginActivityRows([]);
+    setLoginActivitySel(new Set());
     try {
-      const data = await usersApi.activity(u.id);
-      setActivity(data.activity || []);
+      const [act, la] = await Promise.all([
+        usersApi.activity(u.id).catch(() => ({ activity: [] })),
+        usersApi.loginActivity(u.id).catch(() => ({ rows: [] })),
+      ]);
+      setActivity(act.activity || []);
+      setLoginActivityRows(la.rows || []);
     } catch {}
+  };
+
+  const refreshLoginActivity = async () => {
+    if (!detailUser?.id) return;
+    try {
+      const la = await usersApi.loginActivity(detailUser.id);
+      setLoginActivityRows(la.rows || []);
+      setLoginActivitySel(new Set());
+    } catch {
+      setLoginActivityRows([]);
+    }
+  };
+
+  const bulkDeleteLoginActivity = async () => {
+    if (!detailUser || loginActivitySel.size === 0) return;
+    if (!window.confirm(`Delete ${loginActivitySel.size} login location record(s)? This cannot be undone.`)) return;
+    setSaving(true);
+    setError('');
+    try {
+      await usersApi.loginActivityBulkDelete([...loginActivitySel]);
+      await refreshLoginActivity();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleLoginSel = (id) => {
+    setLoginActivitySel((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const exportCsv = () => {
@@ -881,18 +926,105 @@ export default function UserManagement() {
                 </div>
               )}
               <div>
-                <p className="text-sm font-medium text-surface-700 mb-2">Recent activity</p>
-                {activity.length === 0 ? (
-                  <p className="text-sm text-surface-500">No recent activity.</p>
-                ) : (
-                  <ul className="space-y-1.5 text-sm">
-                    {activity.map((a, i) => (
-                      <li key={i} className="flex justify-between text-surface-600">
-                        <span>{a.action}</span>
-                        <span className="text-surface-400 font-mono text-xs">{formatDate(a.created_at)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                <div className="flex gap-1 mb-2 border-b border-surface-200">
+                  <button
+                    type="button"
+                    onClick={() => setDetailTab('audit')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-t-lg ${
+                      detailTab === 'audit' ? 'bg-surface-100 text-surface-900' : 'text-surface-500 hover:text-surface-800'
+                    }`}
+                  >
+                    Recent activity
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDetailTab('login')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-t-lg ${
+                      detailTab === 'login' ? 'bg-surface-100 text-surface-900' : 'text-surface-500 hover:text-surface-800'
+                    }`}
+                  >
+                    Login activity
+                  </button>
+                </div>
+                {detailTab === 'audit' && (
+                  <>
+                    {activity.length === 0 ? (
+                      <p className="text-sm text-surface-500">No recent activity.</p>
+                    ) : (
+                      <ul className="space-y-1.5 text-sm">
+                        {activity.map((a, i) => (
+                          <li key={i} className="flex justify-between text-surface-600">
+                            <span>{a.action}</span>
+                            <span className="text-surface-400 font-mono text-xs">{formatDate(a.created_at)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+                {detailTab === 'login' && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-surface-500">
+                      Sign-in IP and GPS captured at login. Select rows to delete in bulk (admin only).
+                    </p>
+                    {canManageUsers && loginActivityRows.length > 0 && (
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          disabled={saving || loginActivitySel.size === 0}
+                          onClick={bulkDeleteLoginActivity}
+                          className="text-xs px-2 py-1 rounded border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          Delete selected ({loginActivitySel.size})
+                        </button>
+                        <button type="button" onClick={refreshLoginActivity} className="text-xs px-2 py-1 rounded border border-surface-200 text-surface-700 hover:bg-surface-50">
+                          Refresh
+                        </button>
+                      </div>
+                    )}
+                    {loginActivityRows.length === 0 ? (
+                      <p className="text-sm text-surface-500">No login location records.</p>
+                    ) : (
+                      <div className="max-h-64 overflow-auto border border-surface-200 rounded-lg text-xs">
+                        <table className="w-full text-left">
+                          <thead className="bg-surface-50 sticky top-0">
+                            <tr className="text-surface-500">
+                              {canManageUsers && <th className="p-2 w-8" />}
+                              <th className="p-2">When</th>
+                              <th className="p-2">IP</th>
+                              <th className="p-2">Location</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-surface-100">
+                            {loginActivityRows.map((row) => (
+                              <tr key={row.id}>
+                                {canManageUsers && (
+                                  <td className="p-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={loginActivitySel.has(row.id)}
+                                      onChange={() => toggleLoginSel(row.id)}
+                                      className="rounded border-surface-300"
+                                    />
+                                  </td>
+                                )}
+                                <td className="p-2 text-surface-700 whitespace-nowrap">{formatDate(row.created_at)}</td>
+                                <td className="p-2 font-mono text-surface-600">{row.ip_address || '—'}</td>
+                                <td className="p-2 text-surface-600">
+                                  {row.latitude != null && row.longitude != null
+                                    ? `${Number(row.latitude).toFixed(5)}, ${Number(row.longitude).toFixed(5)}`
+                                    : '—'}
+                                  {row.accuracy_meters != null && (
+                                    <span className="text-surface-400"> ±{Math.round(row.accuracy_meters)}m</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

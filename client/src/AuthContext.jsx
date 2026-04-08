@@ -31,8 +31,8 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
-  const login = async (email, password) => {
-    await authApi.login(email, password);
+  const login = async (email, password, location) => {
+    await authApi.login(email, password, location);
     const data = await authApi.me();
     const u = data.user ?? null;
     setUser(u);

@@ -63,6 +63,7 @@ export const CC_TAB_IDS = [
   'applications',
   'delivery',
   'contractors_details',
+  'contractor_expiries',
   'breakdowns',
   'delete_fleet_drivers',
   'handed_over_analysis',

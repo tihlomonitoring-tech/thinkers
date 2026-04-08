@@ -290,6 +290,14 @@ export default function Contractor() {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryUploading, setLibraryUploading] = useState(false);
   const [libraryUploadType, setLibraryUploadType] = useState('other');
+  const [libraryLinkKind, setLibraryLinkKind] = useState('none'); // 'none' | 'truck' | 'driver'
+  const [libraryLinkTruckId, setLibraryLinkTruckId] = useState('');
+  const [libraryLinkDriverId, setLibraryLinkDriverId] = useState('');
+  const [libraryEditId, setLibraryEditId] = useState(null);
+  const [libraryEditKind, setLibraryEditKind] = useState('none');
+  const [libraryEditTruckId, setLibraryEditTruckId] = useState('');
+  const [libraryEditDriverId, setLibraryEditDriverId] = useState('');
+  const [libraryLinkSavingId, setLibraryLinkSavingId] = useState(null);
   const libraryFileRef = useRef(null);
 
   const hasTenant = user?.tenant_id;
@@ -1401,16 +1409,71 @@ export default function Contractor() {
     const file = e?.target?.files?.[0];
     if (!file) return;
     const type = libraryUploadType || 'other';
+    const link =
+      libraryLinkKind === 'truck' && libraryLinkTruckId
+        ? { linked_entity_type: 'truck', linked_entity_id: libraryLinkTruckId }
+        : libraryLinkKind === 'driver' && libraryLinkDriverId
+          ? { linked_entity_type: 'driver', linked_entity_id: libraryLinkDriverId }
+          : {};
     setLibraryUploading(true);
     setError('');
     try {
-      const res = await contractorApi.library.upload(file, type);
+      const res = await contractorApi.library.upload(file, type, link);
       setLibraryDocuments((prev) => [res.document, ...prev]);
       if (libraryFileRef.current) libraryFileRef.current.value = '';
+      setLibraryLinkKind('none');
+      setLibraryLinkTruckId('');
+      setLibraryLinkDriverId('');
     } catch (err) {
       setError(err.message);
     } finally {
       setLibraryUploading(false);
+    }
+  };
+
+  const formatLibraryLinkLabel = (d) => {
+    if (!d?.linked_entity_type) return 'Not linked to fleet';
+    if (String(d.linked_entity_type).toLowerCase() === 'truck') {
+      return `Truck · ${d.linked_truck_registration || '—'}`;
+    }
+    const name = [d.linked_driver_name, d.linked_driver_surname].filter(Boolean).join(' ').trim();
+    return `Driver · ${name || '—'}`;
+  };
+
+  const openLibraryLinkEdit = (doc) => {
+    const lt = doc.linked_entity_type ? String(doc.linked_entity_type).toLowerCase() : '';
+    setLibraryEditId(doc.id);
+    setLibraryEditKind(lt === 'truck' || lt === 'driver' ? lt : 'none');
+    setLibraryEditTruckId(lt === 'truck' && doc.linked_entity_id ? String(doc.linked_entity_id) : '');
+    setLibraryEditDriverId(lt === 'driver' && doc.linked_entity_id ? String(doc.linked_entity_id) : '');
+  };
+
+  const saveLibraryLink = async (docId) => {
+    setLibraryLinkSavingId(docId);
+    setError('');
+    try {
+      if (libraryEditKind === 'none') {
+        await contractorApi.library.patchLink(docId, { clear: true });
+      } else if (libraryEditKind === 'truck') {
+        if (!libraryEditTruckId) {
+          setError('Select a truck or choose “Not linked”.');
+          return;
+        }
+        await contractorApi.library.patchLink(docId, { linked_entity_type: 'truck', linked_entity_id: libraryEditTruckId });
+      } else if (libraryEditKind === 'driver') {
+        if (!libraryEditDriverId) {
+          setError('Select a driver or choose “Not linked”.');
+          return;
+        }
+        await contractorApi.library.patchLink(docId, { linked_entity_type: 'driver', linked_entity_id: libraryEditDriverId });
+      }
+      const r = await contractorApi.library.list();
+      setLibraryDocuments(r.documents || []);
+      setLibraryEditId(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLibraryLinkSavingId(null);
     }
   };
 
@@ -3537,15 +3600,17 @@ export default function Contractor() {
                 <div className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-surface-200 bg-surface-50">
                     <h2 className="text-lg font-semibold text-surface-900">Library</h2>
-                    <p className="text-sm text-surface-500 mt-0.5">Upload and manage documents (operating licence, insurance, CIPC certificate, etc.).</p>
+                    <p className="text-sm text-surface-500 mt-0.5">
+                      Upload documents; they stay in your library. Optionally link each file to a truck or driver so reviewers see them in Command Centre → Fleet &amp; driver applications.
+                    </p>
                   </div>
                   <div className="p-6">
                     {libraryLoading ? (
                       <p className="text-surface-500">Loading…</p>
                     ) : (
                       <>
-                        <div className="mb-6 p-4 rounded-lg border border-surface-200 bg-surface-50">
-                          <h3 className="text-sm font-medium text-surface-700 mb-2">Upload document</h3>
+                        <div className="mb-6 p-4 rounded-lg border border-surface-200 bg-surface-50 space-y-3">
+                          <h3 className="text-sm font-medium text-surface-700">Upload document</h3>
                           <div className="flex flex-wrap items-end gap-3">
                             <div>
                               <label className="block text-sm text-surface-600 mb-1">Document type</label>
@@ -3555,12 +3620,47 @@ export default function Contractor() {
                                 ))}
                               </select>
                             </div>
+                            <div className="flex flex-col gap-1 min-w-[200px]">
+                              <span className="text-sm text-surface-600">Link to fleet (optional)</span>
+                              <div className="flex flex-wrap gap-2 items-center">
+                                <select
+                                  value={libraryLinkKind}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setLibraryLinkKind(v);
+                                    setLibraryLinkTruckId('');
+                                    setLibraryLinkDriverId('');
+                                  }}
+                                  className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
+                                >
+                                  <option value="none">Not linked</option>
+                                  <option value="truck">Truck</option>
+                                  <option value="driver">Driver</option>
+                                </select>
+                                {libraryLinkKind === 'truck' && (
+                                  <select value={libraryLinkTruckId} onChange={(e) => setLibraryLinkTruckId(e.target.value)} className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm max-w-[240px]">
+                                    <option value="">Select truck…</option>
+                                    {trucksList.map((t) => (
+                                      <option key={t.id} value={t.id}>{t.registration || t.fleet_no || t.id}{t.make_model ? ` · ${t.make_model}` : ''}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                {libraryLinkKind === 'driver' && (
+                                  <select value={libraryLinkDriverId} onChange={(e) => setLibraryLinkDriverId(e.target.value)} className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm max-w-[280px]">
+                                    <option value="">Select driver…</option>
+                                    {driversList.map((dr) => (
+                                      <option key={dr.id} value={dr.id}>{[dr.full_name, dr.surname].filter(Boolean).join(' ') || dr.id}</option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
+                            </div>
                             <div className="flex items-end gap-2">
                               <input type="file" ref={libraryFileRef} id="library-file" className="text-sm" onChange={uploadLibraryDocument} />
                               <span className="text-surface-500 text-sm">Max 25 MB</span>
                             </div>
                           </div>
-                          {libraryUploading && <p className="text-sm text-surface-500 mt-2">Uploading…</p>}
+                          {libraryUploading && <p className="text-sm text-surface-500">Uploading…</p>}
                         </div>
                         <div>
                           <h3 className="text-sm font-medium text-surface-700 mb-2">Documents</h3>
@@ -3569,13 +3669,59 @@ export default function Contractor() {
                           ) : (
                             <ul className="divide-y divide-surface-200">
                               {libraryDocuments.map((d) => (
-                                <li key={d.id} className="py-3 flex flex-wrap items-center justify-between gap-2">
-                                  <div>
+                                <li key={d.id} className="py-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+                                  <div className="min-w-0">
                                     <span className="font-medium text-surface-900">{d.file_name || 'Document'}</span>
                                     <span className="text-surface-500 text-sm ml-2">({(d.document_type || 'other').replace(/_/g, ' ')})</span>
                                     {d.created_at && <span className="text-surface-400 text-xs block">{formatDateTime(d.created_at)}</span>}
+                                    <p className="text-xs text-surface-600 mt-1">{formatLibraryLinkLabel(d)}</p>
+                                    {libraryEditId === d.id && (
+                                      <div className="mt-2 flex flex-wrap items-center gap-2 p-2 rounded-lg border border-surface-200 bg-white">
+                                        <select
+                                          value={libraryEditKind}
+                                          onChange={(e) => {
+                                            setLibraryEditKind(e.target.value);
+                                            setLibraryEditTruckId('');
+                                            setLibraryEditDriverId('');
+                                          }}
+                                          className="rounded border border-surface-300 px-2 py-1 text-sm"
+                                        >
+                                          <option value="none">Not linked</option>
+                                          <option value="truck">Truck</option>
+                                          <option value="driver">Driver</option>
+                                        </select>
+                                        {libraryEditKind === 'truck' && (
+                                          <select value={libraryEditTruckId} onChange={(e) => setLibraryEditTruckId(e.target.value)} className="rounded border border-surface-300 px-2 py-1 text-sm max-w-[220px]">
+                                            <option value="">Select truck…</option>
+                                            {trucksList.map((t) => (
+                                              <option key={t.id} value={t.id}>{t.registration || t.fleet_no || t.id}</option>
+                                            ))}
+                                          </select>
+                                        )}
+                                        {libraryEditKind === 'driver' && (
+                                          <select value={libraryEditDriverId} onChange={(e) => setLibraryEditDriverId(e.target.value)} className="rounded border border-surface-300 px-2 py-1 text-sm max-w-[220px]">
+                                            <option value="">Select driver…</option>
+                                            {driversList.map((dr) => (
+                                              <option key={dr.id} value={dr.id}>{[dr.full_name, dr.surname].filter(Boolean).join(' ') || dr.id}</option>
+                                            ))}
+                                          </select>
+                                        )}
+                                        <button
+                                          type="button"
+                                          disabled={libraryLinkSavingId === d.id}
+                                          onClick={() => saveLibraryLink(d.id)}
+                                          className="px-2 py-1 text-xs rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                                        >
+                                          {libraryLinkSavingId === d.id ? 'Saving…' : 'Save link'}
+                                        </button>
+                                        <button type="button" onClick={() => setLibraryEditId(null)} className="px-2 py-1 text-xs rounded-lg border border-surface-300 text-surface-700">Cancel</button>
+                                      </div>
+                                    )}
                                   </div>
-                                  <div className="flex gap-2">
+                                  <div className="flex flex-wrap gap-2 shrink-0">
+                                    {libraryEditId !== d.id && (
+                                      <button type="button" onClick={() => openLibraryLinkEdit(d)} className="text-sm text-surface-700 hover:underline">Edit link</button>
+                                    )}
                                     <a href={contractorApi.library.downloadUrl(d.id)} target="_blank" rel="noopener noreferrer" className="text-sm text-brand-600 hover:underline">Download</a>
                                     <button type="button" onClick={() => deleteLibraryDocument(d.id)} className="text-sm text-red-600 hover:underline">Delete</button>
                                   </div>

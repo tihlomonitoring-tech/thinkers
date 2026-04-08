@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { getFirstAllowedPath } from './lib/pageAccess.js';
+import { getCurrentPosition } from './lib/geolocation.js';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 export default function Login() {
@@ -9,6 +10,9 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [geoStatus, setGeoStatus] = useState('pending'); // pending | ok | error
+  const [locationError, setLocationError] = useState('');
+  const [signInLocation, setSignInLocation] = useState(null);
   const { user, login } = useAuth();
   const navigate = useNavigate();
   const heroImage = `data:image/svg+xml;utf8,${encodeURIComponent(
@@ -50,12 +54,41 @@ export default function Login() {
 
   if (user) return <Navigate to={getFirstAllowedPath(user)} replace />;
 
+  useEffect(() => {
+    let cancelled = false;
+    setGeoStatus('pending');
+    setLocationError('');
+    getCurrentPosition()
+      .then((loc) => {
+        if (cancelled) return;
+        setSignInLocation(loc);
+        setGeoStatus('ok');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setGeoStatus('error');
+        setSignInLocation(null);
+        setLocationError(
+          err?.code === 1
+            ? 'Location permission denied. Allow location for this site in your browser settings, then refresh the page.'
+            : 'Could not read location. Check connection and permissions, then refresh.'
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    if (geoStatus !== 'ok' || !signInLocation) {
+      setError('Location is required to sign in. Allow location permission in your browser and try again.');
+      return;
+    }
     setLoading(true);
     try {
-      const u = await login(email.trim(), password);
+      const u = await login(email.trim(), password, signInLocation);
       if (u) navigate(getFirstAllowedPath(u), { replace: true });
       else navigate('/login', { replace: true });
     } catch (err) {
@@ -140,6 +173,11 @@ export default function Login() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
+                  {locationError && (
+                    <div className="text-xs text-amber-200 bg-amber-950/50 border border-amber-800/80 rounded-lg px-3 py-2" role="alert">
+                      {locationError}
+                    </div>
+                  )}
                   {error && (
                     <div className="text-xs text-red-300 bg-red-950/50 border border-red-800 rounded-lg px-3 py-2" role="alert">
                       {error}
@@ -181,10 +219,10 @@ export default function Login() {
                   </div>
                   <button
                     type="submit"
-                    disabled={loading}
+                    disabled={loading || geoStatus !== 'ok'}
                     className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-[#b91c1c] hover:bg-[#991b1b] disabled:opacity-50 transition-colors focus:ring-2 focus:ring-[#b91c1c] focus:ring-offset-2 focus:ring-offset-[#262626]"
                   >
-                    {loading ? 'Signing in…' : 'Sign in'}
+                    {loading ? 'Signing in…' : geoStatus === 'pending' ? 'Waiting for location…' : 'Sign in'}
                   </button>
 
                   <div>

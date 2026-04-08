@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
-import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
+import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, shiftClock } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
@@ -93,6 +93,7 @@ const CC_TABS = [
   { id: 'applications', label: 'Fleet & driver applications', icon: 'tick', section: 'Operations' },
   { id: 'delivery', label: 'Delivery management', icon: 'truck', section: 'Operations' },
   { id: 'contractors_details', label: 'Contractors details', icon: 'building', section: 'Operations' },
+  { id: 'contractor_expiries', label: 'Contractor expiries', icon: 'calendar', section: 'Operations' },
   { id: 'breakdowns', label: 'Reported breakdowns', icon: 'alert', section: 'Operations' },
   { id: 'delete_fleet_drivers', label: 'Delete contractors fleets/drivers', icon: 'trash', section: 'Operations' },
 ];
@@ -159,6 +160,8 @@ function CCIcon({ name, className }) {
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z')}</svg>;
     case 'send':
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M12 19l9 2-9-18-9 18 9-2zm0 0v-8')}</svg>;
+    case 'calendar':
+      return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z')}</svg>;
     default:
       return <span className={c} />;
   }
@@ -191,7 +194,29 @@ export default function CommandCentre() {
   const [contractorsDetailsList, setContractorsDetailsList] = useState([]);
   const [contractorsDetailsLoading, setContractorsDetailsLoading] = useState(false);
   const [notesPanelOpen, setNotesPanelOpen] = useState(false);
+  const [shiftClockGate, setShiftClockGate] = useState({ loading: true, allowed: true, message: '' });
   const isSuperAdmin = user?.role === 'super_admin';
+
+  useEffect(() => {
+    let cancelled = false;
+    shiftClock
+      .ccAccess()
+      .then((d) => {
+        if (cancelled) return;
+        setShiftClockGate({
+          loading: false,
+          allowed: d.allowed !== false,
+          message: d.message || '',
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setShiftClockGate({ loading: false, allowed: true, message: '' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -324,10 +349,30 @@ export default function CommandCentre() {
   const sections = [...new Set(navTabs.map((t) => t.section))];
   const canSeeTab = (id) => allowedTabs.includes(id);
   const hasAccess = allowedTabs.length > 0 || isSuperAdmin;
-  if (loading) {
+  if (loading || shiftClockGate.loading) {
     return (
       <div className="max-w-7xl mx-auto p-6">
         <p className="text-surface-500">Loading Command Centre…</p>
+      </div>
+    );
+  }
+
+  if (!shiftClockGate.allowed) {
+    return (
+      <div className="max-w-xl mx-auto p-6 sm:p-8">
+        <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-100 shadow-lg p-8 text-center sm:text-left">
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Shift compliance</p>
+          <h2 className="mt-2 text-xl font-semibold text-slate-900 tracking-tight">Clock in required</h2>
+          <p className="mt-3 text-sm text-slate-600 leading-relaxed">
+            {shiftClockGate.message || 'Clock in for your scheduled shift on Profile → Work schedule before using Command Centre.'}
+          </p>
+          <Link
+            to="/profile"
+            className="mt-6 inline-flex items-center justify-center px-5 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 shadow-md"
+          >
+            Open Profile → Work schedule
+          </Link>
+        </div>
       </div>
     );
   }
@@ -463,6 +508,7 @@ export default function CommandCentre() {
           {activeTab === 'contractors_details' && canSeeTab('contractors_details') && (
             <TabContractorsDetails list={contractorsDetailsList} loading={contractorsDetailsLoading} />
           )}
+          {activeTab === 'contractor_expiries' && canSeeTab('contractor_expiries') && <TabContractorExpiries />}
           {activeTab === 'breakdowns' && canSeeTab('breakdowns') && <TabBreakdowns />}
           {activeTab === 'delete_fleet_drivers' && canSeeTab('delete_fleet_drivers') && <TabDeleteFleetDrivers />}
 
@@ -1897,6 +1943,248 @@ function TabContractorsDetails({ list, loading }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+const EXPIRY_ITEM_TYPE_LABELS = {
+  license: 'Driver licence',
+  roadworthy: 'Vehicle roadworthy',
+  permit: 'Permit / certificate',
+  other: 'Other',
+};
+
+function expiryItemTypeLabel(raw) {
+  const k = String(raw || '').toLowerCase();
+  return EXPIRY_ITEM_TYPE_LABELS[k] || raw || '—';
+}
+
+function TabContractorExpiries() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [windowFilter, setWindowFilter] = useState('all');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadError('');
+    setLoading(true);
+    contractorApi.expiries
+      .list()
+      .then((r) => {
+        if (!cancelled) setRows(Array.isArray(r.expiries) ? r.expiries : []);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err?.message || 'Failed to load expiries');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const filtered = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const end30 = new Date(today);
+    end30.setDate(end30.getDate() + 30);
+    const end90 = new Date(today);
+    end90.setDate(end90.getDate() + 90);
+
+    const expiryDay = (e) => {
+      const raw = e.expiry_date ?? e.expiryDate;
+      if (!raw) return null;
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) return null;
+      const x = new Date(d);
+      x.setHours(0, 0, 0, 0);
+      return x;
+    };
+
+    const q = search.trim().toLowerCase();
+
+    return rows.filter((e) => {
+      const itemType = String(e.item_type ?? e.itemType ?? '').toLowerCase();
+      if (typeFilter !== 'all') {
+        if (typeFilter === 'other') {
+          if (['license', 'roadworthy', 'permit'].includes(itemType)) return false;
+        } else if (itemType !== typeFilter) return false;
+      }
+
+      const ed0 = expiryDay(e);
+      if (windowFilter !== 'all') {
+        if (!ed0) return false;
+        if (windowFilter === 'expired') {
+          if (ed0.getTime() >= today.getTime()) return false;
+        } else if (windowFilter === 'next_30') {
+          if (ed0.getTime() < today.getTime() || ed0.getTime() > end30.getTime()) return false;
+        } else if (windowFilter === 'next_90') {
+          if (ed0.getTime() < today.getTime() || ed0.getTime() > end90.getTime()) return false;
+        } else if (windowFilter === 'later') {
+          if (ed0.getTime() <= end90.getTime()) return false;
+        }
+      }
+
+      if (q) {
+        const ref = String(e.item_ref ?? e.itemRef ?? '');
+        const desc = String(e.description ?? '');
+        const typ = String(e.item_type ?? e.itemType ?? '');
+        const issued = e.issued_date ?? e.issuedDate;
+        const dateBits = [ed0 && formatDateShort(ed0), issued && formatDateShort(issued)].filter(Boolean).join(' ');
+        const hay = `${typ} ${ref} ${desc} ${dateBits}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [rows, search, typeFilter, windowFilter]);
+
+  const hasActiveFilters =
+    search.trim() !== '' || typeFilter !== 'all' || windowFilter !== 'all';
+
+  return (
+    <div className="space-y-4">
+      <div className="sticky top-0 z-10 bg-surface-50 -mx-4 -mt-4 px-4 pt-4 pb-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6 sm:pb-4 border-b border-surface-200 space-y-4">
+        <div>
+          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Contractor expiries</h2>
+          <p className="text-sm text-surface-600 mt-0.5">
+            Licences, roadworthies, and permits submitted by contractors. Use filters to narrow the list.
+          </p>
+        </div>
+        {!loading && !loadError && (
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="cc-expiry-search" className="text-xs font-medium text-surface-500 uppercase tracking-wider">
+                Search
+              </label>
+              <input
+                id="cc-expiry-search"
+                type="search"
+                placeholder="Type, reference, description, dates…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-72 max-w-full"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="cc-expiry-type" className="text-xs font-medium text-surface-500 uppercase tracking-wider">
+                Item type
+              </label>
+              <select
+                id="cc-expiry-type"
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[11rem]"
+              >
+                <option value="all">All types</option>
+                <option value="license">Driver licence</option>
+                <option value="roadworthy">Vehicle roadworthy</option>
+                <option value="permit">Permit / certificate</option>
+                <option value="other">Other / custom</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="cc-expiry-window" className="text-xs font-medium text-surface-500 uppercase tracking-wider">
+                Expiry window
+              </label>
+              <select
+                id="cc-expiry-window"
+                value={windowFilter}
+                onChange={(e) => setWindowFilter(e.target.value)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[13rem]"
+              >
+                <option value="all">Any date</option>
+                <option value="expired">Expired</option>
+                <option value="next_30">Due within 30 days</option>
+                <option value="next_90">Due within 90 days</option>
+                <option value="later">Due after 90 days</option>
+              </select>
+            </div>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch('');
+                  setTypeFilter('all');
+                  setWindowFilter('all');
+                }}
+                className="text-sm text-surface-600 hover:text-surface-900 mb-0.5"
+              >
+                Clear filters
+              </button>
+            )}
+            <span className="text-surface-500 text-sm ml-auto pb-2">
+              {filtered.length} of {rows.length} record{rows.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {loading && <p className="text-surface-500">Loading…</p>}
+      {loadError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{loadError}</div>
+      )}
+      {!loading && !loadError && rows.length === 0 && (
+        <div className="rounded-xl border border-surface-200 bg-surface-50 p-6 text-center text-surface-600">
+          <p>No contractor expiries on file yet. Contractors can add them from the Contractor app → Expiries.</p>
+        </div>
+      )}
+      {!loading && !loadError && rows.length > 0 && (
+        <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-50 border-b border-surface-200">
+                <tr className="text-left text-surface-600">
+                  <th className="p-3 font-medium whitespace-nowrap">Type</th>
+                  <th className="p-3 font-medium whitespace-nowrap">Reference</th>
+                  <th className="p-3 font-medium whitespace-nowrap">Issued</th>
+                  <th className="p-3 font-medium whitespace-nowrap">Expiry</th>
+                  <th className="p-3 font-medium min-w-[8rem]">Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="p-6 text-center text-surface-500">
+                      No records match your filters.
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((e) => {
+                    const raw = e.expiry_date ?? e.expiryDate;
+                    const ed = raw ? new Date(raw) : null;
+                    let expired = false;
+                    if (ed && !Number.isNaN(ed.getTime())) {
+                      const today0 = new Date();
+                      today0.setHours(0, 0, 0, 0);
+                      const ed0 = new Date(ed);
+                      ed0.setHours(0, 0, 0, 0);
+                      expired = ed0.getTime() < today0.getTime();
+                    }
+                    const issued = e.issued_date ?? e.issuedDate;
+                    return (
+                      <tr key={e.id} className="border-b border-surface-100 hover:bg-surface-50">
+                        <td className="p-3 align-top">{expiryItemTypeLabel(e.item_type ?? e.itemType)}</td>
+                        <td className="p-3 align-top font-medium text-surface-900">{e.item_ref ?? e.itemRef ?? '—'}</td>
+                        <td className="p-3 align-top text-surface-600 whitespace-nowrap">{issued ? formatDateShort(issued) : '—'}</td>
+                        <td className="p-3 align-top whitespace-nowrap">
+                          <span className={expired ? 'text-red-600 font-medium' : 'text-surface-800'}>
+                            {raw ? formatDateShort(raw) : '—'}
+                          </span>
+                        </td>
+                        <td className="p-3 align-top text-surface-600 max-w-md break-words">{e.description || '—'}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -6589,6 +6877,8 @@ function TabApplications() {
   const [applicationCommentBody, setApplicationCommentBody] = useState('');
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [entityLibraryDocs, setEntityLibraryDocs] = useState([]);
+  const [entityLibraryLoading, setEntityLibraryLoading] = useState(false);
 
   useEffect(() => {
     if (!selectedId) { setDetail(null); setApplicationComments([]); return; }
@@ -6607,6 +6897,32 @@ function TabApplications() {
       .catch(() => setApplicationComments([]))
       .finally(() => setCommentsLoading(false));
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!detail?.entityId || !detail?.entityType) {
+      setEntityLibraryDocs([]);
+      return;
+    }
+    let cancelled = false;
+    setEntityLibraryLoading(true);
+    contractorApi.library
+      .list({
+        linked_entity_type: detail.entityType,
+        linked_entity_id: detail.entityId,
+      })
+      .then((r) => {
+        if (!cancelled) setEntityLibraryDocs(r.documents || []);
+      })
+      .catch(() => {
+        if (!cancelled) setEntityLibraryDocs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setEntityLibraryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.entityId, detail?.entityType, selectedId]);
 
   const handleAddApplicationComment = async () => {
     const body = applicationCommentBody.trim();
@@ -7168,6 +7484,39 @@ function TabApplications() {
                       <p className="text-surface-600"><span className="text-surface-500">Licence expiry:</span> {detail.entity.license_expiry ? new Date(detail.entity.license_expiry).toLocaleDateString() : '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">Phone:</span> {detail.entity.phone || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">Email:</span> {detail.entity.email || '—'}</p>
+                    </div>
+                  )}
+
+                  {detail.entityId && detail.entityType && (
+                    <div className="border-t border-surface-200 pt-3 space-y-2">
+                      <p className="font-medium text-surface-900">Contractor library</p>
+                      <p className="text-xs text-surface-500">
+                        Documents the contractor uploaded under Contractor → Library and linked to this {detail.entityType === 'truck' ? 'truck' : 'driver'}.
+                      </p>
+                      {entityLibraryLoading ? (
+                        <p className="text-surface-500 text-sm">Loading documents…</p>
+                      ) : entityLibraryDocs.length === 0 ? (
+                        <p className="text-surface-500 text-sm">No linked library documents.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {entityLibraryDocs.map((doc) => (
+                            <li key={doc.id} className="flex flex-wrap items-baseline justify-between gap-2 text-sm rounded-lg bg-surface-50 px-3 py-2 border border-surface-100">
+                              <div className="min-w-0">
+                                <span className="font-medium text-surface-900">{doc.file_name || 'Document'}</span>
+                                <span className="text-surface-500 ml-2">({String(doc.document_type || 'other').replace(/_/g, ' ')})</span>
+                              </div>
+                              <a
+                                href={contractorApi.library.downloadUrl(doc.id)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="shrink-0 text-brand-600 hover:underline text-sm"
+                              >
+                                Open / download
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   )}
 

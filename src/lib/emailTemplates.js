@@ -999,3 +999,30 @@ export function recruitmentAppointmentRegretHtml({ name, vacancyTitle }) {
   `;
   return wrap(content, 'Application update', { charcoal: false });
 }
+
+/** Shift clock: break overrun or 12h shift threshold — matches task / schedule red gradient layout. */
+export function shiftClockAlertHtml({ title, body }) {
+  const inner = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">${escapeHtml(body)}</p>`;
+  return taskEmailLayout(title || 'Shift clock alert', inner, 'Shift clock');
+}
+
+/** Employee requested override while away from clock-in GPS anchor — code for management to relay (one-time). */
+export function shiftLocationAuthRequestHtml({ employeeName, motivation, actionLabel, code, expiresMinutes }) {
+  const name = escapeHtml(employeeName || 'Employee');
+  const mot = escapeHtml(motivation || '');
+  const act = escapeHtml(actionLabel || 'Shift action');
+  const c = escapeHtml(String(code || ''));
+  const inner = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">An employee is signing a shift action from a different location than their clock-in point and has asked for authorization.</p>
+    <p style="margin: 0 0 8px 0; font-size: 14px; color: #475569;"><strong>Employee:</strong> ${name}</p>
+    <p style="margin: 0 0 8px 0; font-size: 14px; color: #475569;"><strong>Requested action:</strong> ${act}</p>
+    <p style="margin: 0 0 16px 0; font-size: 14px; color: #475569;"><strong>Motivation:</strong><br/>${mot.replace(/\n/g, '<br/>')}</p>
+    <div style="background: #fef3c7; border: 1px solid #fcd34d; border-radius: 10px; padding: 16px 20px; text-align: center; margin: 20px 0;">
+      <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 600; color: #92400e; text-transform: uppercase; letter-spacing: 0.06em;">One-time authorization code</p>
+      <p style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: 0.2em; color: #78350f; font-family: ui-monospace, monospace;">${c}</p>
+      <p style="margin: 10px 0 0 0; font-size: 12px; color: #a16207;">Valid about ${expiresMinutes || 30} minutes. Share only if you approve this exception.</p>
+    </div>
+    <p style="margin: 0; font-size: 13px; color: #64748b;">The employee enters this code in the app to complete the action once. Each new request sends a new code.</p>
+  `;
+  return taskEmailLayout('Shift location authorization', inner, 'Shift clock');
+}

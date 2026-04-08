@@ -66,13 +66,31 @@ async function request(path, options = {}) {
       data.error ||
       (res.status === 404 ? `Not found (${path})` : res.statusText);
     const hint = data.hint ? ` ${data.hint}` : '';
-    throw new Error(`${base}${hint}`.trim());
+    const err = new Error(`${base}${hint}`.trim());
+    if (data.code) err.code = data.code;
+    if (data.distanceMeters != null) err.distanceMeters = data.distanceMeters;
+    if (data.allowedRadiusMeters != null) err.allowedRadiusMeters = data.allowedRadiusMeters;
+    throw err;
   }
   return data;
 }
 
 export const auth = {
-  login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  login: (email, password, location) =>
+    request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        password,
+        ...(location && typeof location === 'object'
+          ? {
+              latitude: location.latitude,
+              longitude: location.longitude,
+              accuracy_meters: location.accuracy_meters ?? location.accuracy,
+            }
+          : {}),
+      }),
+    }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   me: () => request('/auth/me'),
   switchTenant: (tenantId) => request('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenant_id: tenantId }) }),
@@ -101,6 +119,12 @@ export const users = {
   /** Create a contractor company under a tenant (from User Management). */
   createContractor: (body) => request('/users/contractors', { method: 'POST', body: JSON.stringify(body) }),
   activity: (id) => request(`/users/${id}/activity`),
+  loginActivity: (id, params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/users/${encodeURIComponent(id)}/login-activity${q ? `?${q}` : ''}`);
+  },
+  loginActivityBulkDelete: (ids) =>
+    request('/users/login-activity/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   create: (body) => request('/users', { method: 'POST', body: JSON.stringify(body) }),
   update: (id, body) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   bulk: (body) => request('/users/bulk', { method: 'POST', body: JSON.stringify(body) }),
@@ -373,11 +397,21 @@ export const contractor = {
   },
   library: {
     documentTypes: () => request('/contractor/library/document-types'),
-    list: () => request('/contractor/library'),
-    upload: (file, documentType = 'other') => {
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.linked_entity_type) q.set('linked_entity_type', params.linked_entity_type);
+      if (params.linked_entity_id) q.set('linked_entity_id', params.linked_entity_id);
+      const s = q.toString();
+      return request(`/contractor/library${s ? `?${s}` : ''}`);
+    },
+    upload: (file, documentType = 'other', link = {}) => {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('document_type', documentType);
+      if (link.linked_entity_type && link.linked_entity_id) {
+        formData.append('linked_entity_type', link.linked_entity_type);
+        formData.append('linked_entity_id', link.linked_entity_id);
+      }
       return fetch(`${API}/contractor/library`, {
         method: 'POST',
         body: formData,
@@ -388,6 +422,7 @@ export const contractor = {
         return data;
       }).catch((err) => { throw wrapNetworkError(err); });
     },
+    patchLink: (id, body) => request(`/contractor/library/${encodeURIComponent(id)}/link`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/contractor/library/${id}`, { method: 'DELETE' }),
     downloadUrl: (id) => `${API}/contractor/library/${id}/download`,
   },
@@ -769,12 +804,19 @@ export const profileManagement = {
     list: (userId) => pm(`/schedules${userId ? `?user_id=${userId}` : ''}`),
     create: (body) => pm('/schedules', { method: 'POST', body: JSON.stringify(body) }),
     generateBulk: (body) => pm('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
+    deleteAllForUser: (userId) => pm(`/schedules/by-user/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
     getEntries: (id) => pm(`/schedules/${id}/entries`),
     addEntries: (id, entries) => pm(`/schedules/${id}/entries`, { method: 'POST', body: JSON.stringify({ entries }) }),
   },
   mySchedule: (params) => {
     const q = new URLSearchParams(params).toString();
     return pm(`/my-schedule${q ? `?${q}` : ''}`);
+  },
+  /** Colleagues' shifts for the month (tenant peers). Pass user_ids: string[] to filter who appears on the calendar. */
+  myScheduleColleagues: ({ month, year, user_ids = [] }) => {
+    const q = new URLSearchParams({ month: String(month), year: String(year) });
+    if (user_ids.length) q.set('user_ids', user_ids.join(','));
+    return pm(`/my-schedule/colleagues?${q}`);
   },
   leave: {
     balance: (year) => pm(`/leave/balance${year != null ? `?year=${year}` : ''}`),
@@ -846,6 +888,47 @@ export const profileManagement = {
     managementReview: (id, body) => pm(`/shift-swaps/${id}/management`, { method: 'PATCH', body: JSON.stringify(body) }),
   },
   tenantUsers: () => pm('/users/tenant'),
+  /** Tenant users who can access Command Centre (page or tab grant) — for Profile work schedule peer overlay. */
+  commandCentreSchedulePeers: () => pm('/users/command-centre-peers'),
+};
+
+const sc = (path, options = {}) => request(`/shift-clock${path}`, options);
+
+/** Shift clock-in, breaks, overtime — Profile & Management. */
+export const shiftClock = {
+  ccAccess: () => sc('/cc-access'),
+  myStatus: () => sc('/my-status'),
+  startSession: (body) => sc('/session', { method: 'POST', body: JSON.stringify(body) }),
+  clockOut: (id, body) => sc(`/session/${encodeURIComponent(id)}/clock-out`, { method: 'PATCH', body: JSON.stringify(body || {}) }),
+  /** Void mistaken clock-in (active session only). */
+  cancelSession: (id) => sc(`/session/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  startBreak: (sessionId, body) =>
+    sc(`/session/${encodeURIComponent(sessionId)}/break/start`, { method: 'POST', body: JSON.stringify(body) }),
+  endBreak: (sessionId, breakId, body = {}) =>
+    sc(`/session/${encodeURIComponent(sessionId)}/break/${encodeURIComponent(breakId)}/end`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+  myHistory: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return sc(`/my-history${q ? `?${q}` : ''}`);
+  },
+  teamDay: (date, opts = {}) => {
+    const q = new URLSearchParams();
+    if (date) q.set('date', date);
+    if (opts.scope) q.set('scope', opts.scope);
+    const qs = q.toString();
+    return sc(`/team-day${qs ? `?${qs}` : ''}`);
+  },
+  managementSessions: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return sc(`/management/sessions${q ? `?${q}` : ''}`);
+  },
+  requestLocationAuth: (sessionId, body) =>
+    sc(`/session/${encodeURIComponent(sessionId)}/location-auth-request`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
 };
 
 const to = (path, options = {}) => request(`/transport-operations${path}`, options);

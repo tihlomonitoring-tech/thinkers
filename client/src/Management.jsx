@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { profileManagement as pm } from './api';
+import { profileManagement as pm, shiftClock } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
+  { id: 'shift_activity', label: 'Shift activity' },
   { id: 'shift-swaps', label: 'Shift swap requests' },
   { id: 'schedule-events', label: 'Schedule events' },
   { id: 'leave', label: 'Leave applications' },
@@ -198,6 +199,7 @@ export default function Management() {
   const [pipPlans, setPipPlans] = useState([]);
   const [tenantUsers, setTenantUsers] = useState([]);
   const [shiftSwapRequests, setShiftSwapRequests] = useState([]);
+  const [shiftMgmtSessions, setShiftMgmtSessions] = useState([]);
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
@@ -254,6 +256,15 @@ export default function Management() {
     }
   }, [activeSection]);
 
+  useEffect(() => {
+    if (activeSection === 'shift_activity') {
+      shiftClock
+        .managementSessions({})
+        .then((d) => setShiftMgmtSessions(d.sessions || []))
+        .catch(() => setShiftMgmtSessions([]));
+    }
+  }, [activeSection]);
+
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
@@ -292,7 +303,7 @@ export default function Management() {
             Show navigation
           </button>
         )}
-        <div className="max-w-6xl mx-auto flex-1">
+        <div className="w-full max-w-7xl mx-auto">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2 flex justify-between items-center">
               <span>{error}</span>
@@ -307,6 +318,71 @@ export default function Management() {
               onRefresh={() => pm.schedules.list().then((d) => setSchedules(d.schedules || []))}
               onError={setError}
             />
+          )}
+
+          {activeSection === 'shift_activity' && (
+            <div className="space-y-6">
+              <div>
+                <h1 className="text-xl font-semibold text-surface-900 tracking-tight">Shift activity</h1>
+                <p className="text-sm text-surface-600 mt-1 max-w-3xl">
+                  Monitor clock-ins, breaks, and overtime across the company. Alerts email staff and management when a break or shift exceeds policy
+                  (12 h on duty, break window).
+                </p>
+              </div>
+              <div className="bg-white rounded-xl border border-surface-200 overflow-hidden shadow-sm">
+                <div className="px-4 py-3 border-b border-surface-100 bg-surface-50 flex justify-between items-center">
+                  <span className="text-sm font-semibold text-surface-900">Recent sessions</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      shiftClock.managementSessions({}).then((d) => setShiftMgmtSessions(d.sessions || []))
+                    }
+                    className="text-sm font-medium text-brand-600 hover:text-brand-700"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div className="overflow-x-auto p-4">
+                  {shiftMgmtSessions.length === 0 ? (
+                    <p className="text-sm text-surface-500">No sessions recorded yet.</p>
+                  ) : (
+                    <table className="w-full text-sm text-left min-w-[800px]">
+                      <thead>
+                        <tr className="text-xs uppercase text-surface-500 border-b border-surface-200">
+                          <th className="pb-2 pr-3">Employee</th>
+                          <th className="pb-2 pr-3">Date</th>
+                          <th className="pb-2 pr-3">In</th>
+                          <th className="pb-2 pr-3">Clock-in GPS</th>
+                          <th className="pb-2 pr-3">Out</th>
+                          <th className="pb-2 pr-3">OT (min)</th>
+                          <th className="pb-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-surface-100">
+                        {shiftMgmtSessions.map((s) => (
+                          <tr key={s.id}>
+                            <td className="py-2 pr-3">
+                              <span className="font-medium text-surface-900">{s.user_name || '—'}</span>
+                              <span className="block text-xs text-surface-500">{s.user_email}</span>
+                            </td>
+                            <td className="py-2 pr-3 font-mono text-xs">{String(s.work_date).slice(0, 10)}</td>
+                            <td className="py-2 pr-3 text-xs">{s.clock_in_at ? new Date(s.clock_in_at).toLocaleString() : '—'}</td>
+                            <td className="py-2 pr-3 text-xs font-mono text-surface-600">
+                              {s.anchor_latitude != null && s.anchor_longitude != null
+                                ? `${Number(s.anchor_latitude).toFixed(4)}, ${Number(s.anchor_longitude).toFixed(4)}`
+                                : '—'}
+                            </td>
+                            <td className="py-2 pr-3 text-xs">{s.clock_out_at ? new Date(s.clock_out_at).toLocaleString() : '—'}</td>
+                            <td className="py-2 pr-3">{s.overtime_minutes ?? 0}</td>
+                            <td className="py-2 capitalize">{s.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
 
           {activeSection === 'shift-swaps' && (
@@ -435,6 +511,9 @@ export default function Management() {
 
 function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
   const [showForm, setShowForm] = useState(false);
+  const [showDeleteAll, setShowDeleteAll] = useState(false);
+  const [deleteAllUserId, setDeleteAllUserId] = useState('');
+  const [deletingAll, setDeletingAll] = useState(false);
   const [scheduleUserId, setScheduleUserId] = useState('');
   const [title, setTitle] = useState('');
   const [periodStart, setPeriodStart] = useState('');
@@ -476,6 +555,44 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
       onError(err?.message || 'Failed to create');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteAllForUser = async (e) => {
+    e.preventDefault();
+    if (!deleteAllUserId) {
+      onError('Select an employee');
+      return;
+    }
+    const u = tenantUsers.find((x) => x.id === deleteAllUserId);
+    const label = u?.full_name || u?.email || 'this employee';
+    const n = schedules.filter((s) => s.user_id === deleteAllUserId).length;
+    if (
+      !window.confirm(
+        `Delete ALL work schedules for ${label}? This removes ${n || 'all'} schedule record(s), every shift, related shift swap requests, and shift clock sessions tied to those shifts. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingAll(true);
+    onError('');
+    try {
+      const res = await pm.schedules.deleteAllForUser(deleteAllUserId);
+      const removed = res?.deleted?.schedules ?? 0;
+      setShowDeleteAll(false);
+      setDeleteAllUserId('');
+      setSelectedSchedule(null);
+      onRefresh();
+      if (removed === 0) {
+        onError('');
+        alert('No schedules were on file for that employee.');
+      } else {
+        alert(`Removed ${removed} schedule(s) for ${label}.`);
+      }
+    } catch (err) {
+      onError(err?.message || 'Failed to delete schedules');
+    } finally {
+      setDeletingAll(false);
     }
   };
 
@@ -546,11 +663,30 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
         />
       </div>
 
-      {!showForm ? (
-        <button type="button" onClick={() => setShowForm(true)} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
-          Create schedule for employee
-        </button>
-      ) : (
+      {!showForm && !showDeleteAll ? (
+        <div className="flex flex-wrap gap-2 items-center">
+          <button
+            type="button"
+            onClick={() => {
+              setShowDeleteAll(false);
+              setShowForm(true);
+            }}
+            className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700"
+          >
+            Create schedule for employee
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowForm(false);
+              setShowDeleteAll(true);
+            }}
+            className="px-4 py-2 rounded-lg border border-red-200 bg-white text-red-700 text-sm font-medium hover:bg-red-50"
+          >
+            Delete all schedules for an employee
+          </button>
+        </div>
+      ) : showForm ? (
         <form onSubmit={handleCreate} className="bg-white rounded-xl border border-surface-200 p-4 space-y-3 max-w-md">
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>
@@ -580,6 +716,45 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
               {saving ? 'Creating…' : 'Create'}
             </button>
             <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm">Cancel</button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={handleDeleteAllForUser} className="bg-white rounded-xl border border-red-100 p-4 space-y-3 max-w-md">
+          <p className="text-sm text-surface-700">
+            Permanently remove every work schedule and shift for the selected employee. Shift swap requests and clock sessions linked to those shifts are removed too.
+          </p>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>
+            <select
+              value={deleteAllUserId}
+              onChange={(e) => setDeleteAllUserId(e.target.value)}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              required
+            >
+              <option value="">Select employee</option>
+              {tenantUsers.map((u) => (
+                <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={deletingAll}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+            >
+              {deletingAll ? 'Deleting…' : 'Delete all schedules'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowDeleteAll(false);
+                setDeleteAllUserId('');
+              }}
+              className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm"
+            >
+              Cancel
+            </button>
           </div>
         </form>
       )}
@@ -1130,7 +1305,7 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-surface-900">Evaluations</h1>
         <p className="text-sm text-surface-600">Create and view employee evaluations. Shift report (controller) evaluations appear below when approvers complete them in Command Centre.</p>

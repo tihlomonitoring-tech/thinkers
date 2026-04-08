@@ -15,6 +15,7 @@ import reportBreakdownRoutes from './src/routes/reportBreakdown.js';
 import testEmailRoutes from './src/routes/testEmail.js';
 import tasksRoutes, { runOverdueTaskNotifications } from './src/routes/tasks.js';
 import profileManagementRoutes from './src/routes/profileManagement.js';
+import shiftClockRoutes, { runShiftClockAlerts } from './src/routes/shiftClock.js';
 import progressReportsRoutes from './src/routes/progressReports.js';
 import actionPlansRoutes from './src/routes/actionPlans.js';
 import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
@@ -126,6 +127,7 @@ app.use('/api/report-breakdown', reportBreakdownRoutes);
 app.use('/api/test-email', testEmailRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/profile-management', profileManagementRoutes);
+app.use('/api/shift-clock', shiftClockRoutes);
 app.use('/api/progress-reports', progressReportsRoutes);
 app.use('/api/action-plans', actionPlansRoutes);
 app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
@@ -134,12 +136,17 @@ app.use('/api/accounting', accountingRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {
+  const pathLower = `${req.path || ''} ${req.originalUrl || ''}`.toLowerCase();
+  const truckAnalysisHint =
+    pathLower.includes('truck-analysis') &&
+    'Command Centre truck analysis requires this API version (routes under /api/command-centre/truck-analysis) and the truck_analysis_handovers table. On the database host run: npm run db:truck-analysis-handovers — then redeploy the Node server so it includes src/routes/commandCentre.js with those routes.';
+  const genericHint =
+    'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint:
-      'Deploy the latest API build. Command Centre truck analysis needs /api/command-centre/truck-analysis/* routes and the truck_analysis_handovers table (npm run db:truck-analysis-handovers).',
+    hint: truckAnalysisHint || genericHint,
   });
 });
 
@@ -174,8 +181,13 @@ app.use((err, req, res, next) => {
   });
 });
 
+setInterval(() => {
+  runShiftClockAlerts().catch(() => {});
+}, 5 * 60 * 1000);
+
 const server = app.listen(PORT, () => {
   console.log(`Thinkers API running at http://localhost:${PORT}`);
+  runShiftClockAlerts().catch(() => {});
   if (!isDbEnvConfigured()) {
     console.warn(
       'Database: no SQLSERVER_* / AZURE_SQL_* / connection string in environment — API routes that use the DB will fail. ' +

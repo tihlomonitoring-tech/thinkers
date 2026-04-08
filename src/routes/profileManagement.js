@@ -210,6 +210,85 @@ router.post('/schedules/bulk', requirePageAccess('management'), async (req, res,
   }
 });
 
+/** Remove every work schedule (and shifts) for one employee in the tenant. Clears shift swaps and clock sessions that reference those shifts. */
+router.delete('/schedules/by-user/:userId', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const targetUserId = req.params.userId;
+    if (!targetUserId) return res.status(400).json({ error: 'user id required' });
+
+    // Same membership rule as GET /users/tenant (user_tenants), not only users.tenant_id
+    const u = await query(
+      `SELECT u.id FROM users u
+       WHERE u.id = @userId
+       AND (
+         u.tenant_id = @tenantId
+         OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId)
+       )`,
+      { userId: targetUserId, tenantId }
+    );
+    if (!u.recordset?.length) return res.status(404).json({ error: 'User not found in this tenant' });
+
+    const cntRow = await query(
+      `SELECT COUNT(*) AS c FROM work_schedules WHERE tenant_id = @tenantId AND user_id = @userId`,
+      { tenantId, userId: targetUserId }
+    );
+    const scheduleCount = parseInt(getRow(cntRow.recordset[0], 'c'), 10) || 0;
+    if (scheduleCount === 0) {
+      return res.json({ deleted: { schedules: 0 } });
+    }
+
+    const pool = await getPool();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+      await execTx(
+        transaction,
+        `DELETE r FROM shift_swap_requests r
+         WHERE r.tenant_id = @tenantId
+         AND (
+           EXISTS (
+             SELECT 1 FROM work_schedule_entries e
+             INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+             WHERE e.id = r.requester_entry_id AND s.tenant_id = @tenantId AND s.user_id = @userId
+           )
+           OR EXISTS (
+             SELECT 1 FROM work_schedule_entries e
+             INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+             WHERE e.id = r.counterparty_entry_id AND s.tenant_id = @tenantId AND s.user_id = @userId
+           )
+         )`,
+        { tenantId, userId: targetUserId }
+      );
+
+      await execTx(
+        transaction,
+        `DELETE sc FROM shift_clock_sessions sc
+         INNER JOIN work_schedule_entries e ON e.id = sc.schedule_entry_id
+         INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+         WHERE s.tenant_id = @tenantId AND s.user_id = @userId`,
+        { tenantId, userId: targetUserId }
+      );
+
+      await execTx(
+        transaction,
+        `DELETE FROM work_schedules WHERE tenant_id = @tenantId AND user_id = @userId`,
+        { tenantId, userId: targetUserId }
+      );
+
+      await transaction.commit();
+    } catch (txErr) {
+      await transaction.rollback();
+      throw txErr;
+    }
+
+    res.json({ deleted: { schedules: scheduleCount } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/schedules/:id/entries', requirePageAccess('management'), async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -261,6 +340,77 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
       schedule_title: getRow(r, 'schedule_title'),
     }));
     res.json({ entries });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Month view: colleagues' shifts for selected tenant users (same org). Used on Profile work schedule overlay. */
+const COLLEAGUE_OVERLAY_MAX = 40;
+router.get('/my-schedule/colleagues', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { month, year, user_ids: userIdsRaw } = req.query;
+    const tenantId = req.user.tenant_id;
+    const me = req.user.id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const m = month != null ? parseInt(month, 10) : new Date().getMonth();
+    const y = year != null ? parseInt(year, 10) : new Date().getFullYear();
+    const start = new Date(y, m, 1);
+    const end = new Date(y, m + 1, 0);
+    const startStr = start.toISOString().slice(0, 10);
+    const endStr = end.toISOString().slice(0, 10);
+
+    const raw = typeof userIdsRaw === 'string' && userIdsRaw.trim()
+      ? userIdsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    const unique = [...new Set(raw)].filter((id) => String(id).toLowerCase() !== String(me).toLowerCase());
+    const limited = unique.slice(0, COLLEAGUE_OVERLAY_MAX);
+    if (limited.length === 0) {
+      return res.json({ colleagues: [] });
+    }
+
+    const verify = await query(
+      `SELECT ut.user_id FROM user_tenants ut WHERE ut.tenant_id = @tenantId AND ut.user_id IN (${limited.map((_, i) => `@c${i}`).join(', ')})`,
+      { tenantId, ...Object.fromEntries(limited.map((id, i) => [`c${i}`, id])) }
+    );
+    const allowed = new Set((verify.recordset || []).map((row) => String(getRow(row, 'user_id'))));
+    const ids = limited.filter((id) => allowed.has(String(id)));
+    if (ids.length === 0) {
+      return res.json({ colleagues: [] });
+    }
+
+    const placeholders = ids.map((_, i) => `@u${i}`).join(', ');
+    const params = { tenantId, startStr, endStr, ...Object.fromEntries(ids.map((id, i) => [`u${i}`, id])) };
+    const result = await query(
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type, s.user_id AS colleague_id, u.full_name AS full_name, u.email AS email
+       FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId
+       INNER JOIN users u ON u.id = s.user_id
+       WHERE s.user_id IN (${placeholders})
+         AND e.work_date >= @startStr AND e.work_date <= @endStr
+       ORDER BY e.work_date, u.full_name`,
+      params
+    );
+
+    const byUser = new Map();
+    for (const row of result.recordset || []) {
+      const uid = String(getRow(row, 'colleague_id'));
+      if (!byUser.has(uid)) {
+        byUser.set(uid, {
+          user_id: uid,
+          full_name: getRow(row, 'full_name'),
+          email: getRow(row, 'email'),
+          entries: [],
+        });
+      }
+      byUser.get(uid).entries.push({
+        entry_id: getRow(row, 'entry_id'),
+        work_date: getRow(row, 'work_date'),
+        shift_type: getRow(row, 'shift_type'),
+      });
+    }
+
+    res.json({ colleagues: [...byUser.values()] });
   } catch (err) {
     next(err);
   }
@@ -1596,6 +1746,52 @@ router.get('/users/tenant', async (req, res, next) => {
       { tenantId }
     );
     res.json({ users: (result.recordset || []).map((r) => ({ id: getRow(r, 'id'), full_name: getRow(r, 'full_name'), email: getRow(r, 'email') })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Users in the tenant with Command Centre page access or a CC tab grant (same rule as Shift activity team list). For Profile work schedule overlay. */
+router.get('/users/command-centre-peers', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const viewerId = req.user.id;
+    if (!tenantId) return res.json({ users: [] });
+    const tenantClause = `(u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`;
+    const ccSqlWithGrants = `
+      SELECT DISTINCT u.id, u.full_name, u.email FROM users u
+      WHERE ${tenantClause}
+      AND u.status = 'active'
+      AND u.email IS NOT NULL
+      AND u.id <> @viewerId
+      AND (
+        EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'command_centre')
+        OR EXISTS (SELECT 1 FROM command_centre_grants g WHERE g.user_id = u.id)
+      )
+      ORDER BY u.full_name`;
+    let result;
+    try {
+      result = await query(ccSqlWithGrants, { tenantId, viewerId });
+    } catch (e) {
+      const msg = (e.message || '').toLowerCase();
+      if (msg.includes('command_centre_grants') || msg.includes('invalid object')) {
+        result = await query(
+          `SELECT DISTINCT u.id, u.full_name, u.email FROM users u
+           WHERE ${tenantClause}
+           AND u.status = 'active'
+           AND u.email IS NOT NULL
+           AND u.id <> @viewerId
+           AND EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'command_centre')
+           ORDER BY u.full_name`,
+          { tenantId, viewerId }
+        );
+      } else {
+        throw e;
+      }
+    }
+    res.json({
+      users: (result.recordset || []).map((r) => ({ id: getRow(r, 'id'), full_name: getRow(r, 'full_name'), email: getRow(r, 'email') })),
+    });
   } catch (err) {
     next(err);
   }

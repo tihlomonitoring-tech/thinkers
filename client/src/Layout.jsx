@@ -86,6 +86,7 @@ export default function Layout() {
     { id: 'cc:delivery', label: 'Command Centre · Delivery management', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'delivery', keywords: ['deliveries', 'loads'] },
     { id: 'cc:breakdowns', label: 'Command Centre · Reported breakdowns', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'breakdowns', keywords: ['incidents', 'downtime'] },
     { id: 'cc:applications', label: 'Command Centre · Fleet & driver applications', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'applications', keywords: ['fleet', 'driver', 'truck', 'application', 'enrollment'] },
+    { id: 'cc:contractor_expiries', label: 'Command Centre · Contractor expiries', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'contractor_expiries', keywords: ['expiry', 'expir', 'licence', 'license', 'roadworthy', 'permit', 'certificate'] },
   ].filter((t) => ccAllowedTabs.includes(t.commandCentreTab)) : [];
   const contractorTabTargets = canAccessPage(user, 'contractor') ? [
     { id: 'ct:dashboard', label: 'Contractor · Dashboard', path: '/contractor', section: 'Contractor', tab: 'dashboard', key: 'contractor-global-target-tab', keywords: ['overview', 'home'] },

@@ -435,6 +435,73 @@ router.post('/block-requests/:id/unlock', requireSuperAdmin, async (req, res, ne
   }
 });
 
+/** Bulk-delete login activity rows (GPS + IP audit). Tenant admins: own tenant only. */
+router.post('/login-activity/bulk-delete', requireTenantAdmin, async (req, res, next) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+    const slice = ids.slice(0, 500);
+    const placeholders = slice.map((_, i) => `@id${i}`).join(',');
+    const params = {};
+    slice.forEach((id, i) => {
+      params[`id${i}`] = id;
+    });
+    if (req.user.role !== 'super_admin') {
+      params.tid = req.user.tenant_id;
+      await query(`DELETE FROM user_login_activity WHERE id IN (${placeholders}) AND tenant_id = @tid`, params);
+    } else {
+      await query(`DELETE FROM user_login_activity WHERE id IN (${placeholders})`, params);
+    }
+    await auditLog({
+      tenantId: req.user.tenant_id,
+      userId: req.user.id,
+      action: 'user.login_activity_bulk_delete',
+      entityType: 'user',
+      entityId: req.user.id,
+      details: { count: slice.length },
+      ip: req.ip,
+    });
+    res.json({ ok: true, deleted: slice.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Sign-in locations + IP for a user (User management → Login activity). */
+router.get('/:id/login-activity', async (req, res, next) => {
+  try {
+    const result = await query(`SELECT u.id, u.tenant_id FROM users u WHERE u.id = @id`, { id: req.params.id });
+    const user = result.recordset?.[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const pool = await getPool();
+    const tidMap = await getTenantIdsForUsers(pool, [user.id]);
+    const targetTenantIds = tidMap[user.id] || (user.tenant_id ? [user.tenant_id] : []);
+    const canAccess = canAccessTenant(req, user.tenant_id) || targetTenantIds.includes(req.user.tenant_id);
+    if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
+
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 100));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+    const r = await query(
+      `SELECT id, ip_address, latitude, longitude, accuracy_meters, user_agent, source, created_at
+       FROM user_login_activity
+       WHERE user_id = @userId
+       ORDER BY created_at DESC
+       OFFSET @off ROWS FETCH NEXT @lim ROWS ONLY`,
+      { userId: req.params.id, off: offset, lim: limit }
+    );
+    res.json({ rows: r.recordset || [], limit, offset });
+  } catch (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('invalid object name') && msg.includes('user_login_activity')) {
+      return res.status(503).json({ error: 'Login activity storage is not installed. Run: npm run db:login-location' });
+    }
+    next(err);
+  }
+});
+
 router.get('/:id', async (req, res, next) => {
   try {
     const result = await query(

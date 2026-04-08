@@ -6,6 +6,9 @@ import { hasRequiredPageAssignments } from '../middleware/auth.js';
 import { auditLog } from '../lib/audit.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { passwordResetHtml } from '../lib/emailTemplates.js';
+import { parseClientCoords } from '../lib/geo.js';
+import { getClientIp } from '../lib/clientIp.js';
+import { insertUserLoginActivity } from '../lib/userLoginActivity.js';
 
 const router = Router();
 const SALT_ROUNDS = 10;
@@ -18,6 +21,14 @@ router.post('/login', async (req, res, next) => {
     const { email, password } = req.body || {};
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
+    }
+    const loc = parseClientCoords(req.body || {});
+    if (!loc) {
+      return res.status(400).json({
+        error:
+          'Location is required to sign in. Allow location access in your browser and try again. Coordinates are stored with your account audit trail only.',
+        code: 'LOCATION_REQUIRED',
+      });
     }
     let result;
     try {
@@ -155,10 +166,27 @@ router.post('/login', async (req, res, next) => {
         action: 'login',
         entityType: 'user',
         entityId: user.id,
-        ip: req.ip || req.connection?.remoteAddress,
+        ip: getClientIp(req),
       });
     } catch (auditErr) {
       console.error('Login: audit log failed', auditErr);
+    }
+    try {
+      const tid = sessionTenantId || user.tenant_id;
+      if (tid) {
+        await insertUserLoginActivity(query, {
+          tenantId: tid,
+          userId: user.id,
+          ip: getClientIp(req),
+          latitude: loc.lat,
+          longitude: loc.lng,
+          accuracyMeters: loc.accuracy,
+          userAgent: req.headers['user-agent'],
+          source: 'login',
+        });
+      }
+    } catch (logErr) {
+      console.error('Login: user_login_activity insert failed', logErr?.message || logErr);
     }
     res.json({
       user: {
