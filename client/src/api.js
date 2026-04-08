@@ -966,6 +966,7 @@ export const accounting = {
   },
   invoices: {
     list: () => acc('/invoices'),
+    nextNumber: () => acc('/invoices/next-number'),
     get: (id) => acc(`/invoices/${id}`),
     create: (body) => acc('/invoices', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => acc(`/invoices/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),

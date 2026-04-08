@@ -4,16 +4,16 @@
  */
 
 export const PDF_THEME = {
-  accent: '#115e59', // teal-800
-  accentBar: '#0f766e',
+  accent: '#7F1D1D', // dark red (brand)
+  accentBar: '#991B1B',
   ink: '#111827',
   inkSoft: '#374151',
   muted: '#6b7280',
   line: '#e5e7eb',
-  tableHead: '#134e4a',
+  tableHead: '#7F1D1D',
   tableZebra: '#f8fafc',
   panelBg: '#fafafa',
-  totalBar: '#0f172a',
+  totalBar: '#7F1D1D',
 };
 
 const PAGE = { w: 595.28, h: 841.89, margin: 48 };
@@ -116,24 +116,16 @@ export function renderCommercialPdf(doc, options) {
   doc.restore();
   y = PAGE.margin + 4;
 
-  const leftBlockW = contentW * 0.52;
-  const rightBlockX = PAGE.margin + leftBlockW + 16;
-  const rightBlockW = contentW - leftBlockW - 16;
+  const colGap = 16;
+  const logoSlotW = 156;
+  const logoMaxH = 54;
+  const issuerTextW = Math.max(120, contentW - logoSlotW - colGap);
   const startHeaderY = y;
 
-  // Logo + issuer (left)
-  let issuerY = y;
-  if (logoBuffer && logoBuffer.length) {
-    try {
-      doc.image(logoBuffer, PAGE.margin, issuerY, { height: 44, fit: [120, 44] });
-      issuerY += 50;
-    } catch (_) {
-      issuerY = y;
-    }
-  }
-
+  // Top row: company details (left) — logo (far right)
+  let issuerY = startHeaderY;
   doc.font('Helvetica', 'bold').fontSize(13).fillColor(PDF_THEME.ink);
-  doc.text(company.company_name || 'Company', PAGE.margin, issuerY, { width: leftBlockW });
+  doc.text(company.company_name || 'Company', PAGE.margin, issuerY, { width: issuerTextW });
   issuerY = doc.y + 4;
 
   doc.font('Helvetica', 'normal').fontSize(8.5).fillColor(PDF_THEME.muted);
@@ -144,41 +136,33 @@ export function renderCommercialPdf(doc, options) {
   if (company.email) issuerBits.push(String(company.email));
   if (company.website) issuerBits.push(String(company.website));
   for (const bit of issuerBits) {
-    doc.text(bit, PAGE.margin, issuerY, { width: leftBlockW });
+    doc.text(bit, PAGE.margin, issuerY, { width: issuerTextW });
     issuerY = doc.y + 2;
   }
 
-  const headerBottom = Math.max(issuerY, startHeaderY + 88);
-
-  // Document panel (right)
-  let panelY = startHeaderY;
-  doc.roundedRect(rightBlockX, panelY, rightBlockW, 88, 4);
-  doc.fillColor(PDF_THEME.panelBg).strokeColor(PDF_THEME.line).lineWidth(0.5).fillAndStroke();
-  panelY += 12;
-  doc.font('Helvetica', 'bold').fontSize(9).fillColor(PDF_THEME.accent);
-  doc.text(String(documentTitle).toUpperCase(), rightBlockX + 12, panelY, { width: rightBlockW - 24 });
-  panelY = doc.y + 6;
-  doc.font('Helvetica', 'bold').fontSize(11).fillColor(PDF_THEME.ink);
-  doc.text(documentNumber || '—', rightBlockX + 12, panelY, { width: rightBlockW - 24 });
-  panelY = doc.y + 8;
-  doc.font('Helvetica', 'normal').fontSize(8).fillColor(PDF_THEME.inkSoft);
-  for (const row of metaRows) {
-    if (!row || !row.value) continue;
-    const label = String(row.label || '');
-    const val = String(row.value || '');
-    doc.font('Helvetica', 'normal').text(`${label}: ${val}`, rightBlockX + 12, panelY, { width: rightBlockW - 24 });
-    panelY = doc.y + 3;
+  let logoBottom = startHeaderY;
+  if (logoBuffer && logoBuffer.length) {
+    try {
+      const logoX = PAGE.margin + contentW - logoSlotW;
+      doc.image(logoBuffer, logoX, startHeaderY, { height: logoMaxH, fit: [logoSlotW, logoMaxH] });
+      logoBottom = startHeaderY + logoMaxH;
+    } catch (_) {
+      /* skip */
+    }
   }
 
-  y = Math.max(headerBottom, panelY + 16) + 8;
+  y = Math.max(issuerY, logoBottom) + colGap;
 
-  // Divider
+  // Divider under company / logo row
   doc.moveTo(PAGE.margin, y).lineTo(PAGE.margin + contentW, y).strokeColor(PDF_THEME.line).lineWidth(0.5).stroke();
   y += 14;
 
-  // Party card (background first, then text)
-  const partyW = contentW * 0.58;
+  // Second row: Bill to (left) + document panel (right), same baseline
+  const partyW = contentW * 0.52;
+  const panelW = contentW - partyW - colGap;
+  const panelX = PAGE.margin + partyW + colGap;
   const partyTop = y;
+
   let partyH = 72;
   {
     let simY = partyTop + 24;
@@ -190,7 +174,21 @@ export function renderCommercialPdf(doc, options) {
     }
     partyH = Math.max(72, simY - partyTop + 16);
   }
-  doc.roundedRect(PAGE.margin, partyTop, partyW, partyH, 3);
+
+  let panelInnerH = 12 + 12 + 6 + 14 + 8; // padding + title + gap + number + gap
+  doc.font('Helvetica', 'normal').fontSize(8).fillColor(PDF_THEME.inkSoft);
+  for (const row of metaRows) {
+    if (!row || !row.value) continue;
+    const label = String(row.label || '');
+    const val = String(row.value || '');
+    const line = `${label}: ${val}`;
+    panelInnerH += doc.heightOfString(line, { width: panelW - 24 }) + 3;
+  }
+  panelInnerH += 12;
+  const panelContentMinH = Math.max(88, panelInnerH);
+  const parallelRowH = Math.max(partyH, panelContentMinH);
+
+  doc.roundedRect(PAGE.margin, partyTop, partyW, parallelRowH, 3);
   doc.fillColor('#fafafa').strokeColor(PDF_THEME.line).lineWidth(0.5).fillAndStroke();
   doc.font('Helvetica', 'bold').fontSize(7).fillColor(PDF_THEME.muted);
   doc.text(String(partyLabel).toUpperCase(), PAGE.margin + 10, partyTop + 10, { characterSpacing: 0.6 });
@@ -201,7 +199,31 @@ export function renderCommercialPdf(doc, options) {
     doc.text(String(pl), PAGE.margin + 10, py, { width: partyW - 20 });
     py = doc.y + 2;
   }
-  y = partyTop + partyH + 16;
+
+  doc.roundedRect(panelX, partyTop, panelW, parallelRowH, 4);
+  doc.fillColor(PDF_THEME.panelBg).strokeColor(PDF_THEME.line).lineWidth(0.5).fillAndStroke();
+  let panelY = partyTop + 12;
+  doc.font('Helvetica', 'bold').fontSize(9).fillColor(PDF_THEME.accent);
+  doc.text(String(documentTitle).toUpperCase(), panelX + 12, panelY, { width: panelW - 24 });
+  panelY = doc.y + 6;
+  doc.font('Helvetica', 'bold').fontSize(11).fillColor(PDF_THEME.ink);
+  doc.text(String(documentNumber != null ? documentNumber : '').trim(), panelX + 12, panelY, { width: panelW - 24 });
+  panelY = doc.y + 8;
+  const metaStartX = panelX + 12;
+  const metaW = panelW - 24;
+  for (const row of metaRows) {
+    if (!row || !row.value) continue;
+    const label = String(row.label || '');
+    const val = String(row.value || '');
+    const valueInk = label === 'Due date' ? PDF_THEME.ink : PDF_THEME.inkSoft;
+    doc.font('Helvetica', 'normal').fontSize(8);
+    doc.fillColor(PDF_THEME.muted).text(`${label}: `, metaStartX, panelY, { continued: true, lineBreak: false });
+    const remW = Math.max(24, metaStartX + metaW - doc.x);
+    doc.fillColor(valueInk).text(val, { width: remW });
+    panelY = doc.y + 3;
+  }
+
+  y = partyTop + parallelRowH + 16;
 
   if (notes && String(notes).trim()) {
     doc.font('Helvetica', 'bold').fontSize(8).fillColor(PDF_THEME.muted).text('Notes', PAGE.margin, y);
@@ -221,7 +243,7 @@ export function renderCommercialPdf(doc, options) {
     contentW * 0.08,
     contentW * 0.14,
   ];
-  const headers = ['Description', 'Qty', 'Unit price', 'Disc %', 'Tax %', 'Amount'];
+  const headers = ['Description', 'Qty', 'Unit price', 'Disc %', 'VAT %', 'Amount'];
 
   const tableTop = y;
   const headH = 22;
@@ -240,8 +262,8 @@ export function renderCommercialPdf(doc, options) {
   let rowIdx = 0;
   for (const l of lines || []) {
     const { qty, up, dPct, tPct, lineTotal } = lineItemCalc(l);
-    const desc = String(l.description || '—');
-    const textH = Math.max(18, doc.heightOfString(desc, { width: colW[0] - 12 }) + 8);
+    const desc = String(l.description ?? '').trim();
+    const textH = Math.max(18, doc.heightOfString(desc || ' ', { width: colW[0] - 12 }) + 8);
     const rowH = Math.min(textH + 4, 120);
 
     if (y + rowH > contentMaxY()) {
@@ -267,11 +289,11 @@ export function renderCommercialPdf(doc, options) {
     const numY = y + 6;
     doc.text(String(qty), PAGE.margin + colW[0] + 4, numY, { width: colW[1] - 8, align: 'right' });
     doc.text(formatMoney(up), PAGE.margin + colW[0] + colW[1] + 4, numY, { width: colW[2] - 8, align: 'right' });
-    doc.text(dPct > 0 ? `${dPct}%` : '—', PAGE.margin + colW[0] + colW[1] + colW[2] + 4, numY, {
+    doc.text(dPct > 0 ? `${dPct}%` : '', PAGE.margin + colW[0] + colW[1] + colW[2] + 4, numY, {
       width: colW[3] - 8,
       align: 'right',
     });
-    doc.text(tPct > 0 ? `${tPct}%` : '—', PAGE.margin + colW[0] + colW[1] + colW[2] + colW[3] + 4, numY, {
+    doc.text(tPct > 0 ? `${tPct}%` : '', PAGE.margin + colW[0] + colW[1] + colW[2] + colW[3] + 4, numY, {
       width: colW[4] - 8,
       align: 'right',
     });
@@ -314,7 +336,7 @@ export function renderCommercialPdf(doc, options) {
 
   totalsRow('Subtotal', formatMoney(documentSubtotal));
   if (discountPct > 0) totalsRow(`Document discount (${discountPct}%)`, `−${formatMoney(discountAmt)}`);
-  if (taxPct > 0) totalsRow(`Document tax (${taxPct}%)`, formatMoney(taxAmt));
+  if (taxPct > 0) totalsRow(`VAT (${taxPct}%)`, formatMoney(taxAmt));
 
   y += 4;
   doc.roundedRect(totalsX - 8, y - 4, totalsW + 16, 26, 3).fill(PDF_THEME.totalBar);

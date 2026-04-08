@@ -931,6 +931,31 @@ async function nextInvoiceNumber(tenantId) {
   return `INV-${y}-${String(n).padStart(3, '0')}`;
 }
 
+async function invoiceNumberTaken(tenantId, number, excludeInvoiceId = null) {
+  const num = String(number || '').trim();
+  if (!num) return false;
+  let sql = `SELECT 1 AS x FROM accounting_invoices WHERE tenant_id = @tenantId AND number = @number`;
+  const params = { tenantId, number: num };
+  if (excludeInvoiceId) {
+    sql += ` AND id <> @excludeId`;
+    params.excludeId = excludeInvoiceId;
+  }
+  const r = await query(sql, params);
+  return (r.recordset?.length ?? 0) > 0;
+}
+
+/** Suggested next invoice number (client can edit before create). */
+router.get('/invoices/next-number', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const next = await nextInvoiceNumber(tenantId);
+    res.json({ number: next });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/invoices', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
@@ -966,11 +991,15 @@ router.post('/invoices', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
-    const number = await nextInvoiceNumber(tenantId);
-    const { quotation_id, customer_id, customer_name, customer_address, customer_email, date, due_date, status, notes, discount_percent, tax_percent, is_recurring, lines } = req.body || {};
+    const { quotation_id, customer_id, customer_name, customer_address, customer_email, date, due_date, status, notes, discount_percent, tax_percent, is_recurring, show_issue_date_on_pdf, lines, number: bodyNumber } = req.body || {};
+    const trimmed = bodyNumber != null ? String(bodyNumber).trim() : '';
+    const number = trimmed || (await nextInvoiceNumber(tenantId));
+    if (trimmed && (await invoiceNumberTaken(tenantId, trimmed))) {
+      return res.status(400).json({ error: 'Invoice number already in use for this company' });
+    }
     const result = await query(
-      `INSERT INTO accounting_invoices (tenant_id, quotation_id, number, customer_id, customer_name, customer_address, customer_email, date, due_date, status, notes, discount_percent, tax_percent, is_recurring)
-       OUTPUT INSERTED.id VALUES (@tenantId, @quotation_id, @number, @customer_id, @customer_name, @customer_address, @customer_email, @date, @due_date, @status, @notes, @discount_percent, @tax_percent, @is_recurring)`,
+      `INSERT INTO accounting_invoices (tenant_id, quotation_id, number, customer_id, customer_name, customer_address, customer_email, date, due_date, status, notes, discount_percent, tax_percent, is_recurring, show_issue_date_on_pdf)
+       OUTPUT INSERTED.id VALUES (@tenantId, @quotation_id, @number, @customer_id, @customer_name, @customer_address, @customer_email, @date, @due_date, @status, @notes, @discount_percent, @tax_percent, @is_recurring, @show_issue_date_on_pdf)`,
       {
         tenantId,
         quotation_id: quotation_id || null,
@@ -986,6 +1015,7 @@ router.post('/invoices', async (req, res, next) => {
         discount_percent: Number(discount_percent) || 0,
         tax_percent: Number(tax_percent) || 0,
         is_recurring: is_recurring ? 1 : 0,
+        show_issue_date_on_pdf: show_issue_date_on_pdf === false || show_issue_date_on_pdf === 0 ? 0 : 1,
       }
     );
     const id = result.recordset?.[0]?.id;
@@ -1064,11 +1094,20 @@ router.patch('/invoices/:id', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     const { id } = req.params;
-    const { customer_id, customer_name, customer_address, customer_email, date, due_date, status, notes, discount_percent, tax_percent, is_recurring, lines } = req.body || {};
+    const { customer_id, customer_name, customer_address, customer_email, date, due_date, status, notes, discount_percent, tax_percent, is_recurring, show_issue_date_on_pdf, lines, number } = req.body || {};
     const existing = await query(`SELECT id FROM accounting_invoices WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
     if (!existing.recordset?.[0]) return res.status(404).json({ error: 'Invoice not found' });
     const updates = [];
     const params = { id, tenantId };
+    if (number !== undefined) {
+      const num = String(number ?? '').trim();
+      if (!num) return res.status(400).json({ error: 'Invoice number cannot be empty' });
+      if (await invoiceNumberTaken(tenantId, num, id)) {
+        return res.status(400).json({ error: 'Invoice number already in use for this company' });
+      }
+      updates.push('number = @number');
+      params.number = num;
+    }
     if (customer_id !== undefined) { updates.push('customer_id = @customer_id'); params.customer_id = customer_id || null; }
     if (customer_name !== undefined) { updates.push('customer_name = @customer_name'); params.customer_name = customer_name ?? ''; }
     if (customer_address !== undefined) { updates.push('customer_address = @customer_address'); params.customer_address = customer_address ?? ''; }
@@ -1087,6 +1126,10 @@ router.patch('/invoices/:id', async (req, res, next) => {
     if (discount_percent !== undefined) { updates.push('discount_percent = @discount_percent'); params.discount_percent = Number(discount_percent) || 0; }
     if (tax_percent !== undefined) { updates.push('tax_percent = @tax_percent'); params.tax_percent = Number(tax_percent) || 0; }
     if (is_recurring !== undefined) { updates.push('is_recurring = @is_recurring'); params.is_recurring = is_recurring ? 1 : 0; }
+    if (show_issue_date_on_pdf !== undefined) {
+      updates.push('show_issue_date_on_pdf = @show_issue_date_on_pdf');
+      params.show_issue_date_on_pdf = show_issue_date_on_pdf === false || show_issue_date_on_pdf === 0 ? 0 : 1;
+    }
     if (updates.length) {
       updates.push('updated_at = SYSUTCDATETIME()');
       await query(`UPDATE accounting_invoices SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
@@ -1123,7 +1166,7 @@ router.delete('/invoices/:id', async (req, res, next) => {
 
 async function buildInvoicePdf(_tenantId, invoice, lines, company, logoBuffer) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: `Invoice ${invoice.number}` } });
+    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: `Tax invoice ${invoice.number}` } });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -1132,17 +1175,22 @@ async function buildInvoicePdf(_tenantId, invoice, lines, company, logoBuffer) {
     const custAddr = invoice.customer_address_from_book || invoice.customer_address || '';
     const custEmail = invoice.customer_email_from_book || invoice.customer_email || '';
     const partyLines = [custName, custAddr, custEmail, invoice.customer_vat ? `VAT: ${invoice.customer_vat}` : '', invoice.customer_registration ? `Reg: ${invoice.customer_registration}` : ''].filter(Boolean);
-    const metaRows = [
-      { label: 'Issue date', value: formatDate(invoice.date) },
+    const metaRows = [];
+    const showIssueOnPdf = !(invoice.show_issue_date_on_pdf === 0 || invoice.show_issue_date_on_pdf === false);
+    if (showIssueOnPdf) {
+      const issueVal = formatDate(invoice.date);
+      if (issueVal) metaRows.push({ label: 'Issue date', value: issueVal });
+    }
+    metaRows.push(
       { label: 'Due date', value: formatDate(invoice.due_date) },
-      { label: 'Status', value: invoice.status ? String(invoice.status) : '' },
-    ];
+      { label: 'Status', value: invoice.status ? String(invoice.status) : '' }
+    );
     if (String(invoice.status || '').toLowerCase() === 'paid') {
       if (invoice.payment_date) metaRows.push({ label: 'Paid on', value: formatDate(invoice.payment_date) });
       if (invoice.payment_reference) metaRows.push({ label: 'Payment ref.', value: String(invoice.payment_reference) });
     }
     renderCommercialPdf(doc, {
-      documentTitle: 'Invoice',
+      documentTitle: 'Tax invoice',
       documentNumber: invoice.number,
       company,
       logoBuffer,
@@ -1155,7 +1203,7 @@ async function buildInvoicePdf(_tenantId, invoice, lines, company, logoBuffer) {
       notes: invoice.notes,
       totalLabel: 'Amount due',
     });
-    stampCommercialPdfFooters(doc, { documentTitle: 'Invoice', documentNumber: invoice.number });
+    stampCommercialPdfFooters(doc, { documentTitle: 'Tax invoice', documentNumber: invoice.number });
     doc.end();
   });
 }
@@ -1181,7 +1229,7 @@ router.get('/invoices/:id/pdf', async (req, res, next) => {
     }
     const pdf = await buildInvoicePdf(tenantId, invoice, lines, company, logoBuffer);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="invoice-${invoice.number}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="tax-invoice-${invoice.number}.pdf"`);
     res.send(pdf);
   } catch (err) {
     next(err);
@@ -1209,8 +1257,8 @@ router.post('/invoices/:id/send-email', async (req, res, next) => {
       if (fs.existsSync(fp) && fp.startsWith(uploadsRoot)) logoBuffer = fs.readFileSync(fp);
     }
     const pdf = await buildInvoicePdf(tenantId, invoice, lines, company, logoBuffer);
-    const subj = subject || `Invoice ${invoice.number}`;
-    const body = message || `Please find attached invoice ${invoice.number}.`;
+    const subj = subject || `Tax invoice ${invoice.number}`;
+    const body = message || `Please find attached tax invoice ${invoice.number}.`;
     if (!isEmailConfigured()) return res.status(503).json({ error: 'Email is not configured' });
     await sendEmail({
       to: toList.join(', '),
@@ -1218,7 +1266,7 @@ router.post('/invoices/:id/send-email', async (req, res, next) => {
       subject: subj,
       body: body,
       html: false,
-      attachments: [{ filename: `invoice-${invoice.number}.pdf`, content: pdf }],
+      attachments: [{ filename: `tax-invoice-${invoice.number}.pdf`, content: pdf }],
     });
     res.json({ ok: true });
   } catch (err) {

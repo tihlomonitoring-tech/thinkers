@@ -610,7 +610,7 @@ function ItemsLibraryTab() {
   );
 }
 
-function DocumentLinesEditor({ lines, setLines, itemsLibrary = [] }) {
+function DocumentLinesEditor({ lines, setLines, itemsLibrary = [], vatColumnLabel = 'Tax %' }) {
   const lineList = Array.isArray(lines) ? lines : [];
   const addLine = () => setLines((prev) => [...(Array.isArray(prev) ? prev : []), { description: '', quantity: 1, unit_price: 0, discount_percent: 0, tax_percent: 0 }]);
   const removeLine = (i) => setLines((prev) => (Array.isArray(prev) ? prev : []).filter((_, idx) => idx !== i));
@@ -661,14 +661,14 @@ function DocumentLinesEditor({ lines, setLines, itemsLibrary = [] }) {
               <th className="text-right p-2 w-16 font-medium text-surface-600">Qty</th>
               <th className="text-right p-2 w-24 font-medium text-surface-600">Unit price</th>
               <th className="text-right p-2 w-16 font-medium text-surface-600">Disc %</th>
-              <th className="text-right p-2 w-16 font-medium text-surface-600">Tax %</th>
+              <th className="text-right p-2 w-16 font-medium text-surface-600">{vatColumnLabel}</th>
               <th className="w-10 p-2" />
             </tr>
           </thead>
           <tbody>
             {lineList.map((line, i) => (
               <tr key={i} className="border-t border-surface-100">
-                <td className="p-2"><input value={line.description || ''} onChange={(e) => updateLine(i, 'description', e.target.value)} className="w-full min-w-[120px] px-2 py-1 rounded border border-surface-200" placeholder="Description" /></td>
+                <td className="p-2"><input value={line.description || ''} onChange={(e) => updateLine(i, 'description', e.target.value)} className="w-full min-w-[120px] px-2 py-1 rounded border border-surface-200" placeholder="" /></td>
                 <td className="p-2"><input type="number" min="0" step="any" value={line.quantity ?? 1} onChange={(e) => updateLine(i, 'quantity', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
                 <td className="p-2"><input type="number" min="0" step="0.01" value={line.unit_price ?? 0} onChange={(e) => updateLine(i, 'unit_price', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
                 <td className="p-2"><input type="number" min="0" max="100" step="0.01" value={line.discount_percent ?? 0} onChange={(e) => updateLine(i, 'discount_percent', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
@@ -994,6 +994,7 @@ function InvoicesTab() {
   const [viewInvoice, setViewInvoice] = useState(null);
   const [emailModal, setEmailModal] = useState(null);
   const [form, setForm] = useState({
+    number: '',
     customer_id: '',
     customer_name: '',
     customer_address: '',
@@ -1005,6 +1006,7 @@ function InvoicesTab() {
     discount_percent: 0,
     tax_percent: 0,
     is_recurring: false,
+    show_issue_date_on_pdf: true,
     lines: [{ description: '', quantity: 1, unit_price: 0, discount_percent: 0, tax_percent: 0 }],
   });
   const [editingId, setEditingId] = useState(null);
@@ -1049,6 +1051,7 @@ function InvoicesTab() {
   const openNew = () => {
     setEditingId(null);
     setForm({
+      number: '',
       customer_id: '',
       customer_name: '',
       customer_address: '',
@@ -1060,9 +1063,14 @@ function InvoicesTab() {
       discount_percent: 0,
       tax_percent: 0,
       is_recurring: false,
+      show_issue_date_on_pdf: true,
       lines: [{ description: '', quantity: 1, unit_price: 0, discount_percent: 0, tax_percent: 0 }],
     });
     setFormOpen(true);
+    accountingApi.invoices.nextNumber().then((d) => {
+      const n = d?.number != null ? String(d.number) : '';
+      if (n) setForm((f) => ({ ...f, number: n }));
+    }).catch(() => {});
   };
   const selectCustomer = (customerId) => {
     const c = customers.find((x) => x.id === customerId);
@@ -1074,6 +1082,7 @@ function InvoicesTab() {
     accountingApi.invoices.get(inv.id).then((d) => {
       const ii = d.invoice;
       setForm({
+        number: ii.number != null ? String(ii.number) : '',
         customer_id: ii.customer_id || '',
         customer_name: ii.customer_name ?? '',
         customer_address: ii.customer_address ?? '',
@@ -1085,6 +1094,7 @@ function InvoicesTab() {
         discount_percent: ii.discount_percent ?? 0,
         tax_percent: ii.tax_percent ?? 0,
         is_recurring: !!(ii.is_recurring === true || ii.is_recurring === 1),
+        show_issue_date_on_pdf: !(ii.show_issue_date_on_pdf === 0 || ii.show_issue_date_on_pdf === false),
         lines: (ii.lines && ii.lines.length) ? ii.lines.map((l) => ({ description: l.description ?? '', quantity: l.quantity ?? 1, unit_price: l.unit_price ?? 0, discount_percent: l.discount_percent ?? 0, tax_percent: l.tax_percent ?? 0 })) : [{ description: '', quantity: 1, unit_price: 0, discount_percent: 0, tax_percent: 0 }],
       });
       setFormOpen(true);
@@ -1135,14 +1145,21 @@ function InvoicesTab() {
       discount_percent: Number(form.discount_percent) || 0,
       tax_percent: Number(form.tax_percent) || 0,
       is_recurring: !!form.is_recurring,
+      show_issue_date_on_pdf: !!form.show_issue_date_on_pdf,
       lines: form.lines.map((l) => ({ ...l, discount_percent: Number(l.discount_percent) || 0, tax_percent: Number(l.tax_percent) || 0 })),
     };
+    const numTrim = String(form.number ?? '').trim();
+    if (editingId) {
+      payload.number = numTrim;
+    } else if (numTrim) {
+      payload.number = numTrim;
+    }
     (editingId ? accountingApi.invoices.update(editingId, payload) : accountingApi.invoices.create(payload))
       .then(() => { setFormOpen(false); load(); })
       .catch((err) => alert(err?.message || 'Could not save invoice'))
       .finally(() => setSaving(false));
   };
-  const openEmailModal = (inv) => setEmailModal({ invoice: inv, to_emails: [], cc_emails: [], subject: `Invoice ${inv.number}`, message: '' });
+  const openEmailModal = (inv) => setEmailModal({ invoice: inv, to_emails: [], cc_emails: [], subject: `Tax invoice ${inv.number}`, message: '' });
   const sendInvoiceEmail = () => {
     if (!emailModal || emailModal.to_emails.length === 0) return;
     accountingApi.invoices.sendEmail(emailModal.invoice.id, {
@@ -1164,6 +1181,17 @@ function InvoicesTab() {
           <h3 className="font-medium text-surface-900 mb-4">{editingId ? 'Edit invoice' : 'New invoice'}</h3>
           <form onSubmit={handleSubmit} className="space-y-4 w-full max-w-6xl">
             <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Invoice number</label>
+              <input
+                value={form.number ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, number: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900"
+                placeholder={editingId ? '' : 'Suggested number — edit if needed'}
+                maxLength={50}
+              />
+              {!editingId && <p className="text-xs text-surface-500 mt-1">Clear the field to let the system assign the next number on save.</p>}
+            </div>
+            <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">Customer</label>
               <select value={form.customer_id || ''} onChange={(e) => selectCustomer(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900">
                 <option value="">— Select from customer book —</option>
@@ -1174,8 +1202,14 @@ function InvoicesTab() {
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Address</label><textarea value={form.customer_address} onChange={(e) => setForm((f) => ({ ...f, customer_address: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Email</label><input type="email" value={form.customer_email} onChange={(e) => setForm((f) => ({ ...f, customer_email: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             <div className="grid grid-cols-2 gap-4">
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">Date</label><input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+              <div><label className="block text-sm font-medium text-surface-700 mb-1">Issue date</label><input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
               <div><label className="block text-sm font-medium text-surface-700 mb-1">Due date</label><input type="date" value={form.due_date} onChange={(e) => setForm((f) => ({ ...f, due_date: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+            </div>
+            <div className="flex items-center">
+              <label className="inline-flex items-center gap-2 text-sm text-surface-800 cursor-pointer">
+                <input type="checkbox" checked={!!form.show_issue_date_on_pdf} onChange={(e) => setForm((f) => ({ ...f, show_issue_date_on_pdf: e.target.checked }))} className="rounded border-surface-300" />
+                Show issue date on PDF
+              </label>
             </div>
             {form.status === 'paid' ? (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
@@ -1204,10 +1238,10 @@ function InvoicesTab() {
             <p className="text-xs text-surface-500 -mt-2">Use <strong>Mark paid</strong> on the list to record payment (date + reference). Recurring invoices use that short form by design.</p>
             <div className="grid grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-surface-700 mb-1">Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, discount_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">Tax %</label><input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+              <div><label className="block text-sm font-medium text-surface-700 mb-1">VAT %</label><input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             </div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Notes</label><textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-            <DocumentLinesEditor lines={form.lines} setLines={(linesOrUpdater) => setForm((f) => ({ ...f, lines: typeof linesOrUpdater === 'function' ? linesOrUpdater(Array.isArray(f.lines) ? f.lines : []) : (Array.isArray(linesOrUpdater) ? linesOrUpdater : []) }))} itemsLibrary={itemsLibrary} />
+            <DocumentLinesEditor lines={form.lines} setLines={(linesOrUpdater) => setForm((f) => ({ ...f, lines: typeof linesOrUpdater === 'function' ? linesOrUpdater(Array.isArray(f.lines) ? f.lines : []) : (Array.isArray(linesOrUpdater) ? linesOrUpdater : []) }))} itemsLibrary={itemsLibrary} vatColumnLabel="VAT %" />
             <div className="flex gap-2">
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
               <button type="button" onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
@@ -1276,7 +1310,7 @@ function InvoicesTab() {
       {viewId && viewInvoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] overflow-auto p-6">
-            <h3 className="font-semibold text-surface-900 mb-4">Invoice {viewInvoice.number}</h3>
+            <h3 className="font-semibold text-surface-900 mb-4">Tax invoice {viewInvoice.number}</h3>
             <div className="flex flex-wrap gap-2 mb-2">
               {viewInvoice.is_recurring === true || viewInvoice.is_recurring === 1 ? (
                 <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-sky-100 text-sky-800">Recurring</span>
@@ -1286,7 +1320,12 @@ function InvoicesTab() {
               ) : null}
             </div>
             <p className="text-sm text-surface-600">Customer: {viewInvoice.customer_name_from_book || viewInvoice.customer_name || '—'}</p>
-            <p className="text-sm text-surface-600">Date: {formatDate(viewInvoice.date)} · Due: {formatDate(viewInvoice.due_date)}</p>
+            <p className="text-sm text-surface-600">
+              Issue: {formatDate(viewInvoice.date)} · Due: {formatDate(viewInvoice.due_date)}
+              {viewInvoice.show_issue_date_on_pdf === 0 || viewInvoice.show_issue_date_on_pdf === false ? (
+                <span className="text-surface-500"> · Issue date hidden on PDF</span>
+              ) : null}
+            </p>
             {String(viewInvoice.status || '').toLowerCase() === 'paid' && (viewInvoice.payment_date || viewInvoice.payment_reference) ? (
               <p className="text-sm text-surface-600 mt-1">
                 Paid: {viewInvoice.payment_date ? formatDate(viewInvoice.payment_date) : '—'}
@@ -1295,7 +1334,7 @@ function InvoicesTab() {
             ) : null}
             <div className="mt-4 border rounded-lg overflow-x-auto">
               <table className="w-full text-sm min-w-[500px]">
-                <thead className="bg-surface-50"><tr><th className="text-left p-2">Description</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Unit price</th><th className="text-right p-2">Disc %</th><th className="text-right p-2">Tax %</th><th className="text-right p-2">Line total</th></tr></thead>
+                <thead className="bg-surface-50"><tr><th className="text-left p-2">Description</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Unit price</th><th className="text-right p-2">Disc %</th><th className="text-right p-2">VAT %</th><th className="text-right p-2">Line total</th></tr></thead>
                 <tbody>
                   {(viewInvoice.lines || []).map((l, i) => {
                     const qty = Number(l.quantity) || 0;
@@ -1307,13 +1346,14 @@ function InvoicesTab() {
                     const lineAfterDisc = lineSub - lineDisc;
                     const lineTax = lineAfterDisc * (tPct / 100);
                     const lineTotal = lineAfterDisc + lineTax;
+                    const desc = (l.description != null ? String(l.description) : '').trim();
                     return (
                       <tr key={i} className="border-t">
-                        <td className="p-2">{l.description}</td>
+                        <td className="p-2">{desc}</td>
                         <td className="p-2 text-right">{l.quantity}</td>
                         <td className="p-2 text-right">{l.unit_price}</td>
-                        <td className="p-2 text-right">{dPct > 0 ? dPct + '%' : '—'}</td>
-                        <td className="p-2 text-right">{tPct > 0 ? tPct + '%' : '—'}</td>
+                        <td className="p-2 text-right">{dPct > 0 ? `${dPct}%` : ''}</td>
+                        <td className="p-2 text-right">{tPct > 0 ? `${tPct}%` : ''}</td>
                         <td className="p-2 text-right">{lineTotal.toFixed(2)}</td>
                       </tr>
                     );
@@ -1343,7 +1383,7 @@ function InvoicesTab() {
                 <div className="mt-2 text-sm text-surface-600 space-y-1">
                   <p>Subtotal: {documentSubtotal.toFixed(2)}</p>
                   {dPct > 0 && <p>Discount ({dPct}%): -{discountAmt.toFixed(2)}</p>}
-                  {tPct > 0 && <p>Tax ({tPct}%): {taxAmt.toFixed(2)}</p>}
+                  {tPct > 0 && <p>VAT ({tPct}%): {taxAmt.toFixed(2)}</p>}
                   <p className="font-semibold text-surface-900">Total: {total.toFixed(2)}</p>
                 </div>
               );

@@ -51,6 +51,7 @@
     "db:accounting-discount-tax-suppliers-po-statements": "node scripts/run-accounting-discount-tax-suppliers-po-statements.js",
     "db:accounting-per-line-discount-tax-items-library": "node scripts/run-accounting-per-line-discount-tax-items-library.js",
     "db:accounting-invoice-paid-recurring": "node scripts/run-accounting-invoice-paid-recurring.js",
+    "db:accounting-invoice-show-issue-date-pdf": "node scripts/run-accounting-invoice-show-issue-date-pdf.js",
     "db:accounting-statement-lines": "node scripts/run-accounting-statement-lines.js",
     "db:accounting-documentation": "node scripts/run-accounting-documentation.js",
     "db:accounting-documentation-versions": "node scripts/run-accounting-documentation-versions.js",

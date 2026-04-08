@@ -34,7 +34,13 @@ import {
   enrollmentForRow,
 } from '../lib/truckUpdateInsights.js';
 import { contractor as contractorApi, commandCentre as ccApi } from '../api.js';
-import { convertRawExportToFleetUpdate, buildRegistrationEntityMap } from '../lib/rawExportToFleetUpdate.js';
+import {
+  convertRawExportToFleetUpdate,
+  buildRegistrationEntityMap,
+  parseRouteHeaderFromPasteLine,
+  detectPasteIssueLines,
+  matchBreakdownForPasteIssue,
+} from '../lib/rawExportToFleetUpdate.js';
 
 function defaultShiftStartLocal() {
   const start = new Date();
@@ -100,6 +106,10 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
   const [rawExportInput, setRawExportInput] = useState('');
   const [rawExportOutput, setRawExportOutput] = useState('');
   const [rawExportWarnings, setRawExportWarnings] = useState([]);
+  const [rawExportIssues, setRawExportIssues] = useState([]);
+  const [issueResolvedChoice, setIssueResolvedChoice] = useState({});
+  const [pasteBreakdowns, setPasteBreakdowns] = useState([]);
+  const [pasteBreakdownsLoading, setPasteBreakdownsLoading] = useState(false);
   /** Full fleet list for company lookup when route rows omit names (same registration / truck_id). */
   const [fleetTrucksList, setFleetTrucksList] = useState([]);
   const pasteRef = useRef(null);
@@ -197,6 +207,27 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
       });
     return () => { cancelled = true; };
   }, []);
+
+  const refreshPasteBreakdowns = useCallback(() => {
+    setPasteBreakdownsLoading(true);
+    ccApi.breakdowns
+      .list({ resolved: 'false' })
+      .then((r) => setPasteBreakdowns(Array.isArray(r.breakdowns) ? r.breakdowns : []))
+      .catch(() => setPasteBreakdowns([]))
+      .finally(() => setPasteBreakdownsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    refreshPasteBreakdowns();
+  }, [refreshPasteBreakdowns]);
+
+  const issueBreakdownMatches = useMemo(() => {
+    const map = {};
+    for (const iss of rawExportIssues) {
+      map[iss.id] = matchBreakdownForPasteIssue(iss, pasteBreakdowns);
+    }
+    return map;
+  }, [rawExportIssues, pasteBreakdowns]);
 
   const persistSettings = useCallback((next) => {
     setSettings(next);
@@ -363,8 +394,11 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
   };
 
   const handleConvertRawExport = () => {
-    if (!settings.routeId || !selectedRouteDisplayName) {
-      window.alert('Select a route above (Route for enrolment check) so the export uses the correct line and company lookup.');
+    const hasRouteInPaste = rawExportInput.split(/\r?\n/).some((ln) => parseRouteHeaderFromPasteLine(ln));
+    if (!hasRouteInPaste && (!settings.routeId || !selectedRouteDisplayName)) {
+      window.alert(
+        'Select a route under Route for enrolment check when your paste does not include route lines (e.g. NTSHOVELO → MAJUBA …), or paste a full export that already contains those route headers.'
+      );
       return;
     }
     const { text, warnings, linesConverted } = convertRawExportToFleetUpdate({
@@ -374,6 +408,8 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
     });
     setRawExportOutput(text);
     setRawExportWarnings(warnings || []);
+    setRawExportIssues(detectPasteIssueLines(rawExportInput));
+    setIssueResolvedChoice({});
     if (linesConverted === 0 && !text) {
       window.alert(warnings?.[0] || 'Could not parse any truck lines from the raw export.');
     }
@@ -1059,10 +1095,12 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
           <div>
             <h3 className="text-sm font-semibold text-surface-900 dark:!text-white">Paste raw export</h3>
             <p className="text-xs text-surface-600 mt-1 max-w-3xl dark:!text-white/90">
-              Paste text from an export schedule (e.g. <span className="font-mono text-surface-800 dark:!text-white">REG - STATUS - (Company) - Hours: … - Weight: …</span>).
-              Company names use the <strong className="text-surface-800 dark:!text-white">contractor company</strong> linked to each truck (and trucks enrolled on the selected route); not the sub-contractor free-text field alone.
-              The header and route line use the selected route and today&apos;s date unless the paste includes a weekday and{' '}
-              <span className="font-mono dark:!text-white/90">YYYY-MM-DD</span>. Add closing lines such as &quot;Kind regards&quot; manually after you copy or apply.
+              Supports fleet screenshots: <span className="font-mono text-surface-800 dark:!text-white">REG - (Company) - Status at site - Tons: … - Hours: …</span>, route banners{' '}
+              <span className="font-mono dark:!text-white/90">ORIGIN → DESTINATION (Client)</span>, and older{' '}
+              <span className="font-mono dark:!text-white/90">Hours / Weight</span> orders. Multiple routes in one paste are split automatically; status lines use the{' '}
+              <strong className="text-surface-800 dark:!text-white">destination from each route banner</strong> (e.g. Majuba) so waypoints like &quot;Enroute to Khashani-Kriel&quot; are not copied into the fleet file.
+              Company names prefer the <strong className="text-surface-800 dark:!text-white">contractor company</strong> from trucks enrolled on the selected route. Dates: weekday + ISO or{' '}
+              <span className="font-mono dark:!text-white/90">07 April 2026</span>. Edit the converted text before applying. Notes mentioning breakdowns or delays are listed below for follow-up.
             </p>
           </div>
           <textarea
@@ -1108,13 +1146,83 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
           )}
           {rawExportOutput ? (
             <textarea
-              readOnly
               value={rawExportOutput}
-              rows={8}
+              onChange={(e) => setRawExportOutput(e.target.value)}
+              rows={10}
               className="w-full rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-950 px-3 py-2 text-sm font-mono text-surface-800 dark:text-surface-100"
-              aria-label="Converted fleet update text"
+              aria-label="Converted fleet update text (editable)"
             />
           ) : null}
+          {rawExportIssues.length > 0 && (
+            <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/90 dark:bg-amber-950/40 p-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold text-amber-950 dark:text-amber-100">Notes &amp; issues from paste</h4>
+                <button
+                  type="button"
+                  onClick={refreshPasteBreakdowns}
+                  disabled={pasteBreakdownsLoading}
+                  className="text-xs font-medium px-2 py-1 rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-surface-900 text-amber-900 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/50 disabled:opacity-50"
+                >
+                  {pasteBreakdownsLoading ? 'Refreshing…' : 'Refresh breakdown match'}
+                </button>
+              </div>
+              <p className="text-xs text-amber-900/90 dark:text-amber-200/90">
+                Lines that look like <strong>breakdowns</strong> or <strong>comments</strong> (e.g. waiting for slips) are flagged. For each, say whether it is resolved on site. If a breakdown is mentioned, we match open Command Centre breakdown reports by truck registration; if none match, use{' '}
+                <a href="/report-breakdown" target="_blank" rel="noopener noreferrer" className="underline font-medium text-amber-950 dark:text-amber-50">
+                  Report breakdown
+                </a>{' '}
+                then refresh — we&apos;ll acknowledge when a matching open report appears.
+              </p>
+              <div className="overflow-x-auto rounded-md border border-amber-200/80 dark:border-amber-800/80 bg-white dark:bg-surface-950">
+                <table className="w-full text-xs sm:text-sm">
+                  <thead>
+                    <tr className="text-left border-b border-amber-200 dark:border-amber-800 bg-amber-100/50 dark:bg-amber-950/60">
+                      <th className="p-2 font-semibold text-amber-950 dark:text-amber-100">#</th>
+                      <th className="p-2 font-semibold text-amber-950 dark:text-amber-100">Excerpt</th>
+                      <th className="p-2 font-semibold text-amber-950 dark:text-amber-100">Type</th>
+                      <th className="p-2 font-semibold text-amber-950 dark:text-amber-100">System</th>
+                      <th className="p-2 font-semibold text-amber-950 dark:text-amber-100">Resolved on site?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rawExportIssues.map((iss) => {
+                      const match = issueBreakdownMatches[iss.id];
+                      return (
+                        <tr key={iss.id} className="border-b border-amber-100 dark:border-amber-900/50 align-top">
+                          <td className="p-2 text-surface-600 dark:text-surface-400 whitespace-nowrap">{iss.line}</td>
+                          <td className="p-2 font-mono text-surface-800 dark:text-surface-200 max-w-[220px] sm:max-w-md break-words">{iss.text}</td>
+                          <td className="p-2 capitalize text-surface-700 dark:text-surface-300">{iss.kind}</td>
+                          <td className="p-2 text-surface-700 dark:text-surface-300">
+                            {iss.kind === 'breakdown' && match ? (
+                              <span className="inline-flex flex-col gap-0.5">
+                                <span className="text-emerald-700 dark:text-emerald-400 font-medium">Matched open report</span>
+                                <span className="text-surface-600 dark:text-surface-400">{match.title || 'Breakdown'} · {match.truck_registration || '—'}</span>
+                              </span>
+                            ) : iss.kind === 'breakdown' ? (
+                              <span className="text-amber-800 dark:text-amber-200">No open match — report if real</span>
+                            ) : (
+                              <span className="text-surface-500 dark:text-surface-400">—</span>
+                            )}
+                          </td>
+                          <td className="p-2">
+                            <select
+                              value={issueResolvedChoice[iss.id] || ''}
+                              onChange={(e) => setIssueResolvedChoice((prev) => ({ ...prev, [iss.id]: e.target.value }))}
+                              className="w-full min-w-[8rem] rounded border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-900 text-surface-900 dark:text-surface-100 text-xs py-1"
+                            >
+                              <option value="">Not recorded</option>
+                              <option value="yes">Yes</option>
+                              <option value="no">No / open</option>
+                            </select>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2">

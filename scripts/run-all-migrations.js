@@ -54,6 +54,7 @@ const SCRIPTS = [
   'db:accounting-discount-tax-suppliers-po-statements',
   'db:accounting-per-line-discount-tax-items-library',
   'db:accounting-invoice-paid-recurring',
+  'db:accounting-invoice-show-issue-date-pdf',
   'db:accounting-statement-lines',
   'db:accounting-documentation',
   'db:accounting-documentation-versions',

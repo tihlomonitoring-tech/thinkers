@@ -15,6 +15,10 @@ function normalizeRawExportLine(line) {
     .trim();
 }
 
+function stripMarkdownBold(s) {
+  return String(s || '').replace(/\*\*/g, '').trim();
+}
+
 /**
  * Registration at start of export lines: optional spaces/hyphens inside the plate (e.g. DK16 PTZN → DK16PTZN).
  * Spaced form must be tried before a plain contiguous run, or "DK16 PTZN" would match only "DK16".
@@ -69,6 +73,8 @@ function labelFromTruckRow(t) {
  */
 export function destinationFromRouteName(routeName) {
   const s = String(routeName || '')
+    .normalize('NFKC')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
     .replace(/\*/g, '')
     .trim();
   const parts = s.split(/\s*(?:→|->|=>)\s*/i);
@@ -86,6 +92,51 @@ export function destinationFromRouteName(routeName) {
       .trim();
   }
   return s || 'destination';
+}
+
+/**
+ * Routes saved as "Khashani–kriel" or "Origin - Site": use the segment after the last hyphen
+ * as the operational site name (e.g. Queuing at Kriel).
+ */
+function hyphenRouteTerminalSite(fragment) {
+  const raw = String(fragment || '')
+    .normalize('NFKC')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .trim();
+  if (!raw) return null;
+  const parts = raw.split(/\s*-\s*/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const last = parts[parts.length - 1];
+  if (!last || last.length < 2) return null;
+  if (!/^[A-Za-z][A-Za-z0-9\s]{0,60}$/.test(last)) return null;
+  return last;
+}
+
+/** Human-friendly site label for status lines (prefer first word before POWER STATION, etc.). */
+export function shortDestinationLabel(fullDest) {
+  let s = String(fullDest || '')
+    .normalize('NFKC')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return '';
+  const terminal = hyphenRouteTerminalSite(s);
+  if (terminal) {
+    s = terminal;
+  }
+  const words = s.split(/\s+/);
+  const u = s.toUpperCase();
+  if (/\bPOWER\s+STATION\b/.test(u) || /\bPS\b$/.test(u)) {
+    const w0 = words[0] || s;
+    return w0.charAt(0) + w0.slice(1).toLowerCase();
+  }
+  if (words.length <= 3) {
+    return words.map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+  }
+  return words
+    .slice(0, 2)
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(' ');
 }
 
 /**
@@ -137,12 +188,30 @@ export function buildRegistrationEntityMap(routeTrucks, fleetTrucks) {
  * Also: Weight/Tons before Hours (some exports reverse these).
  */
 export function parseRawExportTruckLine(line) {
-  const clean = normalizeRawExportLine(line);
+  const clean = stripMarkdownBold(normalizeRawExportLine(line));
   if (!clean || /^FLEET\s+UPDATE/i.test(clean)) return null;
   if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/i.test(clean)) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return null;
+  if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(clean)) return null;
   if ((/→|->|=>/.test(clean) || /\*.*\*/.test(clean)) && !/Hours:\s*[\d.]+/i.test(clean) && !/(?:Weight|Tons|Load):\s*[\d.]+/i.test(clean)) {
     return null;
+  }
+
+  /** WhatsApp / fleet screenshot: REG - (Co) - Status at Site - Tons: x - Hours: y */
+  const reFleetTonsFirst = new RegExp(
+    `^${REGISTRATION_FIRST_SEGMENT}\\s*-\\s*\\(([^)]*)\\)\\s*-\\s*(.+?)\\s*-\\s*Tons:\\s*([\\d.]+)\\s*-\\s*Hours:\\s*([\\d.]+)\\s*$`,
+    'i'
+  );
+  const fm = clean.match(reFleetTonsFirst);
+  if (fm) {
+    const registration = normalizeRegistrationFromExportSegment(fm[1]);
+    const contractorFromPaste = fm[2].trim();
+    const rawStatus = fm[3].trim();
+    const tons = parseFloat(fm[4]);
+    const hours = parseFloat(fm[5]);
+    if (!Number.isNaN(hours) && !Number.isNaN(tons) && /^[A-Z0-9]{3,26}$/.test(registration)) {
+      return { registration, rawStatus, contractorFromPaste, hours, tons, driverName: '' };
+    }
   }
 
   const reHoursFirst = new RegExp(
@@ -246,19 +315,41 @@ function tryParseRawExportLineLoose(clean) {
   return { registration, rawStatus, contractorFromPaste, hours, tons, driverName: '' };
 }
 
+/**
+ * Build fleet-update status using the canonical destination from the active route header
+ * so lines do not keep vague waypoints (e.g. "Enroute to Khashani-Kriel") when the route is Majuba.
+ */
 function formatStatusForFleetLine(rawStatus, dest) {
-  const d = dest || 'destination';
-  const u = rawStatus.toUpperCase();
-  if (/\bOFFLOAD/.test(u) && /\(D\)/.test(rawStatus)) {
-    return `**Offloading at ${d} (D)**`;
+  const d = (dest || 'destination').trim() || 'destination';
+  const plain = stripMarkdownBold(rawStatus);
+  const u = plain.toUpperCase();
+  // Queuing / queueing / queue at (exports vary in spelling and spacing)
+  const queuingAt =
+    /QUEU(?:E)?ING\s+AT\b/i.test(plain) ||
+    /\bQUEUE\s+AT\b/i.test(plain) ||
+    /\bIN\s+QUEUE\s+(?:AT|FOR)\b/i.test(u);
+  const queuingLoose =
+    /\bQUEU(?:E)?ING\b/i.test(plain) &&
+    !/\bDEQUEU/i.test(u) &&
+    !/\bEN[\s-]?ROUTE\b/.test(u) &&
+    !/\bENROUTE\b/.test(u) &&
+    !/\bOFFLOAD/.test(u);
+  if (queuingAt || queuingLoose) {
+    return `**Queuing at ${d}**`;
   }
   if (/\bOFFLOAD/.test(u)) {
-    return `**Offloading at ${d} (D)**`;
+    return /\(D\)/i.test(rawStatus) ? `**Offloading at ${d} (D)**` : `**Offloading at ${d} (D)**`;
   }
-  if (/\bEN[\s-]?ROUTE\b/.test(u) || /\bENROUTE\b/.test(u)) {
+  if (/\bEN[\s-]?ROUTE\b/.test(u) || /\bENROUTE\b/.test(u) || /\bIN\s+TRANSIT\b/.test(u)) {
     return `**Enroute to ${d}**`;
   }
-  return `**${rawStatus.trim()}**`;
+  if (/\bLOADING\s+AT\b/.test(u)) {
+    return `**Loading at ${d}**`;
+  }
+  if (/\bAT\s+[A-Z0-9]/i.test(plain) && /\b(PARK|YARD|DEPOT)\b/i.test(u)) {
+    return `**${plain}**`.replace(/\*\*\*\*/g, '**');
+  }
+  return `**${plain}**`;
 }
 
 function formatEntityParen(entity) {
@@ -271,6 +362,31 @@ function formatEntityParen(entity) {
  * Parse optional header from raw paste (day + ISO date).
  * @returns {{ dayName: string, isoDate: string } | null}
  */
+const MONTH_NAMES = {
+  january: 1,
+  february: 2,
+  march: 3,
+  april: 4,
+  may: 5,
+  june: 6,
+  july: 7,
+  august: 8,
+  september: 9,
+  october: 10,
+  november: 11,
+  december: 12,
+};
+
+function parseDayMonthYearLine(t) {
+  const m = t.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+  if (!m) return '';
+  const day = parseInt(m[1], 10);
+  const mon = MONTH_NAMES[m[2].toLowerCase()];
+  const year = parseInt(m[3], 10);
+  if (!mon || Number.isNaN(day) || Number.isNaN(year)) return '';
+  return `${year}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
 export function parseRawExportHeader(lines) {
   let dayName = '';
   let isoDate = '';
@@ -286,9 +402,30 @@ export function parseRawExportHeader(lines) {
       isoDate = iso[1];
       continue;
     }
+    const dmy = parseDayMonthYearLine(t);
+    if (dmy) {
+      isoDate = dmy;
+      continue;
+    }
   }
   if (!isoDate && !dayName) return null;
   return { dayName, isoDate };
+}
+
+/**
+ * Route banner line: contains arrow, no truck metrics (screenshot style).
+ * @returns {string|null} normalized line to echo into fleet output
+ */
+export function parseRouteHeaderFromPasteLine(line) {
+  const c = stripMarkdownBold(normalizeRawExportLine(line));
+  if (!c) return null;
+  if (/Tons:\s*[\d.]+/i.test(c) || /Hours:\s*[\d.]+/i.test(c)) return null;
+  if (!/→|->|=>/.test(c)) return null;
+  if (/^FLEET\s+UPDATE/i.test(c)) return null;
+  if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/i.test(c)) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(c)) return null;
+  if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(c)) return null;
+  return c;
 }
 
 function defaultHeaderNow() {
@@ -302,46 +439,89 @@ function defaultHeaderNow() {
 /**
  * @param {object} opts
  * @param {string} opts.rawText
- * @param {string} opts.routeDisplayName route name for header line (arrow format)
+ * @param {string} [opts.routeDisplayName] fallback route when the paste has no `→` route banners
  * @param {Map<string,string>} opts.regToEntity normalized registration -> company label
  * @param {{ dayName?: string, isoDate?: string }} [opts.headerOverride]
  * @returns {{ text: string, warnings: string[], linesConverted: number }}
  */
 export function convertRawExportToFleetUpdate(opts) {
   const rawText = String(opts.rawText || '');
-  const routeDisplayName = String(opts.routeDisplayName || '').trim() || 'Route A -> Route B';
+  const routeDisplayName = String(opts.routeDisplayName || '').trim();
   const regToEntity = opts.regToEntity instanceof Map ? opts.regToEntity : new Map();
   const lines = rawText.split(/\r?\n/);
   const headerFromPaste = parseRawExportHeader(lines);
   const fallback = defaultHeaderNow();
   const dayName = opts.headerOverride?.dayName || headerFromPaste?.dayName || fallback.dayName;
   const isoDate = opts.headerOverride?.isoDate || headerFromPaste?.isoDate || fallback.isoDate;
-  const dest = destinationFromRouteName(routeDisplayName);
+
+  const hasPastedRouteBanners = lines.some((ln) => !!parseRouteHeaderFromPasteLine(ln));
+  if (!hasPastedRouteBanners && !routeDisplayName) {
+    return {
+      text: '',
+      warnings: [
+        'No route line found in the paste (expected e.g. NTSHOVELO → MAJUBA …). Either paste a full fleet block with route headers, or select a route above for a single-route export.',
+      ],
+      linesConverted: 0,
+    };
+  }
+
+  let currentRouteLine = hasPastedRouteBanners ? null : routeDisplayName;
+  let currentDestShort = currentRouteLine
+    ? shortDestinationLabel(destinationFromRouteName(currentRouteLine))
+    : '';
 
   const out = [];
   out.push('FLEET UPDATE/ALLOCATION');
   out.push(dayName);
   out.push(isoDate);
-  out.push(routeDisplayName.replace(/\*/g, '').trim());
+
+  const pushRouteLine = (routeLine) => {
+    const norm = String(routeLine || '')
+      .replace(/\*/g, '')
+      .trim();
+    if (!norm) return;
+    out.push(norm);
+    currentDestShort = shortDestinationLabel(destinationFromRouteName(norm));
+  };
+
+  let insertedFallbackRoute = false;
+  if (!hasPastedRouteBanners) {
+    pushRouteLine(routeDisplayName);
+    insertedFallbackRoute = true;
+  }
 
   const warnings = [];
   let linesConverted = 0;
 
   for (const line of lines) {
+    const rh = parseRouteHeaderFromPasteLine(line);
+    if (rh) {
+      currentRouteLine = rh;
+      pushRouteLine(rh);
+      continue;
+    }
+
     const row = parseRawExportTruckLine(line);
     if (!row) continue;
+
+    if (!currentDestShort && routeDisplayName && !insertedFallbackRoute) {
+      pushRouteLine(routeDisplayName);
+      insertedFallbackRoute = true;
+    }
+    const destForStatus = currentDestShort || shortDestinationLabel(destinationFromRouteName(routeDisplayName)) || 'destination';
+
     linesConverted += 1;
     const reg = normalizeRegistration(row.registration);
     const regLookup = registrationKeyForLookup(row.registration);
     const enrolled = regToEntity.get(reg) ?? regToEntity.get(regLookup);
     const entityLabel = enrolled || row.contractorFromPaste;
     if (!enrolled && row.contractorFromPaste) {
-      warnings.push(`${reg}: not enrolled on selected route — used company from export (${row.contractorFromPaste}).`);
+      warnings.push(`${reg}: not on selected route enrolment — used company from paste (${row.contractorFromPaste}).`);
     } else if (!enrolled && !row.contractorFromPaste) {
-      warnings.push(`${reg}: not enrolled on selected route — company unknown; paste company if needed.`);
+      warnings.push(`${reg}: not on selected route enrolment — company unknown; check paste or route.`);
     }
     const entity = formatEntityParen(entityLabel || 'Unknown');
-    const statusPart = formatStatusForFleetLine(row.rawStatus, dest);
+    const statusPart = formatStatusForFleetLine(row.rawStatus, destForStatus);
     const tons = row.tons.toFixed(2);
     const hours = row.hours.toFixed(2);
     out.push(`${reg} - ${entity} - ${statusPart} - Tons: ${tons} - Hours: ${hours}`);
@@ -350,10 +530,103 @@ export function convertRawExportToFleetUpdate(opts) {
   if (linesConverted === 0) {
     return {
       text: '',
-      warnings: ['No truck lines found. Expected lines like: REG - STATUS - (Company) - Hours: 0.0 - Weight: 0.0'],
+      warnings: [
+        'No truck lines found. Expected: REG - (Company) - Status - Tons: 0.00 - Hours: 0.00, or REG - Status - (Company) - Hours / Weight variants.',
+      ],
       linesConverted: 0,
     };
   }
 
   return { text: `${out.join('\n')}\n`, warnings, linesConverted };
+}
+
+const RE_BREAKDOWN_HINT =
+  /\b(break\s*down|breakdown|broke\s+down|tyre|tire|puncture|overheat|accident|immobil|stuck|cannot\s+move|engine\s+fault|transmission\s+fault|hydraulic|axle)\b/i;
+const RE_COMMENT_HINT =
+  /\b(waiting\s+for|note\s*:|comment|slips?\s+to\s+confirm|please\s+note|heads?\s+up|awaiting|pending\s+confirmation)\b/i;
+
+function extractRegsFromText(t) {
+  const s = String(t || '');
+  const found = new Set();
+  const re = /\b([A-Z]{2,3}\d{2,3}[A-Z]{2,3}|[A-Z]\d{2,3}[A-Z]{2,3}\d{2})\b/gi;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const n = normalizeRegistration(m[1]);
+    if (n && /^[A-Z0-9]{5,12}$/.test(n)) found.add(n);
+  }
+  return [...found];
+}
+
+function normTxt(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Lines that look like operational notes / breakdowns (not standard truck metric rows).
+ * @param {string} rawText full paste
+ * @returns {Array<{ id: string, line: number, text: string, kind: 'breakdown'|'comment', registrations: string[] }>}
+ */
+export function detectPasteIssueLines(rawText) {
+  const rawLines = String(rawText || '').split(/\r?\n/);
+  const issues = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const raw = rawLines[i];
+    const t = stripMarkdownBold(normalizeRawExportLine(raw));
+    if (!t) continue;
+    if (/^FLEET\s+UPDATE/i.test(t)) continue;
+    if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/i.test(t)) continue;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t) || /^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(t)) continue;
+    if (parseRouteHeaderFromPasteLine(raw)) continue;
+    if (parseRawExportTruckLine(raw)) continue;
+    if (/^[-_=•.\s]{2,}$/u.test(t)) continue;
+
+    let kind = null;
+    if (RE_BREAKDOWN_HINT.test(t)) kind = 'breakdown';
+    else if (RE_COMMENT_HINT.test(t) || /^\(\s*[^)]{3,}/.test(t)) kind = 'comment';
+
+    if (!kind) continue;
+    const id = `issue-${i}-${kind}`;
+    issues.push({
+      id,
+      line: i + 1,
+      text: t.slice(0, 500),
+      kind,
+      registrations: extractRegsFromText(t),
+    });
+  }
+  return issues;
+}
+
+/**
+ * Match pasted issue line to an unresolved Command Centre breakdown (best effort).
+ * @param {{ text: string, registrations: string[] }} issue
+ * @param {Array<object>} breakdowns from GET /command-centre/breakdowns
+ * @returns {object|null}
+ */
+export function matchBreakdownForPasteIssue(issue, breakdowns) {
+  if (!issue || !Array.isArray(breakdowns)) return null;
+  const issueRegs = issue.registrations || [];
+  const blob = normTxt(issue.text);
+  for (const b of breakdowns) {
+    const breg = normalizeRegistration(b.truck_registration || '');
+    if (!breg) continue;
+    const regHit = issueRegs.length > 0 ? issueRegs.includes(breg) : blob.includes(normTxt(breg));
+    if (!regHit) continue;
+    const desc = normTxt(`${b.title || ''} ${b.description || ''}`);
+    if (desc.length < 4) {
+      return b;
+    }
+    const words = desc.split(/\s+/).filter((w) => w.length > 3);
+    const overlap = words.some((w) => blob.includes(w));
+    if (overlap || blob.includes(normTxt(breg))) return b;
+  }
+  for (const b of breakdowns) {
+    const breg = normalizeRegistration(b.truck_registration || '');
+    if (!breg || !blob.includes(normTxt(breg))) continue;
+    return b;
+  }
+  return null;
 }
