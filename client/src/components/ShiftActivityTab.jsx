@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { shiftClock } from '../api';
 import { useAuth } from '../AuthContext';
+import InfoHint from './InfoHint.jsx';
 
 function fmt(iso) {
   if (!iso) return '—';
@@ -71,11 +72,12 @@ export default function ShiftActivityTab() {
 
   return (
     <div className="space-y-8 max-w-5xl">
-      <div>
+      <div className="flex items-center gap-2">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-white tracking-tight">Shift activity</h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-          Your clock-in history, breaks, and overtime. Supervisors use the same data under Management → Shift activity.
-        </p>
+        <InfoHint
+          title="Shift activity help"
+          text="Your clock-in history, breaks, and overtime. Supervisors use the same data under Management → Shift activity."
+        />
       </div>
 
       <section className="bg-white dark:bg-slate-900/80 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">

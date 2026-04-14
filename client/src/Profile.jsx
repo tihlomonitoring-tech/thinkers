@@ -23,6 +23,7 @@ const SHIFT_NIGHT = '18:00 – 06:00';
 
 const COLLEAGUE_FILTER_STORAGE_KEY = 'profile.workSchedule.colleagueFilter';
 const COLLEAGUE_VIEW_MODE_KEY = 'profile.workSchedule.colleagueViewMode';
+const CC_TEAM_PANEL_COLLAPSED_KEY = 'profile.workSchedule.ccTeamPanelCollapsed';
 
 function shortFirstName(name) {
   const p = (name || '').trim().split(/\s+/).filter(Boolean);
@@ -100,6 +101,23 @@ export default function Profile() {
     }
     return 'same_shift';
   });
+  const [ccTeamPanelCollapsed, setCcTeamPanelCollapsed] = useState(() => {
+    try {
+      const v = localStorage.getItem(CC_TEAM_PANEL_COLLAPSED_KEY);
+      if (v === '0') return false;
+      return true;
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CC_TEAM_PANEL_COLLAPSED_KEY, ccTeamPanelCollapsed ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [ccTeamPanelCollapsed]);
 
   const calendar = useMemo(() => getDaysInMonth(calendarYear, calendarMonth), [calendarYear, calendarMonth]);
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -313,8 +331,13 @@ export default function Profile() {
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-surface-900">Profile</h2>
-            <p className="text-xs text-surface-500 mt-0.5">Your HR hub</p>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-50">Profile</h2>
+              <InfoHint
+                title="Profile help"
+                text="Your HR hub: work schedule, shift activity, leave, documents, disciplinary and rewards, queries, and growth records."
+              />
+            </div>
           </div>
           <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
@@ -362,108 +385,139 @@ export default function Profile() {
                 <InfoHint
                   title="Work schedule help"
                   text="The list below is limited to people in your organization who can access Command Centre (page or tab). Tick who to compare; their shifts appear in each day cell the same way as your Day or Night row. Same shift only lists people on your shift type when you are scheduled; All selected shifts shows everyone you selected, including the opposite shift. Your selection is saved on this device."
+                  bullets={[
+                    'Use Hide panel on Command Centre team to collapse the picker and show only your shifts on the calendar (and a clearer day detail panel). Show team picker restores teammate lines and settings.',
+                  ]}
                 />
               </div>
-              <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-medium text-surface-900">Command Centre team on my calendar</p>
-                    <p className="text-xs text-surface-500 mt-0.5">
-                      Only people with Command Centre access appear here. Search, tick names, then their Day or Night shifts show inside each day like yours.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setColleagueFilterIds(commandCentrePeers.map((u) => u.id))}
-                      className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
-                    >
-                      Select all
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setColleagueFilterIds([])}
-                      className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 text-sm">
-                  <span className="text-surface-600 font-medium shrink-0">Calendar shows:</span>
-                  <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
-                    <input
-                      type="radio"
-                      name="colleagueViewMode"
-                      checked={colleagueViewMode === 'same_shift'}
-                      onChange={() => setColleagueViewMode('same_shift')}
-                      className="text-brand-600 focus:ring-brand-500"
+              {ccTeamPanelCollapsed ? (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-dashed border-surface-300 bg-surface-50/80 px-4 py-3">
+                  <div className="flex items-start gap-2 min-w-0">
+                    <p className="text-sm font-medium text-surface-800 dark:text-surface-200 shrink-0">Command Centre team</p>
+                    <InfoHint
+                      title="Team picker hidden"
+                      text="The teammate picker is hidden. The calendar shows your shifts only so the month grid and day details are easier to read. Show the team picker again to overlay colleagues on calendar days or change who is selected."
                     />
-                    Same shift as me only
-                  </label>
-                  <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
-                    <input
-                      type="radio"
-                      name="colleagueViewMode"
-                      checked={colleagueViewMode === 'all_shifts'}
-                      onChange={() => setColleagueViewMode('all_shifts')}
-                      className="text-brand-600 focus:ring-brand-500"
-                    />
-                    All selected colleagues (same + other shift)
-                  </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCcTeamPanelCollapsed(false)}
+                    className="shrink-0 px-3 py-2 text-sm font-medium rounded-lg bg-white border border-surface-300 text-surface-800 hover:bg-surface-50"
+                  >
+                    Show team picker
+                  </button>
                 </div>
-                <input
-                  type="search"
-                  value={colleagueFilterSearch}
-                  onChange={(e) => setColleagueFilterSearch(e.target.value)}
-                  placeholder="Search by name or email…"
-                  className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                />
-                <div className="max-h-40 overflow-y-auto rounded-lg border border-surface-100 bg-surface-50/80 p-2 space-y-1">
-                  {filteredPeersForPicker.length === 0 ? (
-                    <p className="text-sm text-surface-500 px-1">
-                      {commandCentrePeers.length === 0
-                        ? 'No other Command Centre users in your tenant, or still loading.'
-                        : 'No matches.'}
+              ) : (
+                <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <p className="text-sm font-medium text-surface-900 dark:text-surface-50">Command Centre team on my calendar</p>
+                      <InfoHint
+                        title="Command Centre team on calendar"
+                        text="Only people with Command Centre access appear here. Search, tick names, then their Day or Night shifts show inside each calendar day like yours."
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCcTeamPanelCollapsed(true)}
+                        className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50"
+                        title="Hide this panel and show only your shifts on the calendar"
+                      >
+                        Hide panel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setColleagueFilterIds(commandCentrePeers.map((u) => u.id))}
+                        className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setColleagueFilterIds([])}
+                        className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 text-sm">
+                    <span className="text-surface-600 font-medium shrink-0">Calendar shows:</span>
+                    <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
+                      <input
+                        type="radio"
+                        name="colleagueViewMode"
+                        checked={colleagueViewMode === 'same_shift'}
+                        onChange={() => setColleagueViewMode('same_shift')}
+                        className="text-brand-600 focus:ring-brand-500"
+                      />
+                      Same shift as me only
+                    </label>
+                    <label className="inline-flex items-center gap-2 cursor-pointer text-surface-800">
+                      <input
+                        type="radio"
+                        name="colleagueViewMode"
+                        checked={colleagueViewMode === 'all_shifts'}
+                        onChange={() => setColleagueViewMode('all_shifts')}
+                        className="text-brand-600 focus:ring-brand-500"
+                      />
+                      All selected colleagues (same + other shift)
+                    </label>
+                  </div>
+                  <input
+                    type="search"
+                    value={colleagueFilterSearch}
+                    onChange={(e) => setColleagueFilterSearch(e.target.value)}
+                    placeholder="Search by name or email…"
+                    className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  />
+                  <div className="max-h-40 overflow-y-auto rounded-lg border border-surface-100 bg-surface-50/80 p-2 space-y-1">
+                    {filteredPeersForPicker.length === 0 ? (
+                      <p className="text-sm text-surface-500 px-1">
+                        {commandCentrePeers.length === 0
+                          ? 'No other Command Centre users in your tenant, or still loading.'
+                          : 'No matches.'}
+                      </p>
+                    ) : (
+                      filteredPeersForPicker.map((u) => {
+                        const checked = colleagueFilterIds.some((id) => String(id) === String(u.id));
+                        return (
+                          <label
+                            key={u.id}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white cursor-pointer text-sm"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setColleagueFilterIds((prev) => {
+                                  const idStr = String(u.id);
+                                  if (prev.some((id) => String(id) === idStr)) {
+                                    return prev.filter((id) => String(id) !== idStr);
+                                  }
+                                  return [...prev, u.id];
+                                });
+                              }}
+                              className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                            />
+                            <span className="text-surface-800">{u.full_name || u.email}</span>
+                            {u.full_name && u.email && <span className="text-surface-500 text-xs truncate">{u.email}</span>}
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                  {colleagueFilterIds.length > 0 && (
+                    <p className="text-xs text-surface-500">
+                      Showing shifts for {colleagueFilterIds.length} selected user{colleagueFilterIds.length === 1 ? '' : 's'}.
+                      {colleagueViewMode === 'same_shift'
+                        ? ' Day cells list only people on the same shift type as you when you are scheduled; if you are off, everyone selected who is working that day is listed.'
+                        : ' Day cells list each selected person’s Day or Night, same style as your row.'}
                     </p>
-                  ) : (
-                    filteredPeersForPicker.map((u) => {
-                      const checked = colleagueFilterIds.some((id) => String(id) === String(u.id));
-                      return (
-                        <label
-                          key={u.id}
-                          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white cursor-pointer text-sm"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              setColleagueFilterIds((prev) => {
-                                const idStr = String(u.id);
-                                if (prev.some((id) => String(id) === idStr)) {
-                                  return prev.filter((id) => String(id) !== idStr);
-                                }
-                                return [...prev, u.id];
-                              });
-                            }}
-                            className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
-                          />
-                          <span className="text-surface-800">{u.full_name || u.email}</span>
-                          {u.full_name && u.email && <span className="text-surface-500 text-xs truncate">{u.email}</span>}
-                        </label>
-                      );
-                    })
                   )}
                 </div>
-                {colleagueFilterIds.length > 0 && (
-                  <p className="text-xs text-surface-500">
-                    Showing shifts for {colleagueFilterIds.length} selected user{colleagueFilterIds.length === 1 ? '' : 's'}.
-                    {colleagueViewMode === 'same_shift'
-                      ? ' Day cells list only people on the same shift type as you when you are scheduled; if you are off, everyone selected who is working that day is listed.'
-                      : ' Day cells list each selected person’s Day or Night, same style as your row.'}
-                  </p>
-                )}
-              </div>
+              )}
               <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
                   <button
@@ -517,7 +571,7 @@ export default function Profile() {
                       const isSelected = selectedScheduleDate === dateStr;
                       const daySwaps = swapBadgesByDate[dateStr] || [];
                       const hasSwap = daySwaps.length > 0;
-                      const peerLines = peerLinesByDate[dateStr] || [];
+                      const peerLines = ccTeamPanelCollapsed ? [] : peerLinesByDate[dateStr] || [];
                       const maxPeerLines = 5;
                       const peerLinesShown = peerLines.slice(0, maxPeerLines);
                       const peerOverflow = peerLines.length - peerLinesShown.length;
@@ -565,12 +619,23 @@ export default function Profile() {
                     })}
                   </div>
                 </div>
-                <div className="px-4 py-2 border-t border-surface-100 flex flex-wrap gap-3 text-xs text-surface-500">
-                  <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day: {SHIFT_DAY}</span>
-                  <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night: {SHIFT_NIGHT}</span>
-                  <span>Extra lines: Command Centre teammates (Name · Day/Night), same style as your row.</span>
-                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap: peer pending</span>
-                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap: management</span>
+                <div className="px-4 py-2 border-t border-surface-100 flex flex-wrap items-center gap-2 text-xs text-surface-500">
+                  <InfoHint
+                    title="Calendar legend"
+                    text="Colors match shift types. Small dots on a day mark shift swap activity."
+                    bullets={[
+                      `Day: ${SHIFT_DAY}; Night: ${SHIFT_NIGHT}.`,
+                      !ccTeamPanelCollapsed
+                        ? 'Extra lines under the day list selected Command Centre teammates (Name · Day/Night).'
+                        : 'Teammate lines are hidden — use Show team picker to compare shifts on the calendar.',
+                      'Amber dot: swap awaiting colleague. Violet dot: awaiting management.',
+                    ]}
+                  />
+                  <span className="hidden sm:inline text-surface-300">|</span>
+                  <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day</span>
+                  <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night</span>
+                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap peer</span>
+                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap mgmt</span>
                 </div>
               </div>
               </div>
@@ -584,7 +649,9 @@ export default function Profile() {
                 swapRequests={swapRequests}
                 currentUserId={user?.id}
                 colleagueDay={
-                  selectedScheduleDate && colleagueFilterIds.length > 0 ? colleagueCalendarByDate[selectedScheduleDate] : null
+                  !ccTeamPanelCollapsed && selectedScheduleDate && colleagueFilterIds.length > 0
+                    ? colleagueCalendarByDate[selectedScheduleDate]
+                    : null
                 }
                 onOpenSwapModal={(shift) => setSwapModal({ shift })}
                 onSwapHandled={() => {
@@ -640,7 +707,13 @@ export default function Profile() {
 
           {activeTab === 'disciplinary' && (
             <div className="space-y-6">
-              <h1 className="text-xl font-semibold text-surface-900">Disciplinary & rewards</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Disciplinary & rewards</h1>
+                <InfoHint
+                  title="Disciplinary and rewards"
+                  text="Warnings and disciplinary cases appear alongside formal rewards recorded for you. Contact HR if something looks incorrect."
+                />
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-white rounded-xl border border-surface-200 p-4">
                   <p className="text-sm font-medium text-surface-700 mb-2">Warnings & cases</p>
@@ -810,7 +883,13 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Growth</h1>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Growth</h1>
+        <InfoHint
+          title="Growth help"
+          text="View evaluation summaries and any performance improvement plan (PIP) assigned to you, including progress updates and exports."
+        />
+      </div>
       <div className="space-y-4">
         <div className="bg-white rounded-xl border border-surface-200 p-4">
           <p className="text-sm font-medium text-surface-700 mb-2">Employee evaluations</p>
@@ -901,8 +980,14 @@ function ScheduleSidePanel({
   const [peerBusy, setPeerBusy] = useState(null);
   if (!selectedDate) {
     return (
-      <div className="w-full lg:w-80 shrink-0 bg-surface-50 rounded-xl border border-surface-200 p-4 flex flex-col items-center justify-center text-center text-surface-500 text-sm min-h-[160px]">
-        <p>Click a date on the calendar to see shift details, tasks due, and events for that day.</p>
+      <div className="w-full lg:w-80 shrink-0 bg-surface-50 dark:bg-surface-900/40 rounded-xl border border-surface-200 dark:border-surface-800 p-4 flex flex-col items-center justify-center text-center text-surface-500 dark:text-surface-400 text-sm min-h-[160px] gap-2">
+        <div className="flex items-center justify-center gap-2">
+          <span className="font-medium text-surface-700 dark:text-surface-300">Day details</span>
+          <InfoHint
+            title="Day details panel"
+            text="Click a date on the calendar to see your shift, clock panel, tasks due, company events, performance items, and shift swaps for that day."
+          />
+        </div>
       </div>
     );
   }
@@ -1226,12 +1311,14 @@ function ShiftSwapRequestModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true" aria-labelledby="swap-modal-title">
       <div className="bg-white rounded-2xl border border-surface-200 shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
         <div className="px-5 py-4 border-b border-surface-100 flex justify-between items-start gap-2">
-          <div>
-            <h2 id="swap-modal-title" className="text-lg font-semibold text-surface-900">Request shift swap</h2>
-            <p className="text-sm text-surface-600 mt-1">
-              You offer <strong>{shift.shift_type === 'night' ? 'Night' : 'Day'}</strong> on{' '}
-              <strong>{formatDate(shift.work_date)}</strong>. Pick a colleague and the shift you want in return. They must approve, then management.
-            </p>
+          <div className="flex items-start gap-2 min-w-0">
+            <h2 id="swap-modal-title" className="text-lg font-semibold text-surface-900">
+              Request shift swap
+            </h2>
+            <InfoHint
+              title="Shift swap help"
+              text={`You offer ${shift.shift_type === 'night' ? 'Night' : 'Day'} on ${formatDate(shift.work_date)}. Pick a colleague and the shift you want in return. They must approve first, then management.`}
+            />
           </div>
           <button type="button" onClick={onClose} className="p-1 rounded text-surface-500 hover:bg-surface-100" aria-label="Close">
             ×
@@ -1358,7 +1445,13 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Leave application</h1>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Leave application</h1>
+        <InfoHint
+          title="Leave application help"
+          text="Check your leave balance, submit new applications with optional attachments, and review history. Managers process approvals in Management."
+        />
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white rounded-xl border border-surface-200 p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Leave balance ({year})</p>
@@ -1505,8 +1598,10 @@ function DocumentsTab({ documents, onRefresh, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Employee documents</h1>
-      <p className="text-sm text-surface-600">Your document library.</p>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Employee documents</h1>
+        <InfoHint title="Employee documents help" text="Your personal document library. Upload files and download them when needed." />
+      </div>
       <div className="bg-white rounded-xl border border-surface-200 p-4">
         <label className="inline-block">
           <span className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 cursor-pointer inline-block">
@@ -1566,8 +1661,13 @@ function QueriesTab({ queries, onRefresh, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Queries</h1>
-      <p className="text-sm text-surface-600">Submit grievances or complaints. Track status and responses.</p>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Queries</h1>
+        <InfoHint
+          title="Queries help"
+          text="Submit grievances or complaints to management. Track status and read responses when they are added."
+        />
+      </div>
       {!showForm ? (
         <button type="button" onClick={() => setShowForm(true)} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
           Submit a query

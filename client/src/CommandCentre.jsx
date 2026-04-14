@@ -12,6 +12,7 @@ import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import { getApiBase } from './lib/apiBase.js';
 import TruckUpdateRecordsTab from './components/TruckUpdateRecordsTab.jsx';
 import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
+import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
@@ -1372,6 +1373,7 @@ function TabBreakdowns() {
   const [resolveModal, setResolveModal] = useState(null);
   const [notifyRectorModal, setNotifyRectorModal] = useState(null);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [breakdownsHelpOpen, setBreakdownsHelpOpen] = useState(false);
 
   const buildParams = () => {
     const p = {};
@@ -1532,10 +1534,15 @@ function TabBreakdowns() {
     <div className="space-y-4">
       {/* Sticky: page heading + filters (do not move when user scrolls) */}
       <div className="sticky top-0 z-10 bg-surface-50 -mx-4 -mt-4 px-4 pt-4 pb-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6 sm:pb-4 border-b border-surface-200 space-y-4">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Reported breakdowns</h2>
-          <p className="text-sm text-surface-600 mt-0.5">View all reported breakdowns. Click a row to open details in the side panel. Resolve with resolution notes; rector, driver and contractor are notified by email.</p>
-        </div>
+        <CollapsibleSectionHelp
+          title="Reported breakdowns"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={breakdownsHelpOpen}
+          setOpen={setBreakdownsHelpOpen}
+          topic="reported breakdowns"
+        >
+          <p>View all reported breakdowns. Click a row to open details in the side panel. Resolve with resolution notes; rector, driver and contractor are notified by email.</p>
+        </CollapsibleSectionHelp>
         {error && <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 px-4 py-2 text-sm">{error}</div>}
 
         <div className="rounded-xl border border-surface-200 bg-white p-4">
@@ -1790,6 +1797,7 @@ function TabContractorsDetails({ list, loading }) {
   const [hasSubcontractorsFilter, setHasSubcontractorsFilter] = useState('all'); // 'all' | 'yes' | 'no'
   const [selectedContractor, setSelectedContractor] = useState(null); // full contractor object
   const [selectedSubcontractor, setSelectedSubcontractor] = useState(null); // subcontractor row when viewing from detail panel
+  const [contractorsDetailsHelpOpen, setContractorsDetailsHelpOpen] = useState(false);
 
   const filtered = (list || []).filter((c) => {
     const q = (search || '').toLowerCase().trim();
@@ -1809,10 +1817,15 @@ function TabContractorsDetails({ list, loading }) {
     <div className="space-y-4">
       {/* Sticky: page heading + filters */}
       <div className="sticky top-0 z-10 bg-surface-50 -mx-4 -mt-4 px-4 pt-4 pb-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6 sm:pb-4 border-b border-surface-200 space-y-4">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Contractors details</h2>
-          <p className="text-sm text-surface-600 mt-0.5">Click a row to open full details.</p>
-        </div>
+        <CollapsibleSectionHelp
+          title="Contractors details"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={contractorsDetailsHelpOpen}
+          setOpen={setContractorsDetailsHelpOpen}
+          topic="contractors details"
+        >
+          <p>Click a row to open full company and subcontractor details.</p>
+        </CollapsibleSectionHelp>
         {!loading && list.length > 0 && (
           <div className="flex flex-wrap gap-3 items-center">
             <input
@@ -1967,6 +1980,7 @@ function TabContractorExpiries() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [windowFilter, setWindowFilter] = useState('all');
+  const [contractorExpiriesHelpOpen, setContractorExpiriesHelpOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2049,12 +2063,15 @@ function TabContractorExpiries() {
   return (
     <div className="space-y-4">
       <div className="sticky top-0 z-10 bg-surface-50 -mx-4 -mt-4 px-4 pt-4 pb-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6 sm:pb-4 border-b border-surface-200 space-y-4">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Contractor expiries</h2>
-          <p className="text-sm text-surface-600 mt-0.5">
-            Licences, roadworthies, and permits submitted by contractors. Use filters to narrow the list.
-          </p>
-        </div>
+        <CollapsibleSectionHelp
+          title="Contractor expiries"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={contractorExpiriesHelpOpen}
+          setOpen={setContractorExpiriesHelpOpen}
+          topic="contractor expiries"
+        >
+          <p>Licences, roadworthies, and permits submitted by contractors. Use filters to narrow the list.</p>
+        </CollapsibleSectionHelp>
         {!loading && !loadError && (
           <div className="flex flex-wrap gap-3 items-end">
             <div className="flex flex-col gap-1">
@@ -2197,6 +2214,7 @@ function TabReports() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [openSection, setOpenSection] = useState('info');
+  const [reportComposeHelpOpen, setReportComposeHelpOpen] = useState(false);
 
   const reportTypes = [
     { id: 'shift', label: 'Shift report', description: 'Official controller shift documentation for fleet monitoring & logistics' },
@@ -2210,8 +2228,17 @@ function TabReports() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-900">Report composition</h2>
-      <p className="text-sm text-surface-600">Document shifts, investigations and performance. Fleet monitoring & logistics industry standard.</p>
+      <CollapsibleSectionHelp
+        title="Report composition"
+        titleClassName="text-lg font-semibold text-surface-900"
+        open={reportComposeHelpOpen}
+        setOpen={setReportComposeHelpOpen}
+        topic="report composition"
+      >
+        <p>
+          Document shifts, investigations and performance. Fleet monitoring and logistics industry standard.
+        </p>
+      </CollapsibleSectionHelp>
       <div className="inline-flex rounded-lg border border-surface-200 bg-white p-1">
         <button
           type="button"
@@ -2442,6 +2469,7 @@ function TabSavedReports() {
   const [forceEditMode, setForceEditMode] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [savedReportsHelpOpen, setSavedReportsHelpOpen] = useState(false);
 
   const loadList = () => {
     setLoading(true);
@@ -2594,8 +2622,15 @@ function TabSavedReports() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-900">View saved shift reports</h2>
-      <p className="text-sm text-surface-600">Open a report to view, edit, submit for approval, or download (when approved).</p>
+      <CollapsibleSectionHelp
+        title="View saved shift reports"
+        titleClassName="text-lg font-semibold text-surface-900"
+        open={savedReportsHelpOpen}
+        setOpen={setSavedReportsHelpOpen}
+        topic="saved shift reports"
+      >
+        <p>Open a report to view, edit, submit for approval, or download (when approved).</p>
+      </CollapsibleSectionHelp>
       <div className="rounded-xl border border-surface-200 bg-white p-4">
         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -2677,6 +2712,7 @@ function TabTrends() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [routeOptions, setRouteOptions] = useState([]);
+  const [trendsHelpOpen, setTrendsHelpOpen] = useState(false);
 
   const loadTrends = () => {
     setLoading(true);
@@ -2701,10 +2737,18 @@ function TabTrends() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">Shift report trends</h2>
-        <p className="text-sm text-surface-600 mt-1">Analytics and insights from approved shift reports. Study what is happening across shifts without opening every report. Data updates as new reports are approved.</p>
-      </div>
+      <CollapsibleSectionHelp
+        title="Shift report trends"
+        titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+        open={trendsHelpOpen}
+        setOpen={setTrendsHelpOpen}
+        topic="shift report trends"
+      >
+        <p>
+          Analytics and insights from approved shift reports. Study what is happening across shifts without opening every report.
+          Data updates as new reports are approved.
+        </p>
+      </CollapsibleSectionHelp>
 
       <div className="flex flex-wrap gap-3 items-end">
         <div>
@@ -2835,6 +2879,7 @@ function TabShiftItems({ setActiveTab }) {
   const [error, setError] = useState('');
   const [searchRoute, setSearchRoute] = useState('');
   const [selectedReportId, setSelectedReportId] = useState(null);
+  const [shiftByRouteHelpOpen, setShiftByRouteHelpOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -2892,10 +2937,17 @@ function TabShiftItems({ setActiveTab }) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">Shift by route</h2>
-        <p className="text-sm text-surface-600 mt-1">View shift reports per route for the past 1–30 days. See what happened on each shift without opening every report.</p>
-      </div>
+      <CollapsibleSectionHelp
+        title="Shift by route"
+        titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+        open={shiftByRouteHelpOpen}
+        setOpen={setShiftByRouteHelpOpen}
+        topic="shift by route"
+      >
+        <p>
+          View shift reports per route for the past 1–30 days. See what happened on each shift without opening every report.
+        </p>
+      </CollapsibleSectionHelp>
 
       <div className="flex flex-wrap gap-4 items-end">
         <div>
@@ -3100,6 +3152,7 @@ function TabShiftReportExports() {
   const [routeOptions, setRouteOptions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [shiftExportHelpOpen, setShiftExportHelpOpen] = useState(false);
 
   useEffect(() => {
     ccApi.shiftItems({ days: 90 })
@@ -3140,10 +3193,17 @@ function TabShiftReportExports() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">Export shift report sections</h2>
-        <p className="text-sm text-surface-600 mt-1">Download selected sections from shift reports as professional Excel files. Use filters to limit by date range and route.</p>
-      </div>
+      <CollapsibleSectionHelp
+        title="Export shift report sections"
+        titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+        open={shiftExportHelpOpen}
+        setOpen={setShiftExportHelpOpen}
+        topic="shift report export"
+      >
+        <p>
+          Download selected sections from shift reports as Excel workbooks. Use filters to limit by date range and route.
+        </p>
+      </CollapsibleSectionHelp>
 
       <div className="rounded-2xl border border-surface-200 bg-white shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
@@ -3468,6 +3528,7 @@ function TabRequests() {
   const [requestingOverride, setRequestingOverride] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [requestsHelpOpen, setRequestsHelpOpen] = useState(false);
 
   const loadList = () => {
     setLoading(true);
@@ -3657,8 +3718,18 @@ function TabRequests() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-900">Requests</h2>
-      <p className="text-sm text-surface-600">Shift reports submitted to you for approval. Complete the controller evaluation, then approve, reject, or grant provisional approval. To change a decision you already made, open the report under “Recently decided by you” and request an override code.</p>
+      <CollapsibleSectionHelp
+        title="Requests"
+        titleClassName="text-lg font-semibold text-surface-900"
+        open={requestsHelpOpen}
+        setOpen={setRequestsHelpOpen}
+        topic="shift report requests"
+      >
+        <p>
+          Shift reports submitted to you for approval. Complete the controller evaluation, then approve, reject, or grant provisional
+          approval. To change a decision you already made, open the report under &quot;Recently decided by you&quot; and request an override code.
+        </p>
+      </CollapsibleSectionHelp>
       <div className="rounded-xl border border-surface-200 bg-white p-4">
         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -4959,6 +5030,7 @@ function TabLibrary() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const fileInputRef = useRef(null);
+  const [libraryHelpOpen, setLibraryHelpOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -5028,7 +5100,15 @@ function TabLibrary() {
   if (loading) {
     return (
       <div className="space-y-6">
-        <h2 className="text-lg font-semibold text-surface-900">Library</h2>
+        <CollapsibleSectionHelp
+          title="Library"
+          titleClassName="text-lg font-semibold text-surface-900"
+          open={libraryHelpOpen}
+          setOpen={setLibraryHelpOpen}
+          topic="library"
+        >
+          <p>Approved reports and uploads shared by your company. Download PDFs and files.</p>
+        </CollapsibleSectionHelp>
         <p className="text-surface-500">Loading library…</p>
       </div>
     );
@@ -5036,10 +5116,15 @@ function TabLibrary() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">Library</h2>
-        <p className="text-sm text-surface-600 mt-1">Approved reports and uploads shared by your company. Download PDFs and files.</p>
-      </div>
+      <CollapsibleSectionHelp
+        title="Library"
+        titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+        open={libraryHelpOpen}
+        setOpen={setLibraryHelpOpen}
+        topic="library"
+      >
+        <p>Approved reports and uploads shared by your company. Download PDFs and files.</p>
+      </CollapsibleSectionHelp>
       {error && <div className="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-3 flex justify-between items-center"><span>{error}</span><button type="button" onClick={() => setError('')} className="text-red-700 font-medium">Dismiss</button></div>}
       <div className="flex flex-col sm:flex-row gap-4 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
@@ -5307,6 +5392,7 @@ function TabCompliance({ user, inspections = [], setInspections }) {
   const [suspending, setSuspending] = useState(false);
   const [suspendPermanent, setSuspendPermanent] = useState(true);
   const [suspendDurationDays, setSuspendDurationDays] = useState(7);
+  const [complianceHelpOpen, setComplianceHelpOpen] = useState(false);
 
   const suspendTruckNow = async () => {
     if (!selectedTruck) return;
@@ -5410,9 +5496,19 @@ function TabCompliance({ user, inspections = [], setInspections }) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">Fleet and driver compliance</h2>
-        {user?.tenant_name && <p className="text-sm font-medium text-surface-700 mt-1">Contractor: {user.tenant_name}</p>}
-        <p className="text-sm text-surface-600 mt-1">Select a truck, complete the truck inspection, then select the driver and complete the driver inspection. The contractor must respond within 8 hours or the truck/driver will be auto-suspended; they can submit an appeal from the Contractor page.</p>
+        <CollapsibleSectionHelp
+          title="Fleet and driver compliance"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={complianceHelpOpen}
+          setOpen={setComplianceHelpOpen}
+          topic="fleet and driver compliance"
+        >
+          <p>
+            Select a truck, complete the truck inspection, then select the driver and complete the driver inspection. The contractor must
+            respond within 8 hours or the truck/driver will be auto-suspended; they can submit an appeal from the Contractor page.
+          </p>
+        </CollapsibleSectionHelp>
+        {user?.tenant_name && <p className="text-sm font-medium text-surface-700 mt-2">Contractor: {user.tenant_name}</p>}
       </div>
 
       {submitSuccess && (
@@ -5686,6 +5782,7 @@ function TabInspected({ inspections = [], setInspections }) {
   const [suspending, setSuspending] = useState(false);
   const [suspendError, setSuspendError] = useState('');
   const [suspendSuccess, setSuspendSuccess] = useState('');
+  const [inspectedHelpOpen, setInspectedHelpOpen] = useState(false);
 
   const truckMap = new Map();
   inspections.forEach((i) => {
@@ -5785,10 +5882,15 @@ function TabInspected({ inspections = [], setInspections }) {
   return (
     <div className="flex gap-0">
       <div className="space-y-4 flex-1 min-w-0">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Inspected trucks &amp; drivers</h2>
-          <p className="text-sm text-surface-600 mt-1">Switch between trucks and drivers. Use filters and click a row to open the full record in the side panel.</p>
-        </div>
+        <CollapsibleSectionHelp
+          title="Inspected trucks & drivers"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={inspectedHelpOpen}
+          setOpen={setInspectedHelpOpen}
+          topic="inspected trucks and drivers"
+        >
+          <p>Switch between trucks and drivers. Use filters and click a row to open the full record in the side panel.</p>
+        </CollapsibleSectionHelp>
 
         {/* Sub-tabs */}
         <div className="flex border-b border-surface-200">
@@ -6127,16 +6229,22 @@ function TabInspectionRecords({ inspections = [], setInspections }) {
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [replyText, setReplyText] = useState('');
   const [replying, setReplying] = useState(false);
+  const [inspectionRecordsHelpOpen, setInspectionRecordsHelpOpen] = useState(false);
   const sorted = [...inspections].sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt));
   const formatDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
 
   return (
     <div className="flex gap-0">
       <div className="space-y-6 flex-1 min-w-0">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Truck inspection records</h2>
-          <p className="text-sm text-surface-600 mt-1">Full trail of all truck inspections. Click a row to view details and contractor response. Trucks must be inspected every 24 hours.</p>
-        </div>
+        <CollapsibleSectionHelp
+          title="Truck inspection records"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={inspectionRecordsHelpOpen}
+          setOpen={setInspectionRecordsHelpOpen}
+          topic="truck inspection records"
+        >
+          <p>Full trail of all truck inspections. Click a row to view details and contractor response. Trucks must be inspected every 24 hours.</p>
+        </CollapsibleSectionHelp>
 
         <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
@@ -6330,6 +6438,7 @@ function TabDeleteFleetDrivers() {
   const [selectedBreakdownIds, setSelectedBreakdownIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(false);
   const [search, setSearch] = useState('');
+  const [deleteFleetHelpOpen, setDeleteFleetHelpOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -6497,8 +6606,18 @@ function TabDeleteFleetDrivers() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-900">Delete contractors fleets/drivers</h2>
-      <p className="text-sm text-surface-600">Permanently remove trucks, drivers, or reported breakdowns (incidents) added by contractors. Use filters to narrow the list, then delete as needed.</p>
+      <CollapsibleSectionHelp
+        title="Delete contractors fleets/drivers"
+        titleClassName="text-lg font-semibold text-surface-900"
+        open={deleteFleetHelpOpen}
+        setOpen={setDeleteFleetHelpOpen}
+        topic="delete fleet and drivers"
+      >
+        <p>
+          Permanently remove trucks, drivers, or reported breakdowns (incidents) added by contractors. Use filters to narrow the list,
+          then delete as needed.
+        </p>
+      </CollapsibleSectionHelp>
 
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex justify-between items-center">
@@ -6703,6 +6822,7 @@ function TabContractorBlock() {
   const [reinstatingId, setReinstatingId] = useState(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [contractorBlockHelpOpen, setContractorBlockHelpOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -6747,8 +6867,18 @@ function TabContractorBlock() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-900">Contractor block</h2>
-      <p className="text-sm text-surface-600">Review suspended and under-appeal fleet/drivers. After the contractor has responded, you can reinstate (unblock) here. Suspensions also end automatically when the suspension period is over.</p>
+      <CollapsibleSectionHelp
+        title="Contractor block"
+        titleClassName="text-lg font-semibold text-surface-900"
+        open={contractorBlockHelpOpen}
+        setOpen={setContractorBlockHelpOpen}
+        topic="contractor block"
+      >
+        <p>
+          Review suspended and under-appeal fleet and drivers. After the contractor has responded, you can reinstate (unblock) here.
+          Suspensions also end automatically when the suspension period is over.
+        </p>
+      </CollapsibleSectionHelp>
 
       {success && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 flex justify-between items-center">
@@ -6857,6 +6987,7 @@ function TabApplications() {
   const [notifyRectors, setNotifyRectors] = useState(false);
   const [selectedRectorIds, setSelectedRectorIds] = useState(new Set());
   const [showBulkApproveModal, setShowBulkApproveModal] = useState(false);
+  const [applicationsHelpOpen, setApplicationsHelpOpen] = useState(false);
 
   useEffect(() => {
     ccApi.rectors().then((r) => setRectors(r.rectors || [])).catch(() => setRectors([]));
@@ -7234,10 +7365,18 @@ function TabApplications() {
   return (
     <div className="space-y-6 flex gap-0">
       <div className="flex-1 min-w-0 space-y-4">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">Fleet & driver applications</h2>
-          <p className="text-sm text-surface-600 mt-1">View all contract additions (including imports). Review full details, then approve to grant facility access or decline with a reason so the contractor knows why the addition was not approved.</p>
-        </div>
+        <CollapsibleSectionHelp
+          title="Fleet & driver applications"
+          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+          open={applicationsHelpOpen}
+          setOpen={setApplicationsHelpOpen}
+          topic="fleet and driver applications"
+        >
+          <p>
+            View all contract additions (including imports). Review full details, then approve to grant facility access or decline with a
+            reason so the contractor knows why the addition was not approved.
+          </p>
+        </CollapsibleSectionHelp>
 
         <div className="flex gap-2 border-b border-surface-200">
           <button
@@ -7893,10 +8032,18 @@ function TabApplicationsIntegration() {
 }
 
 function TabDelivery() {
+  const [deliveryHelpOpen, setDeliveryHelpOpen] = useState(false);
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-surface-900">Delivery management</h2>
-      <p className="text-sm text-surface-600">Document delivery stats per truck. Import transactions.</p>
+      <CollapsibleSectionHelp
+        title="Delivery management"
+        titleClassName="text-lg font-semibold text-surface-900"
+        open={deliveryHelpOpen}
+        setOpen={setDeliveryHelpOpen}
+        topic="delivery management"
+      >
+        <p>Document delivery stats per truck. Import transactions.</p>
+      </CollapsibleSectionHelp>
       <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-4">
         <div className="flex gap-3">
           <button type="button" className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Add delivery record</button>

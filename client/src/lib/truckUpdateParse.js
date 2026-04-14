@@ -95,7 +95,7 @@ export function parseFleetUpdateText(text) {
     const line = lines[i];
     if (!line) continue;
 
-    if (/^FLEET\s+UPDATE/i.test(line)) continue;
+    if (/^\*?FLEET\s+UPDATE/i.test(line.trim())) continue;
 
     if (/^day:\s*/i.test(line)) continue;
 

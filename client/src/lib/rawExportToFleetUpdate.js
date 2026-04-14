@@ -189,7 +189,7 @@ export function buildRegistrationEntityMap(routeTrucks, fleetTrucks) {
  */
 export function parseRawExportTruckLine(line) {
   const clean = stripMarkdownBold(normalizeRawExportLine(line));
-  if (!clean || /^FLEET\s+UPDATE/i.test(clean)) return null;
+  if (!clean || /^\*?FLEET\s+UPDATE/i.test(clean.trim())) return null;
   if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/i.test(clean)) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return null;
   if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(clean)) return null;
@@ -319,6 +319,15 @@ function tryParseRawExportLineLoose(clean) {
  * Build fleet-update status using the canonical destination from the active route header
  * so lines do not keep vague waypoints (e.g. "Enroute to Khashani-Kriel") when the route is Majuba.
  */
+/** WhatsApp-style bold: one asterisk on each side; strip inner stars to avoid nested markers. */
+function wrapFleetStatusBold(inner) {
+  const s = String(inner || '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s ? `*${s}*` : '*—*';
+}
+
 function formatStatusForFleetLine(rawStatus, dest) {
   const d = (dest || 'destination').trim() || 'destination';
   const plain = stripMarkdownBold(rawStatus);
@@ -335,21 +344,21 @@ function formatStatusForFleetLine(rawStatus, dest) {
     !/\bENROUTE\b/.test(u) &&
     !/\bOFFLOAD/.test(u);
   if (queuingAt || queuingLoose) {
-    return `**Queuing at ${d}**`;
+    return wrapFleetStatusBold(`Queuing at ${d}`);
   }
   if (/\bOFFLOAD/.test(u)) {
-    return /\(D\)/i.test(rawStatus) ? `**Offloading at ${d} (D)**` : `**Offloading at ${d} (D)**`;
+    return wrapFleetStatusBold(`Offloading at ${d}`);
   }
   if (/\bEN[\s-]?ROUTE\b/.test(u) || /\bENROUTE\b/.test(u) || /\bIN\s+TRANSIT\b/.test(u)) {
-    return `**Enroute to ${d}**`;
+    return wrapFleetStatusBold(`Enroute to ${d}`);
   }
   if (/\bLOADING\s+AT\b/.test(u)) {
-    return `**Loading at ${d}**`;
+    return wrapFleetStatusBold(`Loading at ${d}`);
   }
   if (/\bAT\s+[A-Z0-9]/i.test(plain) && /\b(PARK|YARD|DEPOT)\b/i.test(u)) {
-    return `**${plain}**`.replace(/\*\*\*\*/g, '**');
+    return wrapFleetStatusBold(plain);
   }
-  return `**${plain}**`;
+  return wrapFleetStatusBold(plain);
 }
 
 function formatEntityParen(entity) {
@@ -421,7 +430,7 @@ export function parseRouteHeaderFromPasteLine(line) {
   if (!c) return null;
   if (/Tons:\s*[\d.]+/i.test(c) || /Hours:\s*[\d.]+/i.test(c)) return null;
   if (!/→|->|=>/.test(c)) return null;
-  if (/^FLEET\s+UPDATE/i.test(c)) return null;
+  if (/^\*?FLEET\s+UPDATE/i.test(c.trim())) return null;
   if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/i.test(c)) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(c)) return null;
   if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(c)) return null;
@@ -471,9 +480,12 @@ export function convertRawExportToFleetUpdate(opts) {
     : '';
 
   const out = [];
-  out.push('FLEET UPDATE/ALLOCATION');
+  out.push('*FLEET UPDATE/ALLOCATION*');
+  out.push('');
   out.push(dayName);
+  out.push('');
   out.push(isoDate);
+  out.push('');
 
   const pushRouteLine = (routeLine) => {
     const norm = String(routeLine || '')
@@ -481,6 +493,7 @@ export function convertRawExportToFleetUpdate(opts) {
       .trim();
     if (!norm) return;
     out.push(norm);
+    out.push('');
     currentDestShort = shortDestinationLabel(destinationFromRouteName(norm));
   };
 
@@ -576,7 +589,7 @@ export function detectPasteIssueLines(rawText) {
     const raw = rawLines[i];
     const t = stripMarkdownBold(normalizeRawExportLine(raw));
     if (!t) continue;
-    if (/^FLEET\s+UPDATE/i.test(t)) continue;
+    if (/^\*?FLEET\s+UPDATE/i.test(t.trim())) continue;
     if (/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/i.test(t)) continue;
     if (/^\d{4}-\d{2}-\d{2}$/.test(t) || /^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(t)) continue;
     if (parseRouteHeaderFromPasteLine(raw)) continue;

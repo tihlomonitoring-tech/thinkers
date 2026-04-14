@@ -21,6 +21,8 @@ const PAGE_ROLES = [
   { id: 'letters', label: 'Letters' },
   { id: 'accounting_management', label: 'Accounting management' },
   { id: 'tracking_integration', label: 'Tracking & integration' },
+  { id: 'fuel_supply_management', label: 'Fuel supply management' },
+  { id: 'fuel_customer_orders', label: 'Customer diesel orders (portal)' },
 ];
 
 function formatDate(d) {

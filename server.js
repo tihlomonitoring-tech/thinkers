@@ -21,6 +21,8 @@ import actionPlansRoutes from './src/routes/actionPlans.js';
 import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceReports.js';
 import recruitmentRoutes from './src/routes/recruitment.js';
 import accountingRoutes from './src/routes/accounting.js';
+import fuelSupplyRoutes from './src/routes/fuelSupply.js';
+import fuelCustomerPortalRoutes from './src/routes/fuelCustomerPortal.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -133,6 +135,8 @@ app.use('/api/action-plans', actionPlansRoutes);
 app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
+app.use('/api/fuel-supply', fuelSupplyRoutes);
+app.use('/api/fuel-customer-portal', fuelCustomerPortalRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {

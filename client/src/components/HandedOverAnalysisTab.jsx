@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import { commandCentre as ccApi } from '../api.js';
+import { CollapsibleSectionHelp } from './CollapsibleSectionHelp.jsx';
 
 export default function HandedOverAnalysisTab({ onContinueSession }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refFilter, setRefFilter] = useState('');
+  const [handedOverHelpOpen, setHandedOverHelpOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -29,14 +31,19 @@ export default function HandedOverAnalysisTab({ onContinueSession }) {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      <div>
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">Handed over analysis</h2>
-        <p className="text-sm text-surface-600 mt-1 max-w-2xl">
-          Pick a session by <strong className="text-surface-800">reference</strong> to continue truck update work another controller
-          left off. Opening a session refreshes the 12-hour timer on the server. If nobody opens it for 12 hours, detailed paste
-          data is removed—you will need to start a new analysis.
+      <CollapsibleSectionHelp
+        title="Handed over analysis"
+        titleClassName="text-xl font-bold text-surface-900 tracking-tight"
+        open={handedOverHelpOpen}
+        setOpen={setHandedOverHelpOpen}
+        topic="handed over analysis"
+      >
+        <p className="max-w-2xl">
+          Pick a session by <strong className="text-surface-800 dark:text-surface-100">reference</strong> to continue truck update work
+          another controller left off. Opening a session refreshes the 12-hour timer on the server. If nobody opens it for 12 hours,
+          detailed paste data is removed—you will need to start a new analysis.
         </p>
-      </div>
+      </CollapsibleSectionHelp>
 
       <div className="flex flex-wrap gap-3 items-end">
         <div className="flex-1 min-w-[200px]">

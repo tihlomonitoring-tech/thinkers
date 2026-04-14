@@ -597,6 +597,107 @@ export const commandCentre = {
   rectorsWithRoutes: () => request('/command-centre/rectors-with-routes'),
 };
 
+export const fuelSupply = {
+  myTabs: () => request('/fuel-supply/my-tabs'),
+  permissions: () => request('/fuel-supply/permissions'),
+  grantPermission: (userId, tabId) =>
+    request('/fuel-supply/permissions', { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
+  revokePermission: (userId, tabId) =>
+    request(`/fuel-supply/permissions?user_id=${encodeURIComponent(userId)}&tab_id=${encodeURIComponent(tabId)}`, { method: 'DELETE' }),
+  events: (limit) => request(`/fuel-supply/events${limit ? `?limit=${limit}` : ''}`),
+  orders: () => request('/fuel-supply/orders'),
+  order: (id) => request(`/fuel-supply/orders/${encodeURIComponent(id)}`),
+  createOrder: (body) => request('/fuel-supply/orders', { method: 'POST', body: JSON.stringify(body) }),
+  patchOrder: (id, body) => request(`/fuel-supply/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  reorderOrder: (id, body) =>
+    request(`/fuel-supply/orders/${encodeURIComponent(id)}/reorder`, { method: 'POST', body: JSON.stringify(body) }),
+  addActivity: (orderId, body) =>
+    request(`/fuel-supply/orders/${encodeURIComponent(orderId)}/activities`, { method: 'POST', body: JSON.stringify(body) }),
+  addDelivery: (orderId, formData) =>
+    fetch(`${API}/fuel-supply/orders/${encodeURIComponent(orderId)}/deliveries`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }).catch((err) => { throw wrapNetworkError(err); }),
+  receiptUrl: (deliveryId) => `${API}/fuel-supply/deliveries/${encodeURIComponent(deliveryId)}/receipt`,
+  activities: () => request('/fuel-supply/activities'),
+  activitiesFiltered: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return request(`/fuel-supply/activities${s ? `?${s}` : ''}`);
+  },
+  reconciliationsList: () => request('/fuel-supply/reconciliations'),
+  analyticsMonthly: (months) =>
+    request(`/fuel-supply/analytics/monthly${months != null ? `?months=${encodeURIComponent(months)}` : ''}`),
+  vehicles: () => request('/fuel-supply/vehicles'),
+  createVehicle: (body) => request('/fuel-supply/vehicles', { method: 'POST', body: JSON.stringify(body) }),
+  patchVehicle: (id, body) =>
+    request(`/fuel-supply/vehicles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  trips: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return request(`/fuel-supply/trips${s ? `?${s}` : ''}`);
+  },
+  tripsSummary: () => request('/fuel-supply/trips/summary'),
+  createTrip: (body) => request('/fuel-supply/trips', { method: 'POST', body: JSON.stringify(body) }),
+  trip: (id) => request(`/fuel-supply/trips/${encodeURIComponent(id)}`),
+  patchTrip: (id, body) =>
+    request(`/fuel-supply/trips/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  addTripStop: (tripId, formData) =>
+    fetch(`${API}/fuel-supply/trips/${encodeURIComponent(tripId)}/stops`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      })
+      .catch((err) => {
+        throw wrapNetworkError(err);
+      }),
+  tripGaugeUrl: (stopId) => `${API}/fuel-supply/trip-stops/${encodeURIComponent(stopId)}/gauge`,
+  tripSlipUrl: (stopId) => `${API}/fuel-supply/trip-stops/${encodeURIComponent(stopId)}/slip`,
+  addReconciliation: (orderId, body) =>
+    request(`/fuel-supply/orders/${encodeURIComponent(orderId)}/reconciliations`, { method: 'POST', body: JSON.stringify(body) }),
+  patchReconciliation: (id, body) =>
+    request(`/fuel-supply/reconciliations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  customerRequests: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.status != null && params.status !== '') q.set('status', String(params.status));
+    const s = q.toString();
+    return request(`/fuel-supply/customer-requests${s ? `?${s}` : ''}`);
+  },
+  customerRequest: (id) => request(`/fuel-supply/customer-requests/${encodeURIComponent(id)}`),
+  approveCustomerRequest: (id, body) =>
+    request(`/fuel-supply/customer-requests/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+  rejectCustomerRequest: (id, body) =>
+    request(`/fuel-supply/customer-requests/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+};
+
+export const fuelCustomerPortal = {
+  myRequests: () => request('/fuel-customer-portal/requests'),
+  createRequest: (body) =>
+    request('/fuel-customer-portal/requests', { method: 'POST', body: JSON.stringify(body || {}) }),
+};
+
 export const progressReports = {
   list: () => request('/progress-reports'),
   get: (id) => request(`/progress-reports/${id}`),

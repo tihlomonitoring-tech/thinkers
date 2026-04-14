@@ -103,6 +103,14 @@ function IconAccounting({ className }) {
   );
 }
 
+function IconFuel({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+    </svg>
+  );
+}
+
 
 function IconChevronLeft({ className }) {
   return (
@@ -164,6 +172,8 @@ const navSections = [
     items: [
       { to: '/contractor', label: 'Contractor', icon: IconContractor, shortcut: '⌘3', pageId: 'contractor' },
       { to: '/command-centre', label: 'Command Centre', icon: IconCommandCentre, shortcut: '⌘4', pageId: 'command_centre' },
+      { to: '/fuel-supply-management', label: 'Fuel supply', icon: IconFuel, shortcut: '⌘8', pageId: 'fuel_supply_management' },
+      { to: '/fuel-customer-orders', label: 'Customer diesel orders', icon: IconFuel, shortcut: '', pageId: 'fuel_customer_orders' },
       { to: '/access-management', label: 'Access management', icon: IconAccess, shortcut: '⌘5', pageId: 'access_management' },
       { to: '/rector', label: 'Rector', icon: IconRector, shortcut: '⌘6', pageId: 'rector' },
       { to: '/tasks', label: 'Tasks', icon: IconTasks, shortcut: '⌘7', pageId: 'tasks' },
@@ -205,7 +215,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
   useEffect(() => {
     function onKeyDown(e) {
       if (e.metaKey || e.ctrlKey) {
-        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '5': '/access-management', '6': '/rector', '7': '/tasks', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
+        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '8': '/fuel-supply-management', '5': '/access-management', '6': '/rector', '7': '/tasks', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
         const path = map[e.key];
         const pageId = path && PATH_PAGE_IDS[path];
         if (path && pageId && canAccessPage(user, pageId)) {

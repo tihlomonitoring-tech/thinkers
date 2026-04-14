@@ -101,6 +101,7 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
   const [showSettings, setShowSettings] = useState(false);
   const [howToOpen, setHowToOpen] = useState(false);
   const [startShiftInfoOpen, setStartShiftInfoOpen] = useState(false);
+  const [rawExportHelpOpen, setRawExportHelpOpen] = useState(false);
   /** Sub-views inside Command Centre → Truck update records */
   const [truckRecordsView, setTruckRecordsView] = useState('analysis');
   const [rawExportInput, setRawExportInput] = useState('');
@@ -1093,15 +1094,42 @@ export default function TruckUpdateRecordsTab({ resumeServerSessionId, onResumeC
 
         <div className="rounded-xl border border-surface-200 bg-surface-100/90 p-4 space-y-3 dark:!border-zinc-700 dark:!bg-zinc-950 dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
           <div>
-            <h3 className="text-sm font-semibold text-surface-900 dark:!text-white">Paste raw export</h3>
-            <p className="text-xs text-surface-600 mt-1 max-w-3xl dark:!text-white/90">
-              Supports fleet screenshots: <span className="font-mono text-surface-800 dark:!text-white">REG - (Company) - Status at site - Tons: … - Hours: …</span>, route banners{' '}
-              <span className="font-mono dark:!text-white/90">ORIGIN → DESTINATION (Client)</span>, and older{' '}
-              <span className="font-mono dark:!text-white/90">Hours / Weight</span> orders. Multiple routes in one paste are split automatically; status lines use the{' '}
-              <strong className="text-surface-800 dark:!text-white">destination from each route banner</strong> (e.g. Majuba) so waypoints like &quot;Enroute to Khashani-Kriel&quot; are not copied into the fleet file.
-              Company names prefer the <strong className="text-surface-800 dark:!text-white">contractor company</strong> from trucks enrolled on the selected route. Dates: weekday + ISO or{' '}
-              <span className="font-mono dark:!text-white/90">07 April 2026</span>. Edit the converted text before applying. Notes mentioning breakdowns or delays are listed below for follow-up.
-            </p>
+            <div className="flex items-start gap-2">
+              <h3 className="text-sm font-semibold text-surface-900 dark:!text-white flex-1">Paste raw export</h3>
+              <button
+                type="button"
+                className={`shrink-0 mt-0.5 p-1.5 rounded-full border transition-colors ${
+                  rawExportHelpOpen
+                    ? 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-600 dark:bg-brand-950/60 dark:text-brand-300'
+                    : 'border-transparent text-surface-400 hover:text-brand-600 hover:bg-surface-100 dark:hover:text-brand-400 dark:hover:bg-surface-800'
+                }`}
+                aria-expanded={rawExportHelpOpen}
+                aria-label={rawExportHelpOpen ? 'Hide raw export format help' : 'Show raw export format help'}
+                title="Supported formats and behaviour"
+                onClick={() => setRawExportHelpOpen((v) => !v)}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.8}
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+              </button>
+            </div>
+            {rawExportHelpOpen && (
+              <div className="mt-2 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 p-3 text-xs text-surface-600 dark:text-surface-300 max-w-3xl leading-relaxed shadow-sm">
+                <p>
+                  Supports fleet screenshots: <span className="font-mono text-surface-800 dark:text-surface-100">REG - (Company) - Status at site - Tons: … - Hours: …</span>, route banners{' '}
+                  <span className="font-mono text-surface-700 dark:text-surface-200">ORIGIN → DESTINATION (Client)</span>, and older{' '}
+                  <span className="font-mono text-surface-700 dark:text-surface-200">Hours / Weight</span> orders. Multiple routes in one paste are split automatically; status lines use the{' '}
+                  <strong className="text-surface-800 dark:text-surface-100">destination from each route banner</strong> (e.g. Majuba) so waypoints like &quot;Enroute to Khashani-Kriel&quot; are not copied into the fleet file.
+                  Company names prefer the <strong className="text-surface-800 dark:text-surface-100">contractor company</strong> from trucks enrolled on the selected route. Dates: weekday + ISO or{' '}
+                  <span className="font-mono text-surface-700 dark:text-surface-200">07 April 2026</span>. Edit the converted text before applying. Notes mentioning breakdowns or delays are listed below for follow-up.
+                </p>
+              </div>
+            )}
           </div>
           <textarea
             value={rawExportInput}

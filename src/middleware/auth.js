@@ -1,7 +1,7 @@
 import { query } from '../db.js';
 
 /** Page IDs for app pages — keep in sync with `src/routes/users.js` `PAGE_IDS`. Used for super_admin page_roles. */
-const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration'];
+const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders'];
 
 /** Only platform super_admin skips page assignments (full app). Everyone else needs user_page_roles rows. */
 export function isPageAccessExempt(user) {

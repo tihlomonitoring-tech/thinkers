@@ -12,9 +12,11 @@ export const PATH_PAGE_IDS = {
   '/recruitment': 'recruitment',
   '/letters': 'letters',
   '/accounting-management': 'accounting_management',
+  '/fuel-supply-management': 'fuel_supply_management',
+  '/fuel-customer-orders': 'fuel_customer_orders',
 };
 
-export const ALL_PATHS_ORDER = ['/profile', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/access-management', '/rector', '/tasks', '/recruitment', '/letters', '/accounting-management'];
+export const ALL_PATHS_ORDER = ['/profile', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/fuel-supply-management', '/fuel-customer-orders', '/access-management', '/rector', '/tasks', '/recruitment', '/letters', '/accounting-management'];
 
 /**
  * Whether the user can access the given page.
