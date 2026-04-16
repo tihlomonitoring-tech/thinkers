@@ -23,6 +23,10 @@ export const SP = {
   TASK_LATE: -30,
   REPORT_ON: 50,
   REPORT_LATE: -50,
+  /** Per management 1–5 rating: (rating − 3) × multiplier (neutral at 3). */
+  TEAM_RATING_MULTIPLIER: 5,
+  /** When a measurable shift/team objective is marked achieved (per credited CC user). */
+  OBJECTIVE_ACHIEVED: 15,
   /** Minutes after nominal shift end (06:00 / 18:00) allowed for report hand-in */
   REPORT_HANDOFF_MINUTES: 15,
 };
@@ -140,6 +144,7 @@ export function emptyScoreBreakdown() {
     evaluation: { points: 0, events: [] },
     tasks: { points: 0, events: [] },
     reportTiming: { points: 0, events: [] },
+    teamProgress: { points: 0, events: [] },
   };
 }
 
@@ -148,6 +153,7 @@ export function sumBreakdown(b) {
     (b.punctuality?.points || 0) +
     (b.evaluation?.points || 0) +
     (b.tasks?.points || 0) +
-    (b.reportTiming?.points || 0)
+    (b.reportTiming?.points || 0) +
+    (b.teamProgress?.points || 0)
   );
 }

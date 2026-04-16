@@ -4,9 +4,15 @@ import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js'
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
 import EmployeeProductivityScoreSection from './components/EmployeeProductivityScoreSection.jsx';
+import TeamGoalsManagementSection from './components/TeamGoalsManagementSection.jsx';
+import PerformanceEvaluationTrendsSection from './components/PerformanceEvaluationTrendsSection.jsx';
+import PerformanceEvaluationQuestionsEditor from './components/PerformanceEvaluationQuestionsEditor.jsx';
+import PerformanceEvaluationPeriodSection from './components/PerformanceEvaluationPeriodSection.jsx';
+import PerformanceEvaluationAuditorResultsSection from './components/PerformanceEvaluationAuditorResultsSection.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
+  { id: 'team_goals', label: 'Team goals & shift objectives' },
   { id: 'employee_productivity_score', label: 'Employee productivity score' },
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'shift-swaps', label: 'Shift swap requests' },
@@ -16,6 +22,10 @@ const SECTIONS = [
   { id: 'warnings-rewards', label: 'Warnings & rewards' },
   { id: 'queries', label: 'Queries (grievances)' },
   { id: 'evaluations', label: 'Evaluations' },
+  { id: 'perf_eval_period', label: 'Evaluation period' },
+  { id: 'perf_eval_trends', label: 'Evaluation trends' },
+  { id: 'perf_eval_questions', label: 'Edit evaluation questionnaires' },
+  { id: 'auditor_results', label: 'Auditor results' },
   { id: 'pip', label: 'Performance improvement' },
   { id: 'growth', label: 'Employee growth' },
 ];
@@ -323,6 +333,10 @@ export default function Management() {
             />
           )}
 
+          {activeSection === 'team_goals' && (
+            <TeamGoalsManagementSection tenantUsers={tenantUsers} onError={setError} />
+          )}
+
           {activeSection === 'employee_productivity_score' && <EmployeeProductivityScoreSection />}
 
           {activeSection === 'shift_activity' && (
@@ -477,6 +491,14 @@ export default function Management() {
               onError={setError}
             />
           )}
+
+          {activeSection === 'perf_eval_period' && <PerformanceEvaluationPeriodSection onError={setError} />}
+
+          {activeSection === 'perf_eval_trends' && <PerformanceEvaluationTrendsSection onError={setError} />}
+
+          {activeSection === 'perf_eval_questions' && <PerformanceEvaluationQuestionsEditor onError={setError} />}
+
+          {activeSection === 'auditor_results' && <PerformanceEvaluationAuditorResultsSection onError={setError} />}
 
           {activeSection === 'pip' && (
             <PIPSection

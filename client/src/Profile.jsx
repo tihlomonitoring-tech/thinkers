@@ -7,6 +7,9 @@ import InfoHint from './components/InfoHint.jsx';
 import ShiftClockPanel from './components/ShiftClockPanel.jsx';
 import ShiftActivityTab from './components/ShiftActivityTab.jsx';
 import ProductivityScoreTab from './components/ProductivityScoreTab.jsx';
+import DepartmentStrategyView from './components/DepartmentStrategyView.jsx';
+import CareerDevelopmentHub from './components/CareerDevelopmentHub.jsx';
+import ColleagueEvaluationResultsTab from './components/ColleagueEvaluationResultsTab.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import {
@@ -23,12 +26,15 @@ import {
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
   { id: 'productivity_score', label: 'Productivity score' },
+  { id: 'department_strategy', label: 'Department strategy' },
+  { id: 'career_development', label: 'Career & personal goals' },
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'leave', label: 'Leave application' },
   { id: 'documents', label: 'Employee documents' },
   { id: 'disciplinary', label: 'Disciplinary & rewards' },
   { id: 'queries', label: 'Queries' },
   { id: 'growth', label: 'Growth' },
+  { id: 'evaluation_results', label: 'Colleagues evaluation results' },
 ];
 
 const SHIFT_DAY = '06:00 – 18:00';
@@ -37,6 +43,7 @@ const SHIFT_NIGHT = '18:00 – 06:00';
 const COLLEAGUE_FILTER_STORAGE_KEY = 'profile.workSchedule.colleagueFilter';
 const COLLEAGUE_VIEW_MODE_KEY = 'profile.workSchedule.colleagueViewMode';
 const CC_TEAM_PANEL_COLLAPSED_KEY = 'profile.workSchedule.ccTeamPanelCollapsed';
+const DAY_DETAILS_RAIL_EXPANDED_KEY = 'profile.workSchedule.dayDetailsRailExpanded';
 
 function shortFirstName(name) {
   const p = (name || '').trim().split(/\s+/).filter(Boolean);
@@ -123,6 +130,17 @@ export default function Profile() {
       return true;
     }
   });
+  /** Large screens: when false, the empty “Day details” column is hidden so the calendar is full width; pick a date to open details. */
+  const [dayDetailsRailExpanded, setDayDetailsRailExpanded] = useState(() => {
+    try {
+      const v = localStorage.getItem(DAY_DETAILS_RAIL_EXPANDED_KEY);
+      if (v === '1') return true;
+      if (v === '0') return false;
+      return false;
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     try {
@@ -133,7 +151,24 @@ export default function Profile() {
   }, [ccTeamPanelCollapsed]);
 
   useEffect(() => {
-    const t = searchParams.get('tab');
+    try {
+      localStorage.setItem(DAY_DETAILS_RAIL_EXPANDED_KEY, dayDetailsRailExpanded ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [dayDetailsRailExpanded]);
+
+  const collapseDayDetailsRail = useCallback(() => {
+    setSelectedScheduleDate(null);
+    setDayDetailsRailExpanded(false);
+  }, []);
+
+  const showDayDetailsColumn = selectedScheduleDate != null || dayDetailsRailExpanded;
+
+  useEffect(() => {
+    const raw = searchParams.get('tab');
+    const legacy = { department_goals: 'department_strategy', shift_objectives: 'department_strategy' };
+    const t = legacy[raw] || raw;
     if (t && TABS.some((x) => x.id === t)) setActiveTab(t);
   }, [searchParams]);
 
@@ -400,18 +435,39 @@ export default function Profile() {
           )}
 
           {activeTab === 'schedule' && (
-            <div className="flex gap-4 flex-1 min-w-0">
-              <div className="flex-1 min-w-0 space-y-6">
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col lg:flex-row gap-4 flex-1 min-w-0 relative">
+              <div className="flex-1 min-w-0 space-y-6 min-h-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl font-semibold text-surface-900">Work schedule</h1>
                 <InfoHint
                   title="Work schedule help"
                   text="The list below is limited to people in your organization who can access Command Centre (page or tab). Tick who to compare; their shifts appear in each day cell the same way as your Day or Night row. Same shift only lists people on your shift type when you are scheduled; All selected shifts shows everyone you selected, including the opposite shift. Your selection is saved on this device."
                   bullets={[
                     'Use Hide panel on Command Centre team to collapse the picker and show only your shifts on the calendar (and a clearer day detail panel). Show team picker restores teammate lines and settings.',
+                    'On a phone or narrow screen, the day details panel (clock, tasks, swaps) stays hidden until you tap a date; it opens as a sheet from the bottom. Tap outside the sheet or × to close and return to the calendar.',
+                    'On a wide screen, use Hide sidebar under Day details (or in the day header) to collapse the right column and use the full width for the calendar. Use Show day details sidebar to bring the empty panel back, or click any date to open shift and clock.',
                   ]}
                 />
+                {!selectedScheduleDate && !dayDetailsRailExpanded && (
+                  <button
+                    type="button"
+                    onClick={() => setDayDetailsRailExpanded(true)}
+                    className="ml-auto sm:ml-0 px-3 py-1.5 text-xs font-semibold rounded-lg border border-brand-200 bg-brand-50 text-brand-800 hover:bg-brand-100"
+                  >
+                    Show day details sidebar
+                  </button>
+                )}
               </div>
+              {!selectedScheduleDate && !dayDetailsRailExpanded && (
+                <div className="rounded-xl border border-dashed border-surface-300 bg-surface-50/90 px-4 py-3 text-sm text-surface-700">
+                  <strong className="font-medium text-surface-900">Day details hidden.</strong> The calendar uses the full width.{' '}
+                  <button type="button" onClick={() => setDayDetailsRailExpanded(true)} className="text-brand-700 font-semibold hover:underline">
+                    Show sidebar
+                  </button>
+                  {' · '}
+                  or click any date for shift, clock-in, and tasks.
+                </div>
+              )}
               {ccTeamPanelCollapsed ? (
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-dashed border-surface-300 bg-surface-50/80 px-4 py-3">
                   <div className="flex items-start gap-2 min-w-0">
@@ -658,27 +714,69 @@ export default function Profile() {
                 </div>
               </div>
               </div>
-              <ScheduleSidePanel
-                selectedDate={selectedScheduleDate}
-                onClose={() => setSelectedScheduleDate(null)}
-                scheduleEntries={scheduleEntries}
-                scheduleEvents={scheduleEvents}
-                myTasks={myTasks}
-                pipPlans={pipPlans}
-                swapRequests={swapRequests}
-                currentUserId={user?.id}
-                colleagueDay={
-                  !ccTeamPanelCollapsed && selectedScheduleDate && colleagueFilterIds.length > 0
-                    ? colleagueCalendarByDate[selectedScheduleDate]
-                    : null
+              {showDayDetailsColumn && selectedScheduleDate && (
+                <button
+                  type="button"
+                  className="fixed inset-0 z-[90] bg-slate-900/45 lg:hidden"
+                  aria-label="Close day details"
+                  onClick={() => setSelectedScheduleDate(null)}
+                />
+              )}
+              {showDayDetailsColumn && (
+              <div
+                className={
+                  selectedScheduleDate
+                    ? 'w-full lg:w-96 shrink-0 fixed lg:static left-0 right-0 bottom-0 z-[100] lg:z-auto max-h-[min(92vh,760px)] lg:max-h-none flex flex-col justify-end lg:justify-start pointer-events-none lg:pointer-events-auto pb-[max(0.5rem,env(safe-area-inset-bottom))] lg:pb-0'
+                    : 'hidden lg:flex w-full lg:w-96 shrink-0'
                 }
-                onOpenSwapModal={(shift) => setSwapModal({ shift })}
-                onSwapHandled={() => {
-                  refreshSwapRequests();
-                  loadMySchedule();
-                }}
-                onError={setError}
-              />
+              >
+                {selectedScheduleDate ? (
+                  <div className="pointer-events-auto w-full lg:w-96 min-h-0 max-h-[min(92vh,760px)] lg:max-h-none overflow-hidden rounded-t-2xl lg:rounded-xl border border-surface-200 bg-white shadow-2xl lg:shadow-none">
+                    <ScheduleSidePanel
+                      selectedDate={selectedScheduleDate}
+                      onClose={() => setSelectedScheduleDate(null)}
+                      onHideDayDetailsRail={collapseDayDetailsRail}
+                      scheduleEntries={scheduleEntries}
+                      scheduleEvents={scheduleEvents}
+                      myTasks={myTasks}
+                      pipPlans={pipPlans}
+                      swapRequests={swapRequests}
+                      currentUserId={user?.id}
+                      colleagueDay={
+                        !ccTeamPanelCollapsed && selectedScheduleDate && colleagueFilterIds.length > 0
+                          ? colleagueCalendarByDate[selectedScheduleDate]
+                          : null
+                      }
+                      onOpenSwapModal={(shift) => setSwapModal({ shift })}
+                      onSwapHandled={() => {
+                        refreshSwapRequests();
+                        loadMySchedule();
+                      }}
+                      onError={setError}
+                    />
+                  </div>
+                ) : (
+                  <ScheduleSidePanel
+                    selectedDate={null}
+                    onClose={() => setSelectedScheduleDate(null)}
+                    onHideDayDetailsRail={() => setDayDetailsRailExpanded(false)}
+                    scheduleEntries={scheduleEntries}
+                    scheduleEvents={scheduleEvents}
+                    myTasks={myTasks}
+                    pipPlans={pipPlans}
+                    swapRequests={swapRequests}
+                    currentUserId={user?.id}
+                    colleagueDay={null}
+                    onOpenSwapModal={(shift) => setSwapModal({ shift })}
+                    onSwapHandled={() => {
+                      refreshSwapRequests();
+                      loadMySchedule();
+                    }}
+                    onError={setError}
+                  />
+                )}
+              </div>
+              )}
             </div>
           )}
           {activeTab === 'schedule' && swapModal && (
@@ -701,6 +799,14 @@ export default function Profile() {
           )}
 
           {activeTab === 'productivity_score' && <ProductivityScoreTab />}
+
+          {activeTab === 'department_strategy' && (
+            <div className="p-0 sm:p-0">
+              <DepartmentStrategyView />
+            </div>
+          )}
+
+          {activeTab === 'career_development' && <CareerDevelopmentHub />}
 
           {activeTab === 'shift_activity' && <ShiftActivityTab />}
 
@@ -788,6 +894,8 @@ export default function Profile() {
               onError={setError}
             />
           )}
+
+          {activeTab === 'evaluation_results' && <ColleagueEvaluationResultsTab />}
         </div>
       </div>
     </div>
@@ -985,6 +1093,8 @@ function swapBlocksEntry(swapRequests, entryId) {
 function ScheduleSidePanel({
   selectedDate,
   onClose,
+  /** Collapses the day-details rail and clears the selected date (full calendar width). */
+  onHideDayDetailsRail,
   scheduleEntries,
   scheduleEvents,
   myTasks,
@@ -1001,14 +1111,23 @@ function ScheduleSidePanel({
   const [peerBusy, setPeerBusy] = useState(null);
   if (!selectedDate) {
     return (
-      <div className="w-full lg:w-80 shrink-0 bg-surface-50 dark:bg-surface-900/40 rounded-xl border border-surface-200 dark:border-surface-800 p-4 flex flex-col items-center justify-center text-center text-surface-500 dark:text-surface-400 text-sm min-h-[160px] gap-2">
+      <div className="w-full lg:w-80 shrink-0 bg-surface-50 dark:bg-surface-900/40 rounded-xl border border-surface-200 dark:border-surface-800 p-4 flex flex-col items-center justify-center text-center text-surface-500 dark:text-surface-400 text-sm min-h-[160px] gap-3">
         <div className="flex items-center justify-center gap-2">
           <span className="font-medium text-surface-700 dark:text-surface-300">Day details</span>
           <InfoHint
             title="Day details panel"
-            text="Click a date on the calendar to see your shift, clock panel, tasks due, company events, performance items, and shift swaps for that day."
+            text="Click a date on the calendar to see your shift, clock panel, tasks due, company events, performance items, and shift swaps for that day. On a small screen, tap any day to open this panel from the bottom. On a wide screen you can hide this column with the button below and restore it from the work schedule heading."
           />
         </div>
+        {onHideDayDetailsRail && (
+          <button
+            type="button"
+            onClick={onHideDayDetailsRail}
+            className="px-3 py-2 text-xs font-semibold rounded-lg border border-surface-300 bg-white text-surface-800 hover:bg-surface-50"
+          >
+            Hide sidebar — calendar only
+          </button>
+        )}
       </div>
     );
   }
@@ -1050,10 +1169,24 @@ function ScheduleSidePanel({
   };
 
   return (
-    <div className="w-full lg:w-96 shrink-0 bg-white rounded-xl border border-surface-200 overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
-      <div className="px-4 py-3 border-b border-surface-100 flex justify-between items-center">
-        <span className="font-medium text-surface-900">{dateLabel}</span>
-        <button type="button" onClick={onClose} className="p-1 rounded text-surface-500 hover:bg-surface-100" aria-label="Close">×</button>
+    <div className="w-full lg:w-96 shrink-0 bg-white rounded-none lg:rounded-xl border-0 lg:border border-surface-200 overflow-hidden flex flex-col h-full min-h-0 max-h-full lg:max-h-[calc(100vh-8rem)]">
+      <div className="px-4 py-3 border-b border-surface-100 flex justify-between items-center gap-2 shrink-0">
+        <span className="font-medium text-surface-900 truncate min-w-0">{dateLabel}</span>
+        <div className="flex items-center gap-1 shrink-0">
+          {onHideDayDetailsRail && (
+            <button
+              type="button"
+              onClick={onHideDayDetailsRail}
+              className="px-2 py-1 text-xs font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50 whitespace-nowrap max-sm:max-w-[7.5rem] max-sm:truncate"
+              title="Close and hide the sidebar until you pick a date or show it again"
+            >
+              Hide sidebar
+            </button>
+          )}
+          <button type="button" onClick={onClose} className="p-1.5 rounded text-surface-500 hover:bg-surface-100 text-lg leading-none" aria-label="Close day">
+            ×
+          </button>
+        </div>
       </div>
       <div className="p-4 overflow-y-auto space-y-4 text-sm">
         <div>
@@ -1329,7 +1462,7 @@ function ShiftSwapRequestModal({
   if (!shift) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true" aria-labelledby="swap-modal-title">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true" aria-labelledby="swap-modal-title">
       <div className="bg-white rounded-2xl border border-surface-200 shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
         <div className="px-5 py-4 border-b border-surface-100 flex justify-between items-start gap-2">
           <div className="flex items-start gap-2 min-w-0">

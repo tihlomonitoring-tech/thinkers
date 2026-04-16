@@ -1749,15 +1749,16 @@ router.post('/schedule-events', requirePageAccess('management'), async (req, res
   }
 });
 
-// Tenant users for dropdowns (management)
+// Tenant users for dropdowns (management, evaluations, etc.) — tenant_id OR user_tenants membership
 router.get('/users/tenant', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.json({ users: [] });
     const result = await query(
-      `SELECT u.id, u.full_name, u.email FROM users u
-       INNER JOIN user_tenants ut ON ut.user_id = u.id AND ut.tenant_id = @tenantId
-       WHERE u.status = 'active' ORDER BY u.full_name`,
+      `SELECT DISTINCT u.id, u.full_name, u.email FROM users u
+       WHERE u.status = 'active'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+       ORDER BY u.full_name`,
       { tenantId }
     );
     res.json({ users: (result.recordset || []).map((r) => ({ id: getRow(r, 'id'), full_name: getRow(r, 'full_name'), email: getRow(r, 'email') })) });

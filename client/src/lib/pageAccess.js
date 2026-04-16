@@ -14,9 +14,12 @@ export const PATH_PAGE_IDS = {
   '/accounting-management': 'accounting_management',
   '/fuel-supply-management': 'fuel_supply_management',
   '/fuel-customer-orders': 'fuel_customer_orders',
+  '/team-leader-admin': 'team_leader_admin',
+  '/performance-evaluations': 'performance_evaluations',
+  '/auditor': 'auditor',
 };
 
-export const ALL_PATHS_ORDER = ['/profile', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/fuel-supply-management', '/fuel-customer-orders', '/access-management', '/rector', '/tasks', '/recruitment', '/letters', '/accounting-management'];
+export const ALL_PATHS_ORDER = ['/profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/users', '/tenants', '/contractor', '/command-centre', '/fuel-supply-management', '/fuel-customer-orders', '/access-management', '/rector', '/tasks', '/recruitment', '/letters', '/accounting-management'];
 
 /**
  * Whether the user can access the given page.

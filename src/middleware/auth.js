@@ -1,7 +1,7 @@
 import { query } from '../db.js';
 
 /** Page IDs for app pages — keep in sync with `src/routes/users.js` `PAGE_IDS`. Used for super_admin page_roles. */
-const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders'];
+const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'team_leader_admin', 'performance_evaluations', 'auditor'];
 
 /** Only platform super_admin skips page assignments (full app). Everyone else needs user_page_roles rows. */
 export function isPageAccessExempt(user) {
@@ -52,7 +52,8 @@ export async function loadUser(req, res, next) {
         req.session.destroy((err) => (err ? reject(err) : resolve()));
       });
       return res.status(401).json({
-        error: 'This account is locked after failed sign-in attempts. A super administrator must unlock it under User management → Block requests.',
+        error:
+          'This account is locked after failed sign-in attempts. A super administrator can unlock it under User management → Block requests, or complete Forgot password to clear the lock after setting a new password.',
       });
     }
     let tenant_ids = [];

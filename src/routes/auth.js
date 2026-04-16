@@ -62,7 +62,7 @@ router.post('/login', async (req, res, next) => {
     if (lockedAt) {
       return res.status(403).json({
         error:
-          'This account is locked after too many failed sign-in attempts. A super administrator must unlock it under User management → Block requests.',
+          'This account is locked after too many failed sign-in attempts. A super administrator can unlock it under User management → Block requests. If you cannot reach an admin, use Forgot password and complete the reset — saving a new password clears this lock.',
         code: 'account_locked',
       });
     }
@@ -109,7 +109,7 @@ router.post('/login', async (req, res, next) => {
           });
           return res.status(403).json({
             error:
-              'Too many failed sign-in attempts. This account is now locked. A super administrator can unlock it under User management → Block requests.',
+              'Too many failed sign-in attempts. This account is now locked. A super administrator can unlock it under User management → Block requests, or you can clear the lock by completing Forgot password and saving a new password.',
             code: 'account_locked',
           });
         }

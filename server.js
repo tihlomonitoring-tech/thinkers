@@ -24,6 +24,9 @@ import recruitmentRoutes from './src/routes/recruitment.js';
 import accountingRoutes from './src/routes/accounting.js';
 import fuelSupplyRoutes from './src/routes/fuelSupply.js';
 import fuelCustomerPortalRoutes from './src/routes/fuelCustomerPortal.js';
+import teamGoalsRoutes from './src/routes/teamGoals.js';
+import performanceEvaluationsRoutes from './src/routes/performanceEvaluations.js';
+import userCareerRoutes from './src/routes/userCareer.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -139,6 +142,9 @@ app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
 app.use('/api/fuel-supply', fuelSupplyRoutes);
 app.use('/api/fuel-customer-portal', fuelCustomerPortalRoutes);
+app.use('/api/team-goals', teamGoalsRoutes);
+app.use('/api/performance-evaluations', performanceEvaluationsRoutes);
+app.use('/api/user-career', userCareerRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {

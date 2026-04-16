@@ -20,6 +20,9 @@ import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
 import FuelSupplyManagement from './FuelSupplyManagement';
 import FuelCustomerOrders from './FuelCustomerOrders';
+import TeamLeaderAdmin from './TeamLeaderAdmin';
+import PerformanceEvaluations from './PerformanceEvaluations';
+import Auditor from './Auditor';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
@@ -93,6 +96,9 @@ function AppRoutes() {
         <Route path="rector" element={<PageGate pathKey="/rector"><Rector /></PageGate>} />
         <Route path="tasks" element={<PageGate pathKey="/tasks"><Tasks /></PageGate>} />
         <Route path="profile" element={<PageGate pathKey="/profile"><Profile /></PageGate>} />
+        <Route path="team-leader-admin" element={<PageGate pathKey="/team-leader-admin"><TeamLeaderAdmin /></PageGate>} />
+        <Route path="performance-evaluations" element={<PageGate pathKey="/performance-evaluations"><PerformanceEvaluations /></PageGate>} />
+        <Route path="auditor" element={<PageGate pathKey="/auditor"><Auditor /></PageGate>} />
         <Route path="management" element={<PageGate pathKey="/management"><Management /></PageGate>} />
         <Route path="recruitment" element={<PageGate pathKey="/recruitment"><Recruitment /></PageGate>} />
         <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />

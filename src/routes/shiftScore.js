@@ -221,6 +221,89 @@ async function computeTenantScores(tenantId, windowDays) {
     }
   }
 
+  const parseMemberIds = (json) => {
+    if (!json || typeof json !== 'string') return [];
+    try {
+      const a = JSON.parse(json);
+      return Array.isArray(a) ? a.map((x) => String(x)) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  let objectiveRows = [];
+  try {
+    const or = await query(
+      `SELECT id, scope, status, title, leader_user_id, member_user_ids, created_by, updated_at
+       FROM shift_team_objectives
+       WHERE tenant_id = @tenantId
+         AND LOWER(LTRIM(RTRIM(status))) = N'achieved'
+         AND updated_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())`,
+      params
+    );
+    objectiveRows = or.recordset || [];
+  } catch (_) {
+    objectiveRows = [];
+  }
+
+  for (const row of objectiveRows) {
+    const credited = new Set();
+    const createdBy = String(getRow(row, 'created_by') || '');
+    const scope = String(getRow(row, 'scope') || '').toLowerCase();
+    if (createdBy) credited.add(createdBy);
+    if (scope === 'team') {
+      const lid = String(getRow(row, 'leader_user_id') || '');
+      if (lid) credited.add(lid);
+      parseMemberIds(getRow(row, 'member_user_ids')).forEach((x) => credited.add(x));
+    }
+    const otitle = getRow(row, 'title') || 'Objective';
+    for (const uid of credited) {
+      if (!ccUserIds.has(uid)) continue;
+      const b = byUser.get(uid);
+      if (b) {
+        addEvent(b.breakdown, 'teamProgress', {
+          points: Sp.SP.OBJECTIVE_ACHIEVED,
+          detail: 'objective_achieved',
+          title: String(otitle).slice(0, 200),
+          objective_id: getRow(row, 'id'),
+        });
+      }
+    }
+  }
+
+  let progRatingRows = [];
+  try {
+    const pr = await query(
+      `SELECT member_user_id, rating, work_date, period, narrative, created_at
+       FROM management_team_ratings
+       WHERE tenant_id = @tenantId
+         AND created_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())`,
+      params
+    );
+    progRatingRows = pr.recordset || [];
+  } catch (_) {
+    progRatingRows = [];
+  }
+
+  for (const row of progRatingRows) {
+    const uid = String(getRow(row, 'member_user_id') || '');
+    if (!ccUserIds.has(uid)) continue;
+    const rt = parseInt(String(getRow(row, 'rating') ?? '3'), 10);
+    const rNum = Number.isFinite(rt) ? Math.min(5, Math.max(1, rt)) : 3;
+    const ptsAdj = (rNum - 3) * Sp.SP.TEAM_RATING_MULTIPLIER;
+    const b = byUser.get(uid);
+    if (b) {
+      addEvent(b.breakdown, 'teamProgress', {
+        points: ptsAdj,
+        detail: 'management_rating',
+        rating: rNum,
+        period: getRow(row, 'period'),
+        work_date: getRow(row, 'work_date'),
+        narrative: getRow(row, 'narrative') ? String(getRow(row, 'narrative')).slice(0, 160) : '',
+      });
+    }
+  }
+
   const people = [];
   for (const [, v] of byUser) {
     v.total = Sp.sumBreakdown(v.breakdown);
@@ -242,6 +325,12 @@ async function computeTenantScores(tenantId, windowDays) {
       evaluation: { good: Sp.SP.EVAL_GOOD, bad: Sp.SP.EVAL_BAD, minYesOf: `${Sp.SP.EVAL_MIN_YES}/${Sp.SP.EVAL_QUESTIONS}` },
       tasks: { onTime: Sp.SP.TASK_ON, lateOrOverdue: Sp.SP.TASK_LATE },
       reportHandIn: { onTime: Sp.SP.REPORT_ON, late: Sp.SP.REPORT_LATE, by: `Shift end + ${Sp.SP.REPORT_HANDOFF_MINUTES} min (SAST)` },
+      teamProgress: {
+        objectiveAchieved: Sp.SP.OBJECTIVE_ACHIEVED,
+        ratingNeutral: 3,
+        ratingMultiplier: Sp.SP.TEAM_RATING_MULTIPLIER,
+        note: 'Achieved measurable objectives and management 1–5 ratings (neutral at 3).',
+      },
     },
   };
 }
@@ -301,6 +390,7 @@ router.get('/command-centre-dashboard', requirePageAccess('command_centre'), asy
             evaluation: { points: mine.breakdown.evaluation.points, n: mine.breakdown.evaluation.events.length },
             tasks: { points: mine.breakdown.tasks.points, n: mine.breakdown.tasks.events.length },
             reportTiming: { points: mine.breakdown.reportTiming.points, n: mine.breakdown.reportTiming.events.length },
+            teamProgress: { points: mine.breakdown.teamProgress?.points || 0, n: mine.breakdown.teamProgress?.events?.length || 0 },
           }
         : null,
       scoring,
@@ -342,12 +432,13 @@ router.get('/tenant', requirePageAccess('management'), async (req, res, next) =>
     const totals = enriched.map((x) => x.total).sort((a, b) => a - b);
     const median = totals.length ? totals[Math.floor(totals.length / 2)] : 0;
 
-    const componentTotals = { punctuality: 0, evaluation: 0, tasks: 0, reportTiming: 0 };
+    const componentTotals = { punctuality: 0, evaluation: 0, tasks: 0, reportTiming: 0, teamProgress: 0 };
     for (const p of enriched) {
       componentTotals.punctuality += p.breakdown.punctuality.points;
       componentTotals.evaluation += p.breakdown.evaluation.points;
       componentTotals.tasks += p.breakdown.tasks.points;
       componentTotals.reportTiming += p.breakdown.reportTiming.points;
+      componentTotals.teamProgress += p.breakdown.teamProgress?.points || 0;
     }
     const n = Math.max(1, enriched.length);
     const componentAverages = {
@@ -355,6 +446,7 @@ router.get('/tenant', requirePageAccess('management'), async (req, res, next) =>
       evaluation: Math.round((componentTotals.evaluation / n) * 10) / 10,
       tasks: Math.round((componentTotals.tasks / n) * 10) / 10,
       reportTiming: Math.round((componentTotals.reportTiming / n) * 10) / 10,
+      teamProgress: Math.round((componentTotals.teamProgress / n) * 10) / 10,
     };
 
     res.json({

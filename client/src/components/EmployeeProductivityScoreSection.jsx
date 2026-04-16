@@ -7,6 +7,7 @@ const CAT_LABELS = {
   evaluation: 'Evaluations',
   tasks: 'Tasks',
   reportTiming: 'Report timing',
+  teamProgress: 'Team progress',
 };
 
 export default function EmployeeProductivityScoreSection() {
@@ -57,7 +58,7 @@ export default function EmployeeProductivityScoreSection() {
           <h1 className="text-xl font-semibold text-surface-900">Employee productivity score</h1>
           <InfoHint
             title="Management insights"
-            text="Scores aggregate Command Centre team members only (page or tab access). Each row is a rolling total from clock punctuality, evaluations on authored reports, assigned tasks, and shift-report submission timing. Use this to spot coaching opportunities — not as the sole measure of performance."
+            text="Scores aggregate Command Centre team members only (page or tab access). Each row is a rolling total from clock punctuality, evaluations on authored reports, assigned tasks, shift-report submission timing, and team progress (achieved measurable objectives plus management 1–5 ratings). Use this to spot coaching opportunities — not as the sole measure of performance."
           />
         </div>
         <p className="text-sm text-surface-500">
@@ -87,6 +88,7 @@ export default function EmployeeProductivityScoreSection() {
             <div>E: {data?.componentAverages?.evaluation ?? 0}</div>
             <div>T: {data?.componentAverages?.tasks ?? 0}</div>
             <div>R: {data?.componentAverages?.reportTiming ?? 0}</div>
+            <div>Tm: {data?.componentAverages?.teamProgress ?? 0}</div>
           </div>
         </div>
       </div>

@@ -1056,6 +1056,118 @@ export const shiftScore = {
   },
 };
 
+const tg = (path, options = {}) => request(`/team-goals${path}`, options);
+
+/** Department strategy, shift/team objectives, team leader questionnaires, management ratings. */
+export const teamGoals = {
+  getDepartment: () => tg('/department'),
+  putDepartment: (body) => tg('/department', { method: 'PUT', body: JSON.stringify(body) }),
+  /** Profile dashboard: team-scoped objectives only (read-only). */
+  listProfileTeamObjectives: () => tg('/profile/team-objectives'),
+  listObjectives: () => tg('/objectives'),
+  createObjective: (body) => tg('/objectives', { method: 'POST', body: JSON.stringify(body) }),
+  patchObjective: (id, body) => tg(`/objectives/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listTeamLeaders: () => tg('/team-leaders'),
+  assignTeamLeader: (user_id) => tg('/team-leaders', { method: 'POST', body: JSON.stringify({ user_id }) }),
+  removeTeamLeader: (userId) => tg(`/team-leaders/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
+  scheduleCohort: (work_date, shift_type = 'day') => {
+    const q = new URLSearchParams();
+    q.set('work_date', work_date);
+    q.set('shift_type', shift_type || 'day');
+    return tg(`/schedule-cohort?${q}`);
+  },
+  postRating: (body) => tg('/management/ratings', { method: 'POST', body: JSON.stringify(body) }),
+  listRatings: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.days != null) q.set('days', String(params.days));
+    const qs = q.toString();
+    return tg(`/management/ratings${qs ? `?${qs}` : ''}`);
+  },
+  listManagementQuestionnaires: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.days != null) q.set('days', String(params.days));
+    const qs = q.toString();
+    return tg(`/management/team-leader-questionnaires${qs ? `?${qs}` : ''}`);
+  },
+  teamScoresSummary: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.leader_id) q.set('leader_id', params.leader_id);
+    const qs = q.toString();
+    return tg(`/team-scores/summary${qs ? `?${qs}` : ''}`);
+  },
+  teamLeaderMe: () => tg('/team-leader/me'),
+  /** work_date YYYY-MM-DD; shift_type 'auto' | 'day' | 'night' — colleagues on that shift (excl. leader). */
+  teamLeaderTouchpointRoster: (work_date, shift_type = 'auto') => {
+    const q = new URLSearchParams();
+    q.set('work_date', work_date);
+    q.set('shift_type', shift_type || 'auto');
+    return tg(`/team-leader/touchpoint-roster?${q}`);
+  },
+  postQuestionnaire: (body) => tg('/team-leader/questionnaire', { method: 'POST', body: JSON.stringify(body) }),
+  listMyQuestionnaires: () => tg('/team-leader/questionnaires'),
+};
+
+const pev = (path, options = {}) => request(`/performance-evaluations${path}`, options);
+
+/** 360-style performance evaluations, management trends, auditor workflow. */
+export const performanceEvaluations = {
+  getCurrentEvaluationPeriod: () => pev('/evaluation-periods/current'),
+  listEvaluationPeriods: () => pev('/evaluation-periods'),
+  openEvaluationPeriod: (body) => pev('/evaluation-periods/open', { method: 'POST', body: JSON.stringify(body || {}) }),
+  closeEvaluationPeriod: (id) =>
+    pev(`/evaluation-periods/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({}) }),
+  listEvaluateeOptions: () => pev('/evaluatee-options'),
+  listQuestions: () => pev('/questions'),
+  createQuestion: (body) => pev('/questions', { method: 'POST', body: JSON.stringify(body) }),
+  patchQuestion: (id, body) => pev(`/questions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteQuestion: (id) => pev(`/questions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listMySubmissions: () => pev('/my-submissions'),
+  aboutMe: () => pev('/about-me'),
+  submissionDetail: (id) => pev(`/submissions/${encodeURIComponent(id)}/detail`),
+  submit: (body) => pev('/submissions', { method: 'POST', body: JSON.stringify(body) }),
+  saveEvaluateeImprovement: (body) => pev('/improvement/evaluatee', { method: 'POST', body: JSON.stringify(body) }),
+  trends: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.days != null) q.set('days', String(params.days));
+    const qs = q.toString();
+    return pev(`/trends${qs ? `?${qs}` : ''}`);
+  },
+  getManagementWorkspace: () => pev('/management/workspace'),
+  putManagementWorkspace: (body) => pev('/management/workspace', { method: 'PUT', body: JSON.stringify(body) }),
+  auditorQueue: () => pev('/auditor/queue'),
+  createAuditorReview: (body) => pev('/auditor/reviews', { method: 'POST', body: JSON.stringify(body) }),
+  listAuditorReviews: () => pev('/auditor/reviews'),
+  patchAuditorFollowUp: (id, body) =>
+    pev(`/auditor/reviews/${encodeURIComponent(id)}/follow-up`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listManagementAuditorReviews: () => pev('/management/auditor-reviews'),
+  patchManagementAuditorResponse: (id, body) =>
+    pev(`/management/auditor-reviews/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+};
+
+const uc = (path, options = {}) => request(`/user-career${path}`, options);
+
+/** Personal career plan, milestones, CV (Profile). */
+export const userCareer = {
+  getPlan: () => uc('/plan'),
+  putPlan: (body) => uc('/plan', { method: 'PUT', body: JSON.stringify(body) }),
+  listMilestones: () => uc('/milestones'),
+  createMilestone: (body) => uc('/milestones', { method: 'POST', body: JSON.stringify(body) }),
+  patchMilestone: (id, body) => uc(`/milestones/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteMilestone: (id) => uc(`/milestones/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listCv: () => uc('/cv'),
+  uploadCv: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetch(`${getApiBase()}/user-career/cv`, { method: 'POST', body: formData, credentials: 'include' }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    });
+  },
+  cvDownloadUrl: (id) => `${getApiBase()}/user-career/cv/${encodeURIComponent(id)}/download`,
+  deleteCv: (id) => uc(`/cv/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+};
+
 const to = (path, options = {}) => request(`/transport-operations${path}`, options);
 
 export const transportOperations = {

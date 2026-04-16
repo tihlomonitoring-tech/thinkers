@@ -24,6 +24,9 @@ const PAGE_ROLES = [
   { id: 'tracking_integration', label: 'Tracking & integration' },
   { id: 'fuel_supply_management', label: 'Fuel supply management' },
   { id: 'fuel_customer_orders', label: 'Customer diesel orders (portal)' },
+  { id: 'team_leader_admin', label: 'Team leader admin' },
+  { id: 'performance_evaluations', label: 'Performance evaluations' },
+  { id: 'auditor', label: 'Auditor' },
 ];
 
 function formatDate(d) {
@@ -776,6 +779,9 @@ export default function UserManagement() {
           <div className="p-4 border-b border-surface-100">
             <p className="text-sm text-surface-600">
               Accounts appear here after <strong>three failed sign-in attempts</strong> in a row. Unlocking clears the lock and resets the failure counter so the user can sign in again.
+            </p>
+            <p className="text-sm text-surface-600 mt-2">
+              If the locked user is the only super admin, they can still recover by using <strong>Forgot password</strong> on the sign-in page (after setting a new password, the lock is cleared). Anyone with database access can also run <code className="text-xs bg-surface-100 px-1 rounded">npm run db:unlock-user-login -- email@example.com</code> from the app repo with server <code className="text-xs bg-surface-100 px-1 rounded">.env</code>.
             </p>
           </div>
           <div className="overflow-x-auto">
