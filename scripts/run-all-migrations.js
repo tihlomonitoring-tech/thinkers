@@ -76,6 +76,7 @@ const SCRIPTS = [
   'db:contractor-driver-linked-truck',
   'db:contractor-messages-platform',
   'db:profile-management',
+  'db:employee-details',
   'db:profile-missing-tables',
   'db:shift-clock',
   'db:login-location',

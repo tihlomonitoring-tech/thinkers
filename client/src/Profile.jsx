@@ -10,6 +10,7 @@ import ProductivityScoreTab from './components/ProductivityScoreTab.jsx';
 import DepartmentStrategyView from './components/DepartmentStrategyView.jsx';
 import CareerDevelopmentHub from './components/CareerDevelopmentHub.jsx';
 import ColleagueEvaluationResultsTab from './components/ColleagueEvaluationResultsTab.jsx';
+import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import {
@@ -30,6 +31,7 @@ const TABS = [
   { id: 'career_development', label: 'Career & personal goals' },
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'leave', label: 'Leave application' },
+  { id: 'employee_details', label: 'Employee details' },
   { id: 'documents', label: 'Employee documents' },
   { id: 'disciplinary', label: 'Disciplinary & rewards' },
   { id: 'queries', label: 'Queries' },
@@ -388,7 +390,7 @@ export default function Profile() {
               <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-50">Profile</h2>
               <InfoHint
                 title="Profile help"
-                text="Your HR hub: work schedule, shift activity, leave, documents, disciplinary and rewards, queries, and growth records."
+                text="Your HR hub: work schedule, shift activity, leave, employee details (ID, address, next of kin, medical aid, banking, attachments), documents, disciplinary and rewards, queries, and growth records."
               />
             </div>
           </div>
@@ -823,6 +825,8 @@ export default function Profile() {
               onError={setError}
             />
           )}
+
+          {activeTab === 'employee_details' && <EmployeeDetailsTab onError={setError} />}
 
           {activeTab === 'documents' && (
             <DocumentsTab

@@ -81,6 +81,7 @@
     "db:contractor-driver-linked-truck": "node scripts/run-contractor-driver-linked-truck.js",
     "db:contractor-messages-platform": "node scripts/run-contractor-messages-platform.js",
     "db:profile-management": "node scripts/run-profile-management-schema.js",
+    "db:employee-details": "node scripts/run-employee-details-schema.js",
     "db:profile-missing-tables": "node scripts/run-create-missing-profile-tables.js",
     "db:shift-clock": "node scripts/run-shift-clock-schema.js",
     "db:login-location": "node scripts/run-login-location-schema.js",

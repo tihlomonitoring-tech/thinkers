@@ -45,6 +45,57 @@ function canAccessTenant(req, tenantId) {
   return tid === tenantId;
 }
 
+function normalizeEmployeeDetailsFolderName(name) {
+  const s = String(name ?? '').trim();
+  if (!s) return 'General';
+  return s.slice(0, 200);
+}
+
+function employeeDetailsFromRow(row) {
+  if (!row) {
+    return {
+      legalFirstNames: '',
+      legalSurname: '',
+      idDocumentNumber: '',
+      residentialAddress: '',
+      nextOfKinName: '',
+      nextOfKinRelationship: '',
+      nextOfKinPhone: '',
+      nextOfKinEmail: '',
+      medicalAidProvider: '',
+      medicalAidMemberNo: '',
+      medicalAidPlan: '',
+      medicalAidNotes: '',
+      bankName: '',
+      bankAccountHolder: '',
+      bankAccountNumber: '',
+      bankBranchCode: '',
+      bankAccountType: '',
+      updatedAt: null,
+    };
+  }
+  return {
+    legalFirstNames: getRow(row, 'legal_first_names') || '',
+    legalSurname: getRow(row, 'legal_surname') || '',
+    idDocumentNumber: getRow(row, 'id_document_number') || '',
+    residentialAddress: getRow(row, 'residential_address') || '',
+    nextOfKinName: getRow(row, 'next_of_kin_name') || '',
+    nextOfKinRelationship: getRow(row, 'next_of_kin_relationship') || '',
+    nextOfKinPhone: getRow(row, 'next_of_kin_phone') || '',
+    nextOfKinEmail: getRow(row, 'next_of_kin_email') || '',
+    medicalAidProvider: getRow(row, 'medical_aid_provider') || '',
+    medicalAidMemberNo: getRow(row, 'medical_aid_member_no') || '',
+    medicalAidPlan: getRow(row, 'medical_aid_plan') || '',
+    medicalAidNotes: getRow(row, 'medical_aid_notes') || '',
+    bankName: getRow(row, 'bank_name') || '',
+    bankAccountHolder: getRow(row, 'bank_account_holder') || '',
+    bankAccountNumber: getRow(row, 'bank_account_number') || '',
+    bankBranchCode: getRow(row, 'bank_branch_code') || '',
+    bankAccountType: getRow(row, 'bank_account_type') || '',
+    updatedAt: getRow(row, 'updated_at') || null,
+  };
+}
+
 const leaveUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -78,6 +129,23 @@ const documentUpload = multer({
   }),
   limits: { fileSize: 25 * 1024 * 1024 },
 }).single('file');
+
+const employeeDetailsAttachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tenantId = String(req.user?.tenant_id || 'anon');
+      const userId = String(req.user?.id || 'new');
+      const dir = path.join(uploadsBase, 'employee-details', tenantId, userId);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${Date.now()}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+}).array('files', 30);
 
 router.use(requireAuth);
 router.use(loadUser);
@@ -1300,6 +1368,306 @@ router.get('/documents/library', requirePageAccess('management'), async (req, re
       { tenantId }
     );
     res.json({ documents: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// —— Employee details (HR record: ID names, address, next of kin, medical aid, banking, attachments / folders) ——
+async function fetchEmployeeDetailsBundle(userId, tenantId) {
+  const det = await query(
+    `SELECT * FROM employee_details WHERE user_id = @userId AND tenant_id = @tenantId`,
+    { userId, tenantId }
+  );
+  const row = det.recordset?.[0];
+  const at = await query(
+    `SELECT id, file_name, folder_name, created_at FROM employee_detail_attachments
+     WHERE user_id = @userId AND tenant_id = @tenantId ORDER BY folder_name, created_at DESC`,
+    { userId, tenantId }
+  );
+  return {
+    details: employeeDetailsFromRow(row),
+    attachments: (at.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      file_name: getRow(r, 'file_name'),
+      folder_name: getRow(r, 'folder_name'),
+      created_at: getRow(r, 'created_at'),
+    })),
+  };
+}
+
+router.get('/employee-details', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const bundle = await fetchEmployeeDetailsBundle(req.user.id, tenantId);
+    res.json(bundle);
+  } catch (err) {
+    if ((err.message || '').includes('employee_details') || (err.message || '').includes('employee_detail_attachments')) {
+      return res.status(503).json({ error: 'Employee details tables are not installed. Run: npm run db:employee-details' });
+    }
+    next(err);
+  }
+});
+
+router.put('/employee-details', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const b = req.body || {};
+    const fields = {
+      legalFirstNames: b.legalFirstNames != null ? String(b.legalFirstNames).slice(0, 300) : null,
+      legalSurname: b.legalSurname != null ? String(b.legalSurname).slice(0, 300) : null,
+      idDocumentNumber: b.idDocumentNumber != null ? String(b.idDocumentNumber).slice(0, 80) : null,
+      residentialAddress: b.residentialAddress != null ? String(b.residentialAddress) : null,
+      nextOfKinName: b.nextOfKinName != null ? String(b.nextOfKinName).slice(0, 300) : null,
+      nextOfKinRelationship: b.nextOfKinRelationship != null ? String(b.nextOfKinRelationship).slice(0, 120) : null,
+      nextOfKinPhone: b.nextOfKinPhone != null ? String(b.nextOfKinPhone).slice(0, 120) : null,
+      nextOfKinEmail: b.nextOfKinEmail != null ? String(b.nextOfKinEmail).slice(0, 256) : null,
+      medicalAidProvider: b.medicalAidProvider != null ? String(b.medicalAidProvider).slice(0, 300) : null,
+      medicalAidMemberNo: b.medicalAidMemberNo != null ? String(b.medicalAidMemberNo).slice(0, 120) : null,
+      medicalAidPlan: b.medicalAidPlan != null ? String(b.medicalAidPlan).slice(0, 200) : null,
+      medicalAidNotes: b.medicalAidNotes != null ? String(b.medicalAidNotes) : null,
+      bankName: b.bankName != null ? String(b.bankName).slice(0, 200) : null,
+      bankAccountHolder: b.bankAccountHolder != null ? String(b.bankAccountHolder).slice(0, 300) : null,
+      bankAccountNumber: b.bankAccountNumber != null ? String(b.bankAccountNumber).slice(0, 80) : null,
+      bankBranchCode: b.bankBranchCode != null ? String(b.bankBranchCode).slice(0, 50) : null,
+      bankAccountType: b.bankAccountType != null ? String(b.bankAccountType).slice(0, 80) : null,
+    };
+    const existing = await query(
+      `SELECT id FROM employee_details WHERE user_id = @userId AND tenant_id = @tenantId`,
+      { userId, tenantId }
+    );
+    const exId = existing.recordset?.[0] && getRow(existing.recordset[0], 'id');
+    if (exId) {
+      await query(
+        `UPDATE employee_details SET
+          legal_first_names = @legalFirstNames, legal_surname = @legalSurname, id_document_number = @idDocumentNumber,
+          residential_address = @residentialAddress,
+          next_of_kin_name = @nextOfKinName, next_of_kin_relationship = @nextOfKinRelationship,
+          next_of_kin_phone = @nextOfKinPhone, next_of_kin_email = @nextOfKinEmail,
+          medical_aid_provider = @medicalAidProvider, medical_aid_member_no = @medicalAidMemberNo,
+          medical_aid_plan = @medicalAidPlan, medical_aid_notes = @medicalAidNotes,
+          bank_name = @bankName, bank_account_holder = @bankAccountHolder, bank_account_number = @bankAccountNumber,
+          bank_branch_code = @bankBranchCode, bank_account_type = @bankAccountType,
+          updated_at = SYSUTCDATETIME()
+         WHERE id = @id`,
+        {
+          id: exId,
+          legalFirstNames: fields.legalFirstNames,
+          legalSurname: fields.legalSurname,
+          idDocumentNumber: fields.idDocumentNumber,
+          residentialAddress: fields.residentialAddress,
+          nextOfKinName: fields.nextOfKinName,
+          nextOfKinRelationship: fields.nextOfKinRelationship,
+          nextOfKinPhone: fields.nextOfKinPhone,
+          nextOfKinEmail: fields.nextOfKinEmail,
+          medicalAidProvider: fields.medicalAidProvider,
+          medicalAidMemberNo: fields.medicalAidMemberNo,
+          medicalAidPlan: fields.medicalAidPlan,
+          medicalAidNotes: fields.medicalAidNotes,
+          bankName: fields.bankName,
+          bankAccountHolder: fields.bankAccountHolder,
+          bankAccountNumber: fields.bankAccountNumber,
+          bankBranchCode: fields.bankBranchCode,
+          bankAccountType: fields.bankAccountType,
+        }
+      );
+    } else {
+      await query(
+        `INSERT INTO employee_details (
+          tenant_id, user_id,
+          legal_first_names, legal_surname, id_document_number, residential_address,
+          next_of_kin_name, next_of_kin_relationship, next_of_kin_phone, next_of_kin_email,
+          medical_aid_provider, medical_aid_member_no, medical_aid_plan, medical_aid_notes,
+          bank_name, bank_account_holder, bank_account_number, bank_branch_code, bank_account_type
+        ) VALUES (
+          @tenantId, @userId,
+          @legalFirstNames, @legalSurname, @idDocumentNumber, @residentialAddress,
+          @nextOfKinName, @nextOfKinRelationship, @nextOfKinPhone, @nextOfKinEmail,
+          @medicalAidProvider, @medicalAidMemberNo, @medicalAidPlan, @medicalAidNotes,
+          @bankName, @bankAccountHolder, @bankAccountNumber, @bankBranchCode, @bankAccountType
+        )`,
+        { tenantId, userId, ...fields }
+      );
+    }
+    const bundle = await fetchEmployeeDetailsBundle(userId, tenantId);
+    res.json(bundle);
+  } catch (err) {
+    if ((err.message || '').includes('employee_details')) {
+      return res.status(503).json({ error: 'Employee details tables are not installed. Run: npm run db:employee-details' });
+    }
+    next(err);
+  }
+});
+
+router.post('/employee-details/attachments', requirePageAccess('profile'), employeeDetailsAttachmentUpload, async (req, res, next) => {
+  try {
+    const files = req.files;
+    if (!files || !files.length) return res.status(400).json({ error: 'No files' });
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const folderName = normalizeEmployeeDetailsFolderName(req.body?.folder_name);
+    for (const file of files) {
+      const rel = path.relative(path.join(process.cwd(), 'uploads'), file.path).replace(/\\/g, '/');
+      await query(
+        `INSERT INTO employee_detail_attachments (tenant_id, user_id, folder_name, file_name, file_path, uploaded_by)
+         VALUES (@tenantId, @userId, @folderName, @fileName, @filePath, @uploadedBy)`,
+        {
+          tenantId,
+          userId,
+          folderName,
+          fileName: file.originalname || file.filename,
+          filePath: rel,
+          uploadedBy: req.user.id,
+        }
+      );
+    }
+    const bundle = await fetchEmployeeDetailsBundle(userId, tenantId);
+    res.status(201).json(bundle);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/employee-details/attachments/:id/folder', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const folderName = normalizeEmployeeDetailsFolderName(req.body?.folder_name);
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.id;
+    const chk = await query(
+      `SELECT id FROM employee_detail_attachments WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId`,
+      { id, tenantId, userId }
+    );
+    if (!chk.recordset?.length) return res.status(404).json({ error: 'Not found' });
+    await query(`UPDATE employee_detail_attachments SET folder_name = @folderName WHERE id = @id`, { id, folderName });
+    const bundle = await fetchEmployeeDetailsBundle(userId, tenantId);
+    res.json(bundle);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/employee-details/attachments/bulk-folder', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
+    const folderName = normalizeEmployeeDetailsFolderName(req.body?.folder_name);
+    if (!ids.length) return res.status(400).json({ error: 'attachment_ids required' });
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.id;
+    for (const raw of ids) {
+      const id = String(raw);
+      const chk = await query(
+        `SELECT id FROM employee_detail_attachments WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId`,
+        { id, tenantId, userId }
+      );
+      if (chk.recordset?.length) {
+        await query(`UPDATE employee_detail_attachments SET folder_name = @folderName WHERE id = @id`, { id, folderName });
+      }
+    }
+    const bundle = await fetchEmployeeDetailsBundle(userId, tenantId);
+    res.json(bundle);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/employee-details/attachments/:id', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.id;
+    const result = await query(
+      `SELECT file_path FROM employee_detail_attachments WHERE id = @id AND tenant_id = @tenantId AND user_id = @userId`,
+      { id, tenantId, userId }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const fullPath = path.join(process.cwd(), 'uploads', getRow(row, 'file_path'));
+    await query(`DELETE FROM employee_detail_attachments WHERE id = @id`, { id });
+    if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    const bundle = await fetchEmployeeDetailsBundle(userId, tenantId);
+    res.json(bundle);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/employee-details/attachments/:id/download', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT a.file_path, a.file_name, a.user_id, a.tenant_id FROM employee_detail_attachments a WHERE a.id = @id`,
+      { id }
+    );
+    const row = result.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    if (getRow(row, 'user_id') !== req.user.id && !req.user.page_roles?.includes('management')) return res.status(403).json({ error: 'Forbidden' });
+    const fullPath = path.join(process.cwd(), 'uploads', getRow(row, 'file_path'));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    res.download(fullPath, getRow(row, 'file_name') || 'attachment');
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/employee-details/directory', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ employees: [] });
+    const result = await query(
+      `SELECT u.id AS user_id, u.full_name, u.email,
+              ed.updated_at AS details_updated_at
+       FROM users u
+       LEFT JOIN employee_details ed ON ed.user_id = u.id AND ed.tenant_id = @tenantId
+       WHERE u.status = N'active'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+       ORDER BY u.full_name`,
+      { tenantId }
+    );
+    res.json({
+      employees: (result.recordset || []).map((r) => ({
+        user_id: getRow(r, 'user_id'),
+        full_name: getRow(r, 'full_name'),
+        email: getRow(r, 'email'),
+        details_updated_at: getRow(r, 'details_updated_at') || null,
+      })),
+    });
+  } catch (err) {
+    if ((err.message || '').includes('employee_details')) {
+      return res.status(503).json({ error: 'Employee details tables are not installed. Run: npm run db:employee-details' });
+    }
+    next(err);
+  }
+});
+
+router.get('/employee-details/user/:userId', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const mem = await query(
+      `SELECT 1 AS ok FROM users u
+       WHERE u.id = @userId AND u.status = N'active'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`,
+      { userId, tenantId }
+    );
+    if (!mem.recordset?.length) return res.status(404).json({ error: 'User not in tenant' });
+    const bundle = await fetchEmployeeDetailsBundle(userId, tenantId);
+    const urow = await query(`SELECT full_name, email FROM users WHERE id = @userId`, { userId });
+    const u = urow.recordset?.[0];
+    res.json({
+      ...bundle,
+      user: {
+        id: userId,
+        full_name: u ? getRow(u, 'full_name') : null,
+        email: u ? getRow(u, 'email') : null,
+      },
+    });
   } catch (err) {
     next(err);
   }

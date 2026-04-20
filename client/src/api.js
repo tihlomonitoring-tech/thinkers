@@ -947,6 +947,26 @@ export const profileManagement = {
     downloadUrl: (id) => `${API}/profile-management/documents/${id}/download`,
     library: () => pm('/documents/library'),
   },
+  employeeDetails: {
+    get: () => pm('/employee-details'),
+    save: (body) => pm('/employee-details', { method: 'PUT', body: JSON.stringify(body) }),
+    uploadAttachments: (files, folderName) => {
+      const formData = new FormData();
+      Array.from(files).forEach((f) => formData.append('files', f));
+      if (folderName) formData.append('folder_name', folderName);
+      return fetch(`${API}/profile-management/employee-details/attachments`, { method: 'POST', body: formData, credentials: 'include' }).then((res) =>
+        res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))
+      );
+    },
+    updateAttachmentFolder: (id, folder_name) =>
+      pm(`/employee-details/attachments/${encodeURIComponent(id)}/folder`, { method: 'PATCH', body: JSON.stringify({ folder_name }) }),
+    bulkAttachmentFolders: (attachment_ids, folder_name) =>
+      pm('/employee-details/attachments/bulk-folder', { method: 'PATCH', body: JSON.stringify({ attachment_ids, folder_name }) }),
+    deleteAttachment: (id) => pm(`/employee-details/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    downloadUrl: (id) => `${API}/profile-management/employee-details/attachments/${encodeURIComponent(id)}/download`,
+    directory: () => pm('/employee-details/directory'),
+    getForUser: (userId) => pm(`/employee-details/user/${encodeURIComponent(userId)}`),
+  },
   warnings: { list: () => pm('/warnings'), listAll: () => pm('/warnings/all'), create: (body) => pm('/warnings', { method: 'POST', body: JSON.stringify(body) }) },
   rewards: { list: () => pm('/rewards'), listAll: () => pm('/rewards/all'), create: (body) => pm('/rewards', { method: 'POST', body: JSON.stringify(body) }) },
   queries: {

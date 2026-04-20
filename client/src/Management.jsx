@@ -9,6 +9,7 @@ import PerformanceEvaluationTrendsSection from './components/PerformanceEvaluati
 import PerformanceEvaluationQuestionsEditor from './components/PerformanceEvaluationQuestionsEditor.jsx';
 import PerformanceEvaluationPeriodSection from './components/PerformanceEvaluationPeriodSection.jsx';
 import PerformanceEvaluationAuditorResultsSection from './components/PerformanceEvaluationAuditorResultsSection.jsx';
+import EmployeeDetailsManagementSection from './components/EmployeeDetailsManagementSection.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
@@ -19,6 +20,7 @@ const SECTIONS = [
   { id: 'schedule-events', label: 'Schedule events' },
   { id: 'leave', label: 'Leave applications' },
   { id: 'documents', label: 'Documents library' },
+  { id: 'employee-details', label: 'Employee details' },
   { id: 'warnings-rewards', label: 'Warnings & rewards' },
   { id: 'queries', label: 'Queries (grievances)' },
   { id: 'evaluations', label: 'Evaluations' },
@@ -464,6 +466,8 @@ export default function Management() {
               )}
             </div>
           )}
+
+          {activeSection === 'employee-details' && <EmployeeDetailsManagementSection onError={setError} />}
 
           {activeSection === 'warnings-rewards' && (
             <WarningsRewardsSection
