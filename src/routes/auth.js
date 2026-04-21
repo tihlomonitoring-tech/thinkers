@@ -9,6 +9,7 @@ import { passwordResetHtml } from '../lib/emailTemplates.js';
 import { parseClientCoords } from '../lib/geo.js';
 import { getClientIp } from '../lib/clientIp.js';
 import { insertUserLoginActivity } from '../lib/userLoginActivity.js';
+import { resolveUserTenantContext } from '../lib/tenantPrimaryPreference.js';
 
 const router = Router();
 const SALT_ROUNDS = 10;
@@ -127,13 +128,23 @@ router.post('/login', async (req, res, next) => {
       const { PAGE_IDS } = await import('./users.js');
       page_roles = PAGE_IDS.slice();
     }
-    const sessionTenantId = user.tenant_id || tenant_ids[0] || null;
-    let tenantPlanForAccess = user.tenant_plan;
+    const tenantCtx = await resolveUserTenantContext(query, {
+      userId: user.id,
+      sessionTenantId: null,
+      usersRowTenantId: user.tenant_id,
+      usersRowTenantName: user.tenant_name,
+      usersRowTenantPlan: user.tenant_plan,
+    });
+    if (tenantCtx.tenant_ids.length) tenant_ids = tenantCtx.tenant_ids;
+    const sessionTenantId = tenantCtx.currentTenantId || user.tenant_id || tenant_ids[0] || null;
+    let tenantPlanForAccess = tenantCtx.tenant_plan ?? user.tenant_plan;
+    let tenantNameForResponse = tenantCtx.tenant_name ?? user.tenant_name;
     if (sessionTenantId && String(sessionTenantId) !== String(user.tenant_id ?? '')) {
       try {
-        const tp = await query(`SELECT [plan] AS p FROM tenants WHERE id = @id`, { id: sessionTenantId });
+        const tp = await query(`SELECT [plan] AS p, name AS n FROM tenants WHERE id = @id`, { id: sessionTenantId });
         const row = tp.recordset?.[0];
         tenantPlanForAccess = row?.p ?? row?.P ?? tenantPlanForAccess;
+        tenantNameForResponse = row?.n ?? row?.N ?? tenantNameForResponse;
       } catch (_) {}
     }
     if (
@@ -193,7 +204,7 @@ router.post('/login', async (req, res, next) => {
         id: user.id,
         tenant_id: req.session.tenantId,
         tenant_ids: tenant_ids,
-        tenant_name: user.tenant_name,
+        tenant_name: tenantNameForResponse,
         tenant_plan: tenantPlanForAccess,
         email: user.email,
         full_name: user.full_name,
@@ -273,25 +284,21 @@ router.get('/me', async (req, res, next) => {
       const { PAGE_IDS } = await import('./users.js');
       page_roles = PAGE_IDS.slice();
     }
-    let tenant_ids = [];
-    try {
-      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @id`, { id: req.session.userId });
-      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
-    } catch (_) {}
-    if (tenant_ids.length === 0 && get(row, 'tenant_id')) tenant_ids = [get(row, 'tenant_id')];
     const primaryTenantId = get(row, 'tenant_id');
-    const currentTenantId = req.session.tenantId && tenant_ids.includes(req.session.tenantId) ? req.session.tenantId : (primaryTenantId || tenant_ids[0] || null);
-    let tenantName = get(row, 'tenant_name');
-    let tenantPlan = get(row, 'tenant_plan');
-    if (currentTenantId && currentTenantId !== primaryTenantId) {
-      try {
-        const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: currentTenantId });
-        if (trow.recordset?.[0]) {
-          tenantName = trow.recordset[0].name ?? trow.recordset[0].name;
-          tenantPlan = trow.recordset[0].plan ?? trow.recordset[0].plan;
-        }
-      } catch (_) {}
+    const meCtx = await resolveUserTenantContext(query, {
+      userId: req.session.userId,
+      sessionTenantId: req.session.tenantId,
+      usersRowTenantId: primaryTenantId,
+      usersRowTenantName: get(row, 'tenant_name'),
+      usersRowTenantPlan: get(row, 'tenant_plan'),
+    });
+    const tenant_ids = meCtx.tenant_ids;
+    const currentTenantId = meCtx.currentTenantId;
+    if (currentTenantId && String(currentTenantId) !== String(req.session.tenantId || '')) {
+      req.session.tenantId = currentTenantId;
     }
+    let tenantName = meCtx.tenant_name;
+    let tenantPlan = meCtx.tenant_plan;
     if (!hasRequiredPageAssignments({ role, tenant_plan: tenantPlan, page_roles })) {
       await new Promise((resolve, reject) => {
         req.session.destroy((err) => (err ? reject(err) : resolve()));
@@ -301,7 +308,7 @@ router.get('/me', async (req, res, next) => {
     res.json({
       user: {
         id: get(row, 'id'),
-        tenant_id: currentTenantId,
+        tenant_id: currentTenantId || null,
         tenant_ids,
         tenant_name: tenantName,
         tenant_plan: tenantPlan,

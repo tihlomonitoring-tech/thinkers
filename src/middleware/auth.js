@@ -1,4 +1,5 @@
 import { query } from '../db.js';
+import { resolveUserTenantContext } from '../lib/tenantPrimaryPreference.js';
 
 /** Page IDs for app pages — keep in sync with `src/routes/users.js` `PAGE_IDS`. Used for super_admin page_roles. */
 const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'team_leader_admin', 'performance_evaluations', 'auditor'];
@@ -56,26 +57,21 @@ export async function loadUser(req, res, next) {
           'This account is locked after failed sign-in attempts. A super administrator can unlock it under User management → Block requests, or complete Forgot password to clear the lock after setting a new password.',
       });
     }
-    let tenant_ids = [];
-    try {
-      const ut = await query(`SELECT tenant_id FROM user_tenants WHERE user_id = @userId`, { userId: req.session.userId });
-      tenant_ids = (ut.recordset || []).map((r) => r.tenant_id ?? r.tenant_Id).filter(Boolean);
-    } catch (_) {}
     const primaryTenantId = get(row, 'tenant_id');
-    if (tenant_ids.length === 0 && primaryTenantId) tenant_ids = [primaryTenantId];
-    const sessionTenantId = req.session.tenantId;
-    const currentTenantId = (sessionTenantId && tenant_ids.includes(sessionTenantId)) ? sessionTenantId : (primaryTenantId || tenant_ids[0] || null);
-    let tenant_name = get(row, 'tenant_name');
-    let tenant_plan = get(row, 'tenant_plan');
-    if (currentTenantId && currentTenantId !== primaryTenantId) {
-      try {
-        const trow = await query(`SELECT name, [plan] FROM tenants WHERE id = @id`, { id: currentTenantId });
-        if (trow.recordset?.[0]) {
-          tenant_name = trow.recordset[0].name ?? trow.recordset[0].name;
-          tenant_plan = trow.recordset[0].plan ?? trow.recordset[0].plan;
-        }
-      } catch (_) {}
+    const ctx = await resolveUserTenantContext(query, {
+      userId: req.session.userId,
+      sessionTenantId: req.session.tenantId,
+      usersRowTenantId: primaryTenantId,
+      usersRowTenantName: get(row, 'tenant_name'),
+      usersRowTenantPlan: get(row, 'tenant_plan'),
+    });
+    const tenant_ids = ctx.tenant_ids;
+    const currentTenantId = ctx.currentTenantId;
+    if (currentTenantId && String(currentTenantId) !== String(req.session.tenantId || '')) {
+      req.session.tenantId = currentTenantId;
     }
+    let tenant_name = ctx.tenant_name;
+    let tenant_plan = ctx.tenant_plan;
     let page_roles = [];
     try {
       const pr = await query(`SELECT page_id FROM user_page_roles WHERE user_id = @userId`, { userId: req.session.userId });
