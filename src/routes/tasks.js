@@ -60,6 +60,51 @@ function canAccessTaskTenant(req, tenantId) {
   return tid === tenantId;
 }
 
+const TASK_CATEGORY_VALUES = ['sales', 'departmental', 'thinkers_afrika'];
+
+const TASK_PROGRESS_LEGEND_VALUES = ['not_started', 'early', 'active', 'on_hold', 'proposal', 'near_complete', 'finalised'];
+
+function normalizeProgressLegend(raw) {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_');
+  if (TASK_PROGRESS_LEGEND_VALUES.includes(s)) return s;
+  return 'not_started';
+}
+
+function normalizeTaskCategory(raw) {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_');
+  if (s === 'thinkers_afrika_company' || s === 'thinkers_afrika') return 'thinkers_afrika';
+  if (TASK_CATEGORY_VALUES.includes(s)) return s;
+  return 'departmental';
+}
+
+/** Active user in tenant (primary tenant_id or user_tenants). */
+async function isUserActiveInTenant(userId, tenantId) {
+  if (!userId || !tenantId) return false;
+  const r = await query(
+    `SELECT 1 AS ok FROM users u
+     WHERE u.id = @userId AND u.status = N'active'
+       AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`,
+    { userId, tenantId }
+  );
+  return (r.recordset || []).length > 0;
+}
+
+const TASK_LIST_SORT = {
+  '': 't.created_at DESC',
+  created: 't.created_at DESC',
+  due_asc: 't.due_date ASC, t.created_at DESC',
+  due_desc: 't.due_date DESC, t.created_at DESC',
+  start_asc: 't.start_date ASC, t.created_at DESC',
+};
+
 /** Check if current user is assigned to the task (for progress/comments/reminders) */
 async function isTaskAssignee(taskId, userId) {
   const r = await query(
@@ -133,10 +178,27 @@ router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess('tasks'));
 
-/** List tasks: filter by assigned_to_me, created_by_me, status; tenant-scoped */
+/** List tasks: filters (status, category, search, due range, assignee user), sort, pagination */
 router.get('/', async (req, res, next) => {
   try {
-    const { assigned_to_me, created_by_me, status, page = 1, limit = 50 } = req.query;
+    const {
+      assigned_to_me,
+      created_by_me,
+      status,
+      page = 1,
+      limit = 50,
+      category,
+      search,
+      due_from,
+      due_to,
+      start_from,
+      start_to,
+      user_id,
+      leader_id,
+      reviewer_id,
+      progress_legend,
+      sort,
+    } = req.query;
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
 
@@ -158,6 +220,60 @@ router.get('/', async (req, res, next) => {
       where += ' AND t.[status] = @status';
       params.status = status;
     }
+    if (category && category !== 'all') {
+      where += ' AND t.category = @category';
+      params.category = normalizeTaskCategory(category);
+    }
+    const qSearch = search != null ? String(search).trim() : '';
+    if (qSearch) {
+      const safe = qSearch.replace(/%/g, '').replace(/_/g, '').replace(/[[\]]/g, '');
+      if (safe) {
+        where += ' AND (t.title LIKE @search OR t.[description] LIKE @search)';
+        params.search = `%${safe}%`;
+      }
+    }
+    const df = due_from != null ? String(due_from).trim().slice(0, 10) : '';
+    if (df && /^\d{4}-\d{2}-\d{2}$/.test(df)) {
+      where += ' AND t.due_date IS NOT NULL AND CAST(t.due_date AS DATE) >= CAST(@dueFrom AS DATE)';
+      params.dueFrom = df;
+    }
+    const dt = due_to != null ? String(due_to).trim().slice(0, 10) : '';
+    if (dt && /^\d{4}-\d{2}-\d{2}$/.test(dt)) {
+      where += ' AND t.due_date IS NOT NULL AND CAST(t.due_date AS DATE) <= CAST(@dueTo AS DATE)';
+      params.dueTo = dt;
+    }
+    if (user_id && String(user_id).trim() && String(user_id).trim() !== 'all') {
+      where += ' AND EXISTS (SELECT 1 FROM task_assignments a2 WHERE a2.task_id = t.id AND a2.user_id = @filterUserId)';
+      params.filterUserId = String(user_id).trim();
+    }
+    const lf = leader_id != null ? String(leader_id).trim() : '';
+    if (lf && lf !== 'all') {
+      where += ' AND t.task_leader_id = @leaderId';
+      params.leaderId = lf;
+    }
+    const rf = reviewer_id != null ? String(reviewer_id).trim() : '';
+    if (rf && rf !== 'all') {
+      where += ' AND t.task_reviewer_id = @reviewerId';
+      params.reviewerId = rf;
+    }
+    const sf = start_from != null ? String(start_from).trim().slice(0, 10) : '';
+    if (sf && /^\d{4}-\d{2}-\d{2}$/.test(sf)) {
+      where += ' AND t.start_date IS NOT NULL AND CAST(t.start_date AS DATE) >= CAST(@startFrom AS DATE)';
+      params.startFrom = sf;
+    }
+    const st = start_to != null ? String(start_to).trim().slice(0, 10) : '';
+    if (st && /^\d{4}-\d{2}-\d{2}$/.test(st)) {
+      where += ' AND t.start_date IS NOT NULL AND CAST(t.start_date AS DATE) <= CAST(@startTo AS DATE)';
+      params.startTo = st;
+    }
+    const pl = progress_legend != null ? String(progress_legend).trim().toLowerCase() : '';
+    if (pl && pl !== 'all' && TASK_PROGRESS_LEGEND_VALUES.includes(pl)) {
+      where += ' AND t.progress_legend = @progressLegend';
+      params.progressLegend = pl;
+    }
+
+    const sortKey = String(sort || '').toLowerCase();
+    const orderBy = TASK_LIST_SORT[sortKey] || TASK_LIST_SORT.created;
 
     const countResult = await query(
       `SELECT COUNT(*) AS total FROM tasks t ${where}`,
@@ -167,12 +283,15 @@ router.get('/', async (req, res, next) => {
 
     const result = await query(
       `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status],
-              t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
-              u.full_name AS created_by_name
+              t.category, t.progress_legend, t.task_leader_id, t.task_reviewer_id, t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
+              u.full_name AS created_by_name,
+              ul.full_name AS task_leader_name, ur.full_name AS task_reviewer_name
        FROM tasks t
        LEFT JOIN users u ON u.id = t.created_by
+       LEFT JOIN users ul ON ul.id = t.task_leader_id
+       LEFT JOIN users ur ON ur.id = t.task_reviewer_id
        ${where}
-       ORDER BY t.created_at DESC
+       ORDER BY ${orderBy}
        OFFSET @offset ROWS FETCH NEXT @limitNum ROWS ONLY`,
       params
     );
@@ -214,7 +333,18 @@ router.get('/', async (req, res, next) => {
 /** Create task: title, description, key_actions (JSON array), start_date, due_date, assignee_ids[]; send email to assignees */
 router.post('/', async (req, res, next) => {
   try {
-    const { title, description, key_actions, start_date, due_date, assignee_ids } = req.body || {};
+    const {
+      title,
+      description,
+      key_actions,
+      start_date,
+      due_date,
+      assignee_ids,
+      category,
+      task_leader_id,
+      task_reviewer_id,
+      progress_legend,
+    } = req.body || {};
     if (!title || !String(title).trim()) return res.status(400).json({ error: 'Task title is required' });
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
@@ -224,11 +354,22 @@ router.post('/', async (req, res, next) => {
       : (typeof key_actions === 'string' ? key_actions : null);
     const startDate = start_date || null;
     const dueDate = due_date || null;
+    const cat = normalizeTaskCategory(category);
+    const progLegend = normalizeProgressLegend(progress_legend);
+
+    let leaderId = task_leader_id && String(task_leader_id).trim() ? String(task_leader_id).trim() : null;
+    let reviewerId = task_reviewer_id && String(task_reviewer_id).trim() ? String(task_reviewer_id).trim() : null;
+    if (leaderId && !(await isUserActiveInTenant(leaderId, tenantId))) {
+      return res.status(400).json({ error: 'Task leader must be an active user in this tenant' });
+    }
+    if (reviewerId && !(await isUserActiveInTenant(reviewerId, tenantId))) {
+      return res.status(400).json({ error: 'Task reviewer must be an active user in this tenant' });
+    }
 
     const insertResult = await query(
-      `INSERT INTO tasks (tenant_id, title, [description], key_actions, start_date, due_date, created_by)
-       OUTPUT INSERTED.id, INSERTED.title, INSERTED.created_at
-       VALUES (@tenantId, @title, @description, @keyActions, @startDate, @dueDate, @createdBy)`,
+      `INSERT INTO tasks (tenant_id, title, [description], key_actions, start_date, due_date, category, progress_legend, task_leader_id, task_reviewer_id, created_by)
+       OUTPUT INSERTED.id, INSERTED.title, INSERTED.created_at, INSERTED.category, INSERTED.progress_legend, INSERTED.task_leader_id, INSERTED.task_reviewer_id
+       VALUES (@tenantId, @title, @description, @keyActions, @startDate, @dueDate, @category, @progressLegend, @taskLeaderId, @taskReviewerId, @createdBy)`,
       {
         tenantId,
         title: String(title).trim(),
@@ -236,6 +377,10 @@ router.post('/', async (req, res, next) => {
         keyActions: keyActionsStr,
         startDate,
         dueDate,
+        category: cat,
+        progressLegend: progLegend,
+        taskLeaderId: leaderId,
+        taskReviewerId: reviewerId,
         createdBy: req.user.id,
       }
     );
@@ -293,6 +438,10 @@ router.post('/', async (req, res, next) => {
         key_actions: key_actions || [],
         start_date: startDate,
         due_date: dueDate,
+        category: getRow(task, 'category') || cat,
+        progress_legend: getRow(task, 'progress_legend') || progLegend,
+        task_leader_id: getRow(task, 'task_leader_id') ?? leaderId,
+        task_reviewer_id: getRow(task, 'task_reviewer_id') ?? reviewerId,
         progress: 0,
         status: 'not_started',
         created_by: req.user.id,
@@ -311,10 +460,13 @@ router.get('/:id', async (req, res, next) => {
     const { id } = req.params;
     const result = await query(
       `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status],
-              t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
-              u.full_name AS created_by_name, u.email AS created_by_email
+              t.category, t.progress_legend, t.task_leader_id, t.task_reviewer_id, t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
+              u.full_name AS created_by_name, u.email AS created_by_email,
+              ul.full_name AS task_leader_name, ur.full_name AS task_reviewer_name
        FROM tasks t
        LEFT JOIN users u ON u.id = t.created_by
+       LEFT JOIN users ul ON ul.id = t.task_leader_id
+       LEFT JOIN users ur ON ur.id = t.task_reviewer_id
        WHERE t.id = @id`,
       { id }
     );
@@ -446,7 +598,20 @@ router.get('/:id', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { progress, progress_note, status, title, description, key_actions, start_date, due_date } = req.body || {};
+    const {
+      progress,
+      progress_note,
+      status,
+      title,
+      description,
+      key_actions,
+      start_date,
+      due_date,
+      category,
+      task_leader_id,
+      task_reviewer_id,
+      progress_legend,
+    } = req.body || {};
 
     const existing = await query(`SELECT id, tenant_id, created_by, [status], title FROM tasks WHERE id = @id`, { id });
     const row = existing.recordset[0];
@@ -481,6 +646,31 @@ router.patch('/:id', async (req, res, next) => {
     }
     if (start_date !== undefined) { updates.push('start_date = @startDate'); params.startDate = start_date || null; }
     if (due_date !== undefined) { updates.push('due_date = @dueDate'); params.dueDate = due_date || null; }
+    if (category !== undefined) {
+      updates.push('category = @category');
+      params.category = normalizeTaskCategory(category);
+    }
+    const tenantId = getRow(row, 'tenant_id');
+    if (task_leader_id !== undefined) {
+      const lid = task_leader_id && String(task_leader_id).trim() ? String(task_leader_id).trim() : null;
+      if (lid && !(await isUserActiveInTenant(lid, tenantId))) {
+        return res.status(400).json({ error: 'Task leader must be an active user in this tenant' });
+      }
+      updates.push('task_leader_id = @taskLeaderId');
+      params.taskLeaderId = lid;
+    }
+    if (task_reviewer_id !== undefined) {
+      const rid = task_reviewer_id && String(task_reviewer_id).trim() ? String(task_reviewer_id).trim() : null;
+      if (rid && !(await isUserActiveInTenant(rid, tenantId))) {
+        return res.status(400).json({ error: 'Task reviewer must be an active user in this tenant' });
+      }
+      updates.push('task_reviewer_id = @taskReviewerId');
+      params.taskReviewerId = rid;
+    }
+    if (progress_legend !== undefined) {
+      updates.push('progress_legend = @progressLegend');
+      params.progressLegend = normalizeProgressLegend(progress_legend);
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     updates.push('updated_at = SYSUTCDATETIME()');
@@ -522,7 +712,13 @@ router.patch('/:id', async (req, res, next) => {
     }
 
     const updatedResult = await query(
-      `SELECT id, title, [description], key_actions, start_date, due_date, progress, [status], completed_at, completed_by, updated_at FROM tasks WHERE id = @id`,
+      `SELECT t.id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status], t.category,
+              t.progress_legend, t.task_leader_id, t.task_reviewer_id, t.completed_at, t.completed_by, t.updated_at,
+              ul.full_name AS task_leader_name, ur.full_name AS task_reviewer_name
+       FROM tasks t
+       LEFT JOIN users ul ON ul.id = t.task_leader_id
+       LEFT JOIN users ur ON ur.id = t.task_reviewer_id
+       WHERE t.id = @id`,
       { id }
     );
     const updated = updatedResult.recordset[0];
@@ -861,15 +1057,20 @@ router.patch('/:id/reminders/:reminderId/dismiss', async (req, res, next) => {
   }
 });
 
-/** List users in same tenant (for assignee picker) */
+/** List users in same tenant who have Tasks page access (for assignee / board lanes / leader / reviewer pickers). */
 router.get('/users/tenant', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.json({ users: [] });
+    const tenantClause = `(u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`;
     const result = await query(
-      `SELECT u.id, u.full_name, u.email FROM users u
-       INNER JOIN user_tenants ut ON ut.user_id = u.id AND ut.tenant_id = @tenantId
-       WHERE u.status = 'active'
+      `SELECT DISTINCT u.id, u.full_name, u.email FROM users u
+       WHERE u.status = N'active'
+         AND ${tenantClause}
+         AND (
+           EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'tasks')
+           OR u.role = N'super_admin'
+         )
        ORDER BY u.full_name`,
       { tenantId }
     );

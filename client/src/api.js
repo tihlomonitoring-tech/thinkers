@@ -1143,7 +1143,7 @@ export const performanceEvaluations = {
   deleteQuestion: (id) => pev(`/questions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listMySubmissions: () => pev('/my-submissions'),
   aboutMe: () => pev('/about-me'),
-  submissionDetail: (id) => pev(`/submissions/${encodeURIComponent(id)}/detail`),
+  submissionDetail: (id, fetchOpts = {}) => pev(`/submissions/${encodeURIComponent(id)}/detail`, fetchOpts),
   submit: (body) => pev('/submissions', { method: 'POST', body: JSON.stringify(body) }),
   saveEvaluateeImprovement: (body) => pev('/improvement/evaluatee', { method: 'POST', body: JSON.stringify(body) }),
   trends: (params = {}) => {

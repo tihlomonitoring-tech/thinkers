@@ -23,6 +23,8 @@ import {
   toYmdFromDbOrString,
   wallMonthYearInAppZone,
 } from './lib/appTime.js';
+import { taskLegendDotClass, taskLegendSurfaceClass, taskLegendLabel } from './lib/taskProgressLegend.js';
+import TaskColourLegend from './components/TaskColourLegend.jsx';
 
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
@@ -198,6 +200,19 @@ export default function Profile() {
     });
     return m;
   }, [swapRequests]);
+
+  /** Tasks I am assigned to, grouped by due date (for calendar dots). */
+  const tasksByDueDate = useMemo(() => {
+    const m = {};
+    for (const t of myTasks || []) {
+      if (!t?.due_date) continue;
+      const d = isoDate(t.due_date);
+      if (!d) continue;
+      if (!m[d]) m[d] = [];
+      m[d].push(t);
+    }
+    return m;
+  }, [myTasks]);
 
   /** Per date: selected colleagues — same shift as you, other shift, or anyone (for days you are off). */
   const colleagueCalendarByDate = useMemo(() => {
@@ -652,6 +667,9 @@ export default function Profile() {
                       const maxPeerLines = 5;
                       const peerLinesShown = peerLines.slice(0, maxPeerLines);
                       const peerOverflow = peerLines.length - peerLinesShown.length;
+                      const tasksThisDay = tasksByDueDate[dateStr] || [];
+                      const taskDots = tasksThisDay.slice(0, 5);
+                      const taskDotOverflow = tasksThisDay.length - taskDots.length;
                       return (
                         <button
                           key={day}
@@ -691,28 +709,46 @@ export default function Profile() {
                           {peerOverflow > 0 && (
                             <span className="text-[9px] text-surface-500 leading-tight">+{peerOverflow} more</span>
                           )}
+                          {taskDots.length > 0 && (
+                            <div className="mt-auto pt-0.5 w-full flex flex-wrap justify-center items-center gap-0.5 min-h-[0.5rem] border-t border-surface-100/80">
+                              {taskDots.map((tk) => (
+                                <span
+                                  key={tk.id}
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${taskLegendDotClass(tk.progress_legend)}`}
+                                  title={`${tk.title || 'Task'} · ${taskLegendLabel(tk.progress_legend)}`}
+                                />
+                              ))}
+                              {taskDotOverflow > 0 && (
+                                <span className="text-[8px] text-surface-500 leading-none">+{taskDotOverflow}</span>
+                              )}
+                            </div>
+                          )}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-                <div className="px-4 py-2 border-t border-surface-100 flex flex-wrap items-center gap-2 text-xs text-surface-500">
-                  <InfoHint
-                    title="Calendar legend"
-                    text="Colors match shift types. Small dots on a day mark shift swap activity."
-                    bullets={[
-                      `Day: ${SHIFT_DAY}; Night: ${SHIFT_NIGHT}.`,
-                      !ccTeamPanelCollapsed
-                        ? 'Extra lines under the day list selected Command Centre teammates (Name · Day/Night).'
-                        : 'Teammate lines are hidden — use Show team picker to compare shifts on the calendar.',
-                      'Amber dot: swap awaiting colleague. Violet dot: awaiting management.',
-                    ]}
-                  />
-                  <span className="hidden sm:inline text-surface-300">|</span>
-                  <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day</span>
-                  <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night</span>
-                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap peer</span>
-                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap mgmt</span>
+                <div className="px-4 py-2 border-t border-surface-100 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-surface-500">
+                    <InfoHint
+                      title="Calendar legend"
+                      text="Shift colours, swap dots, and task progress dots (tasks assigned to you with a due date)."
+                      bullets={[
+                        `Day: ${SHIFT_DAY}; Night: ${SHIFT_NIGHT}.`,
+                        !ccTeamPanelCollapsed
+                          ? 'Extra lines under the day list selected Command Centre teammates (Name · Day/Night).'
+                          : 'Teammate lines are hidden — use Show team picker to compare shifts on the calendar.',
+                        'Amber dot: swap awaiting colleague. Violet dot: awaiting management.',
+                        'Bottom row on a day: muted dots = your tasks due that day (colour = progress legend set on the task).',
+                      ]}
+                    />
+                    <span className="hidden sm:inline text-surface-300">|</span>
+                    <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day</span>
+                    <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night</span>
+                    <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap peer</span>
+                    <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap mgmt</span>
+                  </div>
+                  <TaskColourLegend className="text-[10px] gap-x-2 gap-y-1 text-surface-600" />
                 </div>
               </div>
               </div>
@@ -1354,9 +1390,17 @@ function ScheduleSidePanel({
           {tasksOnDate.length === 0 ? (
             <p className="text-surface-500">None</p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="space-y-1.5">
               {tasksOnDate.map((t) => (
-                <li key={t.id} className="text-surface-800">{t.title}</li>
+                <li
+                  key={t.id}
+                  className={`text-surface-800 text-sm rounded-r-md border-y border-r border-surface-200/70 pl-2 py-1.5 pr-2 ${taskLegendSurfaceClass(t.progress_legend)}`}
+                >
+                  <span className="inline-flex items-start gap-2">
+                    <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${taskLegendDotClass(t.progress_legend)}`} title={taskLegendLabel(t.progress_legend)} aria-hidden />
+                    <span className="min-w-0">{t.title}</span>
+                  </span>
+                </li>
               ))}
             </ul>
           )}

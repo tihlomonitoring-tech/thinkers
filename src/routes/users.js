@@ -12,6 +12,7 @@ const router = Router();
 const SALT_ROUNDS = 10;
 
 /** Page IDs that can be assigned as roles (main app pages). Must match client PAGE_ROLES. */
+/** Allowed page_id values; DB CHECK CK_user_page_roles_page_id must match — run `npm run db:user-page-roles-check-sync` after adding a page here. */
 export const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'team_leader_admin', 'performance_evaluations', 'auditor'];
 
 async function getPageRolesForUsers(pool, userIds) {

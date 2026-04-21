@@ -1,11 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from './AuthContext';
 import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
+import {
+  TASK_PROGRESS_LEGEND_OPTIONS,
+  taskLegendSurfaceClass,
+  taskLegendDotClass,
+  taskLegendLabel,
+} from './lib/taskProgressLegend.js';
+import TaskColourLegend from './components/TaskColourLegend.jsx';
 
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard', section: 'Overview' },
+  { id: 'list', label: 'Task list', section: 'Workspace' },
+  { id: 'board', label: 'Tasks board', section: 'Workspace' },
   { id: 'create', label: 'Create task', section: 'Tasks' },
   { id: 'library', label: 'Library', section: 'Library' },
 ];
@@ -15,6 +23,12 @@ const STATUS_OPTIONS = [
   { value: 'in_progress', label: 'In progress' },
   { value: 'completed', label: 'Completed' },
   { value: 'cancelled', label: 'Cancelled' },
+];
+
+const TASK_CATEGORIES = [
+  { value: 'sales', label: 'Sales' },
+  { value: 'departmental', label: 'Departmental' },
+  { value: 'thinkers_afrika', label: 'Thinkers Afrika company' },
 ];
 
 function formatDate(d) {
@@ -38,17 +52,40 @@ function StatusBadge({ status }) {
   return <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${styles[status] || styles.not_started}`}>{label}</span>;
 }
 
+function CategoryBadge({ category }) {
+  const c = category || 'departmental';
+  const styles = {
+    sales: 'bg-violet-100 text-violet-900 ring-1 ring-violet-200',
+    departmental: 'bg-sky-100 text-sky-900 ring-1 ring-sky-200',
+    thinkers_afrika: 'bg-amber-100 text-amber-950 ring-1 ring-amber-200',
+  };
+  const label = TASK_CATEGORIES.find((o) => o.value === c)?.label || c;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${styles[c] || styles.departmental}`}>{label}</span>;
+}
+
 export default function Tasks() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('tasks');
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState('list');
   const [tasks, setTasks] = useState([]);
-  const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0 });
+  const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0 });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [filterAssignedToMe, setFilterAssignedToMe] = useState(false);
-  const [filterCreatedByMe, setFilterCreatedByMe] = useState(false);
+  const [taskListView, setTaskListView] = useState('all'); // my_tasks | all | by_user | created_by_me
+  const [taskListUserId, setTaskListUserId] = useState('');
+  const [taskSearch, setTaskSearch] = useState('');
+  const [taskSearchSubmit, setTaskSearchSubmit] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterCategory, setFilterCategory] = useState('all');
+  const [taskDueFrom, setTaskDueFrom] = useState('');
+  const [taskDueTo, setTaskDueTo] = useState('');
+  const [taskStartFrom, setTaskStartFrom] = useState('');
+  const [taskStartTo, setTaskStartTo] = useState('');
+  const [filterLeaderId, setFilterLeaderId] = useState('');
+  const [filterReviewerId, setFilterReviewerId] = useState('');
+  const [taskSort, setTaskSort] = useState('due_asc');
+  const [listPage, setListPage] = useState(1);
+  const [showAdvancedTaskFilters, setShowAdvancedTaskFilters] = useState(true);
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
   const [tenantUsers, setTenantUsers] = useState([]);
@@ -57,10 +94,21 @@ export default function Tasks() {
     setLoading(true);
     setError('');
     try {
-      const params = { page: 1, limit: 50 };
-      if (filterAssignedToMe) params.assigned_to_me = 'true';
-      if (filterCreatedByMe) params.created_by_me = 'true';
+      const pageNum = activeTab === 'board' ? 1 : listPage;
+      const limitNum = activeTab === 'board' ? 100 : 50;
+      const params = { page: pageNum, limit: limitNum, sort: taskSort };
+      if (taskListView === 'my_tasks') params.assigned_to_me = 'true';
+      if (taskListView === 'created_by_me') params.created_by_me = 'true';
+      if (taskListView === 'by_user' && taskListUserId) params.user_id = taskListUserId;
       if (filterStatus && filterStatus !== 'all') params.status = filterStatus;
+      if (filterCategory && filterCategory !== 'all') params.category = filterCategory;
+      if (taskSearchSubmit.trim()) params.search = taskSearchSubmit.trim();
+      if (taskDueFrom) params.due_from = taskDueFrom;
+      if (taskDueTo) params.due_to = taskDueTo;
+      if (taskStartFrom) params.start_from = taskStartFrom;
+      if (taskStartTo) params.start_to = taskStartTo;
+      if (filterLeaderId) params.leader_id = filterLeaderId;
+      if (filterReviewerId) params.reviewer_id = filterReviewerId;
       const data = await tasksApi.list(params);
       setTasks(data.tasks || []);
       setPagination(data.pagination || { page: 1, limit: 50, total: 0 });
@@ -70,14 +118,33 @@ export default function Tasks() {
     } finally {
       setLoading(false);
     }
-  }, [filterAssignedToMe, filterCreatedByMe, filterStatus]);
+  }, [
+    activeTab,
+    listPage,
+    taskSort,
+    taskListView,
+    taskListUserId,
+    filterStatus,
+    filterCategory,
+    taskSearchSubmit,
+    taskDueFrom,
+    taskDueTo,
+    taskStartFrom,
+    taskStartTo,
+    filterLeaderId,
+    filterReviewerId,
+  ]);
 
   useEffect(() => {
-    if (activeTab === 'dashboard' || selectedTaskId) loadTasks();
-  }, [activeTab, loadTasks, selectedTaskId]);
+    setListPage(1);
+  }, [taskListView, taskListUserId, filterStatus, filterCategory, taskDueFrom, taskDueTo, taskStartFrom, taskStartTo, filterLeaderId, filterReviewerId, taskSort]);
 
   useEffect(() => {
-    if (activeTab === 'create') {
+    if (activeTab === 'list' || activeTab === 'board' || selectedTaskId) loadTasks();
+  }, [activeTab, loadTasks, selectedTaskId, listPage]);
+
+  useEffect(() => {
+    if (activeTab === 'create' || activeTab === 'list' || activeTab === 'board') {
       tasksApi.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
     }
   }, [activeTab]);
@@ -87,6 +154,51 @@ export default function Tasks() {
       tasksApi.get(selectedTaskId).then((d) => setDetailTask(d.task)).catch(() => setDetailTask(null));
     }
   }, [selectedTaskId]);
+
+  const clearTaskFilters = useCallback(() => {
+    setTaskSearch('');
+    setTaskSearchSubmit('');
+    setFilterStatus('all');
+    setFilterCategory('all');
+    setTaskDueFrom('');
+    setTaskDueTo('');
+    setTaskStartFrom('');
+    setTaskStartTo('');
+    setFilterLeaderId('');
+    setFilterReviewerId('');
+    setTaskListView('all');
+    setTaskListUserId('');
+    setListPage(1);
+    setTaskSort('due_asc');
+  }, []);
+
+  const handleUpdateLeaderReviewer = async (taskId, payload) => {
+    try {
+      await tasksApi.update(taskId, payload);
+      if (detailTask?.id === taskId) {
+        const d = await tasksApi.get(taskId);
+        setDetailTask(d.task);
+      }
+      setError('');
+      loadTasks();
+    } catch (e) {
+      setError(e?.message || 'Update failed');
+    }
+  };
+
+  const handleUpdateProgressLegend = async (taskId, progress_legend) => {
+    try {
+      await tasksApi.update(taskId, { progress_legend });
+      if (detailTask?.id === taskId) {
+        const d = await tasksApi.get(taskId);
+        setDetailTask(d.task);
+      }
+      setError('');
+      loadTasks();
+    } catch (e) {
+      setError(e?.message || 'Update failed');
+    }
+  };
 
   useEffect(() => {
     if (selectedTaskId) {
@@ -205,16 +317,25 @@ export default function Tasks() {
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-surface-900">Tasks</h2>
-            <p className="text-xs text-surface-500 mt-0.5">Assign, track and complete work</p>
+            <h2 className="text-sm font-semibold text-surface-900">Tasks tracker</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Plan, assign, follow up.</p>
           </div>
           <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
           </button>
         </div>
         <div className="flex-1 overflow-y-auto py-2 min-h-0 w-72">
+          <div className="px-4 pb-3">
+            <button
+              type="button"
+              onClick={() => { setActiveTab('create'); setSelectedTaskId(null); }}
+              className="w-full py-2.5 px-3 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 shadow-sm"
+            >
+              + New task
+            </button>
+          </div>
           <div className="mb-4">
-            <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">Overview</p>
+            <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">Workspace</p>
             <ul className="space-y-0.5">
               {TABS.map((tab) => (
                 <li key={tab.id}>
@@ -231,6 +352,17 @@ export default function Tasks() {
               ))}
             </ul>
           </div>
+          {(activeTab === 'list' || activeTab === 'board') && (
+            <div className="px-4 py-3 border-t border-surface-100">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedTaskFilters((v) => !v)}
+                className="text-xs font-medium text-brand-600 hover:text-brand-700"
+              >
+                {showAdvancedTaskFilters ? 'Hide advanced filters' : 'Show advanced filters'}
+              </button>
+            </div>
+          )}
         </div>
       </nav>
 
@@ -249,16 +381,40 @@ export default function Tasks() {
             </div>
           )}
 
-          {activeTab === 'dashboard' && (
-            <TabDashboard
+          {activeTab === 'list' && (
+            <TabTaskList
               tasks={tasks}
               loading={loading}
-              filterAssignedToMe={filterAssignedToMe}
-              setFilterAssignedToMe={setFilterAssignedToMe}
-              filterCreatedByMe={filterCreatedByMe}
-              setFilterCreatedByMe={setFilterCreatedByMe}
+              pagination={pagination}
+              listPage={listPage}
+              setListPage={setListPage}
+              taskListView={taskListView}
+              setTaskListView={setTaskListView}
+              taskListUserId={taskListUserId}
+              setTaskListUserId={setTaskListUserId}
+              taskSearch={taskSearch}
+              setTaskSearch={setTaskSearch}
+              onApplySearch={() => { setListPage(1); setTaskSearchSubmit(taskSearch); }}
+              onClearFilters={clearTaskFilters}
               filterStatus={filterStatus}
               setFilterStatus={setFilterStatus}
+              filterCategory={filterCategory}
+              setFilterCategory={setFilterCategory}
+              taskDueFrom={taskDueFrom}
+              setTaskDueFrom={setTaskDueFrom}
+              taskDueTo={taskDueTo}
+              setTaskDueTo={setTaskDueTo}
+              taskStartFrom={taskStartFrom}
+              setTaskStartFrom={setTaskStartFrom}
+              taskStartTo={taskStartTo}
+              setTaskStartTo={setTaskStartTo}
+              filterLeaderId={filterLeaderId}
+              setFilterLeaderId={setFilterLeaderId}
+              filterReviewerId={filterReviewerId}
+              setFilterReviewerId={setFilterReviewerId}
+              taskSort={taskSort}
+              setTaskSort={setTaskSort}
+              showAdvancedTaskFilters={showAdvancedTaskFilters}
               assignedToMeCount={assignedToMeCount}
               createdByMeCount={createdByMeCount}
               completedCount={completedCount}
@@ -276,16 +432,72 @@ export default function Tasks() {
               onAddComment={handleAddComment}
               onAddReminder={handleAddReminder}
               onDismissReminder={handleDismissReminder}
+              onUpdateCategory={async (taskId, category) => {
+                try {
+                  await tasksApi.update(taskId, { category });
+                  loadTasks();
+                  if (detailTask?.id === taskId) {
+                    const d = await tasksApi.get(taskId);
+                    setDetailTask(d.task);
+                  }
+                } catch (e) {
+                  setError(e?.message || 'Update failed');
+                }
+              }}
+              onUpdateLeaderReviewer={handleUpdateLeaderReviewer}
+              onUpdateProgressLegend={handleUpdateProgressLegend}
               currentUserId={user?.id}
               tenantUsers={tenantUsers}
+              onNewTask={() => setActiveTab('create')}
+            />
+          )}
+
+          {activeTab === 'board' && (
+            <TabTasksBoard
+              tasks={tasks}
+              loading={loading}
+              tenantUsers={tenantUsers}
+              onSelectTask={(id) => {
+                setSelectedTaskId(id);
+                setActiveTab('list');
+              }}
+              onNewTask={() => setActiveTab('create')}
+              loadTasks={loadTasks}
+              showAdvancedTaskFilters={showAdvancedTaskFilters}
+              taskListView={taskListView}
+              setTaskListView={setTaskListView}
+              taskListUserId={taskListUserId}
+              setTaskListUserId={setTaskListUserId}
+              taskSearch={taskSearch}
+              setTaskSearch={setTaskSearch}
+              onApplySearch={() => { setListPage(1); setTaskSearchSubmit(taskSearch); }}
+              onClearFilters={clearTaskFilters}
+              filterStatus={filterStatus}
+              setFilterStatus={setFilterStatus}
+              filterCategory={filterCategory}
+              setFilterCategory={setFilterCategory}
+              taskDueFrom={taskDueFrom}
+              setTaskDueFrom={setTaskDueFrom}
+              taskDueTo={taskDueTo}
+              setTaskDueTo={setTaskDueTo}
+              taskStartFrom={taskStartFrom}
+              setTaskStartFrom={setTaskStartFrom}
+              taskStartTo={taskStartTo}
+              setTaskStartTo={setTaskStartTo}
+              filterLeaderId={filterLeaderId}
+              setFilterLeaderId={setFilterLeaderId}
+              filterReviewerId={filterReviewerId}
+              setFilterReviewerId={setFilterReviewerId}
+              taskSort={taskSort}
+              setTaskSort={setTaskSort}
             />
           )}
 
           {activeTab === 'create' && (
             <TabCreateTask
               tenantUsers={tenantUsers}
-              onCreated={(task) => { setActiveTab('dashboard'); setSelectedTaskId(task?.id); loadTasks(); }}
-              onCancel={() => setActiveTab('dashboard')}
+              onCreated={(task) => { setActiveTab('list'); setSelectedTaskId(task?.id); loadTasks(); }}
+              onCancel={() => setActiveTab('list')}
             />
           )}
 
@@ -296,15 +508,323 @@ export default function Tasks() {
   );
 }
 
-function TabDashboard({
+function BoardTaskCard({ task, onSelectTask }) {
+  const stripe = taskLegendSurfaceClass(task.progress_legend);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectTask(task.id)}
+      className={`w-full text-left rounded-lg border-y border-r border-surface-200/70 pl-2 pr-2.5 py-2.5 shadow-sm hover:border-brand-300/80 hover:shadow transition ${stripe}`}
+    >
+      <p className="text-sm font-medium text-surface-900 line-clamp-2">{task.title}</p>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        <CategoryBadge category={task.category} />
+        <StatusBadge status={task.status} />
+      </div>
+      <p className="text-[11px] text-surface-500 mt-1">Due {formatDate(task.due_date)}</p>
+    </button>
+  );
+}
+
+function TabTasksBoard({
   tasks,
   loading,
-  filterAssignedToMe,
-  setFilterAssignedToMe,
-  filterCreatedByMe,
-  setFilterCreatedByMe,
+  tenantUsers,
+  onSelectTask,
+  onNewTask,
+  loadTasks,
+  showAdvancedTaskFilters,
+  taskListView,
+  setTaskListView,
+  taskListUserId,
+  setTaskListUserId,
+  taskSearch,
+  setTaskSearch,
+  onApplySearch,
+  onClearFilters,
   filterStatus,
   setFilterStatus,
+  filterCategory,
+  setFilterCategory,
+  taskDueFrom,
+  setTaskDueFrom,
+  taskDueTo,
+  setTaskDueTo,
+  taskStartFrom,
+  setTaskStartFrom,
+  taskStartTo,
+  setTaskStartTo,
+  filterLeaderId,
+  setFilterLeaderId,
+  filterReviewerId,
+  setFilterReviewerId,
+  taskSort,
+  setTaskSort,
+}) {
+  const { lanes, userOrder, unassigned, otherAssignees } = useMemo(() => {
+    const q = tenantUsers || [];
+    const boardUserIds = new Set(q.map((u) => u.id));
+    const byUser = {};
+    q.forEach((u) => {
+      byUser[u.id] = [];
+    });
+    const unassignedList = [];
+    const otherList = [];
+    for (const t of tasks || []) {
+      const as = t.assignees || [];
+      if (!as.length) {
+        unassignedList.push(t);
+        continue;
+      }
+      if (as.every((a) => !boardUserIds.has(a.user_id))) {
+        otherList.push(t);
+        continue;
+      }
+      const seen = new Set();
+      as.forEach((a) => {
+        if (byUser[a.user_id] && !seen.has(`${t.id}-${a.user_id}`)) {
+          byUser[a.user_id].push(t);
+          seen.add(`${t.id}-${a.user_id}`);
+        }
+      });
+    }
+    return { lanes: byUser, userOrder: q, unassigned: unassignedList, otherAssignees: otherList };
+  }, [tasks, tenantUsers]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap justify-between gap-3 items-start">
+        <div>
+          <h1 className="text-xl font-semibold text-surface-900">Tasks board</h1>
+          <p className="text-sm text-surface-600 mt-1 max-w-2xl">
+            One column per teammate who has access to Tasks. Assignees without that access appear under “Other assignees”. Filters match the task list.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => loadTasks()} className="px-3 py-2 rounded-lg border border-surface-300 text-sm text-surface-700 hover:bg-surface-50">
+            Refresh
+          </button>
+          <button type="button" onClick={onNewTask} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
+            New task
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 p-1 rounded-xl bg-surface-100 border border-surface-200 w-fit">
+        {[
+          { id: 'my_tasks', label: 'My tasks' },
+          { id: 'all', label: 'All tasks' },
+          { id: 'by_user', label: 'By user' },
+          { id: 'created_by_me', label: 'Created by me' },
+        ].map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            onClick={() => setTaskListView(v.id)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+              taskListView === v.id ? 'bg-white text-brand-700 shadow-sm' : 'text-surface-600 hover:text-surface-900'
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+      {taskListView === 'by_user' && (
+        <div className="max-w-xs">
+          <label className="block text-xs font-medium text-surface-500 mb-1">Assignee</label>
+          <select
+            value={taskListUserId}
+            onChange={(e) => setTaskListUserId(e.target.value)}
+            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          >
+            <option value="">Select user…</option>
+            {tenantUsers.map((u) => (
+              <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <input
+            type="search"
+            value={taskSearch}
+            onChange={(e) => setTaskSearch(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && onApplySearch()}
+            placeholder="Search title or description…"
+            className="flex-1 min-w-0 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          />
+          <div className="flex gap-2 shrink-0">
+            <button type="button" onClick={onApplySearch} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
+              Search
+            </button>
+            <button type="button" onClick={onClearFilters} className="px-4 py-2 rounded-lg border border-surface-300 text-sm text-surface-700 hover:bg-surface-50">
+              Clear filters
+            </button>
+          </div>
+        </div>
+        {showAdvancedTaskFilters && (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 pt-2 border-t border-surface-100">
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Status</label>
+              <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="all">All</option>
+                {STATUS_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Category</label>
+              <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="all">All categories</option>
+                {TASK_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Task leader</label>
+              <select value={filterLeaderId} onChange={(e) => setFilterLeaderId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="">Any</option>
+                {tenantUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Task reviewer</label>
+              <select value={filterReviewerId} onChange={(e) => setFilterReviewerId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="">Any</option>
+                {tenantUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Start from</label>
+              <input type="date" value={taskStartFrom} onChange={(e) => setTaskStartFrom(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Start to</label>
+              <input type="date" value={taskStartTo} onChange={(e) => setTaskStartTo(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Due from</label>
+              <input type="date" value={taskDueFrom} onChange={(e) => setTaskDueFrom(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Due to</label>
+              <input type="date" value={taskDueTo} onChange={(e) => setTaskDueTo(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div className="sm:col-span-2 xl:col-span-3">
+              <label className="block text-xs font-medium text-surface-500 mb-1">Sort by</label>
+              <select value={taskSort} onChange={(e) => setTaskSort(e.target.value)} className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="due_asc">Due date (earliest first)</option>
+                <option value="due_desc">Due date (latest first)</option>
+                <option value="created">Recently created</option>
+                <option value="start_asc">Start date</option>
+              </select>
+            </div>
+          </div>
+        )}
+        <TaskColourLegend className="pt-3 border-t border-surface-100" />
+      </div>
+
+      {loading ? (
+        <p className="text-surface-500">Loading…</p>
+      ) : (
+        <div className="flex gap-3 overflow-x-auto pb-4 items-start">
+          {userOrder.map((u) => (
+            <div key={u.id} className="shrink-0 w-64 bg-surface-50 rounded-xl border border-surface-200 flex flex-col max-h-[70vh]">
+              <div className="px-3 py-2 border-b border-surface-200 bg-white rounded-t-xl">
+                <p className="font-medium text-surface-900 truncate">{u.full_name || 'User'}</p>
+                <p className="text-xs text-surface-500 truncate">{u.email}</p>
+                <p className="text-xs text-brand-600 mt-1">{(lanes[u.id] || []).length} task(s)</p>
+              </div>
+              <div className="p-2 space-y-2 overflow-y-auto flex-1 min-h-0">
+                {(lanes[u.id] || []).length === 0 ? (
+                  <p className="text-xs text-surface-500 px-1 py-4 text-center">No tasks in this lane.</p>
+                ) : (
+                  (lanes[u.id] || []).map((t) => (
+                    <BoardTaskCard key={`${t.id}-${u.id}`} task={t} onSelectTask={onSelectTask} />
+                  ))
+                )}
+              </div>
+            </div>
+          ))}
+          <div className="shrink-0 w-64 bg-surface-50 rounded-xl border border-amber-200 flex flex-col max-h-[70vh]">
+            <div className="px-3 py-2 border-b border-amber-100 bg-amber-50/80 rounded-t-xl">
+              <p className="font-medium text-surface-900">Other assignees</p>
+              <p className="text-xs text-surface-600">No assignee has Tasks page access</p>
+              <p className="text-xs text-brand-600 mt-1">{otherAssignees.length} task(s)</p>
+            </div>
+            <div className="p-2 space-y-2 overflow-y-auto flex-1 min-h-0">
+              {otherAssignees.length === 0 ? (
+                <p className="text-xs text-surface-500 px-1 py-4 text-center">None.</p>
+              ) : (
+                otherAssignees.map((t) => (
+                  <BoardTaskCard key={t.id} task={t} onSelectTask={onSelectTask} />
+                ))
+              )}
+            </div>
+          </div>
+          <div className="shrink-0 w-64 bg-surface-50 rounded-xl border border-dashed border-surface-300 flex flex-col max-h-[70vh]">
+            <div className="px-3 py-2 border-b border-surface-200 bg-white/80 rounded-t-xl">
+              <p className="font-medium text-surface-900">Queue (unassigned)</p>
+              <p className="text-xs text-surface-500">No assignee yet</p>
+              <p className="text-xs text-brand-600 mt-1">{unassigned.length} task(s)</p>
+            </div>
+            <div className="p-2 space-y-2 overflow-y-auto flex-1 min-h-0">
+              {unassigned.length === 0 ? (
+                <p className="text-xs text-surface-500 px-1 py-4 text-center">No unassigned tasks.</p>
+              ) : (
+                unassigned.map((t) => (
+                  <BoardTaskCard key={t.id} task={t} onSelectTask={onSelectTask} />
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabTaskList({
+  tasks,
+  loading,
+  pagination,
+  listPage,
+  setListPage,
+  taskListView,
+  setTaskListView,
+  taskListUserId,
+  setTaskListUserId,
+  taskSearch,
+  setTaskSearch,
+  onApplySearch,
+  onClearFilters,
+  filterStatus,
+  setFilterStatus,
+  filterCategory,
+  setFilterCategory,
+  taskDueFrom,
+  setTaskDueFrom,
+  taskDueTo,
+  setTaskDueTo,
+  taskStartFrom,
+  setTaskStartFrom,
+  taskStartTo,
+  setTaskStartTo,
+  filterLeaderId,
+  setFilterLeaderId,
+  filterReviewerId,
+  setFilterReviewerId,
+  taskSort,
+  setTaskSort,
+  showAdvancedTaskFilters,
   assignedToMeCount,
   createdByMeCount,
   completedCount,
@@ -322,55 +842,173 @@ function TabDashboard({
   onAddComment,
   onAddReminder,
   onDismissReminder,
+  onUpdateCategory,
+  onUpdateLeaderReviewer,
+  onUpdateProgressLegend,
   currentUserId,
   tenantUsers,
+  onNewTask,
 }) {
   const [assigneeModal, setAssigneeModal] = useState(null);
   const [transferModal, setTransferModal] = useState(null);
   const [uploadingFile, setUploadingFile] = useState(false);
+  const total = pagination?.total ?? tasks.length;
+  const totalPages = Math.max(1, Math.ceil((pagination?.total || 0) / (pagination?.limit || 50)));
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Dashboard</h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold text-surface-900">Tasks</h1>
+          <InfoHint
+            title="Tasks"
+            text="Filter by scope, category, status, start and due dates, task leader and reviewer, and search. Assignee and board columns only list people who have the Tasks page role."
+          />
+        </div>
+        <button type="button" onClick={onNewTask} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 shadow-sm">
+          New task
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 p-1 rounded-xl bg-surface-100 border border-surface-200 w-fit">
+        {[
+          { id: 'my_tasks', label: 'My tasks' },
+          { id: 'all', label: 'All tasks' },
+          { id: 'by_user', label: 'By user' },
+          { id: 'created_by_me', label: 'Created by me' },
+        ].map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            onClick={() => setTaskListView(v.id)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+              taskListView === v.id ? 'bg-white text-brand-700 shadow-sm' : 'text-surface-600 hover:text-surface-900'
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+      {taskListView === 'by_user' && (
+        <div className="max-w-xs">
+          <label className="block text-xs font-medium text-surface-500 mb-1">Assignee</label>
+          <select
+            value={taskListUserId}
+            onChange={(e) => setTaskListUserId(e.target.value)}
+            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          >
+            <option value="">Select user…</option>
+            {tenantUsers.map((u) => (
+              <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border border-surface-200 p-4">
-          <p className="text-xs font-medium text-surface-500 uppercase">Total tasks</p>
-          <p className="mt-1 text-2xl font-semibold text-surface-900">{tasks.length}</p>
+          <p className="text-xs font-medium text-surface-500 uppercase">Matching total</p>
+          <p className="mt-1 text-2xl font-semibold text-surface-900">{total}</p>
         </div>
         <div className="bg-white rounded-xl border border-surface-200 p-4">
-          <p className="text-xs font-medium text-surface-500 uppercase">Assigned to me</p>
+          <p className="text-xs font-medium text-surface-500 uppercase">Assigned to me (page)</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{assignedToMeCount}</p>
         </div>
         <div className="bg-white rounded-xl border border-surface-200 p-4">
-          <p className="text-xs font-medium text-surface-500 uppercase">Created by me</p>
+          <p className="text-xs font-medium text-surface-500 uppercase">Created by me (page)</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{createdByMeCount}</p>
         </div>
         <div className="bg-white rounded-xl border border-surface-200 p-4">
-          <p className="text-xs font-medium text-surface-500 uppercase">Completed</p>
+          <p className="text-xs font-medium text-surface-500 uppercase">Completed (page)</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{completedCount}</p>
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 items-center">
-        <label className="flex items-center gap-2 text-sm text-surface-700">
-          <input type="checkbox" checked={filterAssignedToMe} onChange={(e) => setFilterAssignedToMe(e.target.checked)} className="rounded border-surface-300 text-brand-600" />
-          Assigned to me
-        </label>
-        <label className="flex items-center gap-2 text-sm text-surface-700">
-          <input type="checkbox" checked={filterCreatedByMe} onChange={(e) => setFilterCreatedByMe(e.target.checked)} className="rounded border-surface-300 text-brand-600" />
-          Created by me
-        </label>
-        <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value)}
-          className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm"
-        >
-          <option value="all">All statuses</option>
-          {STATUS_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+      <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <input
+            type="search"
+            value={taskSearch}
+            onChange={(e) => setTaskSearch(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && onApplySearch()}
+            placeholder="Search title or description…"
+            className="flex-1 min-w-0 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          />
+          <div className="flex gap-2 shrink-0">
+            <button type="button" onClick={onApplySearch} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
+              Search
+            </button>
+            <button type="button" onClick={onClearFilters} className="px-4 py-2 rounded-lg border border-surface-300 text-sm text-surface-700 hover:bg-surface-50">
+              Clear filters
+            </button>
+          </div>
+        </div>
+        {showAdvancedTaskFilters && (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 pt-2 border-t border-surface-100">
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Status</label>
+              <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="all">All</option>
+                {STATUS_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Category</label>
+              <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="all">All categories</option>
+                {TASK_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Task leader</label>
+              <select value={filterLeaderId} onChange={(e) => setFilterLeaderId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="">Any</option>
+                {tenantUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Task reviewer</label>
+              <select value={filterReviewerId} onChange={(e) => setFilterReviewerId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="">Any</option>
+                {tenantUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Start from</label>
+              <input type="date" value={taskStartFrom} onChange={(e) => setTaskStartFrom(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Start to</label>
+              <input type="date" value={taskStartTo} onChange={(e) => setTaskStartTo(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Due from</label>
+              <input type="date" value={taskDueFrom} onChange={(e) => setTaskDueFrom(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Due to</label>
+              <input type="date" value={taskDueTo} onChange={(e) => setTaskDueTo(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+            <div className="sm:col-span-2 xl:col-span-3">
+              <label className="block text-xs font-medium text-surface-500 mb-1">Sort by</label>
+              <select value={taskSort} onChange={(e) => setTaskSort(e.target.value)} className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value="due_asc">Due date (earliest first)</option>
+                <option value="due_desc">Due date (latest first)</option>
+                <option value="created">Recently created</option>
+                <option value="start_asc">Start date</option>
+              </select>
+            </div>
+          </div>
+        )}
+        <TaskColourLegend className="pt-3 border-t border-surface-100" />
       </div>
 
       {loading ? (
@@ -382,20 +1020,25 @@ function TabDashboard({
               <tr>
                 <th className="px-4 py-3 text-left font-medium text-surface-700 w-8"></th>
                 <th className="px-4 py-3 text-left font-medium text-surface-700">Title</th>
+                <th className="px-4 py-3 text-left font-medium text-surface-700">Category</th>
                 <th className="px-4 py-3 text-left font-medium text-surface-700">Status</th>
                 <th className="px-4 py-3 text-left font-medium text-surface-700">Progress</th>
-                <th className="px-4 py-3 text-left font-medium text-surface-700">Due date</th>
+                <th className="px-4 py-3 text-left font-medium text-surface-700">Colour</th>
+                <th className="px-4 py-3 text-left font-medium text-surface-700">Leader</th>
+                <th className="px-4 py-3 text-left font-medium text-surface-700">Reviewer</th>
+                <th className="px-4 py-3 text-left font-medium text-surface-700">Start</th>
+                <th className="px-4 py-3 text-left font-medium text-surface-700">Due</th>
                 <th className="px-4 py-3 text-left font-medium text-surface-700">Assignees</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-100">
               {tasks.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No tasks found.</td></tr>
+                <tr><td colSpan={11} className="px-4 py-8 text-center text-surface-500">No tasks match your filters.</td></tr>
               ) : (
                 tasks.map((t) => (
                   <tr
                     key={t.id}
-                    className={`hover:bg-surface-50 cursor-pointer ${selectedTaskId === t.id ? 'bg-brand-50' : ''}`}
+                    className={`hover:bg-surface-50/90 cursor-pointer border-y border-r border-surface-100/80 ${taskLegendSurfaceClass(t.progress_legend)} ${selectedTaskId === t.id ? 'ring-1 ring-inset ring-brand-400/50' : ''}`}
                     onClick={() => onSelectTask(selectedTaskId === t.id ? null : t.id)}
                   >
                     <td className="px-4 py-2">
@@ -405,16 +1048,53 @@ function TabDashboard({
                         <span className="text-surface-300">○</span>
                       )}
                     </td>
-                    <td className="px-4 py-2 font-medium text-surface-900">{t.title}</td>
+                    <td className="px-4 py-2 font-medium text-surface-900 max-w-[220px]">
+                      <span className="line-clamp-2">{t.title}</span>
+                    </td>
+                    <td className="px-4 py-2"><CategoryBadge category={t.category} /></td>
                     <td className="px-4 py-2"><StatusBadge status={t.status} /></td>
                     <td className="px-4 py-2 text-surface-600">{t.progress}%</td>
+                    <td className="px-4 py-2">
+                      <span className="inline-flex items-center gap-1.5 text-surface-700" title={taskLegendLabel(t.progress_legend)}>
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${taskLegendDotClass(t.progress_legend)}`} aria-hidden />
+                        <span className="text-xs truncate max-w-[7rem]">{taskLegendLabel(t.progress_legend)}</span>
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-surface-600 max-w-[100px] truncate" title={t.task_leader_name || ''}>{t.task_leader_name || '—'}</td>
+                    <td className="px-4 py-2 text-surface-600 max-w-[100px] truncate" title={t.task_reviewer_name || ''}>{t.task_reviewer_name || '—'}</td>
+                    <td className="px-4 py-2 text-surface-600">{formatDate(t.start_date)}</td>
                     <td className="px-4 py-2 text-surface-600">{formatDate(t.due_date)}</td>
-                    <td className="px-4 py-2 text-surface-600">{(t.assignees || []).map((a) => a.full_name).join(', ') || '—'}</td>
+                    <td className="px-4 py-2 text-surface-600 max-w-[160px]">
+                      <span className="line-clamp-2">{(t.assignees || []).map((a) => a.full_name).join(', ') || '—'}</span>
+                    </td>
                   </tr>
                 ))
               )}
             </tbody>
           </table>
+          <div className="px-4 py-3 border-t border-surface-100 flex flex-wrap justify-between gap-2 text-sm text-surface-600">
+            <span>
+              Page {listPage} of {totalPages} · {total} task(s)
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={listPage <= 1}
+                onClick={() => setListPage((p) => Math.max(1, p - 1))}
+                className="px-3 py-1 rounded border border-surface-300 disabled:opacity-40 hover:bg-surface-50"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                disabled={listPage >= totalPages}
+                onClick={() => setListPage((p) => p + 1)}
+                className="px-3 py-1 rounded border border-surface-300 disabled:opacity-40 hover:bg-surface-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -432,6 +1112,9 @@ function TabDashboard({
           onAddComment={onAddComment}
           onAddReminder={onAddReminder}
           onDismissReminder={onDismissReminder}
+          onUpdateCategory={onUpdateCategory}
+          onUpdateLeaderReviewer={onUpdateLeaderReviewer}
+          onUpdateProgressLegend={onUpdateProgressLegend}
           currentUserId={currentUserId}
           tenantUsers={tenantUsers}
           assigneeModal={assigneeModal}
@@ -459,6 +1142,9 @@ function TaskDetailPanel({
   onAddComment,
   onAddReminder,
   onDismissReminder,
+  onUpdateCategory,
+  onUpdateLeaderReviewer,
+  onUpdateProgressLegend,
   currentUserId,
   tenantUsers,
   assigneeModal,
@@ -523,6 +1209,71 @@ function TaskDetailPanel({
               <p className="text-surface-700">{formatDate(task.due_date)}</p>
             </div>
           </div>
+
+          <div>
+            <p className="text-sm text-surface-500 mb-1">Category</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <CategoryBadge category={task.category} />
+              {onUpdateCategory && (
+                <select
+                  value={task.category || 'departmental'}
+                  onChange={(e) => onUpdateCategory(task.id, e.target.value)}
+                  className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm max-w-xs"
+                >
+                  {TASK_CATEGORIES.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          {onUpdateProgressLegend && (
+            <div>
+              <p className="text-sm text-surface-500 mb-1">Progress colour (legend)</p>
+              <p className="text-xs text-surface-500 mb-2">Pick how this task should read on the calendar and boards. Colours are intentionally soft.</p>
+              <select
+                value={task.progress_legend || 'not_started'}
+                onChange={(e) => onUpdateProgressLegend(task.id, e.target.value)}
+                className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              >
+                {TASK_PROGRESS_LEGEND_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {onUpdateLeaderReviewer && (
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm text-surface-500 mb-1">Task leader</p>
+                <select
+                  value={task.task_leader_id || ''}
+                  onChange={(e) => onUpdateLeaderReviewer(task.id, { task_leader_id: e.target.value || null })}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                >
+                  <option value="">None</option>
+                  {tenantUsers.map((u) => (
+                    <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <p className="text-sm text-surface-500 mb-1">Task reviewer</p>
+                <select
+                  value={task.task_reviewer_id || ''}
+                  onChange={(e) => onUpdateLeaderReviewer(task.id, { task_reviewer_id: e.target.value || null })}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                >
+                  <option value="">None</option>
+                  {tenantUsers.map((u) => (
+                    <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
 
           <div>
             <p className="text-sm text-surface-500 mb-1">Progress</p>
@@ -901,6 +1652,10 @@ function TransferModal({ taskId, fromUserId, assigneeName, tenantUsers, onTransf
 function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [category, setCategory] = useState('departmental');
+  const [progressLegend, setProgressLegend] = useState('not_started');
+  const [taskLeaderId, setTaskLeaderId] = useState('');
+  const [taskReviewerId, setTaskReviewerId] = useState('');
   const [keyActions, setKeyActions] = useState(['']);
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
@@ -922,6 +1677,10 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
       const payload = {
         title: title.trim(),
         description: description.trim() || undefined,
+        category,
+        progress_legend: progressLegend,
+        task_leader_id: taskLeaderId || undefined,
+        task_reviewer_id: taskReviewerId || undefined,
         key_actions: keyActions.map((s) => s.trim()).filter(Boolean),
         start_date: startDate || undefined,
         due_date: dueDate || undefined,
@@ -972,6 +1731,55 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
             className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
             placeholder="Describe the task"
           />
+        </div>
+
+        <div className="rounded-xl border border-surface-200 bg-surface-50/50 p-4 space-y-4">
+          <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Classification and ownership</p>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Category *</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
+              {TASK_CATEGORIES.map((c) => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-surface-500 mt-1">Sales, departmental work, or Thinkers Afrika company tasks.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Progress colour (legend)</label>
+            <select
+              value={progressLegend}
+              onChange={(e) => setProgressLegend(e.target.value)}
+              className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+            >
+              {TASK_PROGRESS_LEGEND_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-surface-500 mt-1">Soft colours on your work schedule calendar and task views.</p>
+            <TaskColourLegend className="mt-2 opacity-90" />
+          </div>
+          <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Task leader</label>
+              <select value={taskLeaderId} onChange={(e) => setTaskLeaderId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
+                <option value="">None</option>
+                {tenantUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                ))}
+              </select>
+              <p className="text-xs text-surface-500 mt-1">Optional — accountable lead (must have Tasks access).</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Task reviewer</label>
+              <select value={taskReviewerId} onChange={(e) => setTaskReviewerId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
+                <option value="">None</option>
+                {tenantUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                ))}
+              </select>
+              <p className="text-xs text-surface-500 mt-1">Optional — who reviews completion.</p>
+            </div>
+          </div>
         </div>
 
         <div>
