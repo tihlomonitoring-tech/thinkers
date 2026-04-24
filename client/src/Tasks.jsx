@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from './AuthContext';
 import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
 import {
   TASK_PROGRESS_LEGEND_OPTIONS,
@@ -67,6 +68,7 @@ export default function Tasks() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('tasks');
   const [activeTab, setActiveTab] = useState('list');
+  useAutoHideNavAfterTabChange(activeTab);
   const [tasks, setTasks] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0 });
   const [loading, setLoading] = useState(false);

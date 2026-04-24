@@ -3,6 +3,12 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
+import {
+  isAutoHideNavDisabled,
+  setAutoHideNavDisabled,
+  AUTO_HIDE_NAV_PREF_CHANGED,
+} from './lib/autoHideNav.js';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftClockPanel from './components/ShiftClockPanel.jsx';
 import ShiftActivityTab from './components/ShiftActivityTab.jsx';
@@ -39,6 +45,7 @@ const TABS = [
   { id: 'queries', label: 'Queries' },
   { id: 'growth', label: 'Growth' },
   { id: 'evaluation_results', label: 'Colleagues evaluation results' },
+  { id: 'system_settings', label: 'System settings' },
 ];
 
 const SHIFT_DAY = '06:00 – 18:00';
@@ -77,6 +84,7 @@ export default function Profile() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('profile');
+  const [autoHideNavDisabled, setAutoHideNavDisabledState] = useState(() => isAutoHideNavDisabled());
   const tabFromUrl = searchParams.get('tab');
   const [activeTab, setActiveTab] = useState(() =>
     TABS.some((t) => t.id === tabFromUrl) ? tabFromUrl : 'schedule'
@@ -175,6 +183,14 @@ export default function Profile() {
     const t = legacy[raw] || raw;
     if (t && TABS.some((x) => x.id === t)) setActiveTab(t);
   }, [searchParams]);
+
+  useEffect(() => {
+    const sync = () => setAutoHideNavDisabledState(isAutoHideNavDisabled());
+    window.addEventListener(AUTO_HIDE_NAV_PREF_CHANGED, sync);
+    return () => window.removeEventListener(AUTO_HIDE_NAV_PREF_CHANGED, sync);
+  }, []);
+
+  useAutoHideNavAfterTabChange(activeTab);
 
   const calendar = useMemo(() => getDaysInMonth(calendarYear, calendarMonth), [calendarYear, calendarMonth]);
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -936,6 +952,38 @@ export default function Profile() {
           )}
 
           {activeTab === 'evaluation_results' && <ColleagueEvaluationResultsTab />}
+
+          {activeTab === 'system_settings' && (
+            <div className="space-y-6 max-w-xl">
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">System settings</h1>
+                <InfoHint
+                  title="System settings"
+                  text="Preferences stored on this device. They apply to this browser only unless you sign in on another device."
+                />
+              </div>
+              <div className="rounded-xl border border-surface-200 bg-white dark:bg-surface-900 dark:border-surface-700 p-4 shadow-sm">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1 rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                    checked={autoHideNavDisabled}
+                    onChange={(e) => {
+                      const v = e.target.checked;
+                      setAutoHideNavDisabled(v);
+                      setAutoHideNavDisabledState(v);
+                    }}
+                  />
+                  <span className="min-w-0">
+                    <span className="font-medium text-surface-900 dark:text-surface-100">Disable auto-hide navigation</span>
+                    <p className="text-sm text-surface-500 dark:text-surface-400 mt-1 leading-relaxed">
+                      When this is on, the main app sidebar stays visible after you change tabs inside a page. When it is off (default), that sidebar automatically hides after five seconds so content can use more horizontal space. In-page section navigation is not affected.
+                    </p>
+                  </span>
+                </label>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

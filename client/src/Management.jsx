@@ -3,6 +3,7 @@ import { profileManagement as pm, shiftClock } from './api';
 import TeamLeaderAuditSection from './components/TeamLeaderAuditSection.jsx';
 import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
 import EmployeeProductivityScoreSection from './components/EmployeeProductivityScoreSection.jsx';
 import TeamGoalsManagementSection from './components/TeamGoalsManagementSection.jsx';
@@ -281,6 +282,8 @@ export default function Management() {
         .catch(() => setShiftMgmtSessions([]));
     }
   }, [activeSection]);
+
+  useAutoHideNavAfterTabChange(activeSection);
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">

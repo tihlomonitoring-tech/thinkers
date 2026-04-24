@@ -7,6 +7,7 @@ import ThemeToggle from './components/ThemeToggle';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 import { tenants as tenantsApi, commandCentre as ccApi } from './api';
 import { PATH_PAGE_IDS, canAccessPage, getFirstAllowedPath } from './lib/pageAccess.js';
+import { cancelAutoHideNav, AUTO_HIDE_NAV_FIRE } from './lib/autoHideNav.js';
 
 function IconMenu({ className }) {
   return (
@@ -78,6 +79,19 @@ export default function Layout() {
       navigate(firstAllowed, { replace: true });
     }
   }, [location.pathname, user, navigate]);
+
+  useEffect(() => {
+    cancelAutoHideNav();
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const onAutoHide = () => {
+      setHidden(true);
+      setCollapsed(true);
+    };
+    window.addEventListener(AUTO_HIDE_NAV_FIRE, onAutoHide);
+    return () => window.removeEventListener(AUTO_HIDE_NAV_FIRE, onAutoHide);
+  }, [setHidden, setCollapsed]);
 
   const handleLogout = async () => {
     await logout();

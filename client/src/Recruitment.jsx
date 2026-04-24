@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { recruitment as recruitmentApi, downloadAttachmentWithAuth, openAttachmentWithAuth, users as usersApi } from './api';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
 
 const ALL_TABS = [
@@ -69,6 +70,9 @@ export default function Recruitment() {
       setActiveTab(firstAllowedTabId);
     }
   }, [allowedTabIds, activeTab, firstAllowedTabId, allowedTabIdSet]);
+
+  const navAutoHideReady = allowedTabIds !== null && allowedTabIdSet.has(activeTab);
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">

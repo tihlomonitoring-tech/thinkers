@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { tracking as trackingApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import FleetLiveMap from './components/FleetLiveMap.jsx';
 
 const TABS = [
@@ -79,6 +80,7 @@ export default function TrackingIntegration() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('tracking-integration');
   const [tab, setTab] = useState('movement');
+  useAutoHideNavAfterTabChange(tab);
   const [error, setError] = useState('');
   const [migrationHint, setMigrationHint] = useState('');
 

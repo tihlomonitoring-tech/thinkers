@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
@@ -671,6 +672,9 @@ export default function Rector() {
     }
     return true;
   });
+
+  const navAutoHideReady = !authLoading && !loading && !!hasTenant;
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
 
   if (authLoading) {
     return (

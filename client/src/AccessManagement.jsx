@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { todayYmd } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { useAuth } from './AuthContext';
 import { contractor as contractorApi, users as usersApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
 import { getApiBase } from './lib/apiBase.js';
@@ -333,6 +334,9 @@ export default function AccessManagement() {
     if (TABS.some((t) => t.id === requested)) setActiveTab(requested);
     try { sessionStorage.removeItem('access-management-global-target-tab'); } catch (_) {}
   }, []);
+
+  const navAutoHideReady = !authLoading && !loading;
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
 
   const insertAtFocusedMonthlyPerfText = (prefix) => {
     const cur = monthlyPerfCursor;

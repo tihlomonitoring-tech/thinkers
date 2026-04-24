@@ -7,6 +7,7 @@ import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, shiftClock, shiftScore } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
@@ -369,6 +370,15 @@ export default function CommandCentre() {
   const sections = [...new Set(navTabs.map((t) => t.section))];
   const canSeeTab = (id) => allowedTabs.includes(id);
   const hasAccess = allowedTabs.length > 0 || isSuperAdmin;
+  const navAutoHideReady =
+    !loading &&
+    !shiftClockGate.loading &&
+    shiftClockGate.allowed &&
+    hasAccess &&
+    (activeTab === 'manage_access' ||
+      allowedTabs.includes(activeTab) ||
+      (isSuperAdmin && allowedTabs.length === 0));
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
   if (loading || shiftClockGate.loading) {
     return (
       <div className="max-w-7xl mx-auto p-6">

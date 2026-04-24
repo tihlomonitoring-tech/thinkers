@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { canAccessPage } from './lib/pageAccess.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { contractor as contractorApi, tenants as tenantsApi, openAttachmentWithAuth } from './api';
 import { parseExcelFile, downloadTruckTemplate, downloadDriverTemplate, downloadConsolidatedTemplate, parseConsolidatedFile } from './lib/excelImport.js';
 import JSZip from 'jszip';
@@ -965,6 +966,9 @@ export default function Contractor() {
         setData((prev) => ({ ...prev, messages: [] }));
       });
   }, [hasTenant, selectedContractorId]);
+
+  const navAutoHideReady = !authLoading && !loading;
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
 
   if (authLoading) {
     return (

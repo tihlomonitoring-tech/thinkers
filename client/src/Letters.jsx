@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { todayYmd } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { jsPDF } from 'jspdf';
 
 const STORAGE_KEY = 'thinkers-letters-settings';
@@ -96,6 +97,7 @@ export default function Letters() {
   const [navHidden, setNavHidden] = useSecondaryNavHidden('letters');
   const [company, setCompany] = useState(loadStored);
   const [letterType, setLetterType] = useState('warning');
+  useAutoHideNavAfterTabChange(letterType);
   const [theme, setTheme] = useState('modern');
   const [layout, setLayout] = useState('logo-left');
   const [accentId, setAccentId] = useState('brand');

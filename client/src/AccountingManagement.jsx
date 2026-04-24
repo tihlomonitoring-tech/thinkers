@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } fr
 import { todayYmd, toYmdFromDbOrString } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { getApiBase } from './lib/apiBase.js';
 import { buildAccountingPdfFilename } from './lib/accountingDocumentPdfFilename.js';
@@ -3516,6 +3517,7 @@ export default function AccountingManagement() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('accounting-mgmt');
   const [activeTab, setActiveTab] = useState(NAV_SECTIONS[0].items[0].id);
+  useAutoHideNavAfterTabChange(activeTab);
 
   return (
     <div className="flex gap-0 w-full min-h-0 -m-4 sm:-m-6">

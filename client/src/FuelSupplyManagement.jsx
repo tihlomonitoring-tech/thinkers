@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { fuelSupply, users as usersApi, openAttachmentWithAuth } from './api';
 import { FS_TABS, GRANT_TAB_IDS } from './lib/fuelSupplyTabs.js';
 import { pickRow, formatDt, inputClass } from './lib/fuelSupplyUi.js';
@@ -273,6 +274,13 @@ export default function FuelSupplyManagement() {
   const sections = [...new Set(navTabs.map((t) => t.section))];
   const canSeeTab = (id) => allowedTabs.includes(id);
   const hasAccess = isSuperAdmin || allowedTabs.length > 0;
+  const navAutoHideReady =
+    !loading &&
+    hasAccess &&
+    (activeTab === 'manage_access' ||
+      allowedTabs.includes(activeTab) ||
+      (isSuperAdmin && allowedTabs.length === 0));
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
 
   if (loading) {
     return (

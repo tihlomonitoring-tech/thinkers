@@ -3,6 +3,7 @@ import { addCalendarDays, todayYmd, toYmdFromDbOrString } from './lib/appTime.js
 import { useAuth } from './AuthContext';
 import { transportOperations as toApi, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
 
 const TABS = [
@@ -633,6 +634,9 @@ export default function TransportOperations() {
     });
     setShowRouteForm(true);
   };
+
+  const navAutoHideReady = !authLoading && !loading && !!hasTenant;
+  useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
 
   if (authLoading) {
     return (

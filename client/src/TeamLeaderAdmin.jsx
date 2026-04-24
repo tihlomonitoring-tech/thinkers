@@ -4,6 +4,7 @@ import { useAuth } from './AuthContext';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftObjectivesTab from './components/ShiftObjectivesTab.jsx';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
+import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { todayYmd } from './lib/appTime.js';
 
 const MAIN_TABS = [
@@ -582,6 +583,8 @@ export default function TeamLeaderAdmin() {
       setSaving(false);
     }
   };
+
+  useAutoHideNavAfterTabChange(mainTab, { ready: !loading });
 
   if (loading) {
     return (
