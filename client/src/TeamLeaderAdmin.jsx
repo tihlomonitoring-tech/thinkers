@@ -504,7 +504,6 @@ export default function TeamLeaderAdmin() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('team-leader');
   const [mainTab, setMainTab] = useState('pulse');
-  const [assigned, setAssigned] = useState(null);
   const [entries, setEntries] = useState([]);
   const [tenantUsers, setTenantUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -524,10 +523,7 @@ export default function TeamLeaderAdmin() {
     teamGoals
       .teamLeaderMe()
       .then(async (me) => {
-        const isSuper = user?.role === 'super_admin';
-        const ok = !!(me.isAssigned || isSuper);
-        setAssigned(!!me.isAssigned);
-        if (!ok) {
+        if (!me?.isAssigned && user?.role !== 'super_admin') {
           setEntries([]);
           return;
         }
@@ -536,7 +532,6 @@ export default function TeamLeaderAdmin() {
       })
       .catch((e) => {
         setError(e?.message || 'Could not load');
-        setAssigned(false);
         setEntries([]);
       })
       .finally(() => setLoading(false));
@@ -595,20 +590,6 @@ export default function TeamLeaderAdmin() {
           <div className="h-8 bg-surface-100 dark:bg-surface-800 rounded w-1/3" />
           <div className="h-10 bg-surface-100 dark:bg-surface-800 rounded w-2/3" />
           <div className="h-48 bg-surface-100 dark:bg-surface-800 rounded" />
-        </div>
-      </div>
-    );
-  }
-
-  if (user?.role !== 'super_admin' && assigned === false) {
-    return (
-      <div className="flex flex-1 min-h-0 items-start justify-center">
-        <div className="w-full max-w-2xl rounded-xl border border-amber-200 bg-amber-50 p-6 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
-          <h1 className="text-lg font-semibold">Team leader workspace</h1>
-          <p className="mt-3 text-sm leading-relaxed opacity-90">
-            Your account has the team leader page role, but you are not registered as an appointed team leader for this organisation. Ask management to add you under{' '}
-            <strong>Management → Team goals &amp; shift objectives → Team leaders</strong>, and ensure you have the <strong>Team leader admin</strong> page role in User management.
-          </p>
         </div>
       </div>
     );
@@ -701,7 +682,7 @@ export default function TeamLeaderAdmin() {
             {mainTab === 'objectives' && (
               <InfoHint
                 title="Shift & team objectives"
-                text="Operational measurable goals for your shift and teams. Team-scoped rows appear when you are appointed as a team leader."
+                text="Operational measurable goals for your shift and teams. Team-scoped rows are available when you have the Team leader admin page role."
               />
             )}
             {mainTab === 'submissions' && (

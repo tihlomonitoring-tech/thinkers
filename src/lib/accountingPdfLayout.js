@@ -234,28 +234,46 @@ export function renderCommercialPdf(doc, options) {
     y = doc.y + 12;
   }
 
-  // Line items table
-  const colW = [
-    contentW * 0.38,
-    contentW * 0.09,
-    contentW * 0.13,
-    contentW * 0.08,
-    contentW * 0.08,
-    contentW * 0.14,
-  ];
+  // Line items table — column bands fill full contentW; header/body share exact text boxes so values align under headings
+  const ratioSum = 0.38 + 0.09 + 0.13 + 0.08 + 0.08 + 0.14;
+  const colW = [0.38, 0.09, 0.13, 0.08, 0.08, 0.14].map((r) => (r / ratioSum) * contentW);
+  const colLeft = [];
+  {
+    let acc = PAGE.margin;
+    for (let i = 0; i < colW.length; i++) {
+      colLeft.push(acc);
+      acc += colW[i];
+    }
+  }
+  const DESC_PAD_L = 8;
+  const DESC_PAD_R = 4;
+  const NUM_PAD_L = 4;
+  const NUM_PAD_R = 4;
+  const AMOUNT_PAD_R = 8;
+  const descX = colLeft[0] + DESC_PAD_L;
+  const descW = Math.max(24, colW[0] - DESC_PAD_L - DESC_PAD_R);
+  const numCells = [];
+  for (let i = 1; i <= 5; i++) {
+    const isAmount = i === 5;
+    const x = colLeft[i] + NUM_PAD_L;
+    const w = Math.max(16, colW[i] - NUM_PAD_L - (isAmount ? AMOUNT_PAD_R : NUM_PAD_R));
+    numCells.push({ x, w });
+  }
   const headers = ['Description', 'Qty', 'Unit price', 'Disc %', 'VAT %', 'Amount'];
+
+  const drawTableHeader = (yy) => {
+    doc.rect(PAGE.margin, yy, contentW, headH).fill(PDF_THEME.tableHead);
+    doc.fillColor('#ffffff').font('Helvetica', 'bold').fontSize(8);
+    doc.text(headers[0], descX, yy + 7, { width: descW, align: 'left' });
+    for (let i = 1; i < headers.length; i++) {
+      const { x, w } = numCells[i - 1];
+      doc.text(headers[i], x, yy + 7, { width: w, align: 'right' });
+    }
+  };
 
   const tableTop = y;
   const headH = 22;
-  doc.rect(PAGE.margin, y, contentW, headH).fill(PDF_THEME.tableHead);
-  doc.fillColor('#ffffff').font('Helvetica', 'bold').fontSize(8);
-  let hx = PAGE.margin + 8;
-  for (let i = 0; i < headers.length; i++) {
-    const w = colW[i] - (i === 0 ? 8 : 4);
-    const opts = i >= 1 ? { width: w, align: i >= 1 ? 'right' : 'left' } : { width: w };
-    doc.text(headers[i], hx, y + 7, opts);
-    hx += colW[i];
-  }
+  drawTableHeader(y);
   y += headH;
 
   doc.font('Helvetica', 'normal').fontSize(8.5).fillColor(PDF_THEME.ink);
@@ -263,21 +281,13 @@ export function renderCommercialPdf(doc, options) {
   for (const l of lines || []) {
     const { qty, up, dPct, tPct, lineTotal } = lineItemCalc(l);
     const desc = String(l.description ?? '').trim();
-    const textH = Math.max(18, doc.heightOfString(desc || ' ', { width: colW[0] - 12 }) + 8);
+    const textH = Math.max(18, doc.heightOfString(desc || ' ', { width: descW }) + 8);
     const rowH = Math.min(textH + 4, 120);
 
     if (y + rowH > contentMaxY()) {
       doc.addPage();
       y = PAGE.margin;
-      doc.rect(PAGE.margin, y, contentW, headH).fill(PDF_THEME.tableHead);
-      doc.fillColor('#ffffff').font('Helvetica', 'bold').fontSize(8);
-      hx = PAGE.margin + 8;
-      for (let i = 0; i < headers.length; i++) {
-        const w = colW[i] - (i === 0 ? 8 : 4);
-        const opts = i >= 1 ? { width: w, align: i >= 1 ? 'right' : 'left' } : { width: w };
-        doc.text(headers[i], hx, y + 7, opts);
-        hx += colW[i];
-      }
+      drawTableHeader(y);
       y += headH;
       doc.font('Helvetica', 'normal').fontSize(8.5).fillColor(PDF_THEME.ink);
     }
@@ -285,22 +295,14 @@ export function renderCommercialPdf(doc, options) {
     const fill = rowIdx % 2 === 0 ? PDF_THEME.tableZebra : '#ffffff';
     doc.rect(PAGE.margin, y, contentW, rowH).fill(fill);
     doc.fillColor(PDF_THEME.ink);
-    doc.text(desc, PAGE.margin + 8, y + 6, { width: colW[0] - 12 });
+    doc.text(desc, descX, y + 6, { width: descW });
     const numY = y + 6;
-    doc.text(String(qty), PAGE.margin + colW[0] + 4, numY, { width: colW[1] - 8, align: 'right' });
-    doc.text(formatMoney(up), PAGE.margin + colW[0] + colW[1] + 4, numY, { width: colW[2] - 8, align: 'right' });
-    doc.text(dPct > 0 ? `${dPct}%` : '', PAGE.margin + colW[0] + colW[1] + colW[2] + 4, numY, {
-      width: colW[3] - 8,
-      align: 'right',
-    });
-    doc.text(tPct > 0 ? `${tPct}%` : '', PAGE.margin + colW[0] + colW[1] + colW[2] + colW[3] + 4, numY, {
-      width: colW[4] - 8,
-      align: 'right',
-    });
-    doc.font('Helvetica', 'bold').text(formatMoney(lineTotal), PAGE.margin + colW[0] + colW[1] + colW[2] + colW[3] + colW[4] + 4, numY, {
-      width: colW[5] - 12,
-      align: 'right',
-    });
+    const [cQty, cUp, cDisc, cVat, cAmt] = numCells;
+    doc.text(String(qty), cQty.x, numY, { width: cQty.w, align: 'right' });
+    doc.text(formatMoney(up), cUp.x, numY, { width: cUp.w, align: 'right' });
+    doc.text(dPct > 0 ? `${dPct}%` : '', cDisc.x, numY, { width: cDisc.w, align: 'right' });
+    doc.text(tPct > 0 ? `${tPct}%` : '', cVat.x, numY, { width: cVat.w, align: 'right' });
+    doc.font('Helvetica', 'bold').text(formatMoney(lineTotal), cAmt.x, numY, { width: cAmt.w, align: 'right' });
     doc.font('Helvetica', 'normal');
     doc.moveTo(PAGE.margin, y + rowH).lineTo(PAGE.margin + contentW, y + rowH).strokeColor(PDF_THEME.line).lineWidth(0.25).stroke();
     y += rowH;

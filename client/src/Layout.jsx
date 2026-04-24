@@ -24,6 +24,14 @@ function IconRefresh({ className }) {
   );
 }
 
+function IconNotes({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+    </svg>
+  );
+}
+
 export default function Layout() {
   const { user, logout, switchTenant } = useAuth();
   const { theme } = useTheme();
@@ -118,6 +126,7 @@ export default function Layout() {
   ] : [];
 
   const routePath = location.pathname || '';
+  const isCommandCentreRoute = routePath.startsWith('/command-centre');
   const globalTargets =
     routePath.startsWith('/command-centre') ? commandCentreTabTargets :
       routePath.startsWith('/contractor') ? contractorTabTargets :
@@ -254,6 +263,22 @@ export default function Layout() {
             >
               <IconRefresh className="h-4 w-4" />
             </button>
+            {isCommandCentreRoute && (
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new CustomEvent('cc:toggle-notes-panel'))}
+                className={`inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-2 rounded-lg border sm:px-3 text-sm font-medium transition-colors ${
+                  isDark
+                    ? 'border-surface-700 bg-surface-800 text-surface-200 hover:bg-surface-700'
+                    : 'border-surface-200 bg-white text-surface-700 hover:bg-surface-50'
+                }`}
+                title="Notes and reminders"
+                aria-label="Toggle notes and reminders panel"
+              >
+                <IconNotes className="h-4 w-4 shrink-0 opacity-90" />
+                <span className="hidden sm:inline max-w-[10rem] truncate">Notes</span>
+              </button>
+            )}
             {user?.tenant_ids?.length > 1 && (
               <div className="relative">
                 <button

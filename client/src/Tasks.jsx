@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from './AuthContext';
 import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
@@ -85,7 +85,7 @@ export default function Tasks() {
   const [filterReviewerId, setFilterReviewerId] = useState('');
   const [taskSort, setTaskSort] = useState('due_asc');
   const [listPage, setListPage] = useState(1);
-  const [showAdvancedTaskFilters, setShowAdvancedTaskFilters] = useState(true);
+  const [showAdvancedTaskFilters, setShowAdvancedTaskFilters] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
   const [tenantUsers, setTenantUsers] = useState([]);
@@ -212,6 +212,7 @@ export default function Tasks() {
     try {
       await tasksApi.update(taskId, { progress, progress_note: progressNote || undefined });
       if (detailTask?.id === taskId) setDetailTask((t) => (t ? { ...t, progress } : null));
+      setError('');
       loadTasks();
     } catch (e) {
       setError(e?.message || 'Update failed');
@@ -270,6 +271,7 @@ export default function Tasks() {
   const handleAddProgressUpdate = async (taskId, progress, note) => {
     try {
       await tasksApi.addProgressUpdate(taskId, { progress, note: note || undefined });
+      setError('');
       refreshDetailTask();
       loadTasks();
     } catch (e) {
@@ -1167,133 +1169,197 @@ function TaskDetailPanel({
   const [savingProgress, setSavingProgress] = useState(false);
   const [savingComment, setSavingComment] = useState(false);
   const [savingReminder, setSavingReminder] = useState(false);
+  const [localProgress, setLocalProgress] = useState(task.progress ?? 0);
+  const progressDebounceRef = useRef(null);
 
   const keyActions = Array.isArray(task.key_actions) ? task.key_actions : (task.key_actions ? (typeof task.key_actions === 'string' ? (() => { try { return JSON.parse(task.key_actions); } catch { return []; } })() : []) : []);
 
+  useEffect(() => {
+    setLocalProgress(task.progress ?? 0);
+  }, [task.id, task.progress]);
+
+  useEffect(() => () => clearTimeout(progressDebounceRef.current), []);
+
+  const fieldLabel = 'block text-[11px] font-semibold uppercase tracking-wide text-surface-500 mb-1.5';
+  const inputClass = 'w-full rounded-lg border border-surface-200 bg-white px-3 py-2 text-sm text-surface-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/25 focus:border-brand-500';
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden />
-      <div className="relative w-full max-w-2xl bg-white shadow-xl overflow-y-auto flex flex-col max-h-full">
-        <div className="sticky top-0 bg-white border-b border-surface-200 px-4 py-3 flex justify-between items-center shrink-0">
-          <h2 className="text-lg font-semibold text-surface-900">Task details</h2>
-          <button type="button" onClick={onClose} className="text-surface-500 hover:text-surface-700 p-1">✕</button>
-        </div>
-        <div className="p-4 space-y-4 overflow-y-auto">
-          <div>
-            <p className="text-sm text-surface-500">Title</p>
-            <p className="font-medium text-surface-900">{task.title}</p>
-          </div>
-          {task.description && (
-            <div>
-              <p className="text-sm text-surface-500">Description</p>
-              <p className="text-surface-700 whitespace-pre-wrap">{task.description}</p>
-            </div>
-          )}
-          {keyActions.length > 0 && (
-            <div>
-              <p className="text-sm text-surface-500 mb-1">Key actions</p>
-              <ul className="list-disc list-inside space-y-1 text-surface-700">
-                {keyActions.map((action, i) => (
-                  <li key={i}>{typeof action === 'string' ? action : action?.text || action}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-sm text-surface-500">Start date</p>
-              <p className="text-surface-700">{formatDate(task.start_date)}</p>
-            </div>
-            <div>
-              <p className="text-sm text-surface-500">Due date</p>
-              <p className="text-surface-700">{formatDate(task.due_date)}</p>
-            </div>
-          </div>
-
-          <div>
-            <p className="text-sm text-surface-500 mb-1">Category</p>
-            <div className="flex flex-wrap items-center gap-2">
+      <div className="absolute inset-0 bg-surface-900/40 backdrop-blur-[2px]" onClick={onClose} aria-hidden />
+      <aside
+        className="relative w-full max-w-lg md:max-w-xl shadow-2xl flex flex-col max-h-full border-l border-surface-200 bg-surface-50"
+        aria-labelledby="task-detail-title"
+      >
+        <header className="shrink-0 border-b border-surface-200 bg-white px-5 py-4 flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-500 mb-1">Task</p>
+            <h2 id="task-detail-title" className="text-lg font-semibold text-surface-900 leading-snug tracking-tight">
+              {task.title}
+            </h2>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <StatusBadge status={task.status} />
               <CategoryBadge category={task.category} />
-              {onUpdateCategory && (
-                <select
-                  value={task.category || 'departmental'}
-                  onChange={(e) => onUpdateCategory(task.id, e.target.value)}
-                  className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm max-w-xs"
-                >
-                  {TASK_CATEGORIES.map((c) => (
-                    <option key={c.value} value={c.value}>{c.label}</option>
-                  ))}
-                </select>
-              )}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg p-2 text-surface-500 hover:bg-surface-100 hover:text-surface-800 transition-colors"
+            aria-label="Close"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </header>
 
-          {onUpdateProgressLegend && (
+        <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-4">
+          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+            <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide mb-3">Overview</h3>
+            {task.description ? (
+              <p className="text-sm text-surface-700 whitespace-pre-wrap leading-relaxed">{task.description}</p>
+            ) : (
+              <p className="text-sm text-surface-400 italic">No description</p>
+            )}
+            {keyActions.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-surface-100">
+                <p className={fieldLabel}>Key actions</p>
+                <ul className="space-y-1.5 text-sm text-surface-700">
+                  {keyActions.map((action, i) => (
+                    <li key={i} className="flex gap-2">
+                      <span className="text-brand-500 font-bold leading-snug">·</span>
+                      <span>{typeof action === 'string' ? action : action?.text || action}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+            <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide mb-3">Schedule</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className={fieldLabel}>Start</p>
+                <p className="text-sm font-medium text-surface-900 tabular-nums">{formatDate(task.start_date)}</p>
+              </div>
+              <div>
+                <p className={fieldLabel}>Due</p>
+                <p className="text-sm font-medium text-surface-900 tabular-nums">{formatDate(task.due_date)}</p>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Ownership &amp; classification</h3>
             <div>
-              <p className="text-sm text-surface-500 mb-1">Progress colour (legend)</p>
-              <p className="text-xs text-surface-500 mb-2">Pick how this task should read on the calendar and boards. Colours are intentionally soft.</p>
-              <select
-                value={task.progress_legend || 'not_started'}
-                onChange={(e) => onUpdateProgressLegend(task.id, e.target.value)}
-                className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
-              >
-                {TASK_PROGRESS_LEGEND_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
+              <label className={fieldLabel} htmlFor={`task-cat-${task.id}`}>Category</label>
+              <div className="flex flex-wrap items-center gap-2">
+                <CategoryBadge category={task.category} />
+                {onUpdateCategory && (
+                  <select
+                    id={`task-cat-${task.id}`}
+                    value={task.category || 'departmental'}
+                    onChange={(e) => onUpdateCategory(task.id, e.target.value)}
+                    className={`${inputClass} max-w-xs`}
+                  >
+                    {TASK_CATEGORIES.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
             </div>
-          )}
-
-          {onUpdateLeaderReviewer && (
-            <div className="grid sm:grid-cols-2 gap-4">
+            {onUpdateProgressLegend && (
               <div>
-                <p className="text-sm text-surface-500 mb-1">Task leader</p>
+                <label className={fieldLabel} htmlFor={`task-legend-${task.id}`}>Board colour (legend)</label>
+                <p className="text-xs text-surface-500 mb-2">How this task reads on boards and calendar views.</p>
                 <select
-                  value={task.task_leader_id || ''}
-                  onChange={(e) => onUpdateLeaderReviewer(task.id, { task_leader_id: e.target.value || null })}
-                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  id={`task-legend-${task.id}`}
+                  value={task.progress_legend || 'not_started'}
+                  onChange={(e) => onUpdateProgressLegend(task.id, e.target.value)}
+                  className={inputClass}
                 >
-                  <option value="">None</option>
-                  {tenantUsers.map((u) => (
-                    <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                  {TASK_PROGRESS_LEGEND_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </div>
-              <div>
-                <p className="text-sm text-surface-500 mb-1">Task reviewer</p>
-                <select
-                  value={task.task_reviewer_id || ''}
-                  onChange={(e) => onUpdateLeaderReviewer(task.id, { task_reviewer_id: e.target.value || null })}
-                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                >
-                  <option value="">None</option>
-                  {tenantUsers.map((u) => (
-                    <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
-                  ))}
-                </select>
+            )}
+            {onUpdateLeaderReviewer && (
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className={fieldLabel} htmlFor={`task-leader-${task.id}`}>Task leader</label>
+                  <select
+                    id={`task-leader-${task.id}`}
+                    value={task.task_leader_id || ''}
+                    onChange={(e) => onUpdateLeaderReviewer(task.id, { task_leader_id: e.target.value || null })}
+                    className={inputClass}
+                  >
+                    <option value="">None</option>
+                    {tenantUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={fieldLabel} htmlFor={`task-reviewer-${task.id}`}>Task reviewer</label>
+                  <select
+                    id={`task-reviewer-${task.id}`}
+                    value={task.task_reviewer_id || ''}
+                    onChange={(e) => onUpdateLeaderReviewer(task.id, { task_reviewer_id: e.target.value || null })}
+                    className={inputClass}
+                  >
+                    <option value="">None</option>
+                    {tenantUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </section>
 
-          <div>
-            <p className="text-sm text-surface-500 mb-1">Progress</p>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={task.progress ?? 0}
-              onChange={(e) => onUpdateProgress(task.id, parseInt(e.target.value, 10))}
-              className="w-full"
-            />
-            <span className="text-sm text-surface-600">{task.progress ?? 0}%</span>
+          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Progress</h3>
+              <span className="text-sm font-semibold tabular-nums text-brand-700 bg-brand-50 border border-brand-100 px-2.5 py-0.5 rounded-md">
+                {localProgress}%
+              </span>
+            </div>
+            <div>
+              <label className="sr-only" htmlFor={`task-progress-range-${task.id}`}>
+                Adjust completion percentage
+              </label>
+              <input
+                id={`task-progress-range-${task.id}`}
+                type="range"
+                min="0"
+                max="100"
+                value={localProgress}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  setLocalProgress(v);
+                  if (progressDebounceRef.current) clearTimeout(progressDebounceRef.current);
+                  progressDebounceRef.current = setTimeout(() => onUpdateProgress(task.id, v), 400);
+                }}
+                className="w-full h-2 rounded-full appearance-none bg-surface-200 accent-brand-600 cursor-pointer"
+              />
+              <p className="text-xs text-surface-500 mt-2">Dragging saves the percentage shortly after you pause (no duplicate entries).</p>
+            </div>
+
             {isAssignee && (
-              <div className="mt-2 space-y-2">
+              <div className="rounded-lg border border-surface-100 bg-surface-50/80 p-4 space-y-3">
+                <p className="text-xs font-semibold text-surface-800">Log a progress entry</p>
+                <p className="text-xs text-surface-500">
+                  Adds a timestamped line to the history below and sets completion to the value above.
+                </p>
                 <textarea
-                  placeholder="What did you do? (optional — saved with timestamp when you click Log progress)"
+                  placeholder="Optional note — what changed, blockers, or next steps…"
                   value={progressNote}
                   onChange={(e) => setProgressNote(e.target.value)}
-                  rows={2}
-                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  rows={3}
+                  className={inputClass}
                 />
                 <button
                   type="button"
@@ -1301,61 +1367,64 @@ function TaskDetailPanel({
                   onClick={async () => {
                     setSavingProgress(true);
                     try {
-                      await onAddProgressUpdate(task.id, task.progress ?? 0, progressNote || undefined);
+                      await onAddProgressUpdate(task.id, localProgress, progressNote || undefined);
                       setProgressNote('');
                       onRefreshDetail?.();
                     } finally {
                       setSavingProgress(false);
                     }
                   }}
-                  className="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+                  className="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 disabled:opacity-50 shadow-sm transition-colors"
                 >
-                  {savingProgress ? 'Saving…' : 'Log progress (with timestamp)'}
+                  {savingProgress ? 'Saving…' : 'Save progress entry'}
                 </button>
               </div>
             )}
-          </div>
 
-          {progressUpdates.length > 0 && (
+            {progressUpdates.length > 0 && (
+              <div>
+                <p className={`${fieldLabel} mb-2`}>History</p>
+                <ul className="space-y-0 max-h-52 overflow-y-auto border border-surface-100 rounded-lg divide-y divide-surface-100 bg-surface-50/50">
+                  {progressUpdates.map((u) => (
+                    <li key={u.id} className="px-3 py-2.5 text-sm">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span className="text-xs text-surface-500 tabular-nums">{formatDateTime(u.created_at)}</span>
+                        <span className="font-medium text-surface-800">{u.user_name || 'Someone'}</span>
+                        <span className="text-xs font-semibold text-brand-700 tabular-nums">{u.progress}%</span>
+                      </div>
+                      {u.note ? <p className="text-surface-600 text-xs mt-1.5 whitespace-pre-wrap leading-snug">{u.note}</p> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-3">
+            <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Workflow</h3>
             <div>
-              <p className="text-sm text-surface-500 mb-1">Progress history</p>
-              <ul className="space-y-2 max-h-48 overflow-y-auto rounded-lg border border-surface-200 p-2 bg-surface-50">
-                {progressUpdates.map((u) => (
-                  <li key={u.id} className="text-sm">
-                    <span className="text-surface-500">{formatDateTime(u.created_at)}</span>
-                    <span className="mx-1">·</span>
-                    <span className="font-medium text-surface-700">{u.user_name || 'Someone'}</span>
-                    <span className="mx-1">→</span>
-                    <span className="text-surface-700">{u.progress}%</span>
-                    {u.note && <span className="block text-surface-600 mt-0.5">{u.note}</span>}
-                  </li>
+              <label className={fieldLabel} htmlFor={`task-status-${task.id}`}>Status</label>
+              <select
+                id={`task-status-${task.id}`}
+                value={task.status || 'not_started'}
+                onChange={(e) => onUpdateStatus(task.id, e.target.value)}
+                className={`${inputClass} max-w-xs`}
+              >
+                {STATUS_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
-              </ul>
+              </select>
             </div>
-          )}
-
-          <div>
-            <p className="text-sm text-surface-500 mb-1">Status</p>
-            <select
-              value={task.status || 'not_started'}
-              onChange={(e) => onUpdateStatus(task.id, e.target.value)}
-              className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-full max-w-xs"
-            >
-              {STATUS_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {task.status !== 'completed' && (
-            <button
-              type="button"
-              onClick={() => onUpdateStatus(task.id, 'completed')}
-              className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700"
-            >
-              ✓ Mark complete
-            </button>
-          )}
+            {task.status !== 'completed' && (
+              <button
+                type="button"
+                onClick={() => onUpdateStatus(task.id, 'completed')}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 text-sm font-semibold hover:bg-emerald-100 transition-colors"
+              >
+                <span aria-hidden>✓</span> Mark complete
+              </button>
+            )}
+          </section>
 
           <div>
             <p className="text-sm text-surface-500 mb-1">Assignees</p>
@@ -1563,7 +1632,7 @@ function TaskDetailPanel({
             </label>
           </div>
         </div>
-      </div>
+      </aside>
 
       {assigneeModal && (
         <AddAssigneesModal

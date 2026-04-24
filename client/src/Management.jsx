@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { profileManagement as pm, shiftClock } from './api';
+import TeamLeaderAuditSection from './components/TeamLeaderAuditSection.jsx';
 import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
@@ -14,6 +15,7 @@ import EmployeeDetailsManagementSection from './components/EmployeeDetailsManage
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
   { id: 'team_goals', label: 'Team goals & shift objectives' },
+  { id: 'team_leader_audit', label: 'Team leader audit' },
   { id: 'employee_productivity_score', label: 'Employee productivity score' },
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'shift-swaps', label: 'Shift swap requests' },
@@ -338,6 +340,8 @@ export default function Management() {
           {activeSection === 'team_goals' && (
             <TeamGoalsManagementSection tenantUsers={tenantUsers} onError={setError} />
           )}
+
+          {activeSection === 'team_leader_audit' && <TeamLeaderAuditSection onError={setError} />}
 
           {activeSection === 'employee_productivity_score' && <EmployeeProductivityScoreSection />}
 

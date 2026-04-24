@@ -64,6 +64,7 @@
     "db:tasks-library": "node scripts/run-tasks-library-schema.js",
     "db:tasks-category": "node scripts/run-tasks-category-schema.js",
     "db:tasks-leader-reviewer": "node scripts/run-tasks-leader-reviewer-schema.js",
+    "db:tasks-activity": "node scripts/run-tasks-activity.js",
     "db:task-progress-legend": "node scripts/run-task-progress-legend-schema.js",
     "db:tracking-integration": "node scripts/run-tracking-integration-schema.js",
     "db:tracking-expand-contractor-truck": "node scripts/run-tracking-expand-contractor-truck.js",

@@ -40,14 +40,16 @@ function dedupeEvaluations(rows) {
   return [...byReport.values()];
 }
 
-async function computeTenantScores(tenantId, windowDays) {
+export async function computeTenantScores(tenantId, windowDays) {
   const wd = Math.max(7, Math.min(90, parseInt(String(windowDays || Sp.SP.WINDOW_DAYS_DEFAULT), 10) || Sp.SP.WINDOW_DAYS_DEFAULT));
   const params = { tenantId, windowDays: wd };
 
+  /** Platform and tenant admins are managers — exclude from punctuality / task / CC productivity scoring. */
   const ccUsersR = await query(
     `SELECT DISTINCT u.id, u.full_name, u.email
      FROM users u
      WHERE u.tenant_id = @tenantId
+       AND LOWER(LTRIM(RTRIM(ISNULL(u.role, N'')))) NOT IN (N'super_admin', N'tenant_admin')
        AND (
          EXISTS (SELECT 1 FROM command_centre_grants g WHERE g.user_id = u.id)
          OR EXISTS (SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'command_centre')

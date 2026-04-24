@@ -153,8 +153,8 @@ export default function TeamGoalsManagementSection({ tenantUsers = [], onError }
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-surface-800 uppercase tracking-wide">Team leaders</h2>
           <InfoHint
-            title="Appointing leaders"
-            text="Assign the Team leader admin page role to the same users in User management, then register them here. Leaders complete the daily questionnaire on Team leader admin."
+            title="Who counts as a team leader"
+            text="Anyone with the Team leader admin page role for this organisation is a team leader and appears in this list. Use “Add management roster mark” only if you want an extra record for shift-cohort reference; removing it does not take away their page access — change page roles in User management for that."
           />
         </div>
         <div className="flex flex-wrap gap-2 items-end">
@@ -176,19 +176,44 @@ export default function TeamGoalsManagementSection({ tenantUsers = [], onError }
             onClick={assignLeader}
             className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium disabled:opacity-50"
           >
-            Register as team leader
+            Add management roster mark
           </button>
         </div>
         <ul className="text-sm divide-y divide-surface-100 border border-surface-100 rounded-lg">
-          {leaders.length === 0 && <li className="px-3 py-2 text-surface-500">No team leaders registered.</li>}
-          {leaders.map((L) => (
-            <li key={L.user_id ?? L.user_Id} className="px-3 py-2 flex justify-between gap-2 items-center">
-              <span>{L.full_name || L.email}</span>
-              <button type="button" className="text-xs text-red-600 font-medium" disabled={busy} onClick={() => removeLeader(L.user_id ?? L.user_Id)}>
-                Remove
-              </button>
+          {leaders.length === 0 && (
+            <li className="px-3 py-2 text-surface-500">
+              No users have the Team leader admin page role for this tenant. Grant it in User management.
             </li>
-          ))}
+          )}
+          {leaders.map((L) => {
+            const uid = L.user_id ?? L.user_Id;
+            const roster =
+              L.roster_registered === true || L.roster_registered === 1 || String(L.roster_registered) === '1';
+            return (
+              <li key={uid} className="px-3 py-2 flex justify-between gap-2 items-center">
+                <span>
+                  {L.full_name || L.email}
+                  {roster ? (
+                    <span className="ml-2 text-[10px] font-semibold uppercase text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded">
+                      Management roster
+                    </span>
+                  ) : null}
+                </span>
+                {roster ? (
+                  <button
+                    type="button"
+                    className="text-xs text-red-600 font-medium"
+                    disabled={busy}
+                    onClick={() => removeLeader(uid)}
+                  >
+                    Remove roster mark
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-surface-500">Page role only</span>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </section>
 

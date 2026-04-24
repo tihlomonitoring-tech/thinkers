@@ -52,6 +52,14 @@ function getRow(row, key) {
   return k ? row[k] : undefined;
 }
 
+function isMissingSqlObjectError(err) {
+  const m = String(err?.message || '').toLowerCase();
+  return m.includes('invalid object name') || m.includes('does not exist');
+}
+
+const TASK_ACTIVITY_SCHEMA_MESSAGE =
+  'Task activity tables are missing. Run npm run db:tasks-activity on the server (or include db:tasks-activity in your migration pipeline).';
+
 function canAccessTaskTenant(req, tenantId) {
   if (req.user?.role === 'super_admin') return true;
   const tid = req.user?.tenant_id;
@@ -484,8 +492,6 @@ router.get('/:id', async (req, res, next) => {
     );
 
     let progressUpdates = [];
-    let comments = [];
-    let reminders = [];
     try {
       const progressResult = await query(
         `SELECT p.id, p.task_id, p.user_id, p.progress, p.note, p.created_at, u.full_name AS user_name
@@ -502,6 +508,12 @@ router.get('/:id', async (req, res, next) => {
         note: getRow(r, 'note'),
         created_at: getRow(r, 'created_at'),
       }));
+    } catch (_) {
+      progressUpdates = [];
+    }
+
+    let comments = [];
+    try {
       const commentsResult = await query(
         `SELECT c.id, c.task_id, c.user_id, c.body, c.created_at, u.full_name AS user_name
          FROM task_comments c
@@ -522,7 +534,9 @@ router.get('/:id', async (req, res, next) => {
         const placeholders = commentIds.map((_, i) => `@cid${i}`).join(',');
         const pool = await getPool();
         const reqPool = pool.request();
-        commentIds.forEach((cid, i) => { reqPool.input(`cid${i}`, cid); });
+        commentIds.forEach((cid, i) => {
+          reqPool.input(`cid${i}`, cid);
+        });
         const attResult = await reqPool.query(
           `SELECT a.id, a.task_comment_id, a.file_name, a.created_at
            FROM task_comment_attachments a
@@ -539,8 +553,16 @@ router.get('/:id', async (req, res, next) => {
             created_at: getRow(row, 'created_at'),
           });
         }
-        comments.forEach((c) => { c.attachments = attByComment[c.id] || []; });
+        comments.forEach((c) => {
+          c.attachments = attByComment[c.id] || [];
+        });
       }
+    } catch (_) {
+      comments = [];
+    }
+
+    let reminders = [];
+    try {
       const remindersResult = await query(
         `SELECT r.id, r.task_id, r.user_id, r.remind_at, r.note, r.created_at, r.dismissed_at, u.full_name AS user_name
          FROM task_reminders r
@@ -557,7 +579,9 @@ router.get('/:id', async (req, res, next) => {
         created_at: getRow(r, 'created_at'),
         dismissed_at: getRow(r, 'dismissed_at'),
       }));
-    } catch (_) {}
+    } catch (_) {
+      reminders = [];
+    }
 
     const assignees = (assigneesResult.recordset || []).map((r) => ({
       user_id: getRow(r, 'user_id'),
@@ -690,7 +714,9 @@ router.patch('/:id', async (req, res, next) => {
             { taskId: id, userId: req.user.id, progress: newProgress, note: note || null }
           );
         }
-      } catch (_) { /* activity tables may not exist yet */ }
+      } catch (e) {
+        if (!isMissingSqlObjectError(e)) throw e;
+      }
     }
 
     const newStatus = status !== undefined ? (['not_started', 'in_progress', 'completed', 'cancelled'].includes(status) ? status : getRow(row, 'status')) : getRow(row, 'status');
@@ -870,13 +896,21 @@ router.post('/:id/progress-updates', async (req, res, next) => {
     const p = Math.max(0, Math.min(100, parseInt(progress, 10) ?? 0));
     const noteStr = note != null ? String(note).trim() : null;
 
+    let insertResult;
+    try {
+      insertResult = await query(
+        `INSERT INTO task_progress_updates (task_id, user_id, progress, note)
+         OUTPUT INSERTED.id, INSERTED.progress, INSERTED.note, INSERTED.created_at
+         VALUES (@taskId, @userId, @progress, @note)`,
+        { taskId: id, userId: req.user.id, progress: p, note: noteStr }
+      );
+    } catch (err) {
+      if (isMissingSqlObjectError(err)) {
+        return res.status(503).json({ error: TASK_ACTIVITY_SCHEMA_MESSAGE, code: 'TASK_ACTIVITY_SCHEMA_MISSING' });
+      }
+      throw err;
+    }
     await query(`UPDATE tasks SET progress = @progress, updated_at = SYSUTCDATETIME() WHERE id = @taskId`, { taskId: id, progress: p });
-    const insertResult = await query(
-      `INSERT INTO task_progress_updates (task_id, user_id, progress, note)
-       OUTPUT INSERTED.id, INSERTED.progress, INSERTED.note, INSERTED.created_at
-       VALUES (@taskId, @userId, @progress, @note)`,
-      { taskId: id, userId: req.user.id, progress: p, note: noteStr }
-    );
     const row = insertResult.recordset[0];
     res.status(201).json({
       progress_update: {

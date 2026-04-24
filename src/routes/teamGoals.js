@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { computeTenantScores } from './shiftScore.js';
 
 const router = Router();
 
@@ -13,6 +14,12 @@ function getRow(row, key) {
   return k ? row[k] : undefined;
 }
 
+function rosterRegisteredFlag(row) {
+  const v = getRow(row, 'roster_registered');
+  return v === true || v === 1 || String(v) === '1';
+}
+
+/** Team leader workspace: page role `team_leader_admin` implies team leader — no separate roster row required. */
 async function requireTeamLeaderActive(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   if (req.user.role === 'super_admin') return next();
@@ -21,21 +28,6 @@ async function requireTeamLeaderActive(req, res, next) {
     return res.status(403).json({ error: 'Team leader admin access is required.' });
   }
   if (!req.user.tenant_id) return res.status(400).json({ error: 'No tenant context' });
-  try {
-    const r = await query(
-      `SELECT 1 AS ok FROM team_leader_assignments WHERE tenant_id = @tenantId AND user_id = @userId`,
-      { tenantId: req.user.tenant_id, userId: req.user.id }
-    );
-    if (!r.recordset?.length) {
-      return res.status(403).json({ error: 'You are not assigned as a team leader for this organisation.' });
-    }
-  } catch (e) {
-    const m = String(e?.message || '').toLowerCase();
-    if (m.includes('invalid object') || m.includes('does not exist')) {
-      return res.status(503).json({ error: 'Team goals tables are not installed. Run db:team-goals-schema and db:team-leader-admin-page-role.' });
-    }
-    throw e;
-  }
   return next();
 }
 
@@ -144,17 +136,7 @@ router.get('/objectives', requirePageAccess(['management', 'team_leader_admin'])
   try {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
-    const roles = (req.user.page_roles || []).map((r) => String(r).toLowerCase());
-    const isMgmt = req.user.role === 'super_admin' || roles.includes('management');
-    if (!isMgmt) {
-      const ok = await query(
-        `SELECT 1 AS ok FROM team_leader_assignments WHERE tenant_id = @tenantId AND user_id = @userId`,
-        { tenantId, userId: req.user.id }
-      );
-      if (!ok.recordset?.length) {
-        return res.status(403).json({ error: 'Team leader assignment required to list all objectives.' });
-      }
-    }
+    // management and team_leader_admin (page role) may list tenant objectives
     const r = await query(
       `SELECT id, tenant_id, scope, title, description, metric_name, target_value, current_value, unit, status,
               work_date, shift_type, team_name, leader_user_id, member_user_ids, created_by, created_at, updated_at
@@ -281,10 +263,12 @@ router.get('/team-leaders', requirePageAccess('management'), async (req, res, ne
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
     const r = await query(
-      `SELECT a.user_id, u.full_name, u.email, a.appointed_at
-       FROM team_leader_assignments a
-       INNER JOIN users u ON u.id = a.user_id
-       WHERE a.tenant_id = @tenantId
+      `SELECT DISTINCT u.id AS user_id, u.full_name, u.email, a.appointed_at, a.appointed_by,
+              CASE WHEN a.user_id IS NOT NULL THEN 1 ELSE 0 END AS roster_registered
+       FROM users u
+       INNER JOIN user_page_roles r ON r.user_id = u.id AND r.page_id = N'team_leader_admin'
+       LEFT JOIN team_leader_assignments a ON a.tenant_id = @tenantId AND a.user_id = u.id
+       WHERE (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
        ORDER BY u.full_name`,
       { tenantId }
     );
@@ -327,16 +311,13 @@ router.delete('/team-leaders/:userId', requirePageAccess('management'), async (r
 
 router.get('/team-leader/me', requirePageAccess('team_leader_admin'), async (req, res, next) => {
   try {
-    const tenantId = req.user.tenant_id;
-    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
     if (req.user.role === 'super_admin') {
       return res.json({ isAssigned: true });
     }
-    const r = await query(
-      `SELECT 1 AS ok FROM team_leader_assignments WHERE tenant_id = @tenantId AND user_id = @userId`,
-      { tenantId, userId: req.user.id }
-    );
-    res.json({ isAssigned: Boolean(r.recordset?.length) });
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ isAssigned: false });
+    // Page access to team leader admin implies team leader for the tenant.
+    res.json({ isAssigned: true });
   } catch (err) {
     next(err);
   }
@@ -535,6 +516,204 @@ router.get('/management/ratings', requirePageAccess('management'), async (req, r
     );
     res.json({ ratings: r.recordset || [] });
   } catch (err) {
+    next(err);
+  }
+});
+
+function parseMemberUserIdsJson(raw) {
+  if (!raw) return [];
+  try {
+    const a = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(a) ? a.map((x) => String(x)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Team leader audit: per appointed leader — recent questionnaires, linked objectives,
+ * team members’ productivity scores (Command Centre roster scoring), and management touchpoint ratings.
+ */
+router.get('/management/team-leader-audit', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+    const qDaysRaw = String(req.query.questionnaire_days ?? '60').trim().toLowerCase();
+    const qDaysParsed = parseInt(String(req.query.questionnaire_days ?? '60'), 10);
+    const questionnaireAllTime = qDaysRaw === 'all' || (Number.isFinite(qDaysParsed) && qDaysParsed === 0);
+    const daysQ = questionnaireAllTime
+      ? null
+      : Math.min(3650, Math.max(14, Number.isFinite(qDaysParsed) ? qDaysParsed : 60));
+    const daysScore = Math.min(90, Math.max(7, parseInt(String(req.query.score_days || '56'), 10) || 56));
+    const daysRatings = Math.min(3650, Math.max(14, parseInt(String(req.query.ratings_days || '90'), 10) || 90));
+
+    const tenantUsersR = await query(
+      `SELECT id, full_name, email FROM users WHERE tenant_id = @tenantId`,
+      { tenantId }
+    );
+    const tenantUserById = new Map(
+      (tenantUsersR.recordset || []).map((u) => [
+        String(getRow(u, 'id')),
+        { full_name: getRow(u, 'full_name'), email: getRow(u, 'email') },
+      ])
+    );
+
+    const leadersR = await query(
+      `SELECT DISTINCT u.id AS user_id, u.full_name, u.email, a.appointed_at, a.appointed_by,
+              CASE WHEN a.user_id IS NOT NULL THEN 1 ELSE 0 END AS roster_registered
+       FROM users u
+       INNER JOIN user_page_roles r ON r.user_id = u.id AND r.page_id = N'team_leader_admin'
+       LEFT JOIN team_leader_assignments a ON a.tenant_id = @tenantId AND a.user_id = u.id
+       WHERE (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+       ORDER BY u.full_name`,
+      { tenantId }
+    );
+
+    const qR = await query(
+      questionnaireAllTime
+        ? `SELECT q.*, u.full_name AS leader_name, u.email AS leader_email
+           FROM team_leader_questionnaires q
+           INNER JOIN users u ON u.id = q.leader_user_id
+           WHERE q.tenant_id = @tenantId
+           ORDER BY q.work_date DESC, q.created_at DESC`
+        : `SELECT q.*, u.full_name AS leader_name, u.email AS leader_email
+           FROM team_leader_questionnaires q
+           INNER JOIN users u ON u.id = q.leader_user_id
+           WHERE q.tenant_id = @tenantId AND q.work_date >= CAST(DATEADD(DAY, -@daysQ, SYSUTCDATETIME()) AS DATE)
+           ORDER BY q.work_date DESC, q.created_at DESC`,
+      questionnaireAllTime ? { tenantId } : { tenantId, daysQ }
+    );
+    const questionnaires = qR.recordset || [];
+
+    const objR = await query(
+      `SELECT o.id, o.tenant_id, o.scope, o.title, o.description, o.metric_name, o.target_value, o.current_value, o.unit, o.status,
+              o.work_date, o.shift_type, o.team_name, o.leader_user_id, o.member_user_ids, o.created_by, o.created_at, o.updated_at,
+              uc.full_name AS created_by_name
+       FROM shift_team_objectives o
+       LEFT JOIN users uc ON uc.id = o.created_by
+       WHERE o.tenant_id = @tenantId
+       ORDER BY o.updated_at DESC`,
+      { tenantId }
+    );
+    const allObjectivesRaw = objR.recordset || [];
+    const allObjectives = allObjectivesRaw.map((o) => {
+      const ids = parseMemberUserIdsJson(getRow(o, 'member_user_ids'));
+      const members_on_objective = ids.map((mid) => {
+        const u = tenantUserById.get(String(mid));
+        return { user_id: mid, full_name: u?.full_name || '—', email: u?.email || '' };
+      });
+      return { ...o, members_on_objective };
+    });
+
+    let ratings = [];
+    try {
+      const rt = await query(
+        `SELECT TOP 800 m.id, m.tenant_id, m.manager_user_id, m.member_user_id, m.work_date, m.period, m.rating, m.narrative, m.created_at,
+                um.full_name AS manager_full_name, um.email AS manager_email
+         FROM management_team_ratings m
+         LEFT JOIN users um ON um.id = m.manager_user_id
+         WHERE m.tenant_id = @tenantId AND m.created_at >= DATEADD(DAY, -@daysRatings, SYSUTCDATETIME())
+         ORDER BY m.created_at DESC`,
+        { tenantId, daysRatings }
+      );
+      ratings = rt.recordset || [];
+    } catch (_) {
+      ratings = [];
+    }
+
+    let scoreData;
+    try {
+      scoreData = await computeTenantScores(tenantId, daysScore);
+    } catch (e) {
+      scoreData = {
+        windowDays: daysScore,
+        people: [],
+        scoring: null,
+      };
+    }
+    const scoreByUserId = new Map((scoreData.people || []).map((p) => [String(p.userId), p]));
+
+    const assignedRows = leadersR.recordset || [];
+    const assignedIds = new Set(assignedRows.map((r) => String(getRow(r, 'user_id'))));
+    const submissionOnlyIds = new Set();
+    for (const q of questionnaires) {
+      const lid = String(getRow(q, 'leader_user_id') || '');
+      if (lid && !assignedIds.has(lid)) submissionOnlyIds.add(lid);
+    }
+    const submissionOnlyRows = [...submissionOnlyIds].map((user_id) => {
+      const u = tenantUserById.get(user_id);
+      return {
+        user_id,
+        appointed_at: null,
+        appointed_by: null,
+        full_name: u?.full_name || getRow(questionnaires.find((x) => String(getRow(x, 'leader_user_id')) === user_id) || {}, 'leader_name') || '—',
+        email: u?.email || '',
+        roster_registered: false,
+        leader_from_submissions_only: true,
+      };
+    });
+
+    const combinedLeaderRows = [...assignedRows, ...submissionOnlyRows].sort((a, b) =>
+      String(getRow(a, 'full_name') || '').localeCompare(String(getRow(b, 'full_name') || ''), undefined, { sensitivity: 'base' })
+    );
+
+    const leaders = combinedLeaderRows.map((row) => {
+      const lid = String(getRow(row, 'user_id'));
+      const qs = questionnaires.filter((q) => String(getRow(q, 'leader_user_id')) === lid);
+      const objs = allObjectives.filter((o) => String(getRow(o, 'leader_user_id') || '') === lid);
+      const memberIds = new Set();
+      for (const o of objs) {
+        parseMemberUserIdsJson(getRow(o, 'member_user_ids')).forEach((id) => memberIds.add(String(id)));
+      }
+      const team_members = [...memberIds].map((mid) => {
+        const s = scoreByUserId.get(mid);
+        const tu = tenantUserById.get(mid);
+        return {
+          user_id: mid,
+          full_name: s?.full_name || tu?.full_name || '—',
+          email: s?.email || tu?.email || '',
+          productivity_total: s != null ? s.total : null,
+          breakdown: s?.breakdown ?? null,
+        };
+      });
+      const memberSet = new Set(team_members.map((m) => m.user_id));
+      const member_ratings = ratings.filter((r) => memberSet.has(String(getRow(r, 'member_user_id'))));
+
+      return {
+        user_id: lid,
+        full_name: getRow(row, 'full_name'),
+        email: getRow(row, 'email'),
+        appointed_at: getRow(row, 'appointed_at'),
+        appointed_by: getRow(row, 'appointed_by'),
+        roster_registered: rosterRegisteredFlag(row),
+        leader_from_submissions_only: Boolean(getRow(row, 'leader_from_submissions_only')),
+        questionnaires: qs,
+        objectives: objs,
+        team_members,
+        management_ratings_for_team: member_ratings,
+      };
+    });
+
+    res.json({
+      questionnaire_all_time: questionnaireAllTime,
+      window_questionnaire_days: daysQ,
+      window_score_days: daysScore,
+      window_ratings_days: daysRatings,
+      leaders,
+      scoring: scoreData.scoring || null,
+    });
+  } catch (err) {
+    const m = String(err?.message || '').toLowerCase();
+    if (m.includes('invalid object') || m.includes('does not exist')) {
+      return res.json({
+        questionnaire_all_time: false,
+        window_questionnaire_days: 60,
+        window_score_days: 56,
+        window_ratings_days: 90,
+        leaders: [],
+        scoring: null,
+      });
+    }
     next(err);
   }
 });

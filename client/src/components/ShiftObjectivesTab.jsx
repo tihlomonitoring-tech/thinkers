@@ -109,7 +109,7 @@ export default function ShiftObjectivesTab({ userId, tenantUsers = [], leadershi
       return;
     }
     if (form.scope === 'team' && !canUseTeamScope) {
-      setError('Only appointed team leaders (or platform admin) can create team objectives.');
+      setError('Only users with the Team leader admin page role (or platform admin) can create team objectives.');
       return;
     }
     const leaderId = form.scope === 'team' ? form.leader_user_id || uid : null;
@@ -177,7 +177,7 @@ export default function ShiftObjectivesTab({ userId, tenantUsers = [], leadershi
           text={
             leadershipMode
               ? 'Maintain operational shift and crew-wide team objectives for your tenant. Updates feed Command Centre productivity scoring when objectives are achieved.'
-              : 'Create personal shift objectives, or team objectives when you are an appointed team leader. Use metric, target, and current value. Mark Achieved when met — credited users earn team-progress productivity points (Command Centre roster).'
+              : 'Create personal shift objectives, or team objectives when you have the Team leader admin page role. Use metric, target, and current value. Mark Achieved when met — credited users earn team-progress productivity points (Command Centre roster).'
           }
         />
       </div>
@@ -196,7 +196,7 @@ export default function ShiftObjectivesTab({ userId, tenantUsers = [], leadershi
             >
               <option value="shift">{leadershipMode ? 'Shift / operational' : 'My shift'}</option>
               <option value="team" disabled={!canUseTeamScope}>
-                Team {canUseTeamScope ? '' : '(appointed leader only)'}
+                Team {canUseTeamScope ? '' : '(team leader page role only)'}
               </option>
             </select>
           </div>

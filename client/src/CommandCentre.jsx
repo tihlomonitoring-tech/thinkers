@@ -262,6 +262,12 @@ export default function CommandCentre() {
   }, []);
 
   useEffect(() => {
+    const onToggle = () => setNotesPanelOpen((v) => !v);
+    window.addEventListener('cc:toggle-notes-panel', onToggle);
+    return () => window.removeEventListener('cc:toggle-notes-panel', onToggle);
+  }, []);
+
+  useEffect(() => {
     const handler = (e) => {
       const report = e.detail?.report ?? e.detail;
       const tenantId = e.detail?.tenantId ?? user?.tenant_id;
@@ -534,17 +540,6 @@ export default function CommandCentre() {
           )}
         </div>
       </div>
-
-      {!notesPanelOpen && (
-        <button
-          type="button"
-          onClick={() => setNotesPanelOpen(true)}
-          className="fixed right-0 top-1/2 -translate-y-1/2 z-20 rounded-l-xl border border-surface-300 border-r-0 bg-white px-3 py-2 text-sm font-medium text-surface-700 shadow hover:bg-surface-50"
-          title="Open notes and reminders"
-        >
-          Notes & reminders
-        </button>
-      )}
 
       <aside
         className={`shrink-0 bg-white border-l border-surface-200 min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${

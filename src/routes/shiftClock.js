@@ -650,7 +650,8 @@ export async function runShiftClockAlerts() {
       `SELECT s.*, u.full_name, u.email
        FROM shift_clock_sessions s
        INNER JOIN users u ON u.id = s.user_id
-       WHERE s.status = N'active' AND s.clock_out_at IS NULL`
+       WHERE s.status = N'active' AND s.clock_out_at IS NULL
+         AND LOWER(LTRIM(RTRIM(ISNULL(u.role, N'')))) NOT IN (N'super_admin', N'tenant_admin')`
     );
     const sessions = r.recordset || [];
     const mgmtCache = new Map();
@@ -693,7 +694,8 @@ export async function runShiftClockAlerts() {
        FROM shift_clock_breaks b
        INNER JOIN shift_clock_sessions s ON s.id = b.session_id
        INNER JOIN users u ON u.id = s.user_id
-       WHERE b.ended_at IS NULL AND b.started_at IS NOT NULL`
+       WHERE b.ended_at IS NULL AND b.started_at IS NOT NULL
+         AND LOWER(LTRIM(RTRIM(ISNULL(u.role, N'')))) NOT IN (N'super_admin', N'tenant_admin')`
     );
     for (const b of br.recordset || []) {
       const started = new Date(getRow(b, 'started_at')).getTime();

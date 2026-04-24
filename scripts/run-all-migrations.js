@@ -68,6 +68,7 @@ const SCRIPTS = [
   'db:tasks-library',
   'db:tasks-category',
   'db:tasks-leader-reviewer',
+  'db:tasks-activity',
   'db:task-progress-legend',
   'db:tracking-integration',
   'db:tracking-expand-contractor-truck',

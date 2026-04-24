@@ -1109,6 +1109,15 @@ export const teamGoals = {
     const qs = q.toString();
     return tg(`/management/team-leader-questionnaires${qs ? `?${qs}` : ''}`);
   },
+  /** Per leader: questionnaires, objectives, team productivity scores, management ratings (management page). */
+  teamLeaderAudit: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.questionnaire_days != null) q.set('questionnaire_days', String(params.questionnaire_days));
+    if (params.score_days != null) q.set('score_days', String(params.score_days));
+    if (params.ratings_days != null) q.set('ratings_days', String(params.ratings_days));
+    const qs = q.toString();
+    return tg(`/management/team-leader-audit${qs ? `?${qs}` : ''}`);
+  },
   teamScoresSummary: (params = {}) => {
     const q = new URLSearchParams();
     if (params.leader_id) q.set('leader_id', params.leader_id);
