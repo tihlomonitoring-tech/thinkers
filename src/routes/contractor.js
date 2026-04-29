@@ -108,6 +108,55 @@ function getTenantId(req) {
   return u.tenant_id ?? u.tenant_Id ?? (u.tenant_id !== undefined ? u.tenant_id : undefined);
 }
 
+async function ensureContractorRestrictionTable() {
+  await query(
+    `IF OBJECT_ID(N'contractor_page_restrictions', N'U') IS NULL
+     BEGIN
+       CREATE TABLE contractor_page_restrictions (
+         tenant_id NVARCHAR(64) NOT NULL PRIMARY KEY,
+         allow_truck_manual BIT NOT NULL CONSTRAINT DF_contractor_restrict_truck_manual DEFAULT (1),
+         allow_truck_import BIT NOT NULL CONSTRAINT DF_contractor_restrict_truck_import DEFAULT (1),
+         allow_driver_manual BIT NOT NULL CONSTRAINT DF_contractor_restrict_driver_manual DEFAULT (1),
+         allow_driver_import BIT NOT NULL CONSTRAINT DF_contractor_restrict_driver_import DEFAULT (1),
+         allow_enrollment BIT NOT NULL CONSTRAINT DF_contractor_restrict_enrollment DEFAULT (1),
+         updated_by_user_id NVARCHAR(64) NULL,
+         updated_at DATETIME2(0) NOT NULL CONSTRAINT DF_contractor_restrict_updated_at DEFAULT (SYSUTCDATETIME())
+       );
+     END`
+  );
+}
+
+async function getContractorPageRestrictionsForTenant(tenantId) {
+  await ensureContractorRestrictionTable();
+  const result = await query(
+    `SELECT tenant_id, allow_truck_manual, allow_truck_import, allow_driver_manual, allow_driver_import, allow_enrollment, updated_by_user_id, updated_at
+     FROM contractor_page_restrictions
+     WHERE tenant_id = @tenantId`,
+    { tenantId }
+  );
+  const row = result.recordset?.[0];
+  if (!row) {
+    return {
+      tenant_id: tenantId,
+      allow_truck_manual: true,
+      allow_truck_import: true,
+      allow_driver_manual: true,
+      allow_driver_import: true,
+      allow_enrollment: true,
+      updated_by_user_id: null,
+      updated_at: null,
+    };
+  }
+  return {
+    ...row,
+    allow_truck_manual: !!row.allow_truck_manual,
+    allow_truck_import: !!row.allow_truck_import,
+    allow_driver_manual: !!row.allow_driver_manual,
+    allow_driver_import: !!row.allow_driver_import,
+    allow_enrollment: !!row.allow_enrollment,
+  };
+}
+
 /** Normalise page_id values from DB (case / whitespace can vary). */
 function pageRolesNorm(req) {
   return (req.user?.page_roles || []).map((p) => String(p || '').trim().toLowerCase()).filter(Boolean);
@@ -304,6 +353,70 @@ router.get('/context', async (req, res, next) => {
   }
 });
 
+function canManageContractorRestrictions(req) {
+  if (req.user?.role === 'super_admin') return true;
+  const roles = Array.isArray(req.user?.page_roles) ? req.user.page_roles : [];
+  return roles.includes('access_management');
+}
+
+function requireContractorRestrictionManager(req, res, next) {
+  if (canManageContractorRestrictions(req)) return next();
+  return res.status(403).json({ error: 'Contractor page restrictions can only be managed from Access Management.' });
+}
+
+router.get('/restrictions/page-controls', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const restrictions = await getContractorPageRestrictionsForTenant(tenantId);
+    res.json({ restrictions });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/restrictions/page-controls', requireContractorRestrictionManager, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const body = req.body || {};
+    const allowTruckManual = body.allow_truck_manual !== false;
+    const allowTruckImport = body.allow_truck_import !== false;
+    const allowDriverManual = body.allow_driver_manual !== false;
+    const allowDriverImport = body.allow_driver_import !== false;
+    const allowEnrollment = body.allow_enrollment !== false;
+    await ensureContractorRestrictionTable();
+    await query(
+      `MERGE contractor_page_restrictions AS target
+       USING (SELECT @tenantId AS tenant_id) AS src
+       ON target.tenant_id = src.tenant_id
+       WHEN MATCHED THEN
+         UPDATE SET
+           allow_truck_manual = @allowTruckManual,
+           allow_truck_import = @allowTruckImport,
+           allow_driver_manual = @allowDriverManual,
+           allow_driver_import = @allowDriverImport,
+           allow_enrollment = @allowEnrollment,
+           updated_by_user_id = @updatedBy,
+           updated_at = SYSUTCDATETIME()
+       WHEN NOT MATCHED THEN
+         INSERT (tenant_id, allow_truck_manual, allow_truck_import, allow_driver_manual, allow_driver_import, allow_enrollment, updated_by_user_id)
+         VALUES (@tenantId, @allowTruckManual, @allowTruckImport, @allowDriverManual, @allowDriverImport, @allowEnrollment, @updatedBy);`,
+      {
+        tenantId,
+        allowTruckManual: allowTruckManual ? 1 : 0,
+        allowTruckImport: allowTruckImport ? 1 : 0,
+        allowDriverManual: allowDriverManual ? 1 : 0,
+        allowDriverImport: allowDriverImport ? 1 : 0,
+        allowEnrollment: allowEnrollment ? 1 : 0,
+        updatedBy: req.user?.id || null,
+      }
+    );
+    const restrictions = await getContractorPageRestrictionsForTenant(tenantId);
+    res.json({ ok: true, restrictions });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function normReg(registration) {
   return String(registration || '').trim().toLowerCase();
 }
@@ -430,6 +543,10 @@ router.get('/trucks', async (req, res, next) => {
 });
 router.post('/trucks', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_truck_manual) {
+      return res.status(403).json({ error: 'Truck manual add is restricted by Access Management.' });
+    }
     const {
       main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
@@ -529,6 +646,10 @@ router.patch('/trucks/:id', async (req, res, next) => {
 
 router.post('/trucks/bulk', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_truck_import) {
+      return res.status(403).json({ error: 'Truck import is restricted by Access Management.' });
+    }
     const { trucks: items, contractor_id: bodyContractorId } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Request must include a non-empty trucks array' });
@@ -640,6 +761,10 @@ router.get('/drivers', async (req, res, next) => {
 });
 router.post('/drivers', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_driver_manual) {
+      return res.status(403).json({ error: 'Driver manual add is restricted by Access Management.' });
+    }
     const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, contractor_id: bodyContractorId } = req.body || {};
     const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
     const firstName = full_name || name || '';
@@ -747,6 +872,10 @@ router.patch('/drivers/:id', async (req, res, next) => {
 
 router.post('/drivers/bulk', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_driver_import) {
+      return res.status(403).json({ error: 'Driver import is restricted by Access Management.' });
+    }
     const { drivers: items, contractor_id: bodyContractorId } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Request must include a non-empty drivers array' });
@@ -1979,6 +2108,10 @@ router.get('/routes/:id', async (req, res, next) => {
 /** POST enroll trucks on route (body: { truckIds: [] }). Only trucks belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/trucks', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_enrollment) {
+      return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
+    }
     const tenantId = getTenantId(req);
     const { id: routeId } = req.params;
     const { truckIds } = req.body || {};
@@ -2049,6 +2182,10 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
 /** DELETE unenroll truck from route */
 router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_enrollment) {
+      return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
+    }
     const tenantId = getTenantId(req);
     const { id: routeId, truckId } = req.params;
     const allowed = await getAllowedForEnrollmentMutation(req);
@@ -2082,6 +2219,10 @@ router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
 /** POST enroll drivers on route (body: { driverIds: [] }). Only drivers belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/drivers', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_enrollment) {
+      return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
+    }
     const tenantId = getTenantId(req);
     const { id: routeId } = req.params;
     const { driverIds } = req.body || {};
@@ -2122,6 +2263,10 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
 /** DELETE unenroll driver from route */
 router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
   try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_enrollment) {
+      return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
+    }
     const tenantId = getTenantId(req);
     const { id: routeId, driverId } = req.params;
     const allowed = await getAllowedForEnrollmentMutation(req);

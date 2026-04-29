@@ -198,6 +198,13 @@ export default function Contractor() {
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importSuccess, setImportSuccess] = useState(null); // { type: 'trucks'|'drivers'|'all', count?: number, trucks?: number, drivers?: number }
+  const [pageRestrictions, setPageRestrictions] = useState({
+    allow_truck_manual: true,
+    allow_truck_import: true,
+    allow_driver_manual: true,
+    allow_driver_import: true,
+    allow_enrollment: true,
+  });
   const [trackingProviderIsOther, setTrackingProviderIsOther] = useState(false);
   const truckFileRef = useRef(null);
   const driverFileRef = useRef(null);
@@ -913,6 +920,7 @@ export default function Contractor() {
           messageContractorId ? contractorApi.messages.list({ contractor_id: messageContractorId }).then((r) => r.messages || []) : Promise.resolve([]),
           contractorApi.complianceRecords.list().then((r) => r.records || []),
           contractorApi.routes.list().then((r) => r.routes || []),
+          contractorApi.restrictions.get().then((r) => r.restrictions || null),
         ]),
         timeout.then(() => {
           throw new Error('Request timed out. Check your connection and retry.');
@@ -939,6 +947,17 @@ export default function Contractor() {
         }
       });
       setData(next);
+      const restrictionsResult = results[8];
+      if (restrictionsResult?.status === 'fulfilled' && restrictionsResult.value) {
+        const r = restrictionsResult.value;
+        setPageRestrictions({
+          allow_truck_manual: r.allow_truck_manual !== false,
+          allow_truck_import: r.allow_truck_import !== false,
+          allow_driver_manual: r.allow_driver_manual !== false,
+          allow_driver_import: r.allow_driver_import !== false,
+          allow_enrollment: r.allow_enrollment !== false,
+        });
+      }
       if (failed.length) setError(`Could not load: ${failed.join(', ')}. Other data loaded.`);
       else setError('');
     } catch (err) {
@@ -996,8 +1015,16 @@ export default function Contractor() {
     );
   }
 
+  const restrictionMessage = (text) => {
+    setError(`${text} (configured in Access Management → Contractor page restriction).`);
+  };
+
   const addTruck = async (e) => {
     e.preventDefault();
+    if (!pageRestrictions.allow_truck_manual) {
+      restrictionMessage('Adding trucks manually is currently restricted');
+      return;
+    }
     const form = e.target;
     setSaving(true);
     setError('');
@@ -1034,6 +1061,10 @@ export default function Contractor() {
 
   const addDriver = async (e) => {
     e.preventDefault();
+    if (!pageRestrictions.allow_driver_manual) {
+      restrictionMessage('Adding drivers manually is currently restricted');
+      return;
+    }
     const form = e.target;
     setSaving(true);
     setError('');
@@ -1120,6 +1151,11 @@ export default function Contractor() {
   };
 
   const handleTruckImport = async (e) => {
+    if (!pageRestrictions.allow_truck_import) {
+      restrictionMessage('Truck import is currently restricted');
+      if (e?.target) e.target.value = '';
+      return;
+    }
     const file = e.target?.files?.[0];
     if (!file) return;
     setImportSuccess(null);
@@ -1144,6 +1180,11 @@ export default function Contractor() {
   };
 
   const handleDriverImport = async (e) => {
+    if (!pageRestrictions.allow_driver_import) {
+      restrictionMessage('Driver import is currently restricted');
+      if (e?.target) e.target.value = '';
+      return;
+    }
     const file = e.target?.files?.[0];
     if (!file) return;
     setImportSuccess(null);
@@ -1168,6 +1209,11 @@ export default function Contractor() {
   };
 
   const handleConsolidatedImport = async (e) => {
+    if (!pageRestrictions.allow_truck_import || !pageRestrictions.allow_driver_import) {
+      restrictionMessage('Consolidated import is restricted because truck import or driver import is disabled');
+      if (e?.target) e.target.value = '';
+      return;
+    }
     const file = e.target?.files?.[0];
     if (!file) return;
     setImportSuccess(null);
@@ -1713,8 +1759,8 @@ export default function Contractor() {
                 <div className="bg-white rounded-xl border border-surface-200 p-4">
                   <h3 className="font-medium text-surface-900 mb-2">Quick links</h3>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => setActiveTab('trucks')} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Add truck</button>
-                    <button type="button" onClick={() => setActiveTab('drivers')} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Add driver</button>
+                    <button type="button" onClick={() => setActiveTab('trucks')} disabled={!pageRestrictions.allow_truck_manual} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100 disabled:opacity-40">Add truck</button>
+                    <button type="button" onClick={() => setActiveTab('drivers')} disabled={!pageRestrictions.allow_driver_manual} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100 disabled:opacity-40">Add driver</button>
                     <button type="button" onClick={() => setActiveTab('incidents')} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Report incident</button>
                     <button type="button" onClick={() => setActiveTab('expiries')} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Add expiry</button>
                   </div>
@@ -1726,6 +1772,9 @@ export default function Contractor() {
               <div className="w-full space-y-6">
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Add truck (contract portal)</h2>
+                  {!pageRestrictions.allow_truck_manual && (
+                    <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Manual truck add is restricted by Access Management.</p>
+                  )}
                   <form onSubmit={addTruck} className="space-y-3">
                     <input name="main_contractor" placeholder="Main contractor (e.g. ABC Logistics)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="sub_contractor" placeholder="If sub contractor (e.g. XYZ Logistics)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm border-l-2 border-l-red-300" />
@@ -1749,16 +1798,19 @@ export default function Contractor() {
                       {COMMODITY_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                     <input name="capacity_tonnes" type="number" step="0.01" placeholder="Capacity (tonnes)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add truck</button>
+                    <button type="submit" disabled={saving || !pageRestrictions.allow_truck_manual} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add truck</button>
                   </form>
                 </div>
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import from Excel</h2>
+                  {!pageRestrictions.allow_truck_import && (
+                    <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Truck import is restricted by Access Management.</p>
+                  )}
                   <p className="text-sm text-surface-500 mb-4">Download the template, fill in your fleet data, then upload the file to import multiple trucks at once.</p>
                   <div className="flex flex-wrap gap-3 items-center">
                     <button type="button" onClick={() => downloadTruckTemplate().catch((err) => setError(err?.message || 'Download failed'))} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Download truck template</button>
                     <label className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 cursor-pointer disabled:opacity-50 inline-block">
-                      <input ref={truckFileRef} type="file" accept=".xlsx,.xls" className="sr-only" onChange={handleTruckImport} disabled={importing} />
+                      <input ref={truckFileRef} type="file" accept=".xlsx,.xls" className="sr-only" onChange={handleTruckImport} disabled={importing || !pageRestrictions.allow_truck_import} />
                       {importing ? 'Importing…' : 'Choose file and import'}
                     </label>
                   </div>
@@ -1946,6 +1998,9 @@ export default function Contractor() {
               <div className="w-full space-y-6">
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Add driver</h2>
+                  {!pageRestrictions.allow_driver_manual && (
+                    <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Manual driver add is restricted by Access Management.</p>
+                  )}
                   <form onSubmit={addDriver} className="space-y-3">
                     <input name="name" placeholder="Name" required className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="surname" placeholder="Surname" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -1954,16 +2009,19 @@ export default function Contractor() {
                     <input name="license_expiry" type="date" placeholder="Licence expiry" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="phone" type="tel" placeholder="Cellphone number" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="email" type="email" placeholder="Email address" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add driver</button>
+                    <button type="submit" disabled={saving || !pageRestrictions.allow_driver_manual} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add driver</button>
                   </form>
                 </div>
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import from Excel</h2>
+                  {!pageRestrictions.allow_driver_import && (
+                    <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Driver import is restricted by Access Management.</p>
+                  )}
                   <p className="text-sm text-surface-500 mb-4">Download the template, fill in your drivers, then upload the file to import multiple drivers at once.</p>
                   <div className="flex flex-wrap gap-3 items-center">
                     <button type="button" onClick={() => downloadDriverTemplate().catch((err) => setError(err?.message || 'Download failed'))} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Download driver template</button>
                     <label className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 cursor-pointer disabled:opacity-50 inline-block">
-                      <input ref={driverFileRef} type="file" accept=".xlsx,.xls" className="sr-only" onChange={handleDriverImport} disabled={importing} />
+                      <input ref={driverFileRef} type="file" accept=".xlsx,.xls" className="sr-only" onChange={handleDriverImport} disabled={importing || !pageRestrictions.allow_driver_import} />
                       {importing ? 'Importing…' : 'Choose file and import'}
                     </label>
                   </div>
@@ -2152,11 +2210,16 @@ export default function Contractor() {
               <div className="w-full">
                 <div className="bg-white rounded-xl border border-surface-200 p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import trucks and drivers at once</h2>
+                  {(!pageRestrictions.allow_truck_import || !pageRestrictions.allow_driver_import) && (
+                    <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      Consolidated import is restricted because truck import or driver import has been disabled in Access Management.
+                    </p>
+                  )}
                   <p className="text-sm text-surface-500 mb-4">Use the consolidated template with a <strong>Trucks</strong> sheet and a <strong>Drivers</strong> sheet. Fill in your data, then upload the file to import both in one go.</p>
                   <div className="flex flex-wrap gap-3 items-center">
                     <button type="button" onClick={() => downloadConsolidatedTemplate().catch((err) => setError(err?.message || 'Download failed'))} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Download consolidated template</button>
                     <label className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 cursor-pointer disabled:opacity-50 inline-block">
-                      <input ref={consolidatedFileRef} type="file" accept=".xlsx,.xls" className="sr-only" onChange={handleConsolidatedImport} disabled={importing} />
+                      <input ref={consolidatedFileRef} type="file" accept=".xlsx,.xls" className="sr-only" onChange={handleConsolidatedImport} disabled={importing || !pageRestrictions.allow_truck_import || !pageRestrictions.allow_driver_import} />
                       {importing ? 'Importing…' : 'Choose file and import all'}
                     </label>
                   </div>
@@ -3036,6 +3099,11 @@ export default function Contractor() {
                   <h2 className="font-medium text-surface-900">Fleet and driver enrollment</h2>
                   <p className="text-sm text-surface-500 mt-1">Approved fleet only; suspended trucks/drivers are excluded. Search for a route by name (or start/end point), select it, then enrol trucks or drivers.</p>
                 </div>
+                {!pageRestrictions.allow_enrollment && (
+                  <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 max-w-3xl">
+                    Enrollment actions are restricted by Access Management.
+                  </p>
+                )}
                 {routesList.length === 0 ? (
                   <p className="text-sm text-surface-500">No routes yet. Routes are created in Access Management.</p>
                 ) : (
@@ -3116,7 +3184,8 @@ export default function Contractor() {
                         <button
                           type="button"
                           onClick={() => setEnrollmentAddTruckOpen(true)}
-                          className="px-2 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+                          disabled={!pageRestrictions.allow_enrollment}
+                          className="px-2 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
                         >
                           Enrol truck(s)
                         </button>
@@ -3137,7 +3206,7 @@ export default function Contractor() {
                           filteredEnrollmentRouteTrucks.map((t) => (
                             <li key={t.truck_id} className="flex items-center justify-between py-1 border-b border-surface-100">
                               <span>{t.registration} {t.make_model ? ` · ${t.make_model}` : ''} {t.fleet_no ? ` · #${t.fleet_no}` : ''}</span>
-                              <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollTruck(enrollmentRouteId, t.truck_id); const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery()); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
+                              <button type="button" disabled={!pageRestrictions.allow_enrollment} onClick={async () => { try { await contractorApi.routes.unenrollTruck(enrollmentRouteId, t.truck_id); const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery()); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs disabled:opacity-40">Remove</button>
                             </li>
                           ))
                         )}
@@ -3149,7 +3218,8 @@ export default function Contractor() {
                         <button
                           type="button"
                           onClick={() => setEnrollmentAddDriverOpen(true)}
-                          className="px-2 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+                          disabled={!pageRestrictions.allow_enrollment}
+                          className="px-2 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
                         >
                           Enrol driver(s)
                         </button>
@@ -3170,7 +3240,7 @@ export default function Contractor() {
                           filteredEnrollmentRouteDrivers.map((d) => (
                             <li key={d.driver_id} className="flex items-center justify-between py-1 border-b border-surface-100">
                               <span>{d.full_name} {d.license_number ? ` · ${d.license_number}` : ''}</span>
-                              <button type="button" onClick={async () => { try { await contractorApi.routes.unenrollDriver(enrollmentRouteId, d.driver_id); const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery()); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs">Remove</button>
+                              <button type="button" disabled={!pageRestrictions.allow_enrollment} onClick={async () => { try { await contractorApi.routes.unenrollDriver(enrollmentRouteId, d.driver_id); const r = await contractorApi.routes.get(enrollmentRouteId, enrollmentContractorQuery()); setEnrollmentRouteDetail(r); } catch (e) { setError(e?.message); } }} className="text-red-600 hover:text-red-700 text-xs disabled:opacity-40">Remove</button>
                             </li>
                           ))
                         )}
@@ -3258,8 +3328,9 @@ export default function Contractor() {
                             <div className="mt-4 pt-4 border-t border-surface-200">
                               <button
                                 type="button"
-                                disabled={enrollmentSelectedTruckIds.length === 0 || enrollmentEnrollingTrucks}
+                                disabled={!pageRestrictions.allow_enrollment || enrollmentSelectedTruckIds.length === 0 || enrollmentEnrollingTrucks}
                                 onClick={async () => {
+                                  if (!pageRestrictions.allow_enrollment) return;
                                   if (!enrollmentRouteId || enrollmentSelectedTruckIds.length === 0) return;
                                   setEnrollmentEnrollingTrucks(true);
                                   setError('');
@@ -3358,8 +3429,9 @@ export default function Contractor() {
                             <div className="mt-4 pt-4 border-t border-surface-200">
                               <button
                                 type="button"
-                                disabled={enrollmentSelectedDriverIds.length === 0 || enrollmentEnrollingDrivers}
+                                disabled={!pageRestrictions.allow_enrollment || enrollmentSelectedDriverIds.length === 0 || enrollmentEnrollingDrivers}
                                 onClick={async () => {
+                                  if (!pageRestrictions.allow_enrollment) return;
                                   if (!enrollmentRouteId || enrollmentSelectedDriverIds.length === 0) return;
                                   setEnrollmentEnrollingDrivers(true);
                                   setError('');

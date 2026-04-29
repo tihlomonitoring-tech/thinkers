@@ -162,6 +162,10 @@ export const tenants = {
 
 export const contractor = {
   context: () => request('/contractor/context'),
+  restrictions: {
+    get: () => request('/contractor/restrictions/page-controls'),
+    update: (body) => request('/contractor/restrictions/page-controls', { method: 'PATCH', body: JSON.stringify(body || {}) }),
+  },
   contractors: {
     list: () => request('/contractor/contractors'),
     create: (body) => request('/contractor/contractors', { method: 'POST', body: JSON.stringify(body) }),
@@ -871,6 +875,13 @@ export const tasks = {
     `${API}/tasks/${taskId}/comments/${commentId}/attachments/${attachmentId}/download`,
   addReminder: (id, body) => request(`/tasks/${id}/reminders`, { method: 'POST', body: JSON.stringify(body) }),
   dismissReminder: (taskId, reminderId) => request(`/tasks/${taskId}/reminders/${reminderId}/dismiss`, { method: 'PATCH' }),
+  caseLinks: (taskId) => request(`/tasks/${taskId}/case-links`),
+  linkCase: (taskId, body) => request(`/tasks/${taskId}/case-links`, { method: 'POST', body: JSON.stringify(body) }),
+  unlinkCase: (taskId, linkId) => request(`/tasks/${taskId}/case-links/${linkId}`, { method: 'DELETE' }),
+  linkableCases: (taskId, search = '') => {
+    const q = search ? `?search=${encodeURIComponent(search)}` : '';
+    return request(`/tasks/${taskId}/link-candidates/cases${q}`);
+  },
   uploadAttachment: (id, file) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -896,6 +907,45 @@ export const tasks = {
       downloadUrl: (id) => `${API}/tasks/library/files/${id}/download`,
     },
   },
+};
+
+export const caseManagement = {
+  dashboard: () => request('/case-management/dashboard'),
+  list: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/case-management${q ? `?${q}` : ''}`);
+  },
+  get: (id) => request(`/case-management/${id}`),
+  create: (body) => request('/case-management', { method: 'POST', body: JSON.stringify(body) }),
+  tenantUsers: () => request('/case-management/users/tenant'),
+  assignLead: (id, lead_user_id) => request(`/case-management/${id}/lead`, { method: 'PATCH', body: JSON.stringify({ lead_user_id }) }),
+  addStageUpdate: (caseId, stageId, { status, comment, notify_external, files = [] }) => {
+    const formData = new FormData();
+    if (status) formData.append('status', status);
+    if (comment) formData.append('comment', comment);
+    formData.append('notify_external', notify_external ? 'true' : 'false');
+    Array.from(files).forEach((f) => formData.append('files', f));
+    return fetch(`${API}/case-management/${caseId}/stages/${stageId}/updates`, { method: 'POST', body: formData, credentials: 'include' })
+      .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+  },
+  finalize: (id, final_remarks) => request(`/case-management/${id}/finalize`, { method: 'POST', body: JSON.stringify({ final_remarks }) }),
+  alerts: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.scope) q.set('scope', params.scope);
+    if (params.unread === true || params.unread === '1' || params.unread === 'true') q.set('unread', '1');
+    if (params.case_id) q.set('case_id', params.case_id);
+    const qs = q.toString();
+    return request(`/case-management/alerts${qs ? `?${qs}` : ''}`);
+  },
+  markAlertRead: (alertId) => request(`/case-management/alerts/${alertId}/read`, { method: 'PATCH' }),
+  taskLinks: (caseId) => request(`/case-management/${caseId}/task-links`),
+  linkTask: (caseId, body) => request(`/case-management/${caseId}/task-links`, { method: 'POST', body: JSON.stringify(body) }),
+  unlinkTask: (caseId, linkId) => request(`/case-management/${caseId}/task-links/${linkId}`, { method: 'DELETE' }),
+  linkableTasks: (caseId, search = '') => {
+    const q = search ? `?search=${encodeURIComponent(search)}` : '';
+    return request(`/case-management/${caseId}/link-candidates/tasks${q}`);
+  },
+  attachmentDownloadUrl: (caseId, attachmentId) => `${API}/case-management/${caseId}/attachments/${attachmentId}/download`,
 };
 
 const pm = (path, options = {}) => request(`/profile-management${path}`, options);

@@ -12,6 +12,7 @@ import CommandCentre from './CommandCentre';
 import AccessManagement from './AccessManagement';
 import Rector from './Rector';
 import Tasks from './Tasks';
+import CaseManagement from './CaseManagement';
 import Profile from './Profile';
 import Management from './Management';
 import ReportBreakdown from './ReportBreakdown';
@@ -95,6 +96,7 @@ function AppRoutes() {
         <Route path="access-management" element={<PageGate pathKey="/access-management"><AccessManagement /></PageGate>} />
         <Route path="rector" element={<PageGate pathKey="/rector"><Rector /></PageGate>} />
         <Route path="tasks" element={<PageGate pathKey="/tasks"><Tasks /></PageGate>} />
+        <Route path="case-management" element={<PageGate pathKey="/case-management"><CaseManagement /></PageGate>} />
         <Route path="profile" element={<PageGate pathKey="/profile"><Profile /></PageGate>} />
         <Route path="team-leader-admin" element={<PageGate pathKey="/team-leader-admin"><TeamLeaderAdmin /></PageGate>} />
         <Route path="performance-evaluations" element={<PageGate pathKey="/performance-evaluations"><PerformanceEvaluations /></PageGate>} />

@@ -62,6 +62,14 @@ function IconTasks({ className }) {
   );
 }
 
+function IconCaseManagement({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h3m6-9H6a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V9a2 2 0 00-2-2zm-9-3h6a1 1 0 011 1v2H8V5a1 1 0 011-1z" />
+    </svg>
+  );
+}
+
 function IconProfile({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -204,6 +212,7 @@ const navSections = [
       { to: '/access-management', label: 'Access management', icon: IconAccess, shortcut: '⌘5', pageId: 'access_management' },
       { to: '/rector', label: 'Rector', icon: IconRector, shortcut: '⌘6', pageId: 'rector' },
       { to: '/tasks', label: 'Tasks', icon: IconTasks, shortcut: '⌘7', pageId: 'tasks' },
+      { to: '/case-management', label: 'Case management', icon: IconCaseManagement, shortcut: '', pageId: 'case_management' },
     ],
   },
   {

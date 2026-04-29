@@ -7,6 +7,12 @@ import { query, getPool } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { taskAssignedHtml, taskCompletedHtml, taskOverdueHtml } from '../lib/emailTemplates.js';
+import {
+  insertCaseTaskLink,
+  deleteCaseTaskLinkById,
+  userInvolvedInCase,
+  userInvolvedInTask,
+} from '../lib/caseTaskLinks.js';
 
 const router = Router();
 const uploadsDir = path.join(process.cwd(), 'uploads', 'tasks');
@@ -71,6 +77,7 @@ function canAccessTaskTenant(req, tenantId) {
 const TASK_CATEGORY_VALUES = ['sales', 'departmental', 'thinkers_afrika'];
 
 const TASK_PROGRESS_LEGEND_VALUES = ['not_started', 'early', 'active', 'on_hold', 'proposal', 'near_complete', 'finalised'];
+const TASK_VISIBILITY_VALUES = ['tenant', 'private_assignees'];
 
 function normalizeProgressLegend(raw) {
   const s = String(raw || '')
@@ -91,6 +98,43 @@ function normalizeTaskCategory(raw) {
   if (s === 'thinkers_afrika_company' || s === 'thinkers_afrika') return 'thinkers_afrika';
   if (TASK_CATEGORY_VALUES.includes(s)) return s;
   return 'departmental';
+}
+
+function normalizeTaskVisibility(raw) {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_');
+  if (TASK_VISIBILITY_VALUES.includes(s)) return s;
+  return 'tenant';
+}
+
+async function getThinkersAfrikaTenantId() {
+  const r = await query(
+    `SELECT TOP 1 id
+     FROM tenants
+     WHERE LOWER(LTRIM(RTRIM(name))) IN (N'thinkers afrika', N'thinkers_afrika', N'thinkersafrika', N'thinkers africa', N'thinkers_africa', N'thinkersafrica')
+     ORDER BY created_at ASC`
+  );
+  return r.recordset?.[0]?.id || null;
+}
+
+function userCanUseTenant(req, tenantId) {
+  if (!tenantId) return false;
+  if (req.user?.role === 'super_admin') return true;
+  const current = req.user?.tenant_id;
+  if (String(current || '') === String(tenantId || '')) return true;
+  const all = Array.isArray(req.user?.tenant_ids) ? req.user.tenant_ids : [];
+  return all.some((id) => String(id) === String(tenantId));
+}
+
+async function resolveTaskTenantForCreate(req, requestedTenantId) {
+  const requested = requestedTenantId ? String(requestedTenantId).trim() : '';
+  if (requested && userCanUseTenant(req, requested)) return requested;
+  const thinkersId = await getThinkersAfrikaTenantId();
+  if (thinkersId && userCanUseTenant(req, thinkersId)) return thinkersId;
+  return req.user?.tenant_id || null;
 }
 
 /** Active user in tenant (primary tenant_id or user_tenants). */
@@ -215,6 +259,8 @@ router.get('/', async (req, res, next) => {
 
     let where = 'WHERE t.tenant_id = @tenantId';
     const params = { tenantId, offset, limitNum };
+    where += ' AND (t.visibility_scope = N\'tenant\' OR t.created_by = @viewerId OR EXISTS (SELECT 1 FROM task_assignments av WHERE av.task_id = t.id AND av.user_id = @viewerId))';
+    params.viewerId = req.user.id;
 
     if (assigned_to_me === 'true' || assigned_to_me === '1') {
       where += ' AND EXISTS (SELECT 1 FROM task_assignments a WHERE a.task_id = t.id AND a.user_id = @userId)';
@@ -291,7 +337,7 @@ router.get('/', async (req, res, next) => {
 
     const result = await query(
       `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status],
-              t.category, t.progress_legend, t.task_leader_id, t.task_reviewer_id, t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
+              t.category, t.progress_legend, t.visibility_scope, t.task_leader_id, t.task_reviewer_id, t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
               u.full_name AS created_by_name,
               ul.full_name AS task_leader_name, ur.full_name AS task_reviewer_name
        FROM tasks t
@@ -349,12 +395,14 @@ router.post('/', async (req, res, next) => {
       due_date,
       assignee_ids,
       category,
+      visibility_scope,
+      tenant_id,
       task_leader_id,
       task_reviewer_id,
       progress_legend,
     } = req.body || {};
     if (!title || !String(title).trim()) return res.status(400).json({ error: 'Task title is required' });
-    const tenantId = req.user.tenant_id;
+    const tenantId = await resolveTaskTenantForCreate(req, tenant_id);
     if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
 
     const keyActionsStr = Array.isArray(key_actions)
@@ -364,6 +412,7 @@ router.post('/', async (req, res, next) => {
     const dueDate = due_date || null;
     const cat = normalizeTaskCategory(category);
     const progLegend = normalizeProgressLegend(progress_legend);
+    const visibilityScope = normalizeTaskVisibility(visibility_scope);
 
     let leaderId = task_leader_id && String(task_leader_id).trim() ? String(task_leader_id).trim() : null;
     let reviewerId = task_reviewer_id && String(task_reviewer_id).trim() ? String(task_reviewer_id).trim() : null;
@@ -375,9 +424,9 @@ router.post('/', async (req, res, next) => {
     }
 
     const insertResult = await query(
-      `INSERT INTO tasks (tenant_id, title, [description], key_actions, start_date, due_date, category, progress_legend, task_leader_id, task_reviewer_id, created_by)
-       OUTPUT INSERTED.id, INSERTED.title, INSERTED.created_at, INSERTED.category, INSERTED.progress_legend, INSERTED.task_leader_id, INSERTED.task_reviewer_id
-       VALUES (@tenantId, @title, @description, @keyActions, @startDate, @dueDate, @category, @progressLegend, @taskLeaderId, @taskReviewerId, @createdBy)`,
+      `INSERT INTO tasks (tenant_id, title, [description], key_actions, start_date, due_date, category, progress_legend, visibility_scope, task_leader_id, task_reviewer_id, created_by)
+       OUTPUT INSERTED.id, INSERTED.title, INSERTED.created_at, INSERTED.category, INSERTED.progress_legend, INSERTED.visibility_scope, INSERTED.task_leader_id, INSERTED.task_reviewer_id
+       VALUES (@tenantId, @title, @description, @keyActions, @startDate, @dueDate, @category, @progressLegend, @visibilityScope, @taskLeaderId, @taskReviewerId, @createdBy)`,
       {
         tenantId,
         title: String(title).trim(),
@@ -387,6 +436,7 @@ router.post('/', async (req, res, next) => {
         dueDate,
         category: cat,
         progressLegend: progLegend,
+        visibilityScope,
         taskLeaderId: leaderId,
         taskReviewerId: reviewerId,
         createdBy: req.user.id,
@@ -448,6 +498,7 @@ router.post('/', async (req, res, next) => {
         due_date: dueDate,
         category: getRow(task, 'category') || cat,
         progress_legend: getRow(task, 'progress_legend') || progLegend,
+        visibility_scope: getRow(task, 'visibility_scope') || visibilityScope,
         task_leader_id: getRow(task, 'task_leader_id') ?? leaderId,
         task_reviewer_id: getRow(task, 'task_reviewer_id') ?? reviewerId,
         progress: 0,
@@ -462,13 +513,134 @@ router.post('/', async (req, res, next) => {
   }
 });
 
+/** Linked cases for a task (tenant access to view; candidates & mutations require involvement). */
+router.get('/:id/case-links', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const taskMeta = await query(`SELECT id, tenant_id FROM tasks WHERE id = @id`, { id });
+    const trow = taskMeta.recordset?.[0];
+    if (!trow) return res.status(404).json({ error: 'Task not found' });
+    if (!canAccessTaskTenant(req, getRow(trow, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const r = await query(
+      `SELECT l.id AS link_id, l.link_note, l.created_at,
+              l.case_id, c.case_number, c.title AS case_title, c.[status] AS case_status, c.category AS case_category,
+              u.full_name AS linked_by_name
+       FROM case_management_task_links l
+       INNER JOIN case_management_cases c ON c.id = l.case_id
+       LEFT JOIN users u ON u.id = l.linked_by_user_id
+       WHERE l.task_id = @taskId
+       ORDER BY l.created_at DESC`,
+      { taskId: id }
+    );
+    const links = (r.recordset || []).map((x) => ({
+      id: getRow(x, 'link_id'),
+      case_id: getRow(x, 'case_id'),
+      link_note: getRow(x, 'link_note'),
+      created_at: getRow(x, 'created_at'),
+      linked_by_name: getRow(x, 'linked_by_name'),
+      case: {
+        case_number: getRow(x, 'case_number'),
+        title: getRow(x, 'case_title'),
+        status: getRow(x, 'case_status'),
+        category: getRow(x, 'case_category'),
+      },
+    }));
+    res.json({ links });
+  } catch (err) {
+    if (String(err?.message || '').toLowerCase().includes('invalid object name') &&
+        String(err?.message || '').toLowerCase().includes('case_management_task_links')) {
+      return res.json({ links: [] });
+    }
+    next(err);
+  }
+});
+
+router.get('/:id/link-candidates/cases', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const search = String(req.query.search || '').trim().slice(0, 200);
+    const taskMeta = await query(`SELECT id, tenant_id FROM tasks WHERE id = @id`, { id });
+    const trow = taskMeta.recordset?.[0];
+    if (!trow) return res.status(404).json({ error: 'Task not found' });
+    const tenantId = getRow(trow, 'tenant_id');
+    if (!canAccessTaskTenant(req, tenantId)) return res.status(403).json({ error: 'Forbidden' });
+    const uid = req.user?.id;
+    if (!(await userInvolvedInTask(uid, id)) && req.user?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'You must be involved in this task to browse linkable cases' });
+    }
+    const params = { taskId: id, tenantId, userId: uid };
+    let searchSql = '';
+    if (search) {
+      searchSql = ' AND (c.case_number LIKE @pat OR c.title LIKE @pat OR c.[description] LIKE @pat)';
+      params.pat = `%${search.replace(/[%_]/g, '')}%`;
+    }
+    const r = await query(
+      `SELECT TOP 40 c.id, c.case_number, c.title, c.[status], c.category, c.lead_user_id
+       FROM case_management_cases c
+       WHERE c.tenant_id = @tenantId
+         AND NOT EXISTS (SELECT 1 FROM case_management_task_links l WHERE l.task_id = @taskId AND l.case_id = c.id)
+         AND (
+           c.lead_user_id = @userId OR c.opened_by_user_id = @userId
+           OR EXISTS (SELECT 1 FROM case_management_stages s WHERE s.case_id = c.id AND s.assigned_user_id = @userId)
+         )
+         ${searchSql}
+       ORDER BY c.updated_at DESC`,
+      params
+    );
+    const cases = (r.recordset || []).map((c) => ({
+      id: getRow(c, 'id'),
+      case_number: getRow(c, 'case_number'),
+      title: getRow(c, 'title'),
+      status: getRow(c, 'status'),
+      category: getRow(c, 'category'),
+    }));
+    res.json({ cases });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/case-links', async (req, res, next) => {
+  try {
+    const { id: taskId } = req.params;
+    const { case_id, link_note } = req.body || {};
+    const caseId = case_id ? String(case_id).trim() : '';
+    if (!caseId) return res.status(400).json({ error: 'case_id is required' });
+    const taskMeta = await query(`SELECT id, tenant_id FROM tasks WHERE id = @taskId`, { taskId });
+    if (!taskMeta.recordset?.[0]) return res.status(404).json({ error: 'Task not found' });
+    if (!canAccessTaskTenant(req, getRow(taskMeta.recordset[0], 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const result = await insertCaseTaskLink(req, caseId, taskId, link_note);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    if (String(err?.message || '').toLowerCase().includes('invalid object name')) {
+      return res.status(503).json({ error: 'Case–task links are not installed. Run npm run db:case-management-task-links' });
+    }
+    next(err);
+  }
+});
+
+router.delete('/:id/case-links/:linkId', async (req, res, next) => {
+  try {
+    const { id: taskId, linkId } = req.params;
+    const taskMeta = await query(`SELECT id, tenant_id FROM tasks WHERE id = @taskId`, { taskId });
+    if (!taskMeta.recordset?.[0]) return res.status(404).json({ error: 'Task not found' });
+    if (!canAccessTaskTenant(req, getRow(taskMeta.recordset[0], 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const result = await deleteCaseTaskLinkById(req, linkId, { taskId });
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** Get one task with assignments and attachments */
 router.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
       `SELECT t.id, t.tenant_id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status],
-              t.category, t.progress_legend, t.task_leader_id, t.task_reviewer_id, t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
+              t.category, t.progress_legend, t.visibility_scope, t.task_leader_id, t.task_reviewer_id, t.created_by, t.completed_at, t.completed_by, t.created_at, t.updated_at,
               u.full_name AS created_by_name, u.email AS created_by_email,
               ul.full_name AS task_leader_name, ur.full_name AS task_reviewer_name
        FROM tasks t
@@ -486,6 +658,10 @@ router.get('/:id', async (req, res, next) => {
       `SELECT a.user_id, a.assigned_by, a.assigned_at, u.full_name, u.email FROM task_assignments a JOIN users u ON u.id = a.user_id WHERE a.task_id = @id`,
       { id }
     );
+    const canViewPrivateTask = (assigneesResult.recordset || []).some((r) => getRow(r, 'user_id') === req.user.id) || getRow(task, 'created_by') === req.user.id;
+    if ((getRow(task, 'visibility_scope') || 'tenant') === 'private_assignees' && !canViewPrivateTask) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const attachmentsResult = await query(
       `SELECT id, file_name, file_path, uploaded_by, created_at FROM task_attachments WHERE task_id = @id ORDER BY created_at`,
       { id }
@@ -601,6 +777,40 @@ router.get('/:id', async (req, res, next) => {
       if (ka) key_actions = JSON.parse(ka);
     } catch (_) {}
 
+    let linked_cases = [];
+    try {
+      const lc = await query(
+        `SELECT l.id AS link_id, l.link_note, l.created_at, l.case_id,
+                c.case_number, c.title AS case_title, c.[status] AS case_status, c.category AS case_category,
+                u.full_name AS linked_by_name
+         FROM case_management_task_links l
+         INNER JOIN case_management_cases c ON c.id = l.case_id
+         LEFT JOIN users u ON u.id = l.linked_by_user_id
+         WHERE l.task_id = @id
+         ORDER BY l.created_at DESC`,
+        { id }
+      );
+      linked_cases = (lc.recordset || []).map((x) => ({
+        id: getRow(x, 'link_id'),
+        case_id: getRow(x, 'case_id'),
+        link_note: getRow(x, 'link_note'),
+        created_at: getRow(x, 'created_at'),
+        linked_by_name: getRow(x, 'linked_by_name'),
+        case: {
+          case_number: getRow(x, 'case_number'),
+          title: getRow(x, 'case_title'),
+          status: getRow(x, 'case_status'),
+          category: getRow(x, 'case_category'),
+        },
+      }));
+    } catch (_) {
+      linked_cases = [];
+    }
+
+    const uid = req.user?.id;
+    const canManageCaseLinks =
+      req.user?.role === 'super_admin' || (uid && (await userInvolvedInTask(uid, id)));
+
     res.json({
       task: {
         ...task,
@@ -610,7 +820,9 @@ router.get('/:id', async (req, res, next) => {
         progress_updates: progressUpdates,
         comments,
         reminders,
+        linked_cases,
       },
+      meta: { can_manage_case_links: !!canManageCaseLinks },
     });
   } catch (err) {
     next(err);
@@ -635,9 +847,10 @@ router.patch('/:id', async (req, res, next) => {
       task_leader_id,
       task_reviewer_id,
       progress_legend,
+      visibility_scope,
     } = req.body || {};
 
-    const existing = await query(`SELECT id, tenant_id, created_by, [status], title FROM tasks WHERE id = @id`, { id });
+    const existing = await query(`SELECT id, tenant_id, created_by, [status], title, visibility_scope FROM tasks WHERE id = @id`, { id });
     const row = existing.recordset[0];
     if (!row) return res.status(404).json({ error: 'Task not found' });
     if (!canAccessTaskTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
@@ -695,6 +908,10 @@ router.patch('/:id', async (req, res, next) => {
       updates.push('progress_legend = @progressLegend');
       params.progressLegend = normalizeProgressLegend(progress_legend);
     }
+    if (visibility_scope !== undefined) {
+      updates.push('visibility_scope = @visibilityScope');
+      params.visibilityScope = normalizeTaskVisibility(visibility_scope);
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     updates.push('updated_at = SYSUTCDATETIME()');
@@ -739,7 +956,7 @@ router.patch('/:id', async (req, res, next) => {
 
     const updatedResult = await query(
       `SELECT t.id, t.title, t.[description], t.key_actions, t.start_date, t.due_date, t.progress, t.[status], t.category,
-              t.progress_legend, t.task_leader_id, t.task_reviewer_id, t.completed_at, t.completed_by, t.updated_at,
+              t.progress_legend, t.visibility_scope, t.task_leader_id, t.task_reviewer_id, t.completed_at, t.completed_by, t.updated_at,
               ul.full_name AS task_leader_name, ur.full_name AS task_reviewer_name
        FROM tasks t
        LEFT JOIN users ul ON ul.id = t.task_leader_id

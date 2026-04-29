@@ -20,6 +20,7 @@ ALTER TABLE dbo.user_page_roles ADD CONSTRAINT CK_user_page_roles_page_id CHECK 
   N'access_management',
   N'rector',
   N'tasks',
+  N'case_management',
   N'transport_operations',
   N'recruitment',
   N'letters',

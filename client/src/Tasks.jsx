@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import { tasks as tasksApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
+import { tasks as tasksApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
@@ -32,6 +33,11 @@ const TASK_CATEGORIES = [
   { value: 'thinkers_afrika', label: 'Thinkers Afrika company' },
 ];
 
+const TASK_VISIBILITY_OPTIONS = [
+  { value: 'tenant', label: 'Visible to everyone in this tenant' },
+  { value: 'private_assignees', label: 'Visible to assignees and me only' },
+];
+
 function formatDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
@@ -40,6 +46,11 @@ function formatDate(d) {
 function formatDateTime(d) {
   if (!d) return '—';
   return new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function normalizeTaskDetailResponse(d) {
+  if (!d?.task) return null;
+  return { ...d.task, can_manage_case_links: !!d.meta?.can_manage_case_links };
 }
 
 function StatusBadge({ status }) {
@@ -66,6 +77,8 @@ function CategoryBadge({ category }) {
 
 export default function Tasks() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const openTaskId = searchParams.get('openTask');
   const [navHidden, setNavHidden] = useSecondaryNavHidden('tasks');
   const [activeTab, setActiveTab] = useState('list');
   useAutoHideNavAfterTabChange(activeTab);
@@ -91,6 +104,8 @@ export default function Tasks() {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
   const [tenantUsers, setTenantUsers] = useState([]);
+  const [tenantOptions, setTenantOptions] = useState([]);
+  const [createTaskOpen, setCreateTaskOpen] = useState(false);
 
   const loadTasks = useCallback(async () => {
     setLoading(true);
@@ -146,14 +161,41 @@ export default function Tasks() {
   }, [activeTab, loadTasks, selectedTaskId, listPage]);
 
   useEffect(() => {
+    if (!openTaskId) return;
+    setSelectedTaskId(openTaskId);
+    setActiveTab('list');
+    setSearchParams(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        n.delete('openTask');
+        return n;
+      },
+      { replace: true }
+    );
+  }, [openTaskId, setSearchParams]);
+
+  useEffect(() => {
     if (activeTab === 'create' || activeTab === 'list' || activeTab === 'board') {
       tasksApi.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
+      tenantsApi.list()
+        .then((d) => {
+          const all = Array.isArray(d?.tenants) ? d.tenants : [];
+          const allowed = new Set([...(Array.isArray(user?.tenant_ids) ? user.tenant_ids : []), user?.tenant_id].filter(Boolean));
+          setTenantOptions(all.filter((t) => allowed.has(t.id)).map((t) => ({ id: t.id, name: t.name || 'Tenant' })));
+        })
+        .catch(() => setTenantOptions([]));
     }
-  }, [activeTab]);
+  }, [activeTab, user?.tenant_id, user?.tenant_ids]);
+
+  const thinkersAfrikaTenantId = useMemo(() => {
+    const norm = (s) => String(s || '').trim().toLowerCase().replace(/[_\s]+/g, ' ');
+    const hit = tenantOptions.find((t) => ['thinkers afrika', 'thinkers africa'].includes(norm(t.name)));
+    return hit?.id || '';
+  }, [tenantOptions]);
 
   const refreshDetailTask = useCallback(() => {
     if (selectedTaskId) {
-      tasksApi.get(selectedTaskId).then((d) => setDetailTask(d.task)).catch(() => setDetailTask(null));
+      tasksApi.get(selectedTaskId).then((d) => setDetailTask(normalizeTaskDetailResponse(d))).catch(() => setDetailTask(null));
     }
   }, [selectedTaskId]);
 
@@ -179,7 +221,7 @@ export default function Tasks() {
       await tasksApi.update(taskId, payload);
       if (detailTask?.id === taskId) {
         const d = await tasksApi.get(taskId);
-        setDetailTask(d.task);
+        setDetailTask(normalizeTaskDetailResponse(d));
       }
       setError('');
       loadTasks();
@@ -193,7 +235,7 @@ export default function Tasks() {
       await tasksApi.update(taskId, { progress_legend });
       if (detailTask?.id === taskId) {
         const d = await tasksApi.get(taskId);
-        setDetailTask(d.task);
+        setDetailTask(normalizeTaskDetailResponse(d));
       }
       setError('');
       loadTasks();
@@ -204,7 +246,7 @@ export default function Tasks() {
 
   useEffect(() => {
     if (selectedTaskId) {
-      tasksApi.get(selectedTaskId).then((d) => setDetailTask(d.task)).catch(() => setDetailTask(null));
+      tasksApi.get(selectedTaskId).then((d) => setDetailTask(normalizeTaskDetailResponse(d))).catch(() => setDetailTask(null));
     } else {
       setDetailTask(null);
     }
@@ -237,7 +279,7 @@ export default function Tasks() {
       await tasksApi.assign(taskId, { transfer_from_user_id: fromUserId, transfer_to_user_id: toUserId });
       if (detailTask?.id === taskId) {
         const d = await tasksApi.get(taskId);
-        setDetailTask(d.task);
+        setDetailTask(normalizeTaskDetailResponse(d));
       }
       loadTasks();
     } catch (e) {
@@ -250,7 +292,7 @@ export default function Tasks() {
       await tasksApi.assign(taskId, { user_ids: userIds });
       if (detailTask?.id === taskId) {
         const d = await tasksApi.get(taskId);
-        setDetailTask(d.task);
+        setDetailTask(normalizeTaskDetailResponse(d));
       }
       loadTasks();
     } catch (e) {
@@ -263,7 +305,7 @@ export default function Tasks() {
       await tasksApi.uploadAttachment(taskId, file);
       if (detailTask?.id === taskId) {
         const d = await tasksApi.get(taskId);
-        setDetailTask(d.task);
+        setDetailTask(normalizeTaskDetailResponse(d));
       }
     } catch (e) {
       setError(e?.message || 'Upload failed');
@@ -332,7 +374,7 @@ export default function Tasks() {
           <div className="px-4 pb-3">
             <button
               type="button"
-              onClick={() => { setActiveTab('create'); setSelectedTaskId(null); }}
+              onClick={() => { setCreateTaskOpen(true); }}
               className="w-full py-2.5 px-3 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 shadow-sm"
             >
               + New task
@@ -345,7 +387,14 @@ export default function Tasks() {
                 <li key={tab.id}>
                   <button
                     type="button"
-                    onClick={() => { setActiveTab(tab.id); setSelectedTaskId(null); }}
+                    onClick={() => {
+                      if (tab.id === 'create') {
+                        setCreateTaskOpen(true);
+                        return;
+                      }
+                      setActiveTab(tab.id);
+                      setSelectedTaskId(null);
+                    }}
                     className={`w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors rounded-none min-w-0 ${
                       activeTab === tab.id ? 'bg-brand-50 text-brand-700 border-l-2 border-l-brand-500 font-medium' : 'text-surface-600 hover:bg-surface-50 hover:text-surface-900 border-l-2 border-l-transparent'
                     }`}
@@ -442,7 +491,7 @@ export default function Tasks() {
                   loadTasks();
                   if (detailTask?.id === taskId) {
                     const d = await tasksApi.get(taskId);
-                    setDetailTask(d.task);
+                    setDetailTask(normalizeTaskDetailResponse(d));
                   }
                 } catch (e) {
                   setError(e?.message || 'Update failed');
@@ -452,7 +501,7 @@ export default function Tasks() {
               onUpdateProgressLegend={handleUpdateProgressLegend}
               currentUserId={user?.id}
               tenantUsers={tenantUsers}
-              onNewTask={() => setActiveTab('create')}
+              onNewTask={() => setCreateTaskOpen(true)}
             />
           )}
 
@@ -463,10 +512,36 @@ export default function Tasks() {
               tenantUsers={tenantUsers}
               onSelectTask={(id) => {
                 setSelectedTaskId(id);
-                setActiveTab('list');
               }}
-              onNewTask={() => setActiveTab('create')}
+              onNewTask={() => setCreateTaskOpen(true)}
               loadTasks={loadTasks}
+              detailTask={detailTask}
+              onCloseDetail={() => setSelectedTaskId(null)}
+              onUpdateProgress={handleUpdateProgress}
+              onUpdateStatus={handleUpdateStatus}
+              onTransfer={handleTransfer}
+              onAddAssignees={handleAddAssignees}
+              onUploadAttachment={handleUploadAttachment}
+              onRefreshDetail={refreshDetailTask}
+              onAddProgressUpdate={handleAddProgressUpdate}
+              onAddComment={handleAddComment}
+              onAddReminder={handleAddReminder}
+              onDismissReminder={handleDismissReminder}
+              onUpdateCategory={async (taskId, category) => {
+                try {
+                  await tasksApi.update(taskId, { category });
+                  loadTasks();
+                  if (detailTask?.id === taskId) {
+                    const d = await tasksApi.get(taskId);
+                    setDetailTask(normalizeTaskDetailResponse(d));
+                  }
+                } catch (e) {
+                  setError(e?.message || 'Update failed');
+                }
+              }}
+              onUpdateLeaderReviewer={handleUpdateLeaderReviewer}
+              onUpdateProgressLegend={handleUpdateProgressLegend}
+              currentUserId={user?.id}
               showAdvancedTaskFilters={showAdvancedTaskFilters}
               taskListView={taskListView}
               setTaskListView={setTaskListView}
@@ -500,9 +575,26 @@ export default function Tasks() {
           {activeTab === 'create' && (
             <TabCreateTask
               tenantUsers={tenantUsers}
+              tenantOptions={tenantOptions}
+              defaultTenantId={thinkersAfrikaTenantId || user?.tenant_id || ''}
               onCreated={(task) => { setActiveTab('list'); setSelectedTaskId(task?.id); loadTasks(); }}
               onCancel={() => setActiveTab('list')}
             />
+          )}
+
+          {createTaskOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="absolute inset-0 bg-black/30" onClick={() => setCreateTaskOpen(false)} />
+              <div className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-xl border border-surface-200 bg-white p-5">
+                <TabCreateTask
+                  tenantUsers={tenantUsers}
+                  tenantOptions={tenantOptions}
+                  defaultTenantId={thinkersAfrikaTenantId || user?.tenant_id || ''}
+                  onCreated={(task) => { setCreateTaskOpen(false); setSelectedTaskId(task?.id || null); loadTasks(); }}
+                  onCancel={() => setCreateTaskOpen(false)}
+                />
+              </div>
+            </div>
           )}
 
           {activeTab === 'library' && <TabLibrary />}
@@ -512,11 +604,14 @@ export default function Tasks() {
   );
 }
 
-function BoardTaskCard({ task, onSelectTask }) {
+function BoardTaskCard({ task, onSelectTask, draggable = false, onDragStart, onDragEnd }) {
   const stripe = taskLegendSurfaceClass(task.progress_legend);
   return (
     <button
       type="button"
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onClick={() => onSelectTask(task.id)}
       className={`w-full text-left rounded-lg border-y border-r border-surface-200/70 pl-2 pr-2.5 py-2.5 shadow-sm hover:border-brand-300/80 hover:shadow transition ${stripe}`}
     >
@@ -537,6 +632,22 @@ function TabTasksBoard({
   onSelectTask,
   onNewTask,
   loadTasks,
+  detailTask,
+  onCloseDetail,
+  onUpdateProgress,
+  onUpdateStatus,
+  onTransfer,
+  onAddAssignees,
+  onUploadAttachment,
+  onRefreshDetail,
+  onAddProgressUpdate,
+  onAddComment,
+  onAddReminder,
+  onDismissReminder,
+  onUpdateCategory,
+  onUpdateLeaderReviewer,
+  onUpdateProgressLegend,
+  currentUserId,
   showAdvancedTaskFilters,
   taskListView,
   setTaskListView,
@@ -565,7 +676,11 @@ function TabTasksBoard({
   taskSort,
   setTaskSort,
 }) {
-  const { lanes, userOrder, unassigned, otherAssignees } = useMemo(() => {
+  const [dragging, setDragging] = useState(null); // { taskId, fromUserId }
+  const [assigneeModal, setAssigneeModal] = useState(null);
+  const [transferModal, setTransferModal] = useState(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const { lanes, userOrder, unassigned } = useMemo(() => {
     const q = tenantUsers || [];
     const boardUserIds = new Set(q.map((u) => u.id));
     const byUser = {};
@@ -573,15 +688,10 @@ function TabTasksBoard({
       byUser[u.id] = [];
     });
     const unassignedList = [];
-    const otherList = [];
     for (const t of tasks || []) {
       const as = t.assignees || [];
       if (!as.length) {
         unassignedList.push(t);
-        continue;
-      }
-      if (as.every((a) => !boardUserIds.has(a.user_id))) {
-        otherList.push(t);
         continue;
       }
       const seen = new Set();
@@ -592,8 +702,34 @@ function TabTasksBoard({
         }
       });
     }
-    return { lanes: byUser, userOrder: q, unassigned: unassignedList, otherAssignees: otherList };
+    return { lanes: byUser, userOrder: q, unassigned: unassignedList };
   }, [tasks, tenantUsers]);
+
+  const handleDropToUser = async (toUserId) => {
+    if (!dragging?.taskId || !toUserId) return;
+    const task = (tasks || []).find((t) => String(t.id) === String(dragging.taskId));
+    if (!task) return;
+    try {
+      const fromUserId = dragging.fromUserId ? String(dragging.fromUserId) : null;
+      const target = String(toUserId);
+      if (fromUserId && fromUserId !== target) {
+        await tasksApi.assign(task.id, { transfer_from_user_id: fromUserId, transfer_to_user_id: target });
+      } else {
+        const alreadyAssigned = (task.assignees || []).some((a) => String(a.user_id) === target);
+        if (!alreadyAssigned) {
+          await tasksApi.assign(task.id, { user_ids: [target] });
+        }
+      }
+      await tasksApi.update(task.id, { task_leader_id: target });
+      await loadTasks();
+      const addDetails = window.confirm('Task moved. Would you like to add details to this task now?');
+      if (addDetails) onSelectTask(task.id);
+    } catch (e) {
+      window.alert(e?.message || 'Could not move task');
+    } finally {
+      setDragging(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -601,7 +737,7 @@ function TabTasksBoard({
         <div>
           <h1 className="text-xl font-semibold text-surface-900">Tasks board</h1>
           <p className="text-sm text-surface-600 mt-1 max-w-2xl">
-            One column per teammate who has access to Tasks. Assignees without that access appear under “Other assignees”. Filters match the task list.
+            Drag a task card to another teammate column to transfer assignment and set that person as task leader. Queue (unassigned) stays on the far left.
           </p>
         </div>
         <div className="flex gap-2">
@@ -740,40 +876,6 @@ function TabTasksBoard({
         <p className="text-surface-500">Loading…</p>
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-4 items-start">
-          {userOrder.map((u) => (
-            <div key={u.id} className="shrink-0 w-64 bg-surface-50 rounded-xl border border-surface-200 flex flex-col max-h-[70vh]">
-              <div className="px-3 py-2 border-b border-surface-200 bg-white rounded-t-xl">
-                <p className="font-medium text-surface-900 truncate">{u.full_name || 'User'}</p>
-                <p className="text-xs text-surface-500 truncate">{u.email}</p>
-                <p className="text-xs text-brand-600 mt-1">{(lanes[u.id] || []).length} task(s)</p>
-              </div>
-              <div className="p-2 space-y-2 overflow-y-auto flex-1 min-h-0">
-                {(lanes[u.id] || []).length === 0 ? (
-                  <p className="text-xs text-surface-500 px-1 py-4 text-center">No tasks in this lane.</p>
-                ) : (
-                  (lanes[u.id] || []).map((t) => (
-                    <BoardTaskCard key={`${t.id}-${u.id}`} task={t} onSelectTask={onSelectTask} />
-                  ))
-                )}
-              </div>
-            </div>
-          ))}
-          <div className="shrink-0 w-64 bg-surface-50 rounded-xl border border-amber-200 flex flex-col max-h-[70vh]">
-            <div className="px-3 py-2 border-b border-amber-100 bg-amber-50/80 rounded-t-xl">
-              <p className="font-medium text-surface-900">Other assignees</p>
-              <p className="text-xs text-surface-600">No assignee has Tasks page access</p>
-              <p className="text-xs text-brand-600 mt-1">{otherAssignees.length} task(s)</p>
-            </div>
-            <div className="p-2 space-y-2 overflow-y-auto flex-1 min-h-0">
-              {otherAssignees.length === 0 ? (
-                <p className="text-xs text-surface-500 px-1 py-4 text-center">None.</p>
-              ) : (
-                otherAssignees.map((t) => (
-                  <BoardTaskCard key={t.id} task={t} onSelectTask={onSelectTask} />
-                ))
-              )}
-            </div>
-          </div>
           <div className="shrink-0 w-64 bg-surface-50 rounded-xl border border-dashed border-surface-300 flex flex-col max-h-[70vh]">
             <div className="px-3 py-2 border-b border-surface-200 bg-white/80 rounded-t-xl">
               <p className="font-medium text-surface-900">Queue (unassigned)</p>
@@ -785,12 +887,78 @@ function TabTasksBoard({
                 <p className="text-xs text-surface-500 px-1 py-4 text-center">No unassigned tasks.</p>
               ) : (
                 unassigned.map((t) => (
-                  <BoardTaskCard key={t.id} task={t} onSelectTask={onSelectTask} />
+                  <BoardTaskCard
+                    key={t.id}
+                    task={t}
+                    onSelectTask={onSelectTask}
+                    draggable
+                    onDragStart={() => setDragging({ taskId: t.id, fromUserId: null })}
+                    onDragEnd={() => setDragging(null)}
+                  />
                 ))
               )}
             </div>
           </div>
+          {userOrder.map((u) => (
+            <div
+              key={u.id}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => handleDropToUser(u.id)}
+              className={`shrink-0 w-64 bg-surface-50 rounded-xl border flex flex-col max-h-[70vh] ${
+                dragging ? 'border-brand-300' : 'border-surface-200'
+              }`}
+            >
+              <div className="px-3 py-2 border-b border-surface-200 bg-white rounded-t-xl">
+                <p className="font-medium text-surface-900 truncate">{u.full_name || 'User'}</p>
+                <p className="text-xs text-surface-500 truncate">{u.email}</p>
+                <p className="text-xs text-brand-600 mt-1">{(lanes[u.id] || []).length} task(s)</p>
+              </div>
+              <div className="p-2 space-y-2 overflow-y-auto flex-1 min-h-0">
+                {(lanes[u.id] || []).length === 0 ? (
+                  <p className="text-xs text-surface-500 px-1 py-4 text-center">No tasks in this lane.</p>
+                ) : (
+                  (lanes[u.id] || []).map((t) => (
+                    <BoardTaskCard
+                      key={`${t.id}-${u.id}`}
+                      task={t}
+                      onSelectTask={onSelectTask}
+                      draggable
+                      onDragStart={() => setDragging({ taskId: t.id, fromUserId: u.id })}
+                      onDragEnd={() => setDragging(null)}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+          ))}
         </div>
+      )}
+      {detailTask && (
+        <TaskDetailPanel
+          task={detailTask}
+          onClose={onCloseDetail}
+          onUpdateProgress={onUpdateProgress}
+          onUpdateStatus={onUpdateStatus}
+          onTransfer={onTransfer}
+          onAddAssignees={onAddAssignees}
+          onUploadAttachment={onUploadAttachment}
+          onRefreshDetail={onRefreshDetail}
+          onAddProgressUpdate={onAddProgressUpdate}
+          onAddComment={onAddComment}
+          onAddReminder={onAddReminder}
+          onDismissReminder={onDismissReminder}
+          onUpdateCategory={onUpdateCategory}
+          onUpdateLeaderReviewer={onUpdateLeaderReviewer}
+          onUpdateProgressLegend={onUpdateProgressLegend}
+          currentUserId={currentUserId}
+          tenantUsers={tenantUsers}
+          assigneeModal={assigneeModal}
+          setAssigneeModal={setAssigneeModal}
+          transferModal={transferModal}
+          setTransferModal={setTransferModal}
+          uploadingFile={uploadingFile}
+          setUploadingFile={setUploadingFile}
+        />
       )}
     </div>
   );
@@ -1133,6 +1301,180 @@ function TabTaskList({
   );
 }
 
+function TaskLinkedCasesPanel({ taskId, linkedCases, canManage, onRefreshDetail }) {
+  const [search, setSearch] = useState('');
+  const [candidates, setCandidates] = useState([]);
+  const [selectedCaseId, setSelectedCaseId] = useState('');
+  const [linkNote, setLinkNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    setErr('');
+    setPickerOpen(false);
+    setSearch('');
+    setLinkNote('');
+    setSelectedCaseId('');
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!canManage || !pickerOpen) return;
+    const t = setTimeout(() => {
+      tasksApi
+        .linkableCases(taskId, search)
+        .then((d) => setCandidates(d.cases || []))
+        .catch(() => setCandidates([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [taskId, search, canManage, pickerOpen]);
+
+  useEffect(() => {
+    if (!selectedCaseId) return;
+    if (!candidates.some((c) => String(c.id) === String(selectedCaseId))) {
+      setSelectedCaseId('');
+    }
+  }, [candidates, selectedCaseId]);
+
+  const caseSelectSize = Math.min(12, Math.max(4, candidates.length + 1));
+
+  return (
+    <section className="rounded-xl border border-violet-200/80 bg-gradient-to-br from-violet-50/90 to-white p-5 shadow-sm space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Linked cases</h3>
+          <p className="text-xs text-surface-600 mt-1 max-w-xl">
+            Connect this task to case workflows you participate in (case lead, opener, or step assignee).
+          </p>
+        </div>
+        {canManage ? (
+          <button
+            type="button"
+            onClick={() => setPickerOpen((v) => !v)}
+            className="text-sm font-medium text-violet-800 hover:underline"
+          >
+            {pickerOpen ? 'Close picker' : '+ Link a case'}
+          </button>
+        ) : null}
+      </div>
+      {err ? <p className="text-xs text-red-600">{err}</p> : null}
+      {canManage && pickerOpen ? (
+        <div className="rounded-lg border border-surface-200 bg-white p-3 space-y-2">
+          <label className="block text-xs font-medium text-surface-600" htmlFor={`link-case-search-${taskId}`}>
+            Search cases you can attach
+          </label>
+          <input
+            id={`link-case-search-${taskId}`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Case number or title…"
+            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            autoComplete="off"
+          />
+          <label className="block text-xs font-medium text-surface-600" htmlFor={`link-case-select-${taskId}`}>
+            Matching cases (select one)
+          </label>
+          <select
+            id={`link-case-select-${taskId}`}
+            value={selectedCaseId}
+            onChange={(e) => setSelectedCaseId(e.target.value)}
+            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white shadow-inner"
+            size={caseSelectSize}
+          >
+            <option value="">{candidates.length ? '— Select a case —' : 'No cases match — try another search'}</option>
+            {candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.case_number} · {c.title} — {String(c.status || '').replace(/_/g, ' ')} · {c.category}
+              </option>
+            ))}
+          </select>
+          <label className="block text-xs font-medium text-surface-600">Context (optional)</label>
+          <input
+            value={linkNote}
+            onChange={(e) => setLinkNote(e.target.value)}
+            placeholder="How this task supports the case…"
+            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          />
+          <button
+            type="button"
+            disabled={busy || !selectedCaseId}
+            className="w-full sm:w-auto px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+            onClick={async () => {
+              if (!selectedCaseId) return;
+              setErr('');
+              setBusy(true);
+              try {
+                await tasksApi.linkCase(taskId, {
+                  case_id: selectedCaseId,
+                  link_note: linkNote.trim() || undefined,
+                });
+                await onRefreshDetail?.();
+                setPickerOpen(false);
+                setLinkNote('');
+                setSelectedCaseId('');
+              } catch (e) {
+                setErr(e?.message || 'Could not link');
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? 'Linking…' : 'Link selected case'}
+          </button>
+        </div>
+      ) : null}
+      {!canManage ? (
+        <p className="text-xs text-surface-500">Only people involved on this task can add or remove case links.</p>
+      ) : null}
+      <ul className="space-y-2">
+        {(linkedCases || []).length === 0 ? (
+          <li className="text-sm text-surface-500">No cases linked yet.</li>
+        ) : (
+          linkedCases.map((l) => (
+            <li
+              key={l.id}
+              className="rounded-lg border border-surface-200 bg-white px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+            >
+              <div className="min-w-0">
+                <Link
+                  to={`/case-management?case=${encodeURIComponent(l.case_id)}`}
+                  className="text-sm font-medium text-brand-700 hover:underline"
+                >
+                  {l.case?.case_number} · {l.case?.title}
+                </Link>
+                <p className="text-[11px] text-surface-500 mt-0.5 capitalize">
+                  {String(l.case?.status || '').replace(/_/g, ' ')}
+                  {l.case?.category ? <> · {l.case.category}</> : null}
+                  {l.linked_by_name ? <> · Linked by {l.linked_by_name}</> : null}
+                </p>
+                {l.link_note ? <p className="text-xs text-surface-600 mt-1 italic">&ldquo;{l.link_note}&rdquo;</p> : null}
+              </div>
+              {canManage ? (
+                <button
+                  type="button"
+                  className="text-xs text-red-600 hover:underline"
+                  onClick={async () => {
+                    if (!window.confirm('Remove this case link?')) return;
+                    setErr('');
+                    try {
+                      await tasksApi.unlinkCase(taskId, l.id);
+                      await onRefreshDetail?.();
+                    } catch (e) {
+                      setErr(e?.message || 'Could not unlink');
+                    }
+                  }}
+                >
+                  Unlink
+                </button>
+              ) : null}
+            </li>
+          ))
+        )}
+      </ul>
+    </section>
+  );
+}
+
 function TaskDetailPanel({
   task,
   onClose,
@@ -1237,6 +1579,13 @@ function TaskDetailPanel({
               </div>
             )}
           </section>
+
+          <TaskLinkedCasesPanel
+            taskId={task.id}
+            linkedCases={task.linked_cases || []}
+            canManage={!!task.can_manage_case_links}
+            onRefreshDetail={onRefreshDetail}
+          />
 
           <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
             <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide mb-3">Schedule</h3>
@@ -1720,11 +2069,13 @@ function TransferModal({ taskId, fromUserId, assigneeName, tenantUsers, onTransf
   );
 }
 
-function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
+function TabCreateTask({ tenantUsers, tenantOptions = [], defaultTenantId = '', onCreated, onCancel }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('departmental');
   const [progressLegend, setProgressLegend] = useState('not_started');
+  const [visibilityScope, setVisibilityScope] = useState('tenant');
+  const [tenantId, setTenantId] = useState(defaultTenantId || '');
   const [taskLeaderId, setTaskLeaderId] = useState('');
   const [taskReviewerId, setTaskReviewerId] = useState('');
   const [keyActions, setKeyActions] = useState(['']);
@@ -1734,6 +2085,10 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
   const [files, setFiles] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    setTenantId(defaultTenantId || '');
+  }, [defaultTenantId]);
 
   const addKeyAction = () => setKeyActions((k) => [...k, '']);
   const removeKeyAction = (i) => setKeyActions((k) => k.filter((_, idx) => idx !== i));
@@ -1750,6 +2105,8 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
         description: description.trim() || undefined,
         category,
         progress_legend: progressLegend,
+        visibility_scope: visibilityScope,
+        tenant_id: tenantId || undefined,
         task_leader_id: taskLeaderId || undefined,
         task_reviewer_id: taskReviewerId || undefined,
         key_actions: keyActions.map((s) => s.trim()).filter(Boolean),
@@ -1774,60 +2131,87 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Create task</h1>
+      <div className="rounded-2xl border border-surface-200 bg-gradient-to-br from-white to-surface-50 px-5 py-4">
+        <h1 className="text-xl font-semibold text-surface-900">Create task</h1>
+        <p className="mt-1 text-sm text-surface-600">Capture work clearly, assign ownership, and keep visibility intentional.</p>
+      </div>
 
-      <form onSubmit={handleSubmit} className="max-w-2xl space-y-4">
+      <form onSubmit={handleSubmit} className="max-w-4xl space-y-5">
         {error && (
           <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2">{error}</div>
         )}
 
-        <div>
-          <label className="block text-sm font-medium text-surface-700 mb-1">Task title *</label>
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            placeholder="Enter task title"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-surface-700 mb-1">Description</label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={4}
-            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            placeholder="Describe the task"
-          />
+        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Basic information</p>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Task title *</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              placeholder="e.g. Prepare April fuel usage review"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={4}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              placeholder="Write context, expected outcome, and handover notes."
+            />
+          </div>
         </div>
 
         <div className="rounded-xl border border-surface-200 bg-surface-50/50 p-4 space-y-4">
           <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Classification and ownership</p>
-          <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1">Category *</label>
-            <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
-              {TASK_CATEGORIES.map((c) => (
-                <option key={c.value} value={c.value}>{c.label}</option>
-              ))}
-            </select>
-            <p className="text-xs text-surface-500 mt-1">Sales, departmental work, or Thinkers Afrika company tasks.</p>
+          <div className="grid sm:grid-cols-2 gap-4 max-w-3xl">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Category *</label>
+              <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
+                {TASK_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-surface-500 mt-1">Classify the type of work for reporting and board grouping.</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Progress colour (legend)</label>
+              <select
+                value={progressLegend}
+                onChange={(e) => setProgressLegend(e.target.value)}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+              >
+                {TASK_PROGRESS_LEGEND_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-surface-500 mt-1">Controls the board color style used for this task.</p>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1">Progress colour (legend)</label>
-            <select
-              value={progressLegend}
-              onChange={(e) => setProgressLegend(e.target.value)}
-              className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
-            >
-              {TASK_PROGRESS_LEGEND_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-            <p className="text-xs text-surface-500 mt-1">Soft colours on your work schedule calendar and task views.</p>
-            <TaskColourLegend className="mt-2 opacity-90" />
+          <TaskColourLegend className="mt-2 opacity-90" />
+          <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Task visibility</label>
+              <select value={visibilityScope} onChange={(e) => setVisibilityScope(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
+                {TASK_VISIBILITY_OPTIONS.map((v) => (
+                  <option key={v.value} value={v.value}>{v.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Allocate task under tenant</label>
+              <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white">
+                <option value="">Default tenant</option>
+                {tenantOptions.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-surface-500 mt-1">For users with multiple tenants, confirm allocation here. Defaults to Thinkers Afrika when available.</p>
+            </div>
           </div>
           <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
             <div>
@@ -1838,7 +2222,7 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
                   <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
                 ))}
               </select>
-              <p className="text-xs text-surface-500 mt-1">Optional — accountable lead (must have Tasks access).</p>
+              <p className="text-xs text-surface-500 mt-1">Optional accountable lead for day-to-day delivery.</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">Task reviewer</label>
@@ -1848,86 +2232,90 @@ function TabCreateTask({ tenantUsers, onCreated, onCancel }) {
                   <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
                 ))}
               </select>
-              <p className="text-xs text-surface-500 mt-1">Optional — who reviews completion.</p>
+              <p className="text-xs text-surface-500 mt-1">Optional reviewer to validate completion quality.</p>
             </div>
           </div>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium text-surface-700 mb-1">Key actions</label>
-          {keyActions.map((action, i) => (
-            <div key={i} className="flex gap-2 mb-2">
+        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Planning and assignment</p>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Key actions</label>
+            {keyActions.map((action, i) => (
+              <div key={i} className="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  value={action}
+                  onChange={(e) => setKeyAction(i, e.target.value)}
+                  className="flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                  placeholder="Add a key action item"
+                />
+                <button type="button" onClick={() => removeKeyAction(i)} className="text-surface-500 hover:text-red-600 px-2">Remove</button>
+              </div>
+            ))}
+            <button type="button" onClick={addKeyAction} className="text-sm text-brand-600 hover:underline">+ Add key action</button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Start date</label>
               <input
-                type="text"
-                value={action}
-                onChange={(e) => setKeyAction(i, e.target.value)}
-                className="flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                placeholder="Key action"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
               />
-              <button type="button" onClick={() => removeKeyAction(i)} className="text-surface-500 hover:text-red-600 px-2">Remove</button>
             </div>
-          ))}
-          <button type="button" onClick={addKeyAction} className="text-sm text-brand-600 hover:underline">+ Add key action</button>
-        </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Due date</label>
+              <input
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
 
-        <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1">Start date</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1">Due date</label>
-            <input
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-surface-700 mb-1">Assign to</label>
-          <div className="space-y-2 max-h-40 overflow-y-auto border border-surface-200 rounded-lg p-2">
-            {tenantUsers.length === 0 ? (
-              <p className="text-sm text-surface-500">Loading users…</p>
-            ) : (
-              tenantUsers.map((u) => (
-                <label key={u.id} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={assigneeIds.includes(u.id)}
-                    onChange={(e) => setAssigneeIds((ids) => (e.target.checked ? [...ids, u.id] : ids.filter((id) => id !== u.id)))}
-                    className="rounded border-surface-300 text-brand-600"
-                  />
-                  <span className="text-sm text-surface-700">{u.full_name || u.email}</span>
-                </label>
-              ))
-            )}
+            <label className="block text-sm font-medium text-surface-700 mb-1">Assign to</label>
+            <div className="space-y-2 max-h-44 overflow-y-auto border border-surface-200 rounded-lg p-3 bg-surface-50/50">
+              {tenantUsers.length === 0 ? (
+                <p className="text-sm text-surface-500">Loading users…</p>
+              ) : (
+                tenantUsers.map((u) => (
+                  <label key={u.id} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={assigneeIds.includes(u.id)}
+                      onChange={(e) => setAssigneeIds((ids) => (e.target.checked ? [...ids, u.id] : ids.filter((id) => id !== u.id)))}
+                      className="rounded border-surface-300 text-brand-600"
+                    />
+                    <span className="text-sm text-surface-700">{u.full_name || u.email}</span>
+                  </label>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium text-surface-700 mb-1">Upload files</label>
+        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Attachments</p>
+          <label className="block text-sm font-medium text-surface-700">Upload files</label>
           <input
             type="file"
             multiple
             onChange={(e) => setFiles(Array.from(e.target.files || []))}
             className="w-full text-sm text-surface-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border file:border-surface-300 file:bg-surface-50"
           />
-          {files.length > 0 && <p className="text-xs text-surface-500 mt-1">{files.length} file(s) selected. They will be uploaded after the task is created.</p>}
+          {files.length > 0 && <p className="text-xs text-surface-500">{files.length} file(s) selected. They will upload after task creation.</p>}
         </div>
 
-        <div className="flex gap-2">
-          <button type="submit" disabled={saving || !title.trim()} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+        <div className="sticky bottom-0 z-10 bg-white/90 backdrop-blur border-t border-surface-200 -mx-1 px-1 py-3 flex flex-wrap gap-2 justify-end">
+          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">Cancel</button>
+          <button type="submit" disabled={saving || !title.trim()} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50 shadow-sm">
             {saving ? 'Creating…' : 'Create task'}
           </button>
-          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm">Cancel</button>
         </div>
       </form>
     </div>

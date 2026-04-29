@@ -11,6 +11,7 @@ import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboar
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', section: 'Overview' },
+  { id: 'contractor-page-restriction', label: 'Contractor page restriction', icon: 'ban', section: 'Overview' },
   { id: 'routes', label: 'Route management', icon: 'route', section: 'Routes' },
   { id: 'rectors', label: 'Route rectors', icon: 'users', section: 'Routes' },
   { id: 'reinstatement', label: 'Reinstatement requests', icon: 'reinstatement', section: 'Routes' },
@@ -92,6 +93,12 @@ function TabIcon({ name, className }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
       );
+    case 'ban':
+      return (
+        <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+        </svg>
+      );
     case 'file':
       return (
         <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -167,6 +174,14 @@ export default function AccessManagement() {
   const [routes, setRoutes] = useState([]);
   const [rectors, setRectors] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [contractorRestrictions, setContractorRestrictions] = useState({
+    allow_truck_manual: true,
+    allow_truck_import: true,
+    allow_driver_manual: true,
+    allow_driver_import: true,
+    allow_enrollment: true,
+  });
+  const [contractorRestrictionsSaving, setContractorRestrictionsSaving] = useState(false);
 
   // Route form (create/edit)
   const [routeForm, setRouteForm] = useState({ name: '', starting_point: '', destination: '', capacity: '', max_tons: '', route_expiration: '' });
@@ -390,12 +405,22 @@ export default function AccessManagement() {
       contractorApi.routes.list().then((r) => r.routes || []),
       contractorApi.routeFactors.list().then((r) => r.factors || []),
       usersApi.list({ tenant_id: user?.tenant_id, limit: 500 }).then((r) => r.users || []).catch(() => []),
+      contractorApi.restrictions.get().then((r) => r.restrictions || null).catch(() => null),
     ])
-      .then(([ctx, rList, fList, uList]) => {
+      .then(([ctx, rList, fList, uList, restrictions]) => {
         if (!ctx?.tenantId) setContextError('Your account is not linked to a company.');
         setRoutes(rList);
         setRectors(fList);
         setTenantUsers(uList);
+        if (restrictions) {
+          setContractorRestrictions({
+            allow_truck_manual: restrictions.allow_truck_manual !== false,
+            allow_truck_import: restrictions.allow_truck_import !== false,
+            allow_driver_manual: restrictions.allow_driver_manual !== false,
+            allow_driver_import: restrictions.allow_driver_import !== false,
+            allow_enrollment: restrictions.allow_enrollment !== false,
+          });
+        }
       })
       .catch((err) => setError(err?.message || 'Failed to load'))
       .finally(() => setLoading(false));
@@ -405,6 +430,27 @@ export default function AccessManagement() {
     if (hasTenant) load();
     else setLoading(false);
   }, [hasTenant]);
+
+  const saveContractorRestrictions = async () => {
+    setContractorRestrictionsSaving(true);
+    setError('');
+    try {
+      const res = await contractorApi.restrictions.update(contractorRestrictions);
+      if (res?.restrictions) {
+        setContractorRestrictions({
+          allow_truck_manual: res.restrictions.allow_truck_manual !== false,
+          allow_truck_import: res.restrictions.allow_truck_import !== false,
+          allow_driver_manual: res.restrictions.allow_driver_manual !== false,
+          allow_driver_import: res.restrictions.allow_driver_import !== false,
+          allow_enrollment: res.restrictions.allow_enrollment !== false,
+        });
+      }
+    } catch (err) {
+      setError(err?.message || 'Failed to save contractor page restrictions');
+    } finally {
+      setContractorRestrictionsSaving(false);
+    }
+  };
 
   // When opening the rector form or switching to routes/rectors tab, refetch routes so the Route(s) dropdown includes newly created routes
   useEffect(() => {
@@ -1141,6 +1187,46 @@ export default function AccessManagement() {
               <p className="mt-1 text-2xl font-semibold text-surface-900">
                 {loading ? '—' : routes.filter((r) => r.route_expiration && new Date(r.route_expiration) < new Date()).length}
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'contractor-page-restriction' && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-900">Contractor page restriction</h2>
+            <p className="text-sm text-surface-500 mt-1">
+              Enable or disable actions on the Contractor page. Turn a switch off to restrict that function for users.
+            </p>
+          </div>
+          <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-4 max-w-3xl">
+            {[
+              ['allow_truck_manual', 'Allow adding truck manually'],
+              ['allow_truck_import', 'Allow truck import (Excel / bulk)'],
+              ['allow_driver_manual', 'Allow adding driver manually'],
+              ['allow_driver_import', 'Allow driver import (Excel / bulk)'],
+              ['allow_enrollment', 'Allow fleet and driver enrollment actions'],
+            ].map(([key, label]) => (
+              <label key={key} className="flex items-center justify-between gap-3 py-2 border-b border-surface-100 last:border-b-0">
+                <span className="text-sm text-surface-800">{label}</span>
+                <input
+                  type="checkbox"
+                  checked={!!contractorRestrictions[key]}
+                  onChange={(e) => setContractorRestrictions((prev) => ({ ...prev, [key]: e.target.checked }))}
+                  className="h-4 w-4 rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                />
+              </label>
+            ))}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={saveContractorRestrictions}
+                disabled={contractorRestrictionsSaving}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {contractorRestrictionsSaving ? 'Saving…' : 'Save restrictions'}
+              </button>
             </div>
           </div>
         </div>

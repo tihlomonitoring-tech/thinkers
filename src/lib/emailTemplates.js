@@ -440,6 +440,131 @@ export function taskAssignedHtml({ taskTitle, assignerName, dueDate, taskId, app
   return taskNotificationHtml('Task assigned to you', firstParagraph, taskTitle, dueDate, taskId, appUrl);
 }
 
+/** New case opened: notify opener, case lead, and stage assignees (personalized per recipient). */
+export function caseManagementCaseOpenedHtml({
+  caseNumber,
+  title,
+  description,
+  category,
+  openedSource,
+  appUrl,
+  recipientName,
+  isOpener,
+  isLead,
+  assignedStageLines,
+}) {
+  const base = (appUrl || '').replace(/\/$/, '');
+  const link = `${base}/case-management`;
+  const stageList =
+    Array.isArray(assignedStageLines) && assignedStageLines.length > 0
+      ? `<ul style="margin:8px 0 16px 0;padding-left:20px;color:#334155;">${assignedStageLines.map((l) => `<li style="margin:4px 0;">${escapeHtml(l)}</li>`).join('')}</ul>`
+      : '';
+  const leadLine = isLead
+    ? `<p style="margin: 0 0 12px 0; font-size: 15px; color: #334155; line-height: 1.5;">You are assigned as the <strong>internal case lead</strong> for this case.</p>`
+    : '';
+  let roleHtml = '';
+  if (isOpener && assignedStageLines?.length) {
+    roleHtml = `${leadLine}<p style="margin: 0 0 8px 0; font-size: 15px; color: #334155; line-height: 1.5;">You opened this case and you are also assigned to one or more stages below.</p>${stageList}`;
+  } else if (isOpener) {
+    roleHtml = `${leadLine}<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">You are recorded as the person who opened this case.</p>`;
+  } else if (isLead && assignedStageLines?.length) {
+    roleHtml = `${leadLine}<p style="margin: 0 0 8px 0; font-size: 15px; color: #334155; line-height: 1.5;">You are also tagged on the following stage(s):</p>${stageList}`;
+  } else if (assignedStageLines?.length) {
+    roleHtml = `${leadLine}<p style="margin: 0 0 8px 0; font-size: 15px; color: #334155; line-height: 1.5;">You have been tagged on the following stage(s) of this case:</p>${stageList}`;
+  } else if (isLead) {
+    roleHtml = `${leadLine}<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A new case has been assigned to you as lead.</p>`;
+  } else {
+    roleHtml = `${leadLine}<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">You are receiving this message because you are involved in this case.</p>`;
+  }
+  const desc =
+    description && String(description).trim()
+      ? String(description).trim().slice(0, 800)
+      : '—';
+  const content = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(recipientName || 'there')},</p>
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A new case has been opened in Case management.</p>
+    ${roleHtml}
+    ${taskSectionBar('Case details')}
+    ${taskKeyValueTable([
+      ['Case number', caseNumber],
+      ['Title', title],
+      ['Category', category === 'external' ? 'External' : 'Departmental'],
+      ['Opened as', openedSource === 'external' ? 'External' : 'Internal'],
+      ['Summary', desc],
+    ])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml(link)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Case management →</a></p>
+  `;
+  return taskEmailLayout('New case opened', content, 'Case management');
+}
+
+/** Case lead: a stage was marked in progress or completed. */
+export function caseManagementLeadStageProgressHtml({
+  caseNumber,
+  caseTitle,
+  stageTitle,
+  stageOrder,
+  status,
+  actorName,
+  comment,
+  appUrl,
+  recipientName,
+}) {
+  const base = (appUrl || '').replace(/\/$/, '');
+  const link = `${base}/case-management`;
+  const statusLabel = status === 'completed' ? 'Completed' : status === 'in_progress' ? 'In progress' : status;
+  const content = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(recipientName || 'there')},</p>
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A stage on a case you lead has been updated.</p>
+    ${taskSectionBar('Progress details')}
+    ${taskKeyValueTable([
+      ['Case', `${caseNumber} — ${caseTitle}`],
+      ['Stage', `Step ${stageOrder}: ${stageTitle}`],
+      ['Status recorded', statusLabel],
+      ['Updated by', actorName || '—'],
+      ['Comment', comment && String(comment).trim() ? String(comment).trim() : '—'],
+    ])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml(link)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Case management →</a></p>
+  `;
+  return taskEmailLayout('Case stage progress', content, 'Case management');
+}
+
+/** Case lead: all workflow stages are complete; case awaits final closure. */
+export function caseManagementAllStagesCompleteHtml({ caseNumber, caseTitle, appUrl, recipientName }) {
+  const base = (appUrl || '').replace(/\/$/, '');
+  const link = `${base}/case-management`;
+  const content = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(recipientName || 'there')},</p>
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">All steps on a case you lead are now <strong>completed</strong>. You can review and close the case when ready.</p>
+    ${taskSectionBar('Case')}
+    ${taskKeyValueTable([
+      ['Case number', caseNumber],
+      ['Title', caseTitle],
+    ])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml(link)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Review case →</a></p>
+  `;
+  return taskEmailLayout('All stages completed', content, 'Case management');
+}
+
+/** Case lead: case has been closed with final remarks. */
+export function caseManagementCaseClosedHtml({ caseNumber, caseTitle, finalRemarks, closedByName, appUrl, recipientName }) {
+  const base = (appUrl || '').replace(/\/$/, '');
+  const link = `${base}/case-management`;
+  const remarks = finalRemarks && String(finalRemarks).trim() ? String(finalRemarks).trim() : '—';
+  const content = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(recipientName || 'there')},</p>
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">This case has been <strong>closed</strong> with final completion remarks.</p>
+    ${taskSectionBar('Closure summary')}
+    ${taskKeyValueTable([
+      ['Case number', caseNumber],
+      ['Title', caseTitle],
+      ['Closed by', closedByName || '—'],
+      ['Final remarks', remarks],
+    ])}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml(link)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View Case management →</a></p>
+  `;
+  return taskEmailLayout('Case closed', content, 'Case management');
+}
+
 /** Task completed: notify person who assigned (creator). */
 export function taskCompletedHtml({ taskTitle, completedByName, completedAt, taskId, appUrl }) {
   const content = `

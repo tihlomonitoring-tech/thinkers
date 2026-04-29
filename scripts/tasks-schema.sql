@@ -13,6 +13,7 @@ CREATE TABLE tasks (
   [status] NVARCHAR(50) NOT NULL DEFAULT N'not_started',
   category NVARCHAR(40) NOT NULL DEFAULT N'departmental',
   progress_legend NVARCHAR(40) NOT NULL DEFAULT N'not_started',
+  visibility_scope NVARCHAR(40) NOT NULL DEFAULT N'tenant',
   task_leader_id UNIQUEIDENTIFIER NULL REFERENCES users(id) ON DELETE NO ACTION,
   task_reviewer_id UNIQUEIDENTIFIER NULL REFERENCES users(id) ON DELETE NO ACTION,
   created_by UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE NO ACTION,
@@ -23,7 +24,8 @@ CREATE TABLE tasks (
   CONSTRAINT CK_tasks_progress CHECK (progress >= 0 AND progress <= 100),
   CONSTRAINT CK_tasks_status CHECK ([status] IN (N'not_started', N'in_progress', N'completed', N'cancelled')),
   CONSTRAINT CK_tasks_category CHECK (category IN (N'sales', N'departmental', N'thinkers_afrika')),
-  CONSTRAINT CK_tasks_progress_legend CHECK (progress_legend IN (N'not_started', N'early', N'active', N'on_hold', N'proposal', N'near_complete', N'finalised'))
+  CONSTRAINT CK_tasks_progress_legend CHECK (progress_legend IN (N'not_started', N'early', N'active', N'on_hold', N'proposal', N'near_complete', N'finalised')),
+  CONSTRAINT CK_tasks_visibility_scope CHECK (visibility_scope IN (N'tenant', N'private_assignees'))
 );
 GO
 
