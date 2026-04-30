@@ -8,7 +8,7 @@ import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
-import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, shiftClock, shiftScore } from './api';
+import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth, shiftClock, shiftScore } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
@@ -100,6 +100,7 @@ const CC_TABS = [
   { id: 'contractors_details', label: 'Contractors details', icon: 'building', section: 'Operations' },
   { id: 'contractor_expiries', label: 'Contractor expiries', icon: 'calendar', section: 'Operations' },
   { id: 'breakdowns', label: 'Reported breakdowns', icon: 'alert', section: 'Operations' },
+  { id: 'fleet_verification', label: 'Fleet verification (AI)', icon: 'sparkles', section: 'Operations' },
   { id: 'delete_fleet_drivers', label: 'Delete contractors fleets/drivers', icon: 'trash', section: 'Operations' },
 ];
 
@@ -129,6 +130,8 @@ function CCIcon({ name, className }) {
   switch (name) {
     case 'dashboard':
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z')}</svg>;
+    case 'sparkles':
+      return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3zm7 8l.9 2.1L22 14l-2.1.9L19 17l-.9-2.1L16 14l2.1-.9L19 11zM5 14l1.2 2.8L9 18l-2.8 1.2L5 22l-1.2-2.8L1 18l2.8-1.2L5 14z')}</svg>;
     case 'chart':
       return <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path('M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4v16')}</svg>;
     case 'route':
@@ -540,6 +543,7 @@ export default function CommandCentre() {
           )}
           {activeTab === 'contractor_expiries' && canSeeTab('contractor_expiries') && <TabContractorExpiries />}
           {activeTab === 'breakdowns' && canSeeTab('breakdowns') && <TabBreakdowns />}
+          {activeTab === 'fleet_verification' && canSeeTab('fleet_verification') && <TabFleetVerification />}
           {activeTab === 'delete_fleet_drivers' && canSeeTab('delete_fleet_drivers') && <TabDeleteFleetDrivers />}
 
           {/* Fallback when no tab content matched (e.g. permission race) */}
@@ -9098,6 +9102,171 @@ function TabApplicationsIntegration() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function TabFleetVerification() {
+  const { user } = useAuth();
+  const [tenantOptions, setTenantOptions] = useState([]);
+  const [tenantId, setTenantId] = useState(user?.tenant_id || '');
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState('');
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const allowed = new Set([...(user?.tenant_ids || []), user?.tenant_id].filter(Boolean));
+    tenantsApi
+      .list()
+      .then((d) => {
+        const rows = (d?.tenants || []).filter((t) => allowed.has(t.id));
+        setTenantOptions(rows);
+        if (!tenantId && rows[0]?.id) setTenantId(rows[0].id);
+      })
+      .catch(() => setTenantOptions([]));
+  }, [user?.tenant_id, user?.tenant_ids, tenantId]);
+
+  useEffect(() => {
+    if (!loading) return undefined;
+    const stages = [
+      'Uploading workbook…',
+      'Reading sheets (Trucks/Drivers)…',
+      'AI is detecting key columns…',
+      'Matching against enrolled fleet…',
+      'Building verified workbook…',
+      'Finalizing preview…',
+    ];
+    let i = 0;
+    setStatusText(stages[0]);
+    const t = setInterval(() => {
+      i = Math.min(stages.length - 1, i + 1);
+      setStatusText(stages[i]);
+    }, 700);
+    return () => clearInterval(t);
+  }, [loading]);
+
+  const onVerify = async (e) => {
+    e.preventDefault();
+    if (!file) return;
+    setLoading(true);
+    setError('');
+    setResult(null);
+    try {
+      const data = await ccApi.fleetVerification.verify(file, tenantId || undefined);
+      setResult(data);
+      setStatusText(`Done in ${data.elapsed_ms || 0} ms`);
+    } catch (err) {
+      setError(err?.message || 'Verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-surface-900">Fleet verification (AI)</h2>
+        <p className="text-sm text-surface-600 mt-1">
+          Upload the same workbook used in Contractor Import All. The system keeps your workbook intact, adds professional enrollment audit columns, and generates a verified export showing status, module, contractor, and match key.
+        </p>
+      </div>
+
+      <form onSubmit={onVerify} className="bg-white rounded-xl border border-surface-200 p-4 space-y-4">
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Tenant scope</label>
+            <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <option value="">My default tenant</option>
+              {tenantOptions.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Excel file</label>
+            <input
+              type="file"
+              accept=".xlsx"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="submit" disabled={!file || loading} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+            {loading ? 'Verifying…' : 'Verify fleet workbook'}
+          </button>
+          {loading ? (
+            <div className="flex-1 min-w-[240px]">
+              <div className="h-2 rounded-full bg-surface-100 overflow-hidden">
+                <div className="h-full w-1/2 bg-brand-500 animate-pulse" />
+              </div>
+              <p className="text-xs text-surface-600 mt-1">{statusText}</p>
+            </div>
+          ) : null}
+        </div>
+        {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      </form>
+
+      {result ? (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-surface-200 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-surface-900">Verification complete</p>
+                <p className="text-xs text-surface-600 mt-1">
+                  Trucks matched: {result.summary?.matched_trucks ?? 0} / {result.summary?.total_truck_rows ?? 0} · Drivers matched: {result.summary?.matched_drivers ?? 0} / {result.summary?.total_driver_rows ?? 0}
+                </p>
+                <p className="text-xs text-surface-500 mt-1">
+                  AI mapping: {result.ai?.used ? `enabled (${result.ai?.model || 'model'})` : 'fallback header mapping'} · Output includes "Matched row marker" so previously highlighted matches are still clearly visible.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => downloadAttachmentWithAuth(ccApi.fleetVerification.downloadUrl(result.token), result.file_name || 'fleet-verified.xlsx')}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700"
+              >
+                Download verified workbook
+              </button>
+            </div>
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border border-surface-200 p-4">
+              <p className="font-medium text-surface-900 mb-2">Preview: matched trucks</p>
+              {(result.preview?.trucks || []).length === 0 ? (
+                <p className="text-sm text-surface-500">No already-enrolled trucks detected.</p>
+              ) : (
+                <ul className="max-h-72 overflow-auto divide-y divide-surface-100">
+                  {result.preview.trucks.map((r, idx) => (
+                    <li key={`${r.row}-${idx}`} className="py-2 text-sm">
+                      Row {r.row}: <span className="font-medium">{r.registration}</span>
+                      {r.contractor ? <span className="text-surface-500"> · {r.contractor}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="bg-white rounded-xl border border-surface-200 p-4">
+              <p className="font-medium text-surface-900 mb-2">Preview: matched drivers</p>
+              {(result.preview?.drivers || []).length === 0 ? (
+                <p className="text-sm text-surface-500">No already-enrolled drivers detected.</p>
+              ) : (
+                <ul className="max-h-72 overflow-auto divide-y divide-surface-100">
+                  {result.preview.drivers.map((r, idx) => (
+                    <li key={`${r.row}-${idx}`} className="py-2 text-sm">
+                      Row {r.row}: <span className="font-medium">{r.id_number || r.license_number || 'Matched driver'}</span>
+                      {r.contractor ? <span className="text-surface-500"> · {r.contractor}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

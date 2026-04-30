@@ -543,6 +543,27 @@ export const commandCentre = {
       return request(`/command-centre/fleet-integration${q.toString() ? `?${q.toString()}` : ''}`);
     },
   },
+  fleetVerification: {
+    verify: (file, tenantId) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (tenantId) formData.append('tenant_id', tenantId);
+      return fetch(`${API}/command-centre/fleet-verification/verify`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        })
+        .catch((err) => {
+          throw wrapNetworkError(err);
+        });
+    },
+    downloadUrl: (token) => `${API}/command-centre/fleet-verification/download/${encodeURIComponent(token)}`,
+  },
   deleteFleetDrivers: {
     list: (params = {}) => {
       const q = new URLSearchParams();

@@ -28,6 +28,7 @@ import teamGoalsRoutes from './src/routes/teamGoals.js';
 import performanceEvaluationsRoutes from './src/routes/performanceEvaluations.js';
 import userCareerRoutes from './src/routes/userCareer.js';
 import caseManagementRoutes from './src/routes/caseManagement.js';
+import aiRoutes from './src/routes/ai.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -147,6 +148,7 @@ app.use('/api/team-goals', teamGoalsRoutes);
 app.use('/api/performance-evaluations', performanceEvaluationsRoutes);
 app.use('/api/user-career', userCareerRoutes);
 app.use('/api/case-management', caseManagementRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {

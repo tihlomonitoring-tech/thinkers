@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { randomUUID } from 'crypto';
 import multer from 'multer';
+import ExcelJS from 'exceljs';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
@@ -26,6 +27,7 @@ import {
 } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
 import { todayYmd, addCalendarDays, toYmdFromDbOrString } from '../lib/appTime.js';
+import { getAiModel, getOpenAiClient, isAiConfigured } from '../lib/ai.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
 const libraryUpload = multer({
@@ -40,6 +42,11 @@ const libraryUpload = multer({
       cb(null, `${randomUUID()}${ext}`);
     },
   }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+}).single('file');
+
+const fleetVerificationUpload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
 }).single('file');
 
@@ -68,7 +75,19 @@ export const CC_TAB_IDS = [
   'breakdowns',
   'delete_fleet_drivers',
   'handed_over_analysis',
+  'fleet_verification',
 ];
+
+const FLEET_VERIFICATION_CACHE_TTL_MS = 15 * 60 * 1000;
+const fleetVerificationCache = new Map();
+function pruneFleetVerificationCache() {
+  const now = Date.now();
+  for (const [k, v] of fleetVerificationCache.entries()) {
+    if (!v?.createdAt || now - v.createdAt > FLEET_VERIFICATION_CACHE_TTL_MS) {
+      fleetVerificationCache.delete(k);
+    }
+  }
+}
 
 router.use(requireAuth);
 router.use(loadUser);
@@ -228,6 +247,63 @@ function getRow(row, ...keys) {
     if (val !== undefined) return val;
   }
   return undefined;
+}
+
+function normalizeFleetKey(v) {
+  return String(v || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function rowText(v) {
+  if (v == null) return '';
+  return String(v).trim();
+}
+
+function pickFirstHeaderIndex(headersNorm, candidates) {
+  for (let i = 0; i < headersNorm.length; i++) {
+    if (candidates.includes(headersNorm[i])) return i + 1;
+  }
+  return null;
+}
+
+async function inferVerificationColumnsWithAi(sheetHeaders) {
+  if (!isAiConfigured()) return null;
+  try {
+    const client = getOpenAiClient();
+    const model = getAiModel();
+    const prompt = [
+      'You map Excel headers for contractor import verification.',
+      'Return strict JSON only: {"trucks":{"registration":"exact header or empty"},"drivers":{"idNumber":"exact header or empty","licenseNumber":"exact header or empty"}}',
+      'Use exact header names from input arrays.',
+      `Trucks headers: ${JSON.stringify(sheetHeaders.trucks || [])}`,
+      `Drivers headers: ${JSON.stringify(sheetHeaders.drivers || [])}`,
+    ].join('\n');
+    const response = await Promise.race([
+      client.responses.create({
+        model,
+        input: [{ role: 'user', content: prompt }],
+        max_output_tokens: 180,
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('AI timeout')), 2500)),
+    ]);
+    const out = String(response?.output_text || '').trim();
+    if (!out) return null;
+    const cleaned = out
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    const jsonStr = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+    const parsed = JSON.parse(jsonStr);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function rowToComplianceInspection(r, responseAttachments = []) {
@@ -889,6 +965,213 @@ router.get('/fleet-integration', async (req, res, next) => {
       driverEmail: getRow(r, 'driver_email'),
     }));
     res.json({ rows: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/fleet-verification/verify', fleetVerificationUpload, async (req, res, next) => {
+  try {
+    pruneFleetVerificationCache();
+    if (!req.file?.buffer) return res.status(400).json({ error: 'Upload an Excel file (.xlsx)' });
+    const tenantId = String(req.body?.tenant_id || '').trim() || null;
+    const startedAt = Date.now();
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+
+    const trucksSheet = workbook.getWorksheet('Trucks') || workbook.getWorksheet('trucks') || workbook.worksheets[0] || null;
+    const driversSheet = workbook.getWorksheet('Drivers') || workbook.getWorksheet('drivers') || workbook.worksheets[1] || null;
+    if (!trucksSheet && !driversSheet) {
+      return res.status(400).json({ error: 'Workbook must contain Trucks and/or Drivers sheets' });
+    }
+
+    const truckHeadersRaw = trucksSheet
+      ? Array.from({ length: trucksSheet.columnCount }, (_, i) => rowText(trucksSheet.getRow(1).getCell(i + 1).value))
+      : [];
+    const driverHeadersRaw = driversSheet
+      ? Array.from({ length: driversSheet.columnCount }, (_, i) => rowText(driversSheet.getRow(1).getCell(i + 1).value))
+      : [];
+    const truckHeadersNorm = truckHeadersRaw.map((h) => normalizeFleetKey(h));
+    const driverHeadersNorm = driverHeadersRaw.map((h) => normalizeFleetKey(h));
+
+    const aiColumns = await inferVerificationColumnsWithAi({ trucks: truckHeadersRaw, drivers: driverHeadersRaw });
+    const aiTruckHeader = rowText(aiColumns?.trucks?.registration);
+    const aiDriverIdHeader = rowText(aiColumns?.drivers?.idNumber);
+    const aiDriverLicenseHeader = rowText(aiColumns?.drivers?.licenseNumber);
+    const aiTruckIdx = aiTruckHeader ? truckHeadersRaw.findIndex((h) => normalizeFleetKey(h) === normalizeFleetKey(aiTruckHeader)) + 1 : 0;
+    const aiDriverIdIdx = aiDriverIdHeader ? driverHeadersRaw.findIndex((h) => normalizeFleetKey(h) === normalizeFleetKey(aiDriverIdHeader)) + 1 : 0;
+    const aiDriverLicenseIdx = aiDriverLicenseHeader
+      ? driverHeadersRaw.findIndex((h) => normalizeFleetKey(h) === normalizeFleetKey(aiDriverLicenseHeader)) + 1
+      : 0;
+    const truckRegCol = (aiTruckIdx > 0 ? aiTruckIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, ['truckregno', 'registration', 'truckregistrationnumber']);
+    const driverIdCol = (aiDriverIdIdx > 0 ? aiDriverIdIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, ['idnumber', 'id']);
+    const driverLicenseCol =
+      (aiDriverLicenseIdx > 0 ? aiDriverLicenseIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, ['driverslicensenumber', 'licensenumber', 'licence']);
+
+    const tenantFilter = tenantId ? 'WHERE tr.tenant_id = @tenantId' : '';
+    const truckRows = await query(
+      `SELECT tr.registration, tr.fleet_no, tr.main_contractor, tr.sub_contractor, c.name AS contractor_name
+       FROM contractor_trucks tr
+       LEFT JOIN contractors c ON c.id = tr.contractor_id
+       ${tenantFilter}`,
+      tenantId ? { tenantId } : {}
+    );
+    const driverTenantFilter = tenantId ? 'WHERE d.tenant_id = @tenantId' : '';
+    const driverRows = await query(
+      `SELECT d.id_number, d.license_number, d.full_name, d.surname, c.name AS contractor_name
+       FROM contractor_drivers d
+       LEFT JOIN contractors c ON c.id = d.contractor_id
+       ${driverTenantFilter}`,
+      tenantId ? { tenantId } : {}
+    );
+    const truckByReg = new Map();
+    for (const r of truckRows.recordset || []) {
+      const key = normalizeFleetKey(getRow(r, 'registration'));
+      if (key && !truckByReg.has(key)) truckByReg.set(key, r);
+    }
+    const driverById = new Map();
+    const driverByLicense = new Map();
+    for (const r of driverRows.recordset || []) {
+      const idKey = normalizeFleetKey(getRow(r, 'id_number'));
+      const licKey = normalizeFleetKey(getRow(r, 'license_number'));
+      if (idKey && !driverById.has(idKey)) driverById.set(idKey, r);
+      if (licKey && !driverByLicense.has(licKey)) driverByLicense.set(licKey, r);
+    }
+
+    const EXTRA_HEADERS = [
+      'Enrollment status',
+      'Enrolled in module',
+      'Enrolled under contractor',
+      'Enrollment match key',
+      'Matched row marker',
+    ];
+    const styleExtraHeaders = (sheet, fromCol) => {
+      for (let i = 0; i < EXTRA_HEADERS.length; i++) {
+        const cell = sheet.getRow(1).getCell(fromCol + i);
+        cell.value = EXTRA_HEADERS[i];
+        cell.font = { bold: true, color: { argb: 'FF1F2937' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF3F8' } };
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        sheet.getColumn(fromCol + i).width = [20, 22, 28, 26, 20][i];
+      }
+    };
+    const preview = { trucks: [], drivers: [] };
+    let matchedTrucks = 0;
+    let matchedDrivers = 0;
+
+    if (trucksSheet) {
+      const baseCol = trucksSheet.columnCount + 1;
+      styleExtraHeaders(trucksSheet, baseCol);
+      for (let r = 2; r <= trucksSheet.rowCount; r++) {
+        const row = trucksSheet.getRow(r);
+        const regRaw = truckRegCol ? rowText(row.getCell(truckRegCol).value) : '';
+        const regNorm = normalizeFleetKey(regRaw);
+        const hit = regNorm ? truckByReg.get(regNorm) : null;
+        const matched = !!hit;
+        if (matched) matchedTrucks++;
+        row.getCell(baseCol).value = matched ? 'Already enrolled' : 'Not enrolled';
+        row.getCell(baseCol + 1).value = 'Contractor fleet';
+        row.getCell(baseCol + 2).value = matched ? rowText(getRow(hit, 'contractor_name') || getRow(hit, 'main_contractor') || getRow(hit, 'sub_contractor')) : '';
+        row.getCell(baseCol + 3).value = matched ? `Truck registration: ${regRaw}` : '';
+        row.getCell(baseCol + 4).value = matched ? 'Yes' : 'No';
+        if (preview.trucks.length < 30 && matched) {
+          preview.trucks.push({
+            row: r,
+            registration: regRaw,
+            contractor: rowText(getRow(hit, 'contractor_name') || getRow(hit, 'main_contractor') || getRow(hit, 'sub_contractor')),
+            reason: 'Already enrolled',
+          });
+        }
+      }
+    }
+
+    if (driversSheet) {
+      const baseCol = driversSheet.columnCount + 1;
+      styleExtraHeaders(driversSheet, baseCol);
+      for (let r = 2; r <= driversSheet.rowCount; r++) {
+        const row = driversSheet.getRow(r);
+        const idRaw = driverIdCol ? rowText(row.getCell(driverIdCol).value) : '';
+        const licRaw = driverLicenseCol ? rowText(row.getCell(driverLicenseCol).value) : '';
+        const idNorm = normalizeFleetKey(idRaw);
+        const licNorm = normalizeFleetKey(licRaw);
+        const hitById = idNorm ? driverById.get(idNorm) : null;
+        const hitByLic = licNorm ? driverByLicense.get(licNorm) : null;
+        const hit = hitById || hitByLic || null;
+        const matched = !!hit;
+        if (matched) matchedDrivers++;
+        row.getCell(baseCol).value = matched ? 'Already enrolled' : 'Not enrolled';
+        row.getCell(baseCol + 1).value = 'Contractor drivers';
+        row.getCell(baseCol + 2).value = matched ? rowText(getRow(hit, 'contractor_name')) : '';
+        row.getCell(baseCol + 3).value = matched
+          ? hitById
+            ? `Driver ID number: ${idRaw}`
+            : `Driver license number: ${licRaw}`
+          : '';
+        row.getCell(baseCol + 4).value = matched ? 'Yes' : 'No';
+        if (preview.drivers.length < 30 && matched) {
+          preview.drivers.push({
+            row: r,
+            id_number: idRaw || null,
+            license_number: licRaw || null,
+            contractor: rowText(getRow(hit, 'contractor_name')),
+            reason: 'Driver already enrolled',
+          });
+        }
+      }
+    }
+
+    const outBuffer = await workbook.xlsx.writeBuffer();
+    const token = randomUUID();
+    const inName = rowText(req.file.originalname) || 'fleet-import.xlsx';
+    const safeName = inName.toLowerCase().endsWith('.xlsx') ? inName : `${inName}.xlsx`;
+    fleetVerificationCache.set(token, {
+      createdAt: Date.now(),
+      filename: safeName.replace(/\.xlsx$/i, '-verified.xlsx'),
+      buffer: Buffer.from(outBuffer),
+    });
+
+    res.json({
+      ok: true,
+      token,
+      download_url: `/api/command-centre/fleet-verification/download/${token}`,
+      file_name: safeName.replace(/\.xlsx$/i, '-verified.xlsx'),
+      summary: {
+        total_truck_rows: trucksSheet ? Math.max(0, trucksSheet.rowCount - 1) : 0,
+        total_driver_rows: driversSheet ? Math.max(0, driversSheet.rowCount - 1) : 0,
+        matched_trucks: matchedTrucks,
+        matched_drivers: matchedDrivers,
+      },
+      preview,
+      ai: {
+        used: !!aiColumns,
+        model: aiColumns ? getAiModel() : null,
+        mapped_headers: {
+          truck_registration: aiTruckHeader || null,
+          driver_id_number: aiDriverIdHeader || null,
+          driver_license_number: aiDriverLicenseHeader || null,
+        },
+      },
+      elapsed_ms: Date.now() - startedAt,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/fleet-verification/download/:token', async (req, res, next) => {
+  try {
+    pruneFleetVerificationCache();
+    const token = String(req.params.token || '');
+    const item = fleetVerificationCache.get(token);
+    if (!item) return res.status(404).json({ error: 'Verification file expired or not found' });
+    if (Date.now() - item.createdAt > FLEET_VERIFICATION_CACHE_TTL_MS) {
+      fleetVerificationCache.delete(token);
+      return res.status(410).json({ error: 'Verification file expired. Please run verification again.' });
+    }
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${item.filename}"`);
+    res.send(item.buffer);
   } catch (err) {
     next(err);
   }
