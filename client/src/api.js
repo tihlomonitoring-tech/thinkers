@@ -6,7 +6,14 @@ const API = getApiBase();
 /** Open an attachment URL in a new tab using fetch with credentials so auth is sent. */
 export async function openAttachmentWithAuth(url) {
   const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(res.status === 401 ? 'Please sign in again' : 'Could not load attachment');
+  if (!res.ok) {
+    let msg = res.status === 401 ? 'Please sign in again' : 'Could not open file';
+    try {
+      const data = await res.json();
+      if (data?.error) msg = data.error;
+    } catch (_) {}
+    throw new Error(msg);
+  }
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);
   const w = window.open(objectUrl, '_blank', 'noopener');
@@ -35,16 +42,22 @@ export async function downloadAttachmentWithAuth(url, filename) {
   URL.revokeObjectURL(objectUrl);
 }
 
+/** Shown in the UI when fetch fails (offline, wrong API URL, CORS, etc.). */
+const USER_FACING_NETWORK_ERROR =
+  'Unable to connect to the server. Please check your connection and try again.';
+
 function wrapNetworkError(err) {
   if (err?.message === 'Failed to fetch') {
     if (import.meta.env.DEV) {
-      return new Error(
-        'Cannot reach the API (local dev). (1) Start the backend in the project root: npm run server or npm start. (2) If the API uses another port, set VITE_API_BASE in client/.env and restart Vite. (3) This text only appears while running Vite (npm run dev)—it is not shown by the production build. If you see it on https://your live domain, you are not running the deployed bundle; use the production build on Azure and fix server env (FRONTEND_ORIGIN), not localhost.'
+      console.warn(
+        '[Wise App dev] API unreachable. Start backend: npm run server (or npm start). If the API uses another port, set VITE_API_BASE in client/.env and restart Vite.'
+      );
+    } else {
+      console.warn(
+        '[Wise App] API unreachable. Rebuild with VITE_API_BASE; on the server set FRONTEND_ORIGIN for CORS. See docs/azure-hosting.md.'
       );
     }
-    return new Error(
-      'Cannot reach the API. If the site is hosted separately from the API, rebuild the client with VITE_API_BASE set to your API base URL (e.g. https://your-app.azurewebsites.net/api). On the server, set FRONTEND_ORIGIN (and optionally FRONTEND_ORIGINS) to this site’s exact URL(s) so CORS allows the browser. See docs/azure-hosting.md.'
-    );
+    return new Error(USER_FACING_NETWORK_ERROR);
   }
   return err;
 }
@@ -1001,9 +1014,17 @@ export const profileManagement = {
         .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
     },
     pending: () => pm('/leave/pending'),
+    applicationsAll: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', String(params.status));
+      const qs = q.toString();
+      return pm(`/leave/applications/all${qs ? `?${qs}` : ''}`);
+    },
     review: (id, body) => pm(`/leave/applications/${id}/review`, { method: 'PATCH', body: JSON.stringify(body) }),
     types: () => pm('/leave/types'),
     createType: (body) => pm('/leave/types', { method: 'POST', body: JSON.stringify(body) }),
+    seedSaTypes: () => pm('/leave/seed-sa-types', { method: 'POST' }),
+    balancesTeam: (year) => pm(`/leave/balances/team${year != null ? `?year=${year}` : ''}`),
     history: () => pm('/leave/applications/history'),
   },
   documents: {
@@ -1082,6 +1103,52 @@ export const profileManagement = {
   tenantUsers: () => pm('/users/tenant'),
   /** Tenant users who can access Command Centre (page or tab grant) — for Profile work schedule peer overlay. */
   commandCentreSchedulePeers: () => pm('/users/command-centre-peers'),
+};
+
+const cl = (path, options = {}) => request(`/company-library${path}`, options);
+
+/** Company library: AI summaries, secured docs with system PIN + email-only file delivery, audit. */
+export const companyLibrary = {
+  access: () => cl('/me/access'),
+  adminPolicyGet: (tenantId) => cl(`/admin/policy?tenant_id=${encodeURIComponent(tenantId)}`),
+  adminPolicyPut: (body) => cl('/admin/policy', { method: 'PUT', body: JSON.stringify(body) }),
+  requestDocumentDeleteCode: (documentId) =>
+    cl('/admin/request-document-delete-code', {
+      method: 'POST',
+      body: JSON.stringify({ document_id: documentId }),
+    }),
+  folders: () => cl('/folders'),
+  createFolder: (body) => cl('/folders', { method: 'POST', body: JSON.stringify(body) }),
+  documents: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.q) q.set('q', params.q);
+    if (params.folder_id) q.set('folder_id', params.folder_id);
+    const qs = q.toString();
+    return cl(`/documents${qs ? `?${qs}` : ''}`);
+  },
+  /** POST { intent, folder_id? } — AI / keyword match across library summaries */
+  intentSearch: (body) =>
+    cl('/documents/intent-search', { method: 'POST', body: JSON.stringify(body || {}) }),
+  document: (id) => cl(`/documents/${encodeURIComponent(id)}`),
+  deleteDocument: (id, body) =>
+    cl(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify(body || {}) }),
+  /** Secured documents: emails system PIN to uploader (or super admin’s own inbox). */
+  requestAccess: (id, body) =>
+    cl(`/documents/${encodeURIComponent(id)}/request-access`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  verifyCode: (id, pin) =>
+    cl(`/documents/${encodeURIComponent(id)}/verify-code`, { method: 'POST', body: JSON.stringify({ pin }) }),
+  /** Email file as attachment to the signed-in user. Secured docs require session_token from verifyCode. */
+  emailAttachment: (id, body = {}) =>
+    cl(`/documents/${encodeURIComponent(id)}/email-attachment`, { method: 'POST', body: JSON.stringify(body) }),
+  upload: (formData) =>
+    fetch(`${API}/company-library/documents`, { method: 'POST', body: formData, credentials: 'include' }).then(
+      async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      }
+    ),
+  auditRecent: (limit = 100) => cl(`/audit/recent?limit=${limit}`),
 };
 
 const sc = (path, options = {}) => request(`/shift-clock${path}`, options);

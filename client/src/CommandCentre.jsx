@@ -395,10 +395,13 @@ export default function CommandCentre() {
       <div className="max-w-xl mx-auto p-6 sm:p-8">
         <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-100 shadow-lg p-8 text-center sm:text-left">
           <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Shift compliance</p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-900 tracking-tight">Clock in required</h2>
-          <p className="mt-3 text-sm text-slate-600 leading-relaxed">
-            {shiftClockGate.message || 'Clock in for your scheduled shift on Profile → Work schedule before using Command Centre.'}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center justify-center sm:justify-start gap-2">
+            <h2 className="text-xl font-semibold text-slate-900 tracking-tight">Clock in required</h2>
+            <InfoHint
+              title="Why Command Centre is locked"
+              text={shiftClockGate.message || 'Clock in for your scheduled shift on Profile → Work schedule before using Command Centre.'}
+            />
+          </div>
           <Link
             to="/profile"
             className="mt-6 inline-flex items-center justify-center px-5 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 shadow-md"
@@ -427,8 +430,13 @@ export default function CommandCentre() {
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 shrink-0 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-surface-900">Command Centre</h2>
-            <p className="text-xs text-surface-500 mt-0.5">Controllers & operations</p>
+            <div className="flex items-center gap-1">
+              <h2 className="text-sm font-semibold text-surface-900">Command Centre</h2>
+              <InfoHint
+                title="Command Centre"
+                text="Controllers and operations: breakdowns, fleet applications, shift reports, inspections, and related tools."
+              />
+            </div>
             <Link to="/contractor" className="mt-2 inline-block text-xs text-brand-600 hover:text-brand-700">← Contractor page</Link>
           </div>
           <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
@@ -1462,7 +1470,12 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
     return (
       <div className="h-72 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300/80 dark:border-slate-600 bg-slate-50/80 dark:bg-slate-900/40 text-center px-4">
         <p className="text-sm font-medium text-slate-600 dark:text-slate-300">No delivery timeline data</p>
-        <p className="text-xs text-slate-500 dark:text-slate-500 mt-1 max-w-sm">Try a longer period above, or check that approved shift reports include delivery totals for this range.</p>
+        <div className="flex justify-center mt-2">
+          <InfoHint
+            title="No timeline data"
+            text="Try a longer period above, or check that approved shift reports include delivery totals for this range."
+          />
+        </div>
       </div>
     );
   }
@@ -1551,9 +1564,13 @@ function DeliveryTimelineChart({ timeline, loading, isDark }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 pr-28 sm:pr-32">
-        <p className="text-xs text-slate-600 dark:text-slate-400 min-w-0 flex-1 leading-relaxed">
-          Toggle routes to compare deliveries. Hover a bar for a quick preview, or click to pin figures (Esc or Close to dismiss).
-        </p>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-xs font-medium text-slate-600 dark:text-slate-400">Chart</span>
+          <InfoHint
+            title="Completed deliveries timeline"
+            text="Toggle routes to compare deliveries. Hover a bar for a quick preview, or click to pin figures (Esc or Close to dismiss)."
+          />
+        </div>
         <button
           type="button"
           onClick={exportPng}
@@ -8796,8 +8813,20 @@ function TabApplications() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowExportExcelModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="p-4 border-b border-surface-200">
-              <h3 className="font-semibold text-surface-900">Export to Excel</h3>
-              <p className="text-sm text-surface-600 mt-1">Choose which columns to include. Headings will be shaded red. {selectedIds.size > 0 ? `${applicationsToExport.length} selected application(s) will be exported.` : 'All applications in the current filter will be exported.'}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold text-surface-900">Export to Excel</h3>
+                <InfoHint
+                  title="Fleet applications Excel export"
+                  text={
+                    <>
+                      Choose which columns to include; headings will be shaded red.{' '}
+                      {selectedIds.size > 0
+                        ? `${applicationsToExport.length} selected application(s) will be exported.`
+                        : 'All applications in the current filter will be exported.'}
+                    </>
+                  }
+                />
+              </div>
             </div>
             <div className="p-4 overflow-y-auto flex-1">
               <div className="flex gap-2 mb-3">
@@ -8826,9 +8855,14 @@ function TabApplications() {
       {showDeclineModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowDeclineModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-semibold text-surface-900 mb-2">Decline addition</h3>
-            <p className="text-sm text-surface-600 mb-3">Provide a reason so the contractor knows why this truck or driver was not approved. They will see this reason on their Fleet or Drivers page.</p>
-            <textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="e.g. Incomplete documentation; licence expired; registration not recognised…" rows={4} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-4 resize-y" required />
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <h3 className="font-semibold text-surface-900">Decline addition</h3>
+              <InfoHint
+                title="Decline reason"
+                text="Provide a reason so the contractor knows why this truck or driver was not approved. They will see this reason on their Fleet or Drivers page."
+              />
+            </div>
+            <textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="e.g. Incomplete documentation; licence expired; registration not recognised…" rows={4} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-4 resize-y mt-1" required />
             <div className="flex gap-3 justify-end">
               <button type="button" onClick={() => !acting && setShowDeclineModal(false)} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
               <button type="button" disabled={acting || !declineReason.trim()} onClick={handleDeclineSubmit} className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">Submit decline</button>
@@ -8841,8 +8875,13 @@ function TabApplications() {
       {showApproveModal && approveModalId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowApproveModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-semibold text-surface-900 mb-2">Approve application</h3>
-            <p className="text-sm text-surface-600 mb-4">This will grant facility access. The contractor will receive an email. You can optionally notify selected rectors.</p>
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              <h3 className="font-semibold text-surface-900">Approve application</h3>
+              <InfoHint
+                title="What approval does"
+                text="This grants facility access. The contractor will receive an email. You can optionally notify selected rectors below."
+              />
+            </div>
             <label className="flex items-center gap-2 mb-3 cursor-pointer">
               <input type="checkbox" checked={notifyRectors} onChange={(e) => setNotifyRectors(e.target.checked)} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
               <span className="text-sm font-medium text-surface-800">Notify rectors</span>
@@ -8877,8 +8916,18 @@ function TabApplications() {
       {showBulkApproveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowBulkApproveModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-semibold text-surface-900 mb-2">Bulk approve</h3>
-            <p className="text-sm text-surface-600 mb-4">Approve {[...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length} application(s)? This will grant facility access. One email will be sent to contractors listing the approved items. You can optionally notify selected rectors.</p>
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              <h3 className="font-semibold text-surface-900">Bulk approve</h3>
+              <InfoHint
+                title="Bulk approval"
+                text={
+                  <>
+                    Approves {[...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length} application(s), grants facility access,
+                    sends one email to contractors listing approved items, and optionally notifies selected rectors.
+                  </>
+                }
+              />
+            </div>
             <label className="flex items-center gap-2 mb-3 cursor-pointer">
               <input type="checkbox" checked={notifyRectors} onChange={(e) => setNotifyRectors(e.target.checked)} className="rounded border-surface-300 text-brand-600 focus:ring-brand-500" />
               <span className="text-sm font-medium text-surface-800">Notify rectors</span>
@@ -9010,7 +9059,13 @@ function TabApplicationsIntegration() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-surface-600">View fleets with linked drivers. Choose which columns to include and download a professional Excel sheet with red header styling.</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-surface-900">Fleet with linked drivers</h2>
+        <InfoHint
+          title="Fleet integration export"
+          text="View fleets with linked drivers. Choose which columns to include and download a professional Excel sheet with red header styling."
+        />
+      </div>
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex justify-between items-center">
           {error}
@@ -9036,8 +9091,13 @@ function TabApplicationsIntegration() {
       </div>
       <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
         <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-          <h3 className="font-semibold text-surface-900">Fleet with linked drivers</h3>
-          <p className="text-sm text-surface-500 mt-0.5">All items are available for export. Use the button above to choose how the download should look (which columns to include). Headings will have a light red shade.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-semibold text-surface-900">Data table</h3>
+            <InfoHint
+              title="Exporting this table"
+              text="All items are available for export. Use Choose columns & download Excel above to pick columns. Headings will have a light red shade."
+            />
+          </div>
         </div>
         <div className="overflow-x-auto">
           {loading ? (
@@ -9077,8 +9137,13 @@ function TabApplicationsIntegration() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowExportModal(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="p-4 border-b border-surface-200">
-              <h3 className="font-semibold text-surface-900">Download Excel – choose columns</h3>
-              <p className="text-sm text-surface-600 mt-1">Select which columns to include. Headings will be in a light red shade; the sheet will look professional. All items are listed above—you decide how the download should look.</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold text-surface-900">Download Excel – choose columns</h3>
+                <InfoHint
+                  title="Excel export options"
+                  text="Select which columns to include. Headings will be in a light red shade. All items from the table are exportable—you choose which columns appear in the file."
+                />
+              </div>
             </div>
             <div className="p-4 overflow-y-auto flex-1">
               <div className="flex gap-2 mb-3">
@@ -9166,11 +9231,12 @@ function TabFleetVerification() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-xl font-semibold text-surface-900">Fleet verification (AI)</h2>
-        <p className="text-sm text-surface-600 mt-1">
-          Upload the same workbook used in Contractor Import All. The system keeps your workbook intact, adds professional enrollment audit columns, and generates a verified export showing status, module, contractor, and match key.
-        </p>
+        <InfoHint
+          title="Fleet verification"
+          text="Upload the same workbook used in Contractor Import All. The system keeps your workbook intact, adds professional enrollment audit columns, and generates a verified export showing status, module, contractor, and match key."
+        />
       </div>
 
       <form onSubmit={onVerify} className="bg-white rounded-xl border border-surface-200 p-4 space-y-4">
@@ -9219,9 +9285,16 @@ function TabFleetVerification() {
                 <p className="text-xs text-surface-600 mt-1">
                   Trucks matched: {result.summary?.matched_trucks ?? 0} / {result.summary?.total_truck_rows ?? 0} · Drivers matched: {result.summary?.matched_drivers ?? 0} / {result.summary?.total_driver_rows ?? 0}
                 </p>
-                <p className="text-xs text-surface-500 mt-1">
-                  AI mapping: {result.ai?.used ? `enabled (${result.ai?.model || 'model'})` : 'fallback header mapping'} · Output includes "Matched row marker" so previously highlighted matches are still clearly visible.
-                </p>
+                <div className="mt-1">
+                  <InfoHint
+                    title="Verification details"
+                    text={
+                      <>
+                        AI mapping: {result.ai?.used ? `enabled (${result.ai?.model || 'model'})` : 'fallback header mapping'}. Output includes &quot;Matched row marker&quot; so previously highlighted matches stay visible.
+                      </>
+                    }
+                  />
+                </div>
               </div>
               <button
                 type="button"

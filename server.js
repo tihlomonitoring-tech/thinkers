@@ -29,6 +29,7 @@ import performanceEvaluationsRoutes from './src/routes/performanceEvaluations.js
 import userCareerRoutes from './src/routes/userCareer.js';
 import caseManagementRoutes from './src/routes/caseManagement.js';
 import aiRoutes from './src/routes/ai.js';
+import companyLibraryRoutes, { runCompanyLibraryExpiryReminders } from './src/routes/companyLibrary.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -149,6 +150,7 @@ app.use('/api/performance-evaluations', performanceEvaluationsRoutes);
 app.use('/api/user-career', userCareerRoutes);
 app.use('/api/case-management', caseManagementRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/company-library', companyLibraryRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {
@@ -201,9 +203,14 @@ setInterval(() => {
   runShiftClockAlerts().catch(() => {});
 }, 5 * 60 * 1000);
 
+setInterval(() => {
+  runCompanyLibraryExpiryReminders().catch(() => {});
+}, 60 * 60 * 1000);
+
 const server = app.listen(PORT, () => {
   console.log(`Thinkers API running at http://localhost:${PORT}`);
   runShiftClockAlerts().catch(() => {});
+  runCompanyLibraryExpiryReminders().catch(() => {});
   if (!isDbEnvConfigured()) {
     console.warn(
       'Database: no SQLSERVER_* / AZURE_SQL_* / connection string in environment — API routes that use the DB will fail. ' +

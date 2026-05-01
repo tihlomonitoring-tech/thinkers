@@ -5,54 +5,50 @@ import { getFirstAllowedPath } from './lib/pageAccess.js';
 import { getCurrentPosition } from './lib/geolocation.js';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
+const BG_IMAGE =
+  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=2400&q=85';
+
+const REMEMBER_KEY = 'thinkers-login-remember';
+const EMAIL_KEY = 'thinkers-login-email';
+
+function DecorativeIcon({ children, label }) {
+  return (
+    <div
+      className="flex h-11 w-11 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white/90 shadow-[0_0_0_1px_rgba(255,255,255,0.06)_inset] backdrop-blur-sm transition hover:bg-white/20 hover:border-white/40"
+      title={label}
+      aria-hidden
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [geoStatus, setGeoStatus] = useState('pending'); // pending | ok | error
+  const [geoStatus, setGeoStatus] = useState('pending');
   const [locationError, setLocationError] = useState('');
   const [signInLocation, setSignInLocation] = useState(null);
   const { user, login } = useAuth();
   const navigate = useNavigate();
-  const heroImage = `data:image/svg+xml;utf8,${encodeURIComponent(
-    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 1200'>
-      <defs>
-        <linearGradient id='sky' x1='0' y1='0' x2='0' y2='1'>
-          <stop offset='0%' stop-color='#6d7f91'/>
-          <stop offset='100%' stop-color='#2f3a46'/>
-        </linearGradient>
-        <linearGradient id='pit1' x1='0' y1='0' x2='1' y2='1'>
-          <stop offset='0%' stop-color='#7a5b3d'/>
-          <stop offset='100%' stop-color='#3d2b1f'/>
-        </linearGradient>
-        <linearGradient id='pit2' x1='0' y1='0' x2='1' y2='1'>
-          <stop offset='0%' stop-color='#5f4732'/>
-          <stop offset='100%' stop-color='#2a1d14'/>
-        </linearGradient>
-      </defs>
-      <rect width='1600' height='1200' fill='url(#sky)'/>
-      <path d='M0 500 L420 360 L900 500 L1600 390 L1600 1200 L0 1200 Z' fill='url(#pit1)'/>
-      <path d='M0 640 L420 520 L900 650 L1600 560 L1600 1200 L0 1200 Z' fill='url(#pit2)' opacity='0.92'/>
-      <path d='M0 760 L500 670 L1000 780 L1600 710 L1600 1200 L0 1200 Z' fill='#1e1610' opacity='0.88'/>
-      <rect x='980' y='520' width='220' height='90' rx='8' fill='#d97b22'/>
-      <rect x='1160' y='540' width='140' height='70' rx='6' fill='#a95b18'/>
-      <circle cx='1035' cy='628' r='26' fill='#1b1b1b'/>
-      <circle cx='1170' cy='628' r='26' fill='#1b1b1b'/>
-      <circle cx='1270' cy='628' r='26' fill='#1b1b1b'/>
-      <rect x='640' y='600' width='200' height='76' rx='8' fill='#e08a2e'/>
-      <circle cx='690' cy='685' r='22' fill='#181818'/>
-      <circle cx='810' cy='685' r='22' fill='#181818'/>
-      <rect x='720' y='560' width='110' height='20' fill='#5f5f5f'/>
-      <rect x='250' y='690' width='470' height='16' fill='#8b6f50' opacity='0.95'/>
-      <rect x='300' y='705' width='70' height='8' fill='#6a543d'/>
-      <rect x='420' y='705' width='70' height='8' fill='#6a543d'/>
-      <rect x='540' y='705' width='70' height='8' fill='#6a543d'/>
-      <rect x='660' y='705' width='70' height='8' fill='#6a543d'/>
-    </svg>`
-  )}`;
 
   if (user) return <Navigate to={getFirstAllowedPath(user)} replace />;
+
+  useEffect(() => {
+    try {
+      const r = localStorage.getItem(REMEMBER_KEY) === '1';
+      const saved = localStorage.getItem(EMAIL_KEY);
+      if (r && saved) {
+        setRememberMe(true);
+        setEmail(saved);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +84,17 @@ export default function Login() {
     }
     setLoading(true);
     try {
+      try {
+        if (rememberMe && email.trim()) {
+          localStorage.setItem(REMEMBER_KEY, '1');
+          localStorage.setItem(EMAIL_KEY, email.trim());
+        } else {
+          localStorage.removeItem(REMEMBER_KEY);
+          localStorage.removeItem(EMAIL_KEY);
+        }
+      } catch {
+        /* ignore */
+      }
       const u = await login(email.trim(), password, signInLocation);
       if (u) navigate(getFirstAllowedPath(u), { replace: true });
       else navigate('/login', { replace: true });
@@ -99,163 +106,207 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0f0f0f] flex flex-col">
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 min-h-0">
-        <div className="relative hidden lg:flex overflow-hidden">
-          <img
-            src={heroImage}
-            alt="Coal mine operation"
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-          <div className="absolute inset-0 bg-gradient-to-br from-black/58 via-[#450a0a]/45 to-black/62" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_22%_18%,rgba(248,113,113,0.20),transparent_42%),radial-gradient(circle_at_78%_80%,rgba(185,28,28,0.18),transparent_46%)]" />
-          <div className="absolute inset-0 bg-[linear-gradient(110deg,rgba(255,255,255,0.05)_0%,transparent_22%,transparent_78%,rgba(255,255,255,0.05)_100%)]" />
-          <div className="relative z-10 p-12 xl:p-16 flex flex-col justify-between w-full">
-            <div />
-            <div className="max-w-xl">
-              <h1 className="text-4xl xl:text-5xl font-black tracking-tight text-white leading-tight">
-                Operations workspace
+    <div
+      className="min-h-screen flex flex-col text-white relative overflow-x-hidden"
+      style={{ fontFamily: "'Outfit', system-ui, sans-serif" }}
+    >
+      {/* Full-bleed cinematic background */}
+      <div className="fixed inset-0 z-0" aria-hidden>
+        <img src={BG_IMAGE} alt="" className="h-full w-full object-cover scale-105" />
+        <div className="absolute inset-0 bg-gradient-to-r from-black/88 via-black/55 to-slate-950/75" />
+        <div className="absolute inset-0 bg-gradient-to-t from-orange-950/50 via-transparent to-amber-500/15" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_120%_80%_at_0%_20%,rgba(251,146,60,0.35),transparent_55%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_100%_100%,rgba(15,23,42,0.9),transparent_50%)]" />
+        <div
+          className="absolute inset-0 opacity-[0.07] mix-blend-overlay pointer-events-none"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+          }}
+        />
+      </div>
+
+      <div className="relative z-10 flex-1 flex flex-col min-h-screen">
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] min-h-0">
+          {/* Left — branding */}
+          <section className="relative hidden lg:flex flex-col justify-between px-12 xl:px-20 py-14 xl:py-20 min-h-[50vh] lg:min-h-screen">
+            <div className="pt-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-orange-200/90 mb-4">Thinkers</p>
+              <h1
+                className="text-[clamp(3rem,5.5vw,4.75rem)] leading-[0.98] font-normal uppercase tracking-tight text-white drop-shadow-[0_4px_32px_rgba(0,0,0,0.45)]"
+                style={{ fontFamily: "'Anton', sans-serif" }}
+              >
+                Operations
+                <br />
+                <span className="text-orange-400">workspace</span>
               </h1>
-              <p className="text-[#fca5a5]/90 mt-5 text-base leading-relaxed max-w-lg">
-                Run high-impact mining operations from a single platform designed for fleet oversight,
-                contractor coordination, and safety-first decision making.
+              <p className="mt-5 text-lg font-medium text-white/95 tracking-wide">Welcome back</p>
+              <p className="mt-6 max-w-md text-base leading-relaxed text-white/80 font-light">
+                Fleet, contractors, command centre, and compliance — one place for high-stakes operations. Sign in to continue.
               </p>
-              <div className="mt-8 grid grid-cols-3 gap-3">
-                <div className="rounded-xl border border-[#fecaca]/20 bg-black/35 px-3 py-3 text-center backdrop-blur-sm">
-                  <p className="text-lg font-bold text-white">24/7</p>
-                  <p className="text-[11px] text-[#fecaca]/85">Monitoring</p>
-                </div>
-                <div className="rounded-xl border border-[#fecaca]/20 bg-black/35 px-3 py-3 text-center backdrop-blur-sm">
-                  <p className="text-lg font-bold text-white">Live</p>
-                  <p className="text-[11px] text-[#fecaca]/85">Fleet Control</p>
-                </div>
-                <div className="rounded-xl border border-[#fecaca]/20 bg-black/35 px-3 py-3 text-center backdrop-blur-sm">
-                  <p className="text-lg font-bold text-white">Safe</p>
-                  <p className="text-[11px] text-[#fecaca]/85">Operations</p>
-                </div>
+              <div className="mt-10 flex flex-wrap gap-3">
+                <DecorativeIcon label="Fleet">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.25 2.25 0 00-1.92-1.092A48.64 48.64 0 0112 12c-2.928 0-5.647.108-8.048.292a2.25 2.25 0 00-1.846 1.092 17.915 17.915 0 00-3.213 9.193c-.04.62.508 1.124 1.129 1.124H9.75m-6-4.5h6" />
+                  </svg>
+                </DecorativeIcon>
+                <DecorativeIcon label="Safety">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                  </svg>
+                </DecorativeIcon>
+                <DecorativeIcon label="Reports">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v7.125c0 .621-.504 1.125-1.125 1.125h-2.25A1.125 1.125 0 013 20.25v-7.125zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                  </svg>
+                </DecorativeIcon>
+                <DecorativeIcon label="Network">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
+                  </svg>
+                </DecorativeIcon>
               </div>
             </div>
-            <p className="text-[11px] text-[#fca5a5]/75">Mining intelligence, communication, and compliance in one dashboard.</p>
-          </div>
-        </div>
+            <p className="text-xs text-white/50 max-w-sm leading-relaxed">
+              Mining intelligence, communication, and compliance — engineered for teams who cannot afford downtime.
+            </p>
+          </section>
 
-        <div className="relative flex items-center justify-center p-6 md:p-10 bg-[#171717] overflow-hidden">
-          <img
-            src="https://images.unsplash.com/photo-1519003722824-194d4455a60c?auto=format&fit=crop&w=1800&q=80"
-            alt=""
-            aria-hidden="true"
-            className="absolute inset-0 h-full w-full object-cover opacity-22 scale-105"
-          />
-          <img
-            src="https://images.unsplash.com/photo-1581093804475-577d72e5d2a1?auto=format&fit=crop&w=1600&q=80"
-            alt=""
-            aria-hidden="true"
-            className="absolute -right-12 -bottom-12 h-[55%] w-[58%] object-cover opacity-30 mix-blend-screen"
-          />
-          <img
-            src="https://images.unsplash.com/photo-1489515217757-5fd1be406fef?auto=format&fit=crop&w=1200&q=80"
-            alt=""
-            aria-hidden="true"
-            className="absolute -left-12 top-10 h-[42%] w-[36%] object-cover opacity-20 mix-blend-lighten"
-          />
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-black/62 via-[#171717]/88 to-black/70" />
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_20%,rgba(185,28,28,0.23),transparent_45%),radial-gradient(circle_at_85%_80%,rgba(127,29,29,0.22),transparent_45%)]" />
-          <div className="w-full max-w-[420px] relative z-10">
-            <div className="lg:hidden text-center mb-6">
-              <h1 className="text-2xl font-bold text-white">Operations workspace</h1>
-            </div>
+          {/* Right — form (reference: Sign in, white fields, orange CTA) */}
+          <section className="flex flex-col justify-center px-5 sm:px-10 py-12 lg:py-16 lg:pr-12 xl:pr-20">
+            <div className="w-full max-w-[420px] mx-auto lg:ml-auto lg:mr-0">
+              <div className="lg:hidden mb-8 text-center">
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-orange-200/90 mb-2">Thinkers</p>
+                <h1
+                  className="text-[2.65rem] leading-[0.95] font-normal uppercase text-white"
+                  style={{ fontFamily: "'Anton', sans-serif" }}
+                >
+                  Operations
+                  <br />
+                  <span className="text-orange-400">workspace</span>
+                </h1>
+                <p className="mt-3 text-base font-medium text-white/90">Welcome back</p>
+              </div>
 
-            <div className="bg-[#262626]/90 rounded-2xl shadow-2xl shadow-black/45 border border-[#404040]/90 backdrop-blur-md overflow-hidden">
-              <div className="p-6">
-                <div className="mb-5">
-                  <h2 className="text-xl font-semibold text-white">Sign in</h2>
-                  <p className="text-[#a3a3a3] text-xs mt-0.5">Enter your credentials to access your operations workspace</p>
-                </div>
+              <div className="rounded-2xl border border-white/15 bg-white/[0.08] p-6 sm:p-8 shadow-[0_25px_80px_-12px_rgba(0,0,0,0.65)] backdrop-blur-xl">
+                <h2
+                  className="text-3xl sm:text-4xl font-normal uppercase tracking-tight text-white mb-1"
+                  style={{ fontFamily: "'Anton', sans-serif" }}
+                >
+                  Sign in
+                </h2>
+                <p className="text-sm text-white/65 mb-6 font-light">
+                  Enter your credentials to access your <span className="text-white/90 font-medium">Operations workspace</span>.
+                </p>
 
-                <form onSubmit={handleSubmit} className="space-y-4">
-                  {locationError && (
-                    <div className="text-xs text-amber-200 bg-amber-950/50 border border-amber-800/80 rounded-lg px-3 py-2" role="alert">
-                      {locationError}
-                    </div>
-                  )}
+                {locationError && (
+                  <div className="mb-4 text-xs text-amber-100 bg-amber-500/15 border border-amber-400/30 rounded-xl px-3 py-2.5" role="alert">
+                    {locationError}
+                  </div>
+                )}
+                {geoStatus === 'pending' && !locationError && (
+                  <div className="mb-4 text-xs text-white/70 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 flex items-center gap-2">
+                    <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-orange-400 border-t-transparent animate-spin shrink-0" aria-hidden />
+                    Confirming your location for secure sign-in…
+                  </div>
+                )}
+
+                <form onSubmit={handleSubmit} className="space-y-5">
                   {error && (
-                    <div className="text-xs text-red-300 bg-red-950/50 border border-red-800 rounded-lg px-3 py-2" role="alert">
+                    <div className="text-xs text-red-100 bg-red-600/25 border border-red-400/40 rounded-xl px-3 py-2.5" role="alert">
                       {error}
                     </div>
                   )}
                   <div>
-                    <label htmlFor="email" className="block text-xs font-medium text-[#e5e5e5] mb-1">Email</label>
+                    <label htmlFor="email" className="block text-sm font-medium text-white/90 mb-1.5">
+                      Email address
+                    </label>
                     <input
                       id="email"
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
+                      className="w-full rounded-xl border-0 bg-white px-4 py-3.5 text-slate-900 text-sm placeholder:text-slate-400 shadow-lg shadow-black/20 focus:ring-2 focus:ring-orange-400 focus:outline-none transition"
                       placeholder="you@company.com"
                       required
                       autoComplete="email"
                     />
                   </div>
                   <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label htmlFor="password" className="block text-xs font-medium text-[#e5e5e5]">Password</label>
-                      <Link
-                        to="/forgot-password"
-                        className="text-xs font-medium text-[#f87171] hover:text-[#fca5a5] focus:outline-none focus:underline"
-                      >
-                        Forgot?
-                      </Link>
-                    </div>
+                    <label htmlFor="password" className="block text-sm font-medium text-white/90 mb-1.5">
+                      Password
+                    </label>
                     <input
                       id="password"
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full rounded-lg border border-[#525252] bg-[#171717] px-3 py-2.5 text-sm text-white placeholder:text-[#737373] focus:ring-2 focus:ring-[#b91c1c]/60 focus:border-[#b91c1c] outline-none transition"
+                      className="w-full rounded-xl border-0 bg-white px-4 py-3.5 text-slate-900 text-sm placeholder:text-slate-400 shadow-lg shadow-black/20 focus:ring-2 focus:ring-orange-400 focus:outline-none transition"
                       placeholder="••••••••"
                       required
                       autoComplete="current-password"
                     />
                   </div>
+
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-white/85">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(e) => setRememberMe(e.target.checked)}
+                        className="h-4 w-4 rounded border-white/40 bg-white/10 text-orange-500 focus:ring-orange-400 focus:ring-offset-0"
+                      />
+                      Remember me
+                    </label>
+                    <Link
+                      to="/forgot-password"
+                      className="text-sm font-medium text-white underline decoration-white/40 underline-offset-4 hover:text-orange-200 hover:decoration-orange-200/80"
+                    >
+                      Lost your password?
+                    </Link>
+                  </div>
+
                   <button
                     type="submit"
                     disabled={loading || geoStatus !== 'ok'}
-                    className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-[#b91c1c] hover:bg-[#991b1b] disabled:opacity-50 transition-colors focus:ring-2 focus:ring-[#b91c1c] focus:ring-offset-2 focus:ring-offset-[#262626]"
+                    className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide text-white bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-45 disabled:cursor-not-allowed shadow-[0_12px_40px_-8px_rgba(234,88,12,0.55)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
                   >
-                    {loading ? 'Signing in…' : geoStatus === 'pending' ? 'Waiting for location…' : 'Sign in'}
+                    {loading ? 'Signing in…' : geoStatus === 'pending' ? 'Waiting for location…' : 'Sign in now'}
                   </button>
 
-                  <div>
-                    <Link
-                      to="/report-breakdown"
-                      className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg text-xs font-medium text-[#e5e5e5] border border-[#525252] hover:bg-[#404040] hover:border-[#737373] transition-colors"
-                    >
-                      Don&apos;t have access? Report a breakdown
-                    </Link>
-                  </div>
+                  <Link
+                    to="/report-breakdown"
+                    className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-xs font-semibold uppercase tracking-wider text-white/90 border border-white/25 bg-white/5 hover:bg-white/10 transition"
+                  >
+                    No access? Report a breakdown
+                  </Link>
                 </form>
 
-                <p className="mt-4 text-center text-xs text-[#a3a3a3]">
+                <p className="mt-6 text-center text-sm text-white/70">
                   No account?{' '}
-                  <Link to="/signup" className="font-semibold text-[#f87171] hover:text-[#fca5a5] focus:outline-none focus:underline">
-                    Sign up
+                  <Link to="/signup" className="font-semibold text-orange-300 hover:text-orange-200 underline decoration-orange-400/50 underline-offset-2">
+                    Request access
                   </Link>
+                </p>
+
+                <p className="mt-5 text-[11px] leading-relaxed text-center text-white/45">
+                  By clicking &quot;Sign in now&quot; you confirm use under your organisation’s policies. Location is recorded once per sign-in for security.
+                </p>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-center backdrop-blur-md">
+                <p className="text-[11px] text-white/70 leading-relaxed">
+                  Support — Vincent Mogashoa:{' '}
+                  <a href="tel:+27720934212" className="text-orange-200 font-medium hover:text-white underline underline-offset-2">
+                    072 093 4212
+                  </a>
                 </p>
               </div>
             </div>
-
-            <div className="mt-4 rounded-xl border border-[#525252]/80 bg-black/45 px-4 py-3 text-center backdrop-blur-sm">
-              <p className="text-[11px] text-[#d4d4d4]">
-                For support, please contact the application developer: Vincent Mogashoa on:{' '}
-                <a href="tel:+27720934212" className="text-[#fca5a5] hover:text-[#fecaca] underline">
-                  0720934212
-                </a>
-              </p>
-            </div>
-          </div>
+          </section>
         </div>
+
+        <AppAttributionFooter className="relative z-10 text-white/40 border-t border-white/10 bg-black/35 backdrop-blur-md" />
       </div>
-      <AppAttributionFooter className="text-[#737373] border-t border-[#262626] bg-[#0f0f0f]" />
     </div>
   );
 }

@@ -24,6 +24,7 @@ import FuelCustomerOrders from './FuelCustomerOrders';
 import TeamLeaderAdmin from './TeamLeaderAdmin';
 import PerformanceEvaluations from './PerformanceEvaluations';
 import Auditor from './Auditor';
+import CompanyLibrary from './CompanyLibrary';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
@@ -102,6 +103,7 @@ function AppRoutes() {
         <Route path="performance-evaluations" element={<PageGate pathKey="/performance-evaluations"><PerformanceEvaluations /></PageGate>} />
         <Route path="auditor" element={<PageGate pathKey="/auditor"><Auditor /></PageGate>} />
         <Route path="management" element={<PageGate pathKey="/management"><Management /></PageGate>} />
+        <Route path="company-library" element={<PageGate pathKey="/company-library"><CompanyLibrary /></PageGate>} />
         <Route path="recruitment" element={<PageGate pathKey="/recruitment"><Recruitment /></PageGate>} />
         <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />
         <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />

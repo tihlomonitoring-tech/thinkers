@@ -22,6 +22,7 @@ import { jsPDF } from 'jspdf';
 import {
   addCalendarDays,
   calendarMonthStartYmd,
+  calendarMonthEndYmd,
   daysInCalendarMonth,
   isWeekendYmd,
   startPadForCalendarMonth,
@@ -75,6 +76,27 @@ function formatDate(d) {
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
 }
 
+/** Expand leave spans into per-day map for a calendar month (approved + pending). */
+function leaveSpansToDaysMap(spans, monthStartYmd, monthEndYmd) {
+  const m = {};
+  for (const s of spans || []) {
+    const a = toYmdFromDbOrString(s.start_date);
+    const b = toYmdFromDbOrString(s.end_date);
+    if (!a || !b || b < monthStartYmd || a > monthEndYmd) continue;
+    let cur = a > monthStartYmd ? a : monthStartYmd;
+    const end = b < monthEndYmd ? b : monthEndYmd;
+    while (cur <= end) {
+      if (!m[cur]) m[cur] = [];
+      const list = m[cur];
+      if (!list.some((x) => x.leave_type === s.leave_type && x.status === s.status)) {
+        list.push({ leave_type: s.leave_type, status: s.status });
+      }
+      cur = addCalendarDays(cur, 1);
+    }
+  }
+  return m;
+}
+
 function isoDate(d) {
   if (!d) return '';
   return toYmdFromDbOrString(d);
@@ -92,6 +114,7 @@ export default function Profile() {
   const [calendarMonth, setCalendarMonth] = useState(() => wallMonthYearInAppZone().monthIndex0);
   const [calendarYear, setCalendarYear] = useState(() => wallMonthYearInAppZone().year);
   const [scheduleEntries, setScheduleEntries] = useState([]);
+  const [myLeaveSpans, setMyLeaveSpans] = useState([]);
   const [leaveBalance, setLeaveBalance] = useState([]);
   const [leaveApplications, setLeaveApplications] = useState([]);
   const [documents, setDocuments] = useState([]);
@@ -204,6 +227,12 @@ export default function Profile() {
     return map;
   }, [scheduleEntries]);
 
+  const myLeaveByDate = useMemo(() => {
+    const monthStart = calendarMonthStartYmd(calendarYear, calendarMonth);
+    const monthEnd = calendarMonthEndYmd(calendarYear, calendarMonth);
+    return leaveSpansToDaysMap(myLeaveSpans, monthStart, monthEnd);
+  }, [myLeaveSpans, calendarYear, calendarMonth]);
+
   const swapBadgesByDate = useMemo(() => {
     const m = {};
     (swapRequests || []).forEach((r) => {
@@ -260,6 +289,30 @@ export default function Profile() {
     return map;
   }, [scheduleByDate, colleagueSchedules]);
 
+  const colleagueLeaveByDate = useMemo(() => {
+    const monthStart = calendarMonthStartYmd(calendarYear, calendarMonth);
+    const monthEnd = calendarMonthEndYmd(calendarYear, calendarMonth);
+    const map = {};
+    const filterSet = new Set(colleagueFilterIds.map((id) => String(id)));
+    for (const c of colleagueSchedules) {
+      if (!filterSet.has(String(c.user_id))) continue;
+      const name = (c.full_name && String(c.full_name).trim()) || c.email || 'Colleague';
+      const byDay = leaveSpansToDaysMap(c.leave_spans, monthStart, monthEnd);
+      for (const [d, spans] of Object.entries(byDay)) {
+        if (!map[d]) map[d] = [];
+        for (const s of spans) {
+          map[d].push({
+            user_id: c.user_id,
+            name,
+            leave_type: s.leave_type,
+            status: s.status,
+          });
+        }
+      }
+    }
+    return map;
+  }, [colleagueSchedules, colleagueFilterIds, calendarYear, calendarMonth]);
+
   /** Lines to paint in each calendar cell (same typography as your Day/Night row). */
   const peerLinesByDate = useMemo(() => {
     const out = {};
@@ -312,8 +365,14 @@ export default function Profile() {
 
   const loadMySchedule = useCallback(() => {
     pm.mySchedule({ month: calendarMonth, year: calendarYear })
-      .then((d) => setScheduleEntries(d.entries || []))
-      .catch(() => setScheduleEntries([]));
+      .then((d) => {
+        setScheduleEntries(d.entries || []);
+        setMyLeaveSpans(d.leave_spans || []);
+      })
+      .catch(() => {
+        setScheduleEntries([]);
+        setMyLeaveSpans([]);
+      });
   }, [calendarMonth, calendarYear, activeTenantId]);
 
   const refreshSwapRequests = useCallback(() => {
@@ -335,8 +394,9 @@ export default function Profile() {
 
   useEffect(() => {
     if (activeTab === 'leave') {
+      const y = wallMonthYearInAppZone().year;
       pm.leave.types().then((d) => setLeaveTypes(d.types || [])).catch(() => setLeaveTypes([]));
-      pm.leave.balance().then((d) => setLeaveBalance(d.balance || [])).catch(() => setLeaveBalance([]));
+      pm.leave.balance(y).then((d) => setLeaveBalance(d.balance || [])).catch(() => setLeaveBalance([]));
       pm.leave.applications().then((d) => setLeaveApplications(d.applications || [])).catch(() => setLeaveApplications([]));
     }
   }, [activeTab, activeTenantId]);
@@ -686,6 +746,8 @@ export default function Profile() {
                       const tasksThisDay = tasksByDueDate[dateStr] || [];
                       const taskDots = tasksThisDay.slice(0, 5);
                       const taskDotOverflow = tasksThisDay.length - taskDots.length;
+                      const myLeaveToday = myLeaveByDate[dateStr];
+                      const peerLeaveToday = colleagueLeaveByDate[dateStr] || [];
                       return (
                         <button
                           key={day}
@@ -725,6 +787,29 @@ export default function Profile() {
                           {peerOverflow > 0 && (
                             <span className="text-[9px] text-surface-500 leading-tight">+{peerOverflow} more</span>
                           )}
+                          {myLeaveToday && myLeaveToday.length > 0 && (
+                            <span className="text-[10px] leading-tight w-full truncate text-emerald-800 font-medium" title={myLeaveToday.map((x) => `${x.leave_type} (${x.status})`).join(', ')}>
+                              Leave
+                              {myLeaveToday.length === 1 && myLeaveToday[0]?.leave_type
+                                ? `: ${myLeaveToday[0].leave_type}`
+                                : myLeaveToday.length > 1
+                                  ? ` (${myLeaveToday.length})`
+                                  : ''}
+                              {myLeaveToday.some((x) => x.status === 'pending') ? ' · pending' : ''}
+                            </span>
+                          )}
+                          {peerLeaveToday.slice(0, 3).map((pl) => (
+                            <span
+                              key={`${pl.user_id}-${pl.leave_type}-${pl.status}`}
+                              className="text-[10px] leading-tight w-full truncate text-teal-700"
+                              title={`${pl.name} · ${pl.leave_type}${pl.status === 'pending' ? ' (pending)' : ''}`}
+                            >
+                              {shortFirstName(pl.name)} · leave
+                            </span>
+                          ))}
+                          {peerLeaveToday.length > 3 && (
+                            <span className="text-[9px] text-surface-500 leading-tight">+{peerLeaveToday.length - 3} on leave</span>
+                          )}
                           {taskDots.length > 0 && (
                             <div className="mt-auto pt-0.5 w-full flex flex-wrap justify-center items-center gap-0.5 min-h-[0.5rem] border-t border-surface-100/80">
                               {taskDots.map((tk) => (
@@ -756,11 +841,13 @@ export default function Profile() {
                           : 'Teammate lines are hidden — use Show team picker to compare shifts on the calendar.',
                         'Amber dot: swap awaiting colleague. Violet dot: awaiting management.',
                         'Bottom row on a day: muted dots = your tasks due that day (colour = progress legend set on the task).',
+                        'Green “Leave” lines: approved or pending leave from your applications; teal lines show selected teammates on leave.',
                       ]}
                     />
                     <span className="hidden sm:inline text-surface-300">|</span>
                     <span><span className="inline-block w-3 h-3 rounded bg-amber-200 align-middle mr-1" /> Day</span>
                     <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 align-middle mr-1" /> Night</span>
+                    <span><span className="inline-block w-2 h-2 rounded-sm bg-emerald-200 align-middle mr-1" /> Leave</span>
                     <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle mr-1" /> Swap peer</span>
                     <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 align-middle mr-1" /> Swap mgmt</span>
                   </div>
@@ -796,6 +883,7 @@ export default function Profile() {
                       pipPlans={pipPlans}
                       swapRequests={swapRequests}
                       currentUserId={user?.id}
+                      leaveForDay={selectedScheduleDate ? myLeaveByDate[selectedScheduleDate] || [] : []}
                       colleagueDay={
                         !ccTeamPanelCollapsed && selectedScheduleDate && colleagueFilterIds.length > 0
                           ? colleagueCalendarByDate[selectedScheduleDate]
@@ -820,6 +908,7 @@ export default function Profile() {
                     pipPlans={pipPlans}
                     swapRequests={swapRequests}
                     currentUserId={user?.id}
+                    leaveForDay={[]}
                     colleagueDay={null}
                     onOpenSwapModal={(shift) => setSwapModal({ shift })}
                     onSwapHandled={() => {
@@ -1189,6 +1278,8 @@ function ScheduleSidePanel({
   pipPlans,
   swapRequests = [],
   currentUserId,
+  /** Leave segments for this day: { leave_type, status }[] */
+  leaveForDay = [],
   /** { same, other, any } from colleague overlay for this day */
   colleagueDay = null,
   onOpenSwapModal,
@@ -1303,6 +1394,20 @@ function ScheduleSidePanel({
             <p className="text-surface-500">No shift this day</p>
           )}
         </div>
+
+        {leaveForDay && leaveForDay.length > 0 && (
+          <div className="rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2">
+            <p className="text-xs font-medium text-emerald-900 uppercase mb-1">Leave</p>
+            <ul className="space-y-1 text-emerald-900">
+              {leaveForDay.map((lv, i) => (
+                <li key={`${lv.leave_type}-${lv.status}-${i}`} className="text-sm">
+                  <span className="font-medium">{lv.leave_type}</span>
+                  <span className="text-emerald-800"> · {lv.status === 'pending' ? 'Pending approval' : 'Approved'}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {colleagueDay && colleagueDay.any?.length > 0 && (
           <div>
@@ -1644,6 +1749,13 @@ function ShiftSwapRequestModal({
   );
 }
 
+function leaveSectorLabel(s) {
+  if (s === 'public') return 'Public sector';
+  if (s === 'private') return 'Private sector';
+  if (s === 'both') return 'Public & private';
+  return '';
+}
+
 function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }) {
   const [showForm, setShowForm] = useState(false);
   const [leaveType, setLeaveType] = useState('');
@@ -1687,11 +1799,7 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
     }
   };
 
-  const year = new Date().getFullYear();
-  const balanceByType = balance.reduce((acc, b) => {
-    acc[b.leave_type] = { total: b.total_days, used: b.used_days, remaining: (b.total_days || 0) - (b.used_days || 0) };
-    return acc;
-  }, {});
+  const year = wallMonthYearInAppZone().year;
 
   return (
     <div className="space-y-6">
@@ -1708,10 +1816,20 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
           {balance.length === 0 ? (
             <p className="mt-1 text-surface-500 text-sm">No balance on record</p>
           ) : (
-            <ul className="mt-1 space-y-1 text-sm">
+            <ul className="mt-1 space-y-2 text-sm">
               {balance.map((b) => (
-                <li key={`${b.leave_type}-${b.year}`}>
+                <li key={`${b.leave_type}-${b.year ?? year}`}>
                   <span className="font-medium">{b.leave_type}</span>: {(b.total_days || 0) - (b.used_days || 0)} days remaining
+                  <span className="block text-xs text-surface-500 mt-0.5">
+                    Recorded {b.total_days ?? 0} allocated · {b.used_days ?? 0} used
+                    {(b.type_default_days_per_year != null || b.type_sector) && (
+                      <>
+                        {' '}
+                        · Typical: {b.type_default_days_per_year != null ? `${b.type_default_days_per_year} days/yr` : '—'}
+                        {b.type_sector ? ` (${leaveSectorLabel(b.type_sector)})` : ''}
+                      </>
+                    )}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -1768,6 +1886,34 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
           )}
         </div>
       </div>
+      {leaveTypes.length > 0 && (
+        <div className="bg-white rounded-xl border border-surface-200 p-4 overflow-x-auto">
+          <p className="text-sm font-medium text-surface-700 mb-1">Leave types &amp; typical day weights</p>
+          <p className="text-xs text-surface-500 mb-3">
+            Configured for your organisation (database). Management can add a South African starter set or custom types.
+          </p>
+          <table className="w-full text-sm min-w-[520px]">
+            <thead className="text-left text-surface-500 border-b border-surface-200">
+              <tr>
+                <th className="py-2 pr-3 font-medium">Type</th>
+                <th className="py-2 pr-3 font-medium">Typical days / year</th>
+                <th className="py-2 pr-3 font-medium">Sector</th>
+                <th className="py-2 font-medium">Note</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-surface-100">
+              {leaveTypes.map((t) => (
+                <tr key={t.id} className="align-top">
+                  <td className="py-2 pr-3 font-medium text-surface-900">{t.name}</td>
+                  <td className="py-2 pr-3">{t.default_days_per_year != null ? t.default_days_per_year : '—'}</td>
+                  <td className="py-2 pr-3">{leaveSectorLabel(t.sector) || '—'}</td>
+                  <td className="py-2 text-surface-600 text-xs max-w-md">{t.description || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="bg-white rounded-xl border border-surface-200 p-4">
         <div className="flex justify-between items-center mb-2">
           <p className="text-sm font-medium text-surface-700">Leave application history</p>

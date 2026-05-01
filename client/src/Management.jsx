@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { profileManagement as pm, shiftClock } from './api';
+import { useAuth } from './AuthContext';
+import { profileManagement as pm, shiftClock, companyLibrary as lib, tenants as tenantsApi } from './api';
 import TeamLeaderAuditSection from './components/TeamLeaderAuditSection.jsx';
 import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
@@ -33,6 +34,7 @@ const SECTIONS = [
   { id: 'auditor_results', label: 'Auditor results' },
   { id: 'pip', label: 'Performance improvement' },
   { id: 'growth', label: 'Employee growth' },
+  { id: 'company_library_policy', label: 'Company library (hours)' },
 ];
 
 function formatDate(d) {
@@ -201,11 +203,15 @@ function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
 }
 
 export default function Management() {
+  const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('management');
   const [activeSection, setActiveSection] = useState('schedules');
   const [schedules, setSchedules] = useState([]);
   const [pendingLeave, setPendingLeave] = useState([]);
   const [leaveTypes, setLeaveTypes] = useState([]);
+  const [leaveHistory, setLeaveHistory] = useState([]);
+  const [leaveTeamBalances, setLeaveTeamBalances] = useState([]);
+  const [leaveBalanceYear, setLeaveBalanceYear] = useState(() => wallMonthYearInAppZone().year);
   const [scheduleEvents, setScheduleEvents] = useState([]);
   const [warningsHistory, setWarningsHistory] = useState([]);
   const [rewardsHistory, setRewardsHistory] = useState([]);
@@ -236,6 +242,11 @@ export default function Management() {
     if (activeSection === 'leave') {
       pm.leave.pending().then((d) => setPendingLeave(d.applications || [])).catch(() => setPendingLeave([]));
       pm.leave.types().then((d) => setLeaveTypes(d.types || [])).catch(() => setLeaveTypes([]));
+      pm.leave.applicationsAll().then((d) => setLeaveHistory(d.applications || [])).catch(() => setLeaveHistory([]));
+      pm.leave
+        .balancesTeam(leaveBalanceYear)
+        .then((d) => setLeaveTeamBalances(d.balances || []))
+        .catch(() => setLeaveTeamBalances([]));
     }
     if (activeSection === 'schedule-events') {
       const now = new Date();
@@ -245,7 +256,7 @@ export default function Management() {
       pm.warnings.listAll().then((d) => setWarningsHistory(d.warnings || [])).catch(() => setWarningsHistory([]));
       pm.rewards.listAll().then((d) => setRewardsHistory(d.rewards || [])).catch(() => setRewardsHistory([]));
     }
-  }, [activeSection]);
+  }, [activeSection, leaveBalanceYear]);
 
   useEffect(() => {
     if (activeSection === 'documents') pm.documents.library().then((d) => setLibraryDocs(d.documents || [])).catch(() => setLibraryDocs([]));
@@ -290,15 +301,20 @@ export default function Management() {
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-surface-900">Management</h2>
-            <p className="text-xs text-surface-500 mt-0.5">HR & people management</p>
+            <div className="flex items-center gap-1">
+              <h2 className="text-sm font-semibold text-surface-900">Management</h2>
+              <InfoHint
+                title="Management overview"
+                text="HR and people management: schedules, leave, documents, evaluations, growth tools, and related admin."
+              />
+            </div>
           </div>
           <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
           </button>
         </div>
         <ul className="flex-1 overflow-y-auto py-2 min-h-0 w-72">
-          {SECTIONS.map((sec) => (
+          {SECTIONS.filter((sec) => sec.id !== 'company_library_policy' || user?.role === 'super_admin').map((sec) => (
             <li key={sec.id}>
               <button
                 type="button"
@@ -350,12 +366,12 @@ export default function Management() {
 
           {activeSection === 'shift_activity' && (
             <div className="space-y-6">
-              <div>
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl font-semibold text-surface-900 tracking-tight">Shift activity</h1>
-                <p className="text-sm text-surface-600 mt-1 max-w-3xl">
-                  Monitor clock-ins, breaks, and overtime across the company. Alerts email staff and management when a break or shift exceeds policy
-                  (12 h on duty, break window).
-                </p>
+                <InfoHint
+                  title="Shift activity"
+                  text="Monitor clock-ins, breaks, and overtime across the company. Alerts email staff and management when a break or shift exceeds policy (12 h on duty, break window)."
+                />
               </div>
               <div className="bg-white rounded-xl border border-surface-200 overflow-hidden shadow-sm">
                 <div className="px-4 py-3 border-b border-surface-100 bg-surface-50 flex justify-between items-center">
@@ -435,9 +451,15 @@ export default function Management() {
             <LeaveSection
               pending={pendingLeave}
               leaveTypes={leaveTypes}
+              history={leaveHistory}
+              teamBalances={leaveTeamBalances}
+              balanceYear={leaveBalanceYear}
+              onBalanceYearChange={setLeaveBalanceYear}
               onRefresh={() => {
                 pm.leave.pending().then((d) => setPendingLeave(d.applications || []));
                 pm.leave.types().then((d) => setLeaveTypes(d.types || []));
+                pm.leave.applicationsAll().then((d) => setLeaveHistory(d.applications || []));
+                pm.leave.balancesTeam(leaveBalanceYear).then((d) => setLeaveTeamBalances(d.balances || []));
               }}
               onError={setError}
             />
@@ -445,8 +467,10 @@ export default function Management() {
 
           {activeSection === 'documents' && (
             <div className="space-y-6">
-              <h1 className="text-xl font-semibold text-surface-900">Documents library</h1>
-              <p className="text-sm text-surface-600">View documents across all employee profiles.</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-semibold text-surface-900">Documents library</h1>
+                <InfoHint title="Documents library" text="View documents uploaded across all employee profiles in your organisation." />
+              </div>
               {libraryDocs.length === 0 ? (
                 <p className="text-surface-500 text-sm">No documents in library.</p>
               ) : (
@@ -530,19 +554,276 @@ export default function Management() {
 
           {activeSection === 'growth' && (
             <div className="space-y-6">
-              <h1 className="text-xl font-semibold text-surface-900">Employee growth</h1>
-              <p className="text-sm text-surface-600">Structure career growth — goals, development paths, and inspiration.</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-semibold text-surface-900">Employee growth</h1>
+                <InfoHint
+                  title="Employee growth"
+                  text="Structure career growth — goals, development paths, and inspiration. Use Configure growth structure to define career levels, development plans, and resources for employees."
+                />
+              </div>
               <div className="bg-white rounded-xl border border-surface-200 p-6">
                 <p className="text-sm text-surface-700 mb-2">Configure growth structure</p>
-                <p className="text-xs text-surface-500">Define career levels, development plans, and resources for employees.</p>
                 <button type="button" className="mt-3 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
                   Edit growth structure
                 </button>
               </div>
             </div>
           )}
+
+          {activeSection === 'company_library_policy' && user?.role === 'super_admin' && (
+            <CompanyLibraryPolicySection user={user} onError={setError} />
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const WEEKDAY_LABELS = [
+  { iso: 1, label: 'Mon' },
+  { iso: 2, label: 'Tue' },
+  { iso: 3, label: 'Wed' },
+  { iso: 4, label: 'Thu' },
+  { iso: 5, label: 'Fri' },
+  { iso: 6, label: 'Sat' },
+  { iso: 7, label: 'Sun' },
+];
+
+function minutesToHHmm(m) {
+  const n = Math.max(0, Math.min(1439, Number(m) || 0));
+  const h = Math.floor(n / 60);
+  const min = n % 60;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+function hhmmToMinutes(s) {
+  const [h, m] = String(s || '0:0').split(':').map((x) => parseInt(x, 10));
+  const hh = Number.isFinite(h) ? h : 0;
+  const mm = Number.isFinite(m) ? m : 0;
+  return Math.max(0, Math.min(1439, hh * 60 + mm));
+}
+
+function CompanyLibraryPolicySection({ user, onError }) {
+  const [tenants, setTenants] = useState([]);
+  const [tenantId, setTenantId] = useState(() => user?.tenant_id || '');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [restricted, setRestricted] = useState(false);
+  const [timezone, setTimezone] = useState('Africa/Johannesburg');
+  const [weekdays, setWeekdays] = useState(() => new Set([1, 2, 3, 4, 5]));
+  const [startTime, setStartTime] = useState('08:00');
+  const [endTime, setEndTime] = useState('17:00');
+
+  useEffect(() => {
+    if (user?.tenant_id) setTenantId((t) => t || user.tenant_id);
+  }, [user?.tenant_id]);
+
+  useEffect(() => {
+    if (user?.role !== 'super_admin') return;
+    tenantsApi
+      .list()
+      .then((d) => setTenants(d.tenants || []))
+      .catch(() => setTenants([]));
+  }, [user?.role]);
+
+  const loadPolicy = useCallback(async () => {
+    if (!tenantId) return;
+    setLoading(true);
+    onError('');
+    try {
+      const data = await lib.adminPolicyGet(tenantId);
+      const p = data.policy;
+      setRestricted(!!p?.access_restricted);
+      setTimezone(p?.access_timezone || 'Africa/Johannesburg');
+      if (p?.access_weekdays) {
+        const set = new Set(
+          p.access_weekdays
+            .split(',')
+            .map((x) => parseInt(String(x).trim(), 10))
+            .filter((n) => n >= 1 && n <= 7)
+        );
+        setWeekdays(set.size ? set : new Set([1, 2, 3, 4, 5]));
+      } else {
+        setWeekdays(new Set([1, 2, 3, 4, 5]));
+      }
+      const sm = p?.access_start_minutes != null ? Number(p.access_start_minutes) : 8 * 60;
+      const em = p?.access_end_minutes != null ? Number(p.access_end_minutes) : 17 * 60;
+      setStartTime(minutesToHHmm(sm));
+      setEndTime(minutesToHHmm(em));
+    } catch (e) {
+      onError(e?.message || 'Failed to load library policy');
+    } finally {
+      setLoading(false);
+    }
+  }, [tenantId, onError]);
+
+  useEffect(() => {
+    if (tenantId) loadPolicy();
+  }, [tenantId, loadPolicy]);
+
+  const toggleWeekday = (iso) => {
+    setWeekdays((prev) => {
+      const n = new Set(prev);
+      if (n.has(iso)) n.delete(iso);
+      else n.add(iso);
+      return n;
+    });
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!tenantId) {
+      onError('Select an organization');
+      return;
+    }
+    if (restricted && weekdays.size === 0) {
+      onError('Pick at least one weekday when access is restricted.');
+      return;
+    }
+    const sm = hhmmToMinutes(startTime);
+    const em = hhmmToMinutes(endTime);
+    if (restricted && em <= sm) {
+      onError('End time must be after start time (same calendar day).');
+      return;
+    }
+    setSaving(true);
+    onError('');
+    try {
+      await lib.adminPolicyPut({
+        tenant_id: tenantId,
+        access_restricted: restricted,
+        access_timezone: timezone.trim() || 'Africa/Johannesburg',
+        access_weekdays: Array.from(weekdays)
+          .sort((a, b) => a - b)
+          .join(','),
+        access_start_minutes: sm,
+        access_end_minutes: em,
+      });
+      await loadPolicy();
+    } catch (err) {
+      onError(err?.message || 'Failed to save policy');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Company library — access hours</h1>
+        <InfoHint
+          title="Company library access hours"
+          text="When restrictions are on, users with the Company library page can only browse, search, upload, and email file copies during the days and times you set (in the timezone below). Super admins are not limited by this window."
+        />
+      </div>
+
+      <form onSubmit={handleSave} className="bg-white rounded-xl border border-surface-200 p-6 space-y-5">
+        {tenants.length > 0 && (
+          <div>
+            <label className="block text-sm font-medium text-surface-800 mb-1">Organization</label>
+            <select
+              value={tenantId}
+              onChange={(e) => setTenantId(e.target.value)}
+              className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            >
+              <option value="">Select organization…</option>
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name || t.id}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {tenants.length === 0 && user?.tenant_id && (
+          <p className="text-sm text-surface-600">Policy applies to your organization ({String(user.tenant_id).slice(0, 8)}…).</p>
+        )}
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={restricted}
+            onChange={(e) => setRestricted(e.target.checked)}
+            className="rounded border-surface-300"
+          />
+          <span className="text-sm font-medium text-surface-800">Restrict library use to specific days and times</span>
+        </label>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-surface-800 mb-1">IANA timezone</label>
+            <input
+              type="text"
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              placeholder="e.g. Africa/Johannesburg"
+              className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm font-mono"
+            />
+            <p className="text-xs text-surface-500 mt-1">Used to evaluate “current time” for the access window.</p>
+          </div>
+
+          <div>
+            <span className="block text-sm font-medium text-surface-800 mb-2">Allowed weekdays</span>
+            <div className="flex flex-wrap gap-2">
+              {WEEKDAY_LABELS.map(({ iso, label }) => (
+                <button
+                  key={iso}
+                  type="button"
+                  onClick={() => toggleWeekday(iso)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                    weekdays.has(iso)
+                      ? 'bg-brand-600 text-white border-brand-600'
+                      : 'bg-surface-50 text-surface-600 border-surface-200 hover:bg-surface-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-4">
+            <div>
+              <label className="block text-sm font-medium text-surface-800 mb-1">Opens at</label>
+              <input
+                type="time"
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-800 mb-1">Closes at</label>
+              <input
+                type="time"
+                value={endTime}
+                onChange={(e) => setEndTime(e.target.value)}
+                className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-2">
+          <button
+            type="submit"
+            disabled={saving || loading || !tenantId}
+            className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save policy'}
+          </button>
+          <button
+            type="button"
+            onClick={() => loadPolicy()}
+            disabled={loading || !tenantId}
+            className="px-4 py-2 rounded-lg border border-surface-300 text-sm text-surface-700 hover:bg-surface-50 disabled:opacity-50"
+          >
+            Reload
+          </button>
+          {loading && <span className="text-sm text-surface-500">Loading…</span>}
+        </div>
+      </form>
     </div>
   );
 }
@@ -758,9 +1039,13 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
         </form>
       ) : (
         <form onSubmit={handleDeleteAllForUser} className="bg-white rounded-xl border border-red-100 p-4 space-y-3 max-w-md">
-          <p className="text-sm text-surface-700">
-            Permanently remove every work schedule and shift for the selected employee. Shift swap requests and clock sessions linked to those shifts are removed too.
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-surface-800">Delete all schedules for one employee</span>
+            <InfoHint
+              title="What gets deleted"
+              text="Permanently removes every work schedule and shift for the selected employee. Shift swap requests and clock sessions linked to those shifts are removed too. This cannot be undone."
+            />
+          </div>
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>
             <select
@@ -955,8 +1240,13 @@ function ScheduleEventsSection({ events, onRefresh, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Schedule events</h1>
-      <p className="text-sm text-surface-600">Company events that appear on employee work schedules (e.g. training, meetings).</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Schedule events</h1>
+        <InfoHint
+          title="Schedule events"
+          text="Company events that appear on employee work schedules (e.g. training, meetings)."
+        />
+      </div>
       <form onSubmit={handleCreate} className="bg-white rounded-xl border border-surface-200 p-4 max-w-md space-y-3">
         <div>
           <label className="block text-sm font-medium text-surface-700 mb-1">Title *</label>
@@ -994,14 +1284,34 @@ function ScheduleEventsSection({ events, onRefresh, onError }) {
   );
 }
 
-function LeaveSection({ pending, leaveTypes = [], onRefresh, onError }) {
+function sectorLabel(s) {
+  if (s === 'public') return 'Public sector';
+  if (s === 'private') return 'Private sector';
+  if (s === 'both') return 'Public & private';
+  return '—';
+}
+
+function LeaveSection({
+  pending,
+  leaveTypes = [],
+  history = [],
+  teamBalances = [],
+  balanceYear,
+  onBalanceYearChange,
+  onRefresh,
+  onError,
+}) {
+  const [sub, setSub] = useState('pending');
+  const [historyFilter, setHistoryFilter] = useState('');
   const [reviewNotes, setReviewNotes] = useState('');
   const [reviewId, setReviewId] = useState(null);
   const [status, setStatus] = useState(null);
   const [saving, setSaving] = useState(false);
   const [newLeaveTypeName, setNewLeaveTypeName] = useState('');
   const [newLeaveTypeDays, setNewLeaveTypeDays] = useState('');
+  const [newLeaveTypeSector, setNewLeaveTypeSector] = useState('');
   const [savingType, setSavingType] = useState(false);
+  const [seeding, setSeeding] = useState(false);
 
   const handleReview = async () => {
     if (!reviewId || !status) return;
@@ -1026,9 +1336,14 @@ function LeaveSection({ pending, leaveTypes = [], onRefresh, onError }) {
     setSavingType(true);
     onError('');
     try {
-      await pm.leave.createType({ name: newLeaveTypeName.trim(), default_days_per_year: newLeaveTypeDays ? parseInt(newLeaveTypeDays, 10) : undefined });
+      await pm.leave.createType({
+        name: newLeaveTypeName.trim(),
+        default_days_per_year: newLeaveTypeDays ? parseInt(newLeaveTypeDays, 10) : undefined,
+        sector: newLeaveTypeSector && ['public', 'private', 'both'].includes(newLeaveTypeSector) ? newLeaveTypeSector : undefined,
+      });
       setNewLeaveTypeName('');
       setNewLeaveTypeDays('');
+      setNewLeaveTypeSector('');
       onRefresh();
     } catch (err) {
       onError(err?.message || 'Failed to create leave type');
@@ -1037,60 +1352,256 @@ function LeaveSection({ pending, leaveTypes = [], onRefresh, onError }) {
     }
   };
 
+  const handleSeedSa = async () => {
+    setSeeding(true);
+    onError('');
+    try {
+      const res = await pm.leave.seedSaTypes();
+      onRefresh();
+      onError('');
+      alert(`Added ${res.inserted ?? 0} South African leave type(s) (${res.total_definitions ?? ''} definitions in catalog). Existing names were skipped.`);
+    } catch (err) {
+      onError(err?.message || 'Seed failed');
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  const filteredHistory = (history || []).filter((a) => {
+    if (!historyFilter) return true;
+    const q = historyFilter.toLowerCase();
+    return (
+      String(a.user_name || '').toLowerCase().includes(q) ||
+      String(a.leave_type || '').toLowerCase().includes(q) ||
+      String(a.status || '').toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Leave applications</h1>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Leave</h1>
+        <InfoHint
+          title="Leave management"
+          text="Configure leave types (including a South African starter set), approve requests, browse full history, and view recorded leave balances per employee for a calendar year."
+        />
+      </div>
+
       <div className="bg-white rounded-xl border border-surface-200 p-4">
-        <p className="text-sm font-medium text-surface-700 mb-2">Leave types</p>
-        <p className="text-xs text-surface-500 mb-3">Employees choose from these when applying. Create types (e.g. Annual, Sick, Study).</p>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <p className="text-sm font-medium text-surface-700">Leave types (database)</p>
+          <InfoHint
+            title="Leave types"
+            text="Types are stored per organisation. Use the SA starter set for BCEA-oriented names and typical day weights; adjust in your HR policy as needed."
+          />
+        </div>
+        <div className="flex flex-wrap gap-2 mb-3">
+          <button
+            type="button"
+            disabled={seeding}
+            onClick={handleSeedSa}
+            className="px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 text-sm font-medium hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {seeding ? 'Adding…' : 'Add South African leave types (missing only)'}
+          </button>
+        </div>
         <form onSubmit={handleCreateLeaveType} className="flex flex-wrap gap-2 items-end">
-          <input type="text" value={newLeaveTypeName} onChange={(e) => setNewLeaveTypeName(e.target.value)} placeholder="e.g. Annual leave" className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48" />
-          <input type="number" value={newLeaveTypeDays} onChange={(e) => setNewLeaveTypeDays(e.target.value)} placeholder="Default days/year" min={0} className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-28" />
+          <input type="text" value={newLeaveTypeName} onChange={(e) => setNewLeaveTypeName(e.target.value)} placeholder="Name" className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48" />
+          <input type="number" value={newLeaveTypeDays} onChange={(e) => setNewLeaveTypeDays(e.target.value)} placeholder="Days/year" min={0} className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-24" />
+          <select value={newLeaveTypeSector} onChange={(e) => setNewLeaveTypeSector(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+            <option value="">Sector (optional)</option>
+            <option value="both">Public &amp; private</option>
+            <option value="public">Public sector</option>
+            <option value="private">Private sector</option>
+          </select>
           <button type="submit" disabled={savingType} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-            {savingType ? 'Adding…' : 'Add leave type'}
+            {savingType ? 'Adding…' : 'Add type'}
           </button>
         </form>
-        {leaveTypes.length > 0 && (
-          <ul className="mt-2 text-sm text-surface-600">
-            {leaveTypes.map((t) => (
-              <li key={t.id}>{t.name}{t.default_days_per_year != null ? ` (${t.default_days_per_year} days/year)` : ''}</li>
-            ))}
-          </ul>
+        {leaveTypes.length > 0 ? (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm min-w-[520px]">
+              <thead className="text-left text-surface-500 border-b border-surface-200">
+                <tr>
+                  <th className="py-2 pr-3 font-medium">Name</th>
+                  <th className="py-2 pr-3 font-medium">Typical days / year</th>
+                  <th className="py-2 pr-3 font-medium">Sector</th>
+                  <th className="py-2 font-medium">Note</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-100">
+                {leaveTypes.map((t) => (
+                  <tr key={t.id} className="align-top">
+                    <td className="py-2 pr-3 font-medium text-surface-900">{t.name}</td>
+                    <td className="py-2 pr-3">{t.default_days_per_year != null ? `${t.default_days_per_year}` : '—'}</td>
+                    <td className="py-2 pr-3">{sectorLabel(t.sector)}</td>
+                    <td className="py-2 text-surface-600 text-xs max-w-md">{t.description || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-surface-500">No types yet — seed SA types or add manually.</p>
         )}
       </div>
-      <p className="text-sm text-surface-600">Review and approve or reject leave applications.</p>
-      {pending.length === 0 ? (
-        <p className="text-surface-500 text-sm">No pending applications.</p>
-      ) : (
-        <ul className="space-y-4">
-          {pending.map((a) => (
-            <li key={a.id} className="bg-white rounded-xl border border-surface-200 p-4">
-              <p className="font-medium">{a.user_name} — {a.leave_type}</p>
-              <p className="text-sm text-surface-600">{formatDate(a.start_date)} to {formatDate(a.end_date)} ({a.days_requested} days)</p>
-              {a.reason && <p className="text-sm text-surface-500 mt-1">{a.reason}</p>}
-              {reviewId !== a.id ? (
-                <div className="mt-3 flex gap-2">
-                  <button type="button" onClick={() => { setReviewId(a.id); setStatus('approved'); setReviewNotes(''); }} className="px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 text-sm font-medium hover:bg-emerald-200">
-                    Approve
-                  </button>
-                  <button type="button" onClick={() => { setReviewId(a.id); setStatus('rejected'); setReviewNotes(''); }} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-800 text-sm font-medium hover:bg-red-200">
-                    Reject
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-3 space-y-2">
-                  <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} placeholder="Review notes (optional)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                  <div className="flex gap-2">
-                    <button type="button" onClick={handleReview} disabled={saving} className="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-                      {saving ? 'Saving…' : `Confirm ${status}`}
-                    </button>
-                    <button type="button" onClick={() => { setReviewId(null); setStatus(null); }} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm">Cancel</button>
-                  </div>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
+
+      <div className="flex gap-2 border-b border-surface-200 flex-wrap">
+        {[
+          { id: 'pending', label: `Pending (${pending.length})` },
+          { id: 'history', label: `History (${history.length})` },
+          { id: 'balances', label: 'Team balances' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setSub(t.id)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              sub === t.id ? 'border-brand-500 text-brand-700' : 'border-transparent text-surface-600 hover:text-surface-900'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === 'pending' && (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-surface-700">Pending applications</span>
+            <InfoHint title="Reviewing leave" text="Approve or reject pending applications. Optional review notes are saved with the decision." />
+          </div>
+          {pending.length === 0 ? (
+            <p className="text-surface-500 text-sm bg-white rounded-xl border border-surface-200 p-6">No pending applications.</p>
+          ) : (
+            <ul className="space-y-4">
+              {pending.map((a) => (
+                <li key={a.id} className="bg-white rounded-xl border border-surface-200 p-4">
+                  <p className="font-medium">{a.user_name} — {a.leave_type}</p>
+                  <p className="text-sm text-surface-600">{formatDate(a.start_date)} to {formatDate(a.end_date)} ({a.days_requested} days)</p>
+                  {a.reason && <p className="text-sm text-surface-500 mt-1">{a.reason}</p>}
+                  {reviewId !== a.id ? (
+                    <div className="mt-3 flex gap-2">
+                      <button type="button" onClick={() => { setReviewId(a.id); setStatus('approved'); setReviewNotes(''); }} className="px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 text-sm font-medium hover:bg-emerald-200">
+                        Approve
+                      </button>
+                      <button type="button" onClick={() => { setReviewId(a.id); setStatus('rejected'); setReviewNotes(''); }} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-800 text-sm font-medium hover:bg-red-200">
+                        Reject
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} placeholder="Review notes (optional)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      <div className="flex gap-2">
+                        <button type="button" onClick={handleReview} disabled={saving} className="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                          {saving ? 'Saving…' : `Confirm ${status}`}
+                        </button>
+                        <button type="button" onClick={() => { setReviewId(null); setStatus(null); }} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm">Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+
+      {sub === 'history' && (
+        <div className="space-y-3">
+          <input
+            type="search"
+            value={historyFilter}
+            onChange={(e) => setHistoryFilter(e.target.value)}
+            placeholder="Filter by employee, type, or status"
+            className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
+          />
+          {filteredHistory.length === 0 ? (
+            <p className="text-surface-500 text-sm bg-white rounded-xl border border-surface-200 p-6">No records match.</p>
+          ) : (
+            <div className="bg-white rounded-xl border border-surface-200 overflow-hidden overflow-x-auto">
+              <table className="w-full text-sm min-w-[800px]">
+                <thead className="bg-surface-50 border-b border-surface-200 text-left">
+                  <tr>
+                    <th className="px-4 py-2 font-medium text-surface-700">Employee</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Type</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Dates</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Days</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Status</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Applied</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Reviewed</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-100">
+                  {filteredHistory.map((a) => (
+                    <tr key={a.id} className="align-top">
+                      <td className="px-4 py-2">{a.user_name || '—'}</td>
+                      <td className="px-4 py-2">{a.leave_type}</td>
+                      <td className="px-4 py-2 whitespace-nowrap">{formatDate(a.start_date)} – {formatDate(a.end_date)}</td>
+                      <td className="px-4 py-2">{a.days_requested}</td>
+                      <td className="px-4 py-2 capitalize">{a.status}</td>
+                      <td className="px-4 py-2 whitespace-nowrap">{formatDate(a.created_at)}</td>
+                      <td className="px-4 py-2 whitespace-nowrap">{formatDate(a.reviewed_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {sub === 'balances' && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-sm text-surface-700">Year</label>
+            <input
+              type="number"
+              value={balanceYear}
+              onChange={(e) => {
+                const y = parseInt(e.target.value, 10);
+                if (Number.isFinite(y)) onBalanceYearChange(y);
+              }}
+              className="w-24 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            />
+            <InfoHint
+              title="Leave balances"
+              text="Days remaining = total_days − used_days (per leave type row). Rows appear after balances are recorded (e.g. when leave is approved)."
+            />
+          </div>
+          {teamBalances.length === 0 ? (
+            <p className="text-surface-500 text-sm bg-white rounded-xl border border-surface-200 p-6">No balance rows for this year.</p>
+          ) : (
+            <div className="bg-white rounded-xl border border-surface-200 overflow-hidden overflow-x-auto">
+              <table className="w-full text-sm min-w-[720px]">
+                <thead className="bg-surface-50 border-b border-surface-200 text-left">
+                  <tr>
+                    <th className="px-4 py-2 font-medium text-surface-700">Employee</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Leave type</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Total days</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Used</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Remaining</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Typical (type)</th>
+                    <th className="px-4 py-2 font-medium text-surface-700">Sector</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-100">
+                  {teamBalances.map((b, idx) => (
+                    <tr key={`${b.user_id}-${b.leave_type}-${idx}`}>
+                      <td className="px-4 py-2">{b.full_name || b.email || b.user_id}</td>
+                      <td className="px-4 py-2">{b.leave_type}</td>
+                      <td className="px-4 py-2">{b.total_days ?? 0}</td>
+                      <td className="px-4 py-2">{b.used_days ?? 0}</td>
+                      <td className="px-4 py-2">{(b.total_days ?? 0) - (b.used_days ?? 0)}</td>
+                      <td className="px-4 py-2">{b.type_default_days_per_year != null ? b.type_default_days_per_year : '—'}</td>
+                      <td className="px-4 py-2">{sectorLabel(b.type_sector)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1249,8 +1760,10 @@ function QueriesSection({ queries, onRefresh, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Employee growth — Queries</h1>
-      <p className="text-sm text-surface-600">Respond to employee grievances and complaints.</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Employee growth — Queries</h1>
+        <InfoHint title="Queries" text="Respond to employee grievances and complaints submitted by employees." />
+      </div>
       {queries.length === 0 ? (
         <p className="text-surface-500 text-sm">No queries.</p>
       ) : (
@@ -1344,9 +1857,12 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-xl font-semibold text-surface-900">Evaluations</h1>
-        <p className="text-sm text-surface-600">Create and view employee evaluations. Shift report (controller) evaluations appear below when approvers complete them in Command Centre.</p>
+        <InfoHint
+          title="Evaluations"
+          text="Create and view general employee evaluations. Shift report (controller) evaluations appear in the section below when approvers complete them in Command Centre."
+        />
       </div>
 
       <section>
@@ -1413,8 +1929,13 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
       </section>
 
       <section>
-        <h2 className="text-lg font-semibold text-surface-800 mb-2">Shift report (controller) evaluations</h2>
-        <p className="text-sm text-surface-600 mb-4">Full controller evaluations from Command Centre → Requests. Click a row to view the detailed evaluation.</p>
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <h2 className="text-lg font-semibold text-surface-800">Shift report (controller) evaluations</h2>
+          <InfoHint
+            title="Controller evaluations"
+            text="Full controller evaluations from Command Centre → Requests. Click a row to view the detailed evaluation."
+          />
+        </div>
         {controllerMigrationRequired && (
           <div className="rounded-xl border-2 border-amber-200 bg-amber-50 p-4 mb-4 text-amber-900">
             <p className="font-medium">Database migration required</p>
@@ -1423,7 +1944,15 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
           </div>
         )}
         {controllerEvaluations.length === 0 && !controllerMigrationRequired && (
-          <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-500">No controller evaluations yet. They appear here after approvers complete the evaluation form on a shift report in Command Centre → Requests.</div>
+          <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-500">
+            <p className="font-medium text-surface-600">No controller evaluations yet</p>
+            <div className="flex justify-center mt-2">
+              <InfoHint
+                title="When evaluations appear"
+                text="They appear here after approvers complete the evaluation form on a shift report in Command Centre → Requests."
+              />
+            </div>
+          </div>
         )}
         {controllerEvaluations.length > 0 && (
           <div className="grid gap-4 lg:grid-cols-2">
@@ -1533,8 +2062,10 @@ function PIPSection({ plans, tenantUsers, onRefresh, onError }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Performance improvement plan</h1>
-      <p className="text-sm text-surface-600">Draft and manage PIPs.</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold text-surface-900">Performance improvement plan</h1>
+        <InfoHint title="PIP" text="Draft and manage performance improvement plans (PIPs) for employees, including goals and date ranges." />
+      </div>
       {!showForm ? (
         <button type="button" onClick={() => setShowForm(true)} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
           Draft PIP

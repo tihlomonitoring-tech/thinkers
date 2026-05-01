@@ -92,6 +92,7 @@
     "db:profile-management": "node scripts/run-profile-management-schema.js",
     "db:employee-details": "node scripts/run-employee-details-schema.js",
     "db:profile-missing-tables": "node scripts/run-create-missing-profile-tables.js",
+    "db:sa-leave-types-extend": "node scripts/run-sa-leave-types-extend.js",
     "db:shift-clock": "node scripts/run-shift-clock-schema.js",
     "db:login-location": "node scripts/run-login-location-schema.js",
     "db:shift-clock-features": "npm run db:shift-clock && npm run db:login-location",
@@ -107,6 +108,7 @@
     "db:performance-evaluations-patch": "node scripts/run-performance-evaluations-patch.js",
     "db:user-page-roles-team-leader-admin": "node scripts/run-add-team-leader-admin-page-role.js",
     "db:user-page-roles-check-sync": "node scripts/run-user-page-roles-check-constraint-sync.js",
+    "db:company-library": "node scripts/run-company-library-schema.js",
     "db:user-career-portfolio": "node scripts/run-user-career-portfolio.js",
     "db:recruitment": "node scripts/run-recruitment-schema.js",
     "db:recruitment-expand": "node scripts/run-recruitment-expand-schema.js",
@@ -127,10 +129,12 @@
     "exceljs": "^4.4.0",
     "express": "^4.22.1",
     "express-session": "^1.19.0",
+    "mammoth": "^1.12.0",
     "mssql": "^11.0.1",
     "multer": "^2.1.0",
     "nodemailer": "^6.10.1",
     "openai": "^6.35.0",
+    "pdf-parse": "^1.1.1",
     "pdfkit": "^0.17.2",
     "pptxgenjs": "^3.12.0"
   }

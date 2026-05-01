@@ -9,6 +9,7 @@ import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { generateMonthlyPerformanceReportPdf } from './lib/monthlyPerformanceReportPdf.js';
 import { jsPDF } from 'jspdf';
+import InfoHint from './components/InfoHint.jsx';
 
 const TABS = [
   { id: 'fleet', label: 'Approved fleet & drivers', icon: 'truck', section: 'Data' },
@@ -700,8 +701,13 @@ export default function Rector() {
       <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-label="Rector" aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-surface-900">Rector</h2>
-            <p className="text-xs text-surface-500 mt-0.5">Fleet, incidents & reports</p>
+            <div className="flex items-center gap-1">
+              <h2 className="text-sm font-semibold text-surface-900">Rector</h2>
+              <InfoHint
+                title="Rector overview"
+                text="Fleet, incidents, compliance, and published reports for rectors. Use the sections in this sidebar to switch views."
+              />
+            </div>
             <p className="text-xs text-surface-500 mt-1.5">Data for <strong className="text-surface-700">{user?.tenant_name || 'your company'}</strong></p>
           </div>
           <button type="button" onClick={() => setNavHidden(true)} className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700" aria-label="Hide navigation" title="Hide navigation">
@@ -751,8 +757,12 @@ export default function Rector() {
           )}
 
           {isRectorScoped && (
-            <div className="mb-4 text-sm text-brand-700 bg-brand-50 border border-brand-100 rounded-lg px-4 py-2">
-              You are viewing data for your assigned route(s) only.
+            <div className="mb-4 text-sm text-brand-700 bg-brand-50 border border-brand-100 rounded-lg px-4 py-2 flex flex-wrap items-center gap-2">
+              <span>Assigned route(s) only</span>
+              <InfoHint
+                title="Route-scoped view"
+                text="You only see data for routes linked to your rector access. Other company data is hidden until Access Management updates your assignments."
+              />
             </div>
           )}
 
@@ -871,9 +881,9 @@ export default function Rector() {
           {activeTab === 'contractors-details' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-lg font-semibold text-surface-900">Contractors details and features</h3>
-                  <p className="text-sm text-surface-500">Click a row to open full details.</p>
+                  <InfoHint title="Using this table" text="Click a row to open full contractor or route details." />
                 </div>
               </div>
               {contractorsDetailsLoading ? (
@@ -1241,9 +1251,12 @@ export default function Rector() {
           {activeTab === 'progress-reports' && (
             <div className="space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div>
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold text-surface-900 tracking-tight">Progress reports</h3>
-                  <p className="text-sm text-surface-500 mt-1">Click a row to open the report. Project phases and integration status per company.</p>
+                  <InfoHint
+                    title="Progress reports"
+                    text="Click a row to open the full report, including project phases and integration status per company."
+                  />
                 </div>
               </div>
 
@@ -1260,7 +1273,12 @@ export default function Rector() {
                     <TabIcon name="chart" className="w-7 h-7" />
                   </div>
                   <p className="text-surface-600 font-medium">No progress reports yet</p>
-                  <p className="text-sm text-surface-500 mt-1">Ask Access Management to create one in Project progress report creation.</p>
+                  <div className="flex justify-center mt-2">
+                    <InfoHint
+                      title="How to add reports"
+                      text="Ask Access Management to create a report in Project progress report creation."
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
@@ -1444,9 +1462,9 @@ export default function Rector() {
           {activeTab === 'action-plan-timelines' && (
             <div className="space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div>
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold text-surface-900 tracking-tight">View Project timelines and action plan</h3>
-                  <p className="text-sm text-surface-500 mt-1">Click a row to open the full action plan and project timelines.</p>
+                  <InfoHint title="Action plans" text="Click a row to open the full action plan and project timelines." />
                 </div>
               </div>
 
@@ -1463,7 +1481,12 @@ export default function Rector() {
                     <TabIcon name="calendar" className="w-7 h-7" />
                   </div>
                   <p className="text-surface-600 font-medium">No action plans yet</p>
-                  <p className="text-sm text-surface-500 mt-1">Ask Access Management to create one in Action plan and Project timelines.</p>
+                  <div className="flex justify-center mt-2">
+                    <InfoHint
+                      title="How to add action plans"
+                      text="Ask Access Management to create one in Action plan and Project timelines."
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
@@ -1631,9 +1654,9 @@ export default function Rector() {
           {activeTab === 'monthly-performance-reports' && (
             <div className="space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div>
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold text-surface-900 tracking-tight">Monthly Performance reports</h3>
-                  <p className="text-sm text-surface-500 mt-1">Click a row to open the full report.</p>
+                  <InfoHint title="Monthly performance" text="Click a row to open the full report." />
                 </div>
               </div>
 
@@ -1650,7 +1673,12 @@ export default function Rector() {
                     <TabIcon name="chart" className="w-7 h-7" />
                   </div>
                   <p className="text-surface-600 font-medium">No monthly performance reports yet</p>
-                  <p className="text-sm text-surface-500 mt-1">Ask Access Management to create one in Monthly performance reports.</p>
+                  <div className="flex justify-center mt-2">
+                    <InfoHint
+                      title="How to add monthly reports"
+                      text="Ask Access Management to create one in Monthly performance reports."
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">

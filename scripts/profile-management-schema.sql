@@ -77,8 +77,12 @@ CREATE TABLE leave_types (
   tenant_id UNIQUEIDENTIFIER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   name NVARCHAR(100) NOT NULL,
   default_days_per_year INT NULL,
+  sector NVARCHAR(20) NULL,
+  description NVARCHAR(500) NULL,
+  sort_order INT NOT NULL CONSTRAINT DF_leave_types_sort_order DEFAULT (100),
   created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-  CONSTRAINT UQ_leave_types_tenant_name UNIQUE (tenant_id, name)
+  CONSTRAINT UQ_leave_types_tenant_name UNIQUE (tenant_id, name),
+  CONSTRAINT CK_leave_types_sector CHECK (sector IS NULL OR sector IN (N'public', N'private', N'both'))
 );
 GO
 

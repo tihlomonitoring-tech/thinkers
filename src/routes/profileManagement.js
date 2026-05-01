@@ -27,6 +27,7 @@ import {
   calendarMonthEndYmd,
   addCalendarDays,
 } from '../lib/appTime.js';
+import { SA_LEAVE_TYPES } from '../lib/saLeaveTypes.js';
 
 const router = Router();
 const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
@@ -393,6 +394,36 @@ router.post('/schedules/:id/entries', requirePageAccess('management'), async (re
   }
 });
 
+/** Approved + pending leave overlapping [startStr, endStr] for the given users. */
+async function loadLeaveSpansMap(tenantId, userIds, startStr, endStr) {
+  const map = new Map();
+  const ids = [...new Set((userIds || []).map((id) => String(id)).filter(Boolean))];
+  for (const id of ids) map.set(id, []);
+  if (ids.length === 0) return map;
+  const placeholders = ids.map((_, i) => `@u${i}`).join(', ');
+  const params = { tenantId, startStr, endStr, ...Object.fromEntries(ids.map((id, i) => [`u${i}`, id])) };
+  const result = await query(
+    `SELECT user_id, start_date, end_date, leave_type, status
+     FROM leave_applications
+     WHERE tenant_id = @tenantId
+       AND user_id IN (${placeholders})
+       AND end_date >= @startStr AND start_date <= @endStr
+       AND status IN (N'approved', N'pending')`,
+    params
+  );
+  for (const row of result.recordset || []) {
+    const uid = String(getRow(row, 'user_id'));
+    if (!map.has(uid)) map.set(uid, []);
+    map.get(uid).push({
+      start_date: getRow(row, 'start_date'),
+      end_date: getRow(row, 'end_date'),
+      leave_type: getRow(row, 'leave_type'),
+      status: getRow(row, 'status'),
+    });
+  }
+  return map;
+}
+
 router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) => {
   try {
     const { month, year } = req.query;
@@ -419,7 +450,9 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
       notes: getRow(r, 'notes'),
       schedule_title: getRow(r, 'schedule_title'),
     }));
-    res.json({ entries });
+    const leaveMap = await loadLeaveSpansMap(tenantId, [userId], start, end);
+    const leave_spans = leaveMap.get(String(userId)) || [];
+    res.json({ entries, leave_spans });
   } catch (err) {
     next(err);
   }
@@ -489,7 +522,13 @@ router.get('/my-schedule/colleagues', requirePageAccess('profile'), async (req, 
       });
     }
 
-    res.json({ colleagues: [...byUser.values()] });
+    const leaveMap = await loadLeaveSpansMap(tenantId, ids, startStr, endStr);
+    const colleagues = [...byUser.values()].map((c) => ({
+      ...c,
+      leave_spans: leaveMap.get(String(c.user_id)) || [],
+    }));
+
+    res.json({ colleagues });
   } catch (err) {
     next(err);
   }
@@ -1089,7 +1128,9 @@ router.get('/leave/types', requirePageAccess('profile'), async (req, res, next) 
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.json({ types: [] });
     const result = await query(
-      `SELECT id, name, default_days_per_year FROM leave_types WHERE tenant_id = @tenantId ORDER BY name`,
+      `SELECT id, name, default_days_per_year, sector, description, sort_order
+       FROM leave_types WHERE tenant_id = @tenantId
+       ORDER BY sort_order ASC, name ASC`,
       { tenantId }
     );
     res.json({ types: result.recordset || [] });
@@ -1100,14 +1141,56 @@ router.get('/leave/types', requirePageAccess('profile'), async (req, res, next) 
 
 router.post('/leave/types', requirePageAccess('management'), async (req, res, next) => {
   try {
-    const { name, default_days_per_year } = req.body || {};
+    const { name, default_days_per_year, sector, description, sort_order } = req.body || {};
     const tenantId = req.user.tenant_id;
     if (!tenantId || !name) return res.status(400).json({ error: 'name required' });
+    const sec = sector && ['public', 'private', 'both'].includes(String(sector)) ? String(sector) : null;
+    const sort = sort_order != null && sort_order !== '' ? parseInt(sort_order, 10) : 100;
     await query(
-      `INSERT INTO leave_types (tenant_id, name, default_days_per_year) VALUES (@tenantId, @name, @defaultDays)`,
-      { tenantId, name: String(name).trim(), defaultDays: default_days_per_year != null ? parseInt(default_days_per_year, 10) : null }
+      `INSERT INTO leave_types (tenant_id, name, default_days_per_year, sector, description, sort_order)
+       VALUES (@tenantId, @name, @defaultDays, @sector, @description, @sortOrder)`,
+      {
+        tenantId,
+        name: String(name).trim(),
+        defaultDays: default_days_per_year != null ? parseInt(default_days_per_year, 10) : null,
+        sector: sec,
+        description: description != null ? String(description).trim().slice(0, 500) : null,
+        sortOrder: Number.isFinite(sort) ? sort : 100,
+      }
     );
     res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Insert standard South African leave types for this tenant (skips existing names). */
+router.post('/leave/seed-sa-types', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    let inserted = 0;
+    for (const t of SA_LEAVE_TYPES) {
+      const existing = await query(
+        `SELECT 1 AS ok FROM leave_types WHERE tenant_id = @tenantId AND name = @name`,
+        { tenantId, name: t.name }
+      );
+      if (existing.recordset?.length) continue;
+      await query(
+        `INSERT INTO leave_types (tenant_id, name, default_days_per_year, sector, description, sort_order)
+         VALUES (@tenantId, @name, @days, @sector, @description, @sortOrder)`,
+        {
+          tenantId,
+          name: t.name,
+          days: t.default_days_per_year != null ? parseInt(t.default_days_per_year, 10) : null,
+          sector: t.sector,
+          description: t.description ? String(t.description).slice(0, 500) : null,
+          sortOrder: t.sort_order ?? 100,
+        }
+      );
+      inserted += 1;
+    }
+    res.json({ inserted, total_definitions: SA_LEAVE_TYPES.length });
   } catch (err) {
     next(err);
   }
@@ -1120,10 +1203,40 @@ router.get('/leave/balance', requirePageAccess('profile'), async (req, res, next
     const tenantId = req.user.tenant_id;
     const year = req.query.year != null ? parseInt(req.query.year, 10) : wallMonthYearInAppZone().year;
     const result = await query(
-      `SELECT leave_type, total_days, used_days FROM leave_balance WHERE user_id = @userId AND tenant_id = @tenantId AND [year] = @year`,
+      `SELECT lb.leave_type, lb.total_days, lb.used_days,
+              lt.default_days_per_year AS type_default_days_per_year,
+              lt.sector AS type_sector, lt.description AS type_description
+       FROM leave_balance lb
+       LEFT JOIN leave_types lt ON lt.tenant_id = lb.tenant_id AND lt.name = lb.leave_type
+       WHERE lb.user_id = @userId AND lb.tenant_id = @tenantId AND lb.[year] = @year
+       ORDER BY lb.leave_type`,
       { userId, tenantId, year }
     );
     res.json({ balance: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** All leave balances in the tenant for a calendar year (management). */
+router.get('/leave/balances/team', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const year = req.query.year != null ? parseInt(req.query.year, 10) : wallMonthYearInAppZone().year;
+    const result = await query(
+      `SELECT u.id AS user_id, u.full_name, u.email,
+              lb.leave_type, lb.[year], lb.total_days, lb.used_days,
+              lt.default_days_per_year AS type_default_days_per_year,
+              lt.sector AS type_sector
+       FROM leave_balance lb
+       INNER JOIN users u ON u.id = lb.user_id
+       LEFT JOIN leave_types lt ON lt.tenant_id = lb.tenant_id AND lt.name = lb.leave_type
+       WHERE lb.tenant_id = @tenantId AND lb.[year] = @year
+       ORDER BY u.full_name, lb.leave_type`,
+      { tenantId, year }
+    );
+    res.json({ balances: result.recordset || [] });
   } catch (err) {
     next(err);
   }
@@ -1236,6 +1349,34 @@ router.get('/leave/pending', requirePageAccess('management'), async (req, res, n
        LEFT JOIN users u ON u.id = l.user_id
        WHERE l.tenant_id = @tenantId AND l.status = N'pending' ORDER BY l.created_at`,
       { tenantId }
+    );
+    res.json({ applications: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Full leave application history for the tenant (management). */
+router.get('/leave/applications/all', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const status = req.query.status && String(req.query.status).trim();
+    const params = { tenantId };
+    let where = 'WHERE l.tenant_id = @tenantId';
+    if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+      where += ' AND l.status = @st';
+      params.st = status;
+    }
+    const result = await query(
+      `SELECT TOP 500 l.id, l.user_id, l.leave_type, l.start_date, l.end_date, l.days_requested, l.reason,
+              l.status, l.created_at, l.reviewed_at, l.review_notes,
+              u.full_name AS user_name, u.email AS user_email
+       FROM leave_applications l
+       LEFT JOIN users u ON u.id = l.user_id
+       ${where}
+       ORDER BY l.created_at DESC`,
+      params
     );
     res.json({ applications: result.recordset || [] });
   } catch (err) {
