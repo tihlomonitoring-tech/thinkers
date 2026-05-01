@@ -5,6 +5,7 @@ import { useTheme } from './ThemeContext';
 import Sidebar, { useSidebarState } from './components/Sidebar';
 import ThemeToggle from './components/ThemeToggle';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
+import AppShellBackground from './components/AppShellBackground.jsx';
 import { tenants as tenantsApi, commandCentre as ccApi } from './api';
 import { PATH_PAGE_IDS, canAccessPage, getFirstAllowedPath } from './lib/pageAccess.js';
 import { cancelAutoHideNav, AUTO_HIDE_NAV_FIRE } from './lib/autoHideNav.js';
@@ -197,7 +198,8 @@ export default function Layout() {
   }, []);
 
   return (
-    <div className={`flex min-h-screen ${isDark ? 'bg-surface-950' : 'bg-surface-50'}`}>
+    <div className="relative flex min-h-screen isolate">
+      <AppShellBackground isDark={isDark} />
       <Sidebar
         collapsed={collapsed}
         setCollapsed={setCollapsed}
@@ -208,10 +210,12 @@ export default function Layout() {
         onLogout={handleLogout}
       />
 
-      <div className={`flex-1 flex flex-col min-w-0 ${isDark ? 'bg-surface-950' : 'bg-surface-50'}`}>
+      <div className="relative z-10 flex flex-1 flex-col min-w-0">
         <header
-          className={`sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b backdrop-blur px-4 lg:px-6 ${
-            isDark ? 'border-surface-800 bg-surface-900/95' : 'border-surface-200 bg-white/95'
+          className={`sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b px-4 lg:px-6 backdrop-blur-xl ${
+            isDark
+              ? 'border-white/[0.08] bg-surface-900/55 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset] ring-1 ring-white/[0.06]'
+              : 'border-surface-200/70 bg-white/75 shadow-sm ring-1 ring-surface-200/40'
           }`}
         >
           <button
@@ -237,12 +241,18 @@ export default function Layout() {
                   if (e.key === 'Enter') { e.preventDefault(); goToTarget(filteredTargets[globalSearchIndex] || filteredTargets[0]); }
                 }}
                 placeholder="Search pages and tabs..."
-                className={`w-full h-9 rounded-lg border px-3 text-sm ${
-                  isDark ? 'border-surface-700 bg-surface-800 text-surface-100 placeholder:text-surface-500' : 'border-surface-200 bg-white text-surface-700 placeholder:text-surface-400'
+                className={`w-full h-9 rounded-xl border px-3 text-sm shadow-sm ${
+                  isDark
+                    ? 'border-white/10 bg-surface-950/50 text-surface-100 placeholder:text-surface-500'
+                    : 'border-surface-200/90 bg-white/90 text-surface-700 placeholder:text-surface-400'
                 }`}
               />
               {globalSearchOpen && (
-                <div className={`absolute top-full mt-1 w-full rounded-lg border shadow-lg max-h-72 overflow-auto z-50 ${isDark ? 'border-surface-700 bg-surface-900' : 'border-surface-200 bg-white'}`}>
+                <div
+                  className={`absolute top-full mt-1.5 w-full rounded-xl border shadow-xl max-h-72 overflow-auto z-50 backdrop-blur-xl ${
+                    isDark ? 'border-white/10 bg-surface-900/85' : 'border-surface-200/90 bg-white/95'
+                  }`}
+                >
                   {filteredTargets.length === 0 ? (
                     <div className={`px-3 py-2 text-sm ${isDark ? 'text-surface-400' : 'text-surface-500'}`}>No accessible result</div>
                   ) : (
@@ -350,18 +360,14 @@ export default function Layout() {
           </div>
         </header>
 
-        <main
-          className={`app-main flex-1 min-h-0 p-4 sm:p-6 overflow-auto flex flex-col ${
-            isDark ? 'bg-surface-950' : 'bg-surface-50'
-          }`}
-        >
+        <main className="app-main flex flex-1 min-h-0 flex-col overflow-auto p-4 sm:p-6">
           <Outlet key={dataRefreshKey} />
         </main>
         <AppAttributionFooter
           className={
             isDark
-              ? 'text-surface-500 border-t border-surface-800 bg-surface-950'
-              : 'text-surface-400 border-t border-surface-200 bg-surface-50'
+              ? 'text-surface-400 border-t border-white/[0.06] bg-surface-950/45 backdrop-blur-xl'
+              : 'text-surface-500 border-t border-surface-200/80 bg-white/55 backdrop-blur-xl'
           }
         />
       </div>

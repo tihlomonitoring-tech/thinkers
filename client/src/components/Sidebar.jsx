@@ -282,10 +282,10 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
         onMouseEnter={() => isCollapsed && setTooltipItem(label)}
         onMouseLeave={() => setTooltipItem(null)}
         className={({ isActive }) =>
-          `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-surface-900 ${
+          `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-[rgb(2_6_23)] ${
             isActive
-              ? 'bg-brand-500/15 text-brand-400 border-l-2 border-brand-400 -ml-[2px] pl-[14px]'
-              : 'text-surface-400 hover:bg-surface-700/80 hover:text-surface-200 border-l-2 border-transparent'
+              ? 'bg-brand-500/30 text-brand-200 border-l-2 border-brand-300 -ml-[2px] pl-[14px] shadow-sm shadow-black/20'
+              : 'text-surface-200 hover:bg-white/10 hover:text-white border-l-2 border-transparent'
           }`
         }
       >
@@ -294,16 +294,16 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
           <>
             <span className="flex-1 truncate">{label}</span>
             {shortcut && (
-              <kbd className="hidden xl:inline-flex h-5 items-center rounded border border-surface-600 bg-surface-800 px-1.5 font-mono text-[10px] text-surface-500">
+              <kbd className="hidden xl:inline-flex h-5 items-center rounded border border-white/20 bg-black/35 px-1.5 font-mono text-[10px] font-medium text-surface-200 shadow-sm">
                 {shortcut}
               </kbd>
             )}
           </>
         )}
         {isCollapsed && tooltipItem === label && (
-          <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 z-[100] rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-surface-200 shadow-xl whitespace-nowrap pointer-events-none">
+          <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 z-[100] rounded-md border border-white/15 bg-surface-900 px-3 py-2 text-sm text-surface-100 shadow-xl whitespace-nowrap pointer-events-none">
             {label}
-            {shortcut && <span className="ml-2 text-surface-500">{shortcut}</span>}
+            {shortcut && <span className="ml-2 text-surface-400">{shortcut}</span>}
           </div>
         )}
       </NavLink>
@@ -312,7 +312,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
 
   const sidebarContent = (
     <>
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-surface-700/50 px-3">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-3">
         {!isCollapsed && (
           <span className="font-semibold tracking-tight text-white truncate">
             {user?.tenant_name || import.meta.env.VITE_APP_NAME || 'Portal'}
@@ -322,7 +322,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
           <button
             type="button"
             onClick={() => setCollapsed((c) => !c)}
-            className="hidden lg:flex h-8 w-8 items-center justify-center rounded-lg text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
+            className="hidden lg:flex h-8 w-8 items-center justify-center rounded-lg text-surface-200 hover:bg-white/12 hover:text-white transition-colors"
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? <IconChevronRight className="h-5 w-5" /> : <IconChevronLeft className="h-5 w-5" />}
@@ -330,7 +330,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
           <button
             type="button"
             onClick={() => setHidden(true)}
-            className="hidden lg:flex h-8 w-8 items-center justify-center rounded-lg text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
+            className="hidden lg:flex h-8 w-8 items-center justify-center rounded-lg text-surface-200 hover:bg-white/12 hover:text-white transition-colors"
             aria-label="Hide sidebar to see full content"
             title="Hide sidebar"
           >
@@ -339,7 +339,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
           <button
             type="button"
             onClick={() => setMobileOpen(false)}
-            className="lg:hidden h-8 w-8 flex items-center justify-center rounded-lg text-surface-400 hover:bg-surface-700 hover:text-surface-200"
+            className="lg:hidden h-8 w-8 flex items-center justify-center rounded-lg text-surface-200 hover:bg-white/12 hover:text-white"
             aria-label="Close menu"
           >
             <IconX className="h-5 w-5" />
@@ -351,7 +351,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
         {visibleSections.map((section) => (
           <div key={section.label}>
             {!isCollapsed && (
-              <p className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-surface-500">
+              <p className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-surface-400">
                 {section.label}
               </p>
             )}
@@ -364,16 +364,16 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
         ))}
       </nav>
 
-      <div className="shrink-0 border-t border-surface-700/50 p-3">
+      <div className="shrink-0 border-t border-white/10 p-3">
         <div className={`flex items-center gap-3 ${isCollapsed ? 'justify-center' : ''}`}>
-          <div className="h-9 w-9 shrink-0 rounded-full bg-brand-500/20 flex items-center justify-center text-brand-400 font-semibold text-sm">
+          <div className="h-9 w-9 shrink-0 rounded-full bg-brand-500/35 flex items-center justify-center text-brand-100 font-semibold text-sm ring-2 ring-brand-400/40">
             {user?.full_name?.charAt(0)?.toUpperCase() || '?'}
           </div>
           {!isCollapsed && (
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-surface-200">{user?.full_name}</p>
+              <p className="truncate text-sm font-medium text-white">{user?.full_name}</p>
               {user?.tenant_name && (
-                <p className="truncate text-xs text-surface-500">{user.tenant_name}</p>
+                <p className="truncate text-xs text-surface-300">{user.tenant_name}</p>
               )}
             </div>
           )}
@@ -382,7 +382,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
           <button
             type="button"
             onClick={onLogout}
-            className="mt-3 w-full rounded-lg px-3 py-2 text-left text-sm text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
+            className="mt-3 w-full rounded-lg px-3 py-2 text-left text-sm text-surface-200 hover:bg-white/10 hover:text-white transition-colors"
           >
             Sign out
           </button>
@@ -391,7 +391,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
           <button
             type="button"
             onClick={onLogout}
-            className="mt-3 mx-auto flex h-9 w-9 items-center justify-center rounded-lg text-surface-400 hover:bg-surface-700 hover:text-surface-200"
+            className="mt-3 mx-auto flex h-9 w-9 items-center justify-center rounded-lg text-surface-200 hover:bg-white/12 hover:text-white"
             aria-label="Sign out"
           >
             <IconLogout className="h-4 w-4" />
@@ -412,7 +412,8 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
       )}
       <aside
         className={`
-          fixed left-0 top-0 z-50 flex h-full flex-col bg-surface-900 text-surface-300
+          fixed left-0 top-0 z-50 flex h-full flex-col text-surface-100
+          app-glass-main-sidebar
           transition-[width] duration-300 ease-in-out
           lg:translate-x-0
           ${isHidden ? 'lg:w-0 lg:overflow-hidden lg:pointer-events-none' : collapsed ? 'lg:w-[72px]' : 'lg:w-[260px]'}

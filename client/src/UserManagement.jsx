@@ -594,7 +594,7 @@ export default function UserManagement() {
       {tab === 'users' && (
       <>
       {/* Filters & search */}
-      <div className="bg-white rounded-xl border border-surface-200 p-4 mb-4">
+      <div className="app-glass-card p-4 mb-4">
         <div className="flex flex-wrap gap-3 items-center">
           <div className="flex-1 min-w-[200px]">
             <input
@@ -670,7 +670,7 @@ export default function UserManagement() {
       )}
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full text-sm">
             <thead className="bg-surface-50 border-b border-surface-200">
@@ -775,7 +775,7 @@ export default function UserManagement() {
       )}
 
       {tab === 'block-requests' && me?.role === 'super_admin' && (
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <div className="p-4 border-b border-surface-100">
             <p className="text-sm text-surface-600">
               Accounts appear here after <strong>three failed sign-in attempts</strong> in a row. Unlocking clears the lock and resets the failure counter so the user can sign in again.
@@ -831,7 +831,7 @@ export default function UserManagement() {
       )}
 
       {tab === 'approvals' && canManageUsers && (
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <div className="p-4 border-b border-surface-100 flex flex-wrap items-center gap-3">
             <span className="text-sm font-medium text-surface-700">Status</span>
             <select

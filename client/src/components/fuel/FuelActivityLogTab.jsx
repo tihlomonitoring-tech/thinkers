@@ -98,7 +98,7 @@ export default function FuelActivityLogTab({ orders, onError }) {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6 shadow-sm space-y-4">
+      <div className="app-glass-card p-4 sm:p-6 shadow-sm space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           <div>
             <label className="block text-xs font-medium text-surface-600 mb-1">From</label>
@@ -157,7 +157,7 @@ export default function FuelActivityLogTab({ orders, onError }) {
         </button>
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-white overflow-x-auto shadow-sm">
+      <div className="app-glass-card overflow-x-auto shadow-sm">
         <table className="w-full text-sm min-w-[960px]">
           <thead>
             <tr className="bg-surface-50 text-left text-surface-600">

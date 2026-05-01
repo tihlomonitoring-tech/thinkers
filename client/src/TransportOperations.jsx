@@ -657,7 +657,7 @@ export default function TransportOperations() {
 
   return (
     <div className="flex gap-0 min-h-[calc(100vh-8rem)]">
-      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-label="Transport operations" aria-hidden={navHidden}>
+      <nav className={`shrink-0 app-glass-secondary-nav flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-label="Transport operations" aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-surface-900">Transport Operations</h2>
@@ -722,15 +722,15 @@ export default function TransportOperations() {
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                <div className="app-glass-card p-4 shadow-sm">
                   <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Total Revenue (Shift)</p>
                   <p className="mt-1 text-2xl font-semibold text-surface-800">{formatCurrency(summary.totalRevenue)}</p>
                 </div>
-                <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                <div className="app-glass-card p-4 shadow-sm">
                   <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Total Deliveries</p>
                   <p className="mt-1 text-2xl font-semibold text-surface-800">{summary.totalDeliveries}</p>
                 </div>
-                <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                <div className="app-glass-card p-4 shadow-sm">
                   <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">% of Target Met</p>
                   <p className="mt-1 text-2xl font-semibold text-surface-800">{summary.pctTargetMet != null ? `${summary.pctTargetMet}%` : '—'}</p>
                 </div>
@@ -1171,7 +1171,7 @@ export default function TransportOperations() {
               </div>
 
               {!selectedReportId ? (
-                <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+                <div className="app-glass-card overflow-hidden">
                   {reportsLoading ? <p className="p-6 text-surface-500">Loading…</p> : reportsList.length === 0 ? <p className="p-6 text-surface-500">No reports found.</p> : (
                     <table className="w-full text-sm">
                       <thead className="bg-surface-50 border-b border-surface-200">
@@ -1203,13 +1203,13 @@ export default function TransportOperations() {
                 <div className="space-y-6">
                   <button type="button" onClick={() => setSelectedReportId(null)} className="text-sm font-medium text-surface-600 hover:text-surface-800">← Back to list</button>
                   {reportsDetailLoading ? (
-                    <div className="rounded-xl border border-surface-200 bg-white p-12 text-center">
+                    <div className="app-glass-card p-12 text-center">
                       <p className="text-surface-500">Loading report…</p>
                     </div>
                   ) : reportDetail && (
                     <>
                       {/* Report header */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="bg-gradient-to-r from-surface-800 to-surface-700 px-6 py-4 text-white">
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
@@ -1231,7 +1231,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Notes for next controller */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Notes for next controller</h3>
                         </div>
@@ -1241,7 +1241,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Shift summary & overview */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Shift summary & overview</h3>
                         </div>
@@ -1302,7 +1302,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Truck updates & logistics flow */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Truck updates & logistics flow</h3>
                         </div>
@@ -1333,7 +1333,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Incidents/breakdowns */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Incidents / breakdowns</h3>
                         </div>
@@ -1368,7 +1368,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Non-compliance calls */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Non-compliance calls</h3>
                         </div>
@@ -1405,7 +1405,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Investigations */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Investigations (findings & action taken)</h3>
                         </div>
@@ -1435,7 +1435,7 @@ export default function TransportOperations() {
                       </div>
 
                       {/* Communication log */}
-                      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                      <div className="app-glass-card shadow-sm overflow-hidden">
                         <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                           <h3 className="text-sm font-semibold text-surface-800">Communication log</h3>
                         </div>
@@ -1471,7 +1471,7 @@ export default function TransportOperations() {
 
                       {/* Active fleet logistics log */}
                       {reportDetail.active_fleet_log?.length > 0 && (
-                        <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                        <div className="app-glass-card shadow-sm overflow-hidden">
                           <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3 flex items-center justify-between">
                             <h3 className="text-sm font-semibold text-surface-800">Active fleet logistics log</h3>
                             <span className="text-xs text-surface-500">{reportDetail.active_fleet_log.length} entries</span>
@@ -1509,7 +1509,7 @@ export default function TransportOperations() {
 
                       {/* Non-participating trucks */}
                       {reportDetail.non_participating?.length > 0 && (
-                        <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                        <div className="app-glass-card shadow-sm overflow-hidden">
                           <div className="border-b border-surface-100 bg-surface-50/80 px-5 py-3">
                             <h3 className="text-sm font-semibold text-surface-800">Non-participating trucks</h3>
                           </div>
@@ -1539,7 +1539,7 @@ export default function TransportOperations() {
                       )}
 
                       {reportDetail.status === 'pending_approval' && (
-                        <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm">
+                        <div className="app-glass-card p-6 shadow-sm">
                           <h3 className="text-sm font-semibold text-surface-800 mb-4">Evaluation (required before approval)</h3>
                           {myEvaluation && (
                             <div className="mb-4 overflow-hidden rounded-lg border border-surface-200">
@@ -1582,13 +1582,13 @@ export default function TransportOperations() {
                       )}
 
                       {reportDetail.status === 'pending_approval' && myEvaluation && (
-                        <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm">
+                        <div className="app-glass-card p-6 shadow-sm">
                           <button type="button" onClick={approveReport} disabled={approving} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50">Approve report</button>
                         </div>
                       )}
 
                       {reportDetail.status === 'approved' && (
-                        <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm">
+                        <div className="app-glass-card p-6 shadow-sm">
                           <p className="text-sm text-green-600 font-medium">This report has been approved.</p>
                         </div>
                       )}
@@ -1606,7 +1606,7 @@ export default function TransportOperations() {
                 <InfoHint title="Operations insights help" text="AI-powered insights from approved shift reports. Get recommendations and hold your team accountable when they are not applied." />
               </div>
 
-              <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm">
+              <div className="app-glass-card p-6 shadow-sm">
                 <h3 className="text-sm font-semibold text-surface-800 mb-4">Generate insights</h3>
                 <div className="flex flex-wrap gap-4 items-end">
                   <div>
@@ -1638,7 +1638,7 @@ export default function TransportOperations() {
 
               {presentationsInsights && (
                 <>
-                  <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                  <div className="app-glass-card overflow-hidden shadow-sm">
                     <div className="px-6 py-4 border-b border-surface-100 bg-gradient-to-r from-surface-50 to-brand-50">
                       <h3 className="font-semibold text-surface-900 flex items-center gap-2">
                         <span className="text-lg">Insights</span>
@@ -1668,7 +1668,7 @@ export default function TransportOperations() {
                   </div>
 
                   {presentationsInsights.recommendations?.length > 0 && (
-                    <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                    <div className="app-glass-card overflow-hidden shadow-sm">
                       <div className="px-6 py-4 border-b border-surface-100 bg-gradient-to-r from-surface-50 to-brand-50 flex items-center justify-between flex-wrap gap-2">
                         <div>
                           <h3 className="font-semibold text-surface-900 text-lg">Recommendations & advice</h3>
@@ -1706,19 +1706,19 @@ export default function TransportOperations() {
 
                   {presentationsInsights.summary && (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                      <div className="app-glass-card p-4 shadow-sm">
                         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Reports</p>
                         <p className="mt-1 text-xl font-semibold text-surface-800">{presentationsInsights.summary.report_count}</p>
                       </div>
-                      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                      <div className="app-glass-card p-4 shadow-sm">
                         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Loads delivered</p>
                         <p className="mt-1 text-xl font-semibold text-surface-800">{presentationsInsights.summary.total_loads_delivered ?? '—'}</p>
                       </div>
-                      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                      <div className="app-glass-card p-4 shadow-sm">
                         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Incidents</p>
                         <p className="mt-1 text-xl font-semibold text-surface-800">{presentationsInsights.summary.total_incidents ?? '—'}</p>
                       </div>
-                      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                      <div className="app-glass-card p-4 shadow-sm">
                         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Non-compliance</p>
                         <p className="mt-1 text-xl font-semibold text-surface-800">{presentationsInsights.summary.total_non_compliance ?? '—'}</p>
                       </div>
@@ -1727,7 +1727,7 @@ export default function TransportOperations() {
                 </>
               )}
 
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+              <div className="app-glass-card overflow-hidden shadow-sm">
                 <div className="px-6 py-4 border-b border-surface-200 bg-surface-50">
                   <h3 className="text-sm font-semibold text-surface-800">Recommendations list</h3>
                   <p className="text-xs text-surface-600 mt-0.5">Assign owners and mark as applied to hold people accountable.</p>
@@ -1860,7 +1860,7 @@ export default function TransportOperations() {
               <h2 className="text-lg font-semibold text-surface-900">Presentations</h2>
               <p className="text-sm text-surface-600">Generate a PowerPoint presentation about production from approved shift reports. Use the filters below to choose the period and shift.</p>
 
-              <div className="rounded-xl border border-surface-200 bg-white p-6 shadow-sm">
+              <div className="app-glass-card p-6 shadow-sm">
                 <h3 className="text-sm font-semibold text-surface-800 mb-4">Filters</h3>
                 <div className="flex flex-wrap gap-6 items-end">
                   <div>
@@ -1908,7 +1908,7 @@ export default function TransportOperations() {
                 <InfoHint title="Truck and driver registration help" text="Register trucks and drivers here. They appear in the Shift Report tab for selection." />
               </div>
 
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-surface-800">Trucks</h3>
                   <button type="button" onClick={() => { setEditingTruckId(null); setTruckForm(emptyTruck); setShowTruckForm(true); }} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Add truck</button>
@@ -1966,7 +1966,7 @@ export default function TransportOperations() {
                 )}
               </div>
 
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-surface-800">Drivers</h3>
                   <button type="button" onClick={() => { setEditingDriverId(null); setDriverForm(emptyDriver); setShowDriverForm(true); }} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Add driver</button>
@@ -2041,7 +2041,7 @@ export default function TransportOperations() {
                 <InfoHint title="Accounting setup help" text="Create routes with collection point and destination, set rates and targets (delivery target and amount target) for calculations." />
               </div>
 
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-surface-800">Routes (rates & targets)</h3>
                   <button type="button" onClick={() => { setEditingRouteId(null); setRouteForm(emptyRoute); setShowRouteForm(true); }} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Add route</button>

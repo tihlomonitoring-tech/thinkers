@@ -1099,7 +1099,7 @@ export default function AccessManagement() {
   return (
     <div className="flex gap-0 min-h-[calc(100vh-8rem)]">
       <nav
-        className={`shrink-0 border-r border-surface-200 bg-white flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        className={`shrink-0 app-glass-secondary-nav flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
         aria-label="Access management"
         aria-hidden={navHidden}
       >
@@ -1174,15 +1174,15 @@ export default function AccessManagement() {
         <div className="space-y-6">
           <h2 className="text-lg font-semibold text-surface-900">Dashboard</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+            <div className="app-glass-card p-4 shadow-sm">
               <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Routes</p>
               <p className="mt-1 text-2xl font-semibold text-surface-900">{loading ? '—' : routes.length}</p>
             </div>
-            <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+            <div className="app-glass-card p-4 shadow-sm">
               <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Route rectors</p>
               <p className="mt-1 text-2xl font-semibold text-surface-900">{loading ? '—' : rectors.length}</p>
             </div>
-            <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+            <div className="app-glass-card p-4 shadow-sm">
               <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Expiring routes</p>
               <p className="mt-1 text-2xl font-semibold text-surface-900">
                 {loading ? '—' : routes.filter((r) => r.route_expiration && new Date(r.route_expiration) < new Date()).length}
@@ -1200,7 +1200,7 @@ export default function AccessManagement() {
               Enable or disable actions on the Contractor page. Turn a switch off to restrict that function for users.
             </p>
           </div>
-          <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-4 max-w-3xl">
+          <div className="app-glass-card p-4 space-y-4 max-w-3xl">
             {[
               ['allow_truck_manual', 'Allow adding truck manually'],
               ['allow_truck_import', 'Allow truck import (Excel / bulk)'],
@@ -1245,7 +1245,7 @@ export default function AccessManagement() {
             </button>
           </div>
           <p className="text-sm text-surface-500">Register a route with starting point, destination, capacity, maximum tons, and expiration. Add route rectors to assign owners and alert preferences.</p>
-          <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="app-glass-card overflow-hidden">
             {loading ? (
               <p className="p-6 text-surface-500">Loading…</p>
             ) : routes.length === 0 ? (
@@ -1356,7 +1356,7 @@ export default function AccessManagement() {
             </button>
           </div>
           <p className="text-sm text-surface-500">Rectors must be created as users first (User management). Then link them to a route here. When they open the Rector page, they will only see data for the route(s) they are assigned to.</p>
-          <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="app-glass-card overflow-hidden">
             {loading ? (
               <p className="p-6 text-surface-500">Loading…</p>
             ) : rectors.length === 0 ? (
@@ -1490,13 +1490,13 @@ export default function AccessManagement() {
           {reinstatementLoading ? (
             <p className="text-surface-500">Loading reinstatement requests…</p>
           ) : reinstatementRequests.length === 0 ? (
-            <div className="bg-white rounded-xl border border-surface-200 p-8 text-center text-surface-500">
+            <div className="app-glass-card p-8 text-center text-surface-500">
               <p className="font-medium text-surface-700">No reinstatement requests</p>
               <p className="text-sm mt-1">When contractors submit an appeal (Suspensions and appeals on the Contractor page), requests will appear here. You can view the appeal and reinstate the fleet or driver.</p>
             </div>
           ) : (
             <div className="flex gap-6 flex-wrap">
-              <div className={`bg-white rounded-xl border border-surface-200 overflow-hidden ${reinstatementSelected ? 'flex-1 min-w-0 max-w-2xl' : 'flex-1 min-w-0'}`}>
+              <div className={`app-glass-card overflow-hidden ${reinstatementSelected ? 'flex-1 min-w-0 max-w-2xl' : 'flex-1 min-w-0'}`}>
                 <div className="px-4 py-3 border-b border-surface-100 bg-surface-50 font-medium text-surface-800">Requests ({reinstatementRequests.length})</div>
                 <table className="w-full text-sm">
                   <thead className="bg-surface-50 border-b border-surface-200">
@@ -1556,7 +1556,7 @@ export default function AccessManagement() {
               </div>
 
               {reinstatementSelected && (
-                <div className="bg-white rounded-xl border border-surface-200 overflow-hidden w-full max-w-md shrink-0">
+                <div className="app-glass-card overflow-hidden w-full max-w-md shrink-0">
                   <div className="px-4 py-3 border-b border-surface-100 bg-surface-50 flex justify-between items-center">
                     <span className="font-medium text-surface-800">Appeal details</span>
                     <button type="button" onClick={() => setReinstatementSelected(null)} className="text-surface-500 hover:text-surface-700 p-1" aria-label="Close">×</button>
@@ -1622,7 +1622,7 @@ export default function AccessManagement() {
             ) : reinstatementHistory.length === 0 ? (
               <p className="text-surface-500 text-sm">No reinstated records yet.</p>
             ) : (
-              <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-surface-50 border-b border-surface-200">
                     <tr>
@@ -1687,7 +1687,7 @@ export default function AccessManagement() {
               const drivers = detail?.drivers || [];
               const selected = distSelectedRouteIds.includes(String(r.id ?? r.Id));
               return (
-                <div key={r.id} className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+                <div key={r.id} className="app-glass-card overflow-hidden">
                   <div className="p-4 border-b border-surface-100 flex items-center gap-3">
                     <label className="flex items-center gap-2 cursor-pointer shrink-0">
                       <input
@@ -1736,7 +1736,7 @@ export default function AccessManagement() {
             <p className="text-sm text-surface-500">No routes yet. Add routes in Route management and enrol fleet and drivers on each route.</p>
           )}
 
-          <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-4">
+          <div className="app-glass-card p-6 space-y-4">
             <h3 className="font-medium text-surface-900">How to distribute</h3>
             <p className="text-sm text-surface-500">Choose what to include and the format. If no routes are selected, the list includes all approved fleet/drivers.</p>
             <div className="flex flex-wrap gap-4 items-center">
@@ -2156,7 +2156,7 @@ export default function AccessManagement() {
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-4">
+          <div className="app-glass-card p-6 space-y-4">
             <h3 className="font-medium text-surface-900">New pilot schedule</h3>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
@@ -2481,7 +2481,7 @@ export default function AccessManagement() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="app-glass-card overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 font-medium text-surface-800">Schedules</div>
             {pilotLoading ? (
               <p className="p-4 text-sm text-surface-500">Loading…</p>
@@ -2587,7 +2587,7 @@ export default function AccessManagement() {
                   Run <code className="bg-amber-100 px-1 rounded">npm run db:access-distribution-pilot</code> so pilot sends appear in this history.
                 </div>
               )}
-              <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="px-4 py-3 border-b border-surface-100 font-medium text-surface-800">Emails sent by pilot schedules</div>
                 {pilotHistoryLoading ? (
                   <p className="p-4 text-sm text-surface-500">Loading…</p>
@@ -2638,7 +2638,7 @@ export default function AccessManagement() {
           <h2 className="text-lg font-semibold text-surface-900">Distribution history</h2>
           <p className="text-sm text-surface-500">View and filter all fleet/driver list distributions (downloads, email, WhatsApp). Export with advanced filters.</p>
 
-          <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-4">
+          <div className="app-glass-card p-4 space-y-4">
             <h3 className="font-medium text-surface-900">Advanced filters</h3>
             <div className="flex flex-wrap gap-4 items-end">
               <div>
@@ -2739,7 +2739,7 @@ export default function AccessManagement() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="app-glass-card overflow-hidden">
             {distHistoryLoading ? (
               <p className="p-6 text-surface-500">Loading…</p>
             ) : distHistory.length === 0 ? (
@@ -2799,7 +2799,7 @@ export default function AccessManagement() {
           </div>
 
           {progressReportSubTab === 'published' && (
-            <div className="bg-white rounded-xl border border-surface-200 p-6">
+            <div className="app-glass-card p-6">
               <h3 className="text-base font-semibold text-surface-800 mb-4">Published reports</h3>
               {progressReportsListLoading ? (
                 <p className="text-surface-500">Loading…</p>
@@ -2973,7 +2973,7 @@ export default function AccessManagement() {
               <span className="text-sm text-surface-500 self-center">To edit an existing report, go to the Published reports tab and click Edit.</span>
             </div>
 
-          <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-6">
+          <div className="app-glass-card p-6 space-y-6">
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">Report title *</label>
               <input type="text" value={progressReportForm.title} onChange={(e) => setProgressReportForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Ntshovelo Fleet Monitoring Project: Updated Progress Summary Report" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -3140,7 +3140,7 @@ export default function AccessManagement() {
           </div>
 
           {actionPlanSubTab === 'published' && (
-            <div className="bg-white rounded-xl border border-surface-200 p-6">
+            <div className="app-glass-card p-6">
               <h3 className="text-base font-semibold text-surface-800 mb-4">Published action plans</h3>
               {actionPlansListLoading ? (
                 <p className="text-surface-500">Loading…</p>
@@ -3312,7 +3312,7 @@ export default function AccessManagement() {
                     <span className="text-sm text-surface-500 self-center">To edit an existing plan, go to Published plans and click Edit.</span>
                   </div>
 
-                  <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-6">
+                  <div className="app-glass-card p-6 space-y-6">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-sm font-medium text-surface-700 mb-1">Title *</label>
@@ -3446,7 +3446,7 @@ export default function AccessManagement() {
           </div>
 
           {monthlyPerfSubTab === 'published' && (
-            <div className="bg-white rounded-xl border border-surface-200 p-6">
+            <div className="app-glass-card p-6">
               <h3 className="text-base font-semibold text-surface-800 mb-4">Published monthly performance reports</h3>
               {monthlyPerfListLoading ? <p className="text-surface-500">Loading…</p> : monthlyPerfList.length === 0 ? <p className="text-surface-500">No reports yet. Create one in the Create / Edit tab.</p> : (
                 <div className="overflow-x-auto">
@@ -3492,7 +3492,7 @@ export default function AccessManagement() {
                     <span className="text-sm text-surface-500 self-center">To edit an existing report, go to Published reports and click Edit.</span>
                   </div>
 
-                  <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-6">
+                  <div className="app-glass-card p-6 space-y-6">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="sm:col-span-2">
                         <label className="block text-sm font-medium text-surface-700 mb-1">Report title *</label>

@@ -427,7 +427,7 @@ export default function CommandCentre() {
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden relative">
-      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
+      <nav className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 shrink-0 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1">
@@ -1103,7 +1103,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           {loading ? (
             <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               {[1, 2, 3, 4, 5, 6].map((i) => (
-                <div key={i} className="bg-white rounded-xl border border-surface-200 p-5 h-28 animate-pulse" />
+                <div key={i} className="app-glass-card p-5 h-28 animate-pulse" />
               ))}
             </div>
           ) : (
@@ -1188,7 +1188,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
                   key={a.tab}
                   type="button"
                   onClick={() => setActiveTab?.(a.tab)}
-                  className="flex items-center gap-4 bg-white rounded-xl border border-surface-200 p-4 text-left shadow-sm hover:shadow-md hover:border-brand-200 hover:bg-brand-50/30 transition-all duration-200 group"
+                  className="flex items-center gap-4 app-glass-card p-4 text-left shadow-sm hover:shadow-md hover:border-brand-200 hover:bg-brand-50/30 transition-all duration-200 group"
                 >
                   {inner}
                 </button>
@@ -1208,7 +1208,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
         {/* Two-column: Recent breakdowns + Activity */}
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Recent unresolved breakdowns */}
-          <section className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+          <section className="app-glass-card shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 bg-surface-50/80 flex items-center justify-between">
               <h2 className="font-semibold text-surface-900">Recent unresolved breakdowns</h2>
               {recentBreakdowns.length > 0 && (canSeeTab?.('breakdowns') ? (
@@ -1257,7 +1257,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
           </section>
 
           {/* Compliance & alerts */}
-          <section className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+          <section className="app-glass-card shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 bg-surface-50/80 flex items-center justify-between">
               <h2 className="font-semibold text-surface-900">Compliance & alerts</h2>
               {pendingCompliance > 0 && (canSeeTab?.('compliance') ? (
@@ -1306,7 +1306,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
 
         {/* Unresolved breakdowns by severity */}
         {!loading && unresolvedBreakdowns.length > 0 && (
-          <section className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+          <section className="app-glass-card shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 bg-surface-50/80">
               <h2 className="font-semibold text-surface-900">Unresolved breakdowns by severity</h2>
             </div>
@@ -2434,7 +2434,7 @@ function TabBreakdowns() {
         </CollapsibleSectionHelp>
         {error && <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 px-4 py-2 text-sm">{error}</div>}
 
-        <div className="rounded-xl border border-surface-200 bg-white p-4">
+        <div className="app-glass-card p-4">
           <p className="text-xs font-semibold text-surface-500 uppercase tracking-wider mb-3">Filters</p>
           <div className="flex flex-wrap gap-3 items-end">
             <div>
@@ -2486,7 +2486,7 @@ function TabBreakdowns() {
       </div>
 
       {/* List (Contractor-style: clickable rows) – scrolls under sticky header */}
-      <div className="rounded-xl border border-surface-200 bg-white p-4">
+      <div className="app-glass-card p-4">
         <p className="text-xs text-surface-500 mb-2">Click a breakdown to view full details and attachments in the side panel.</p>
         {loading ? (
           <p className="text-surface-500 py-4">Loading…</p>
@@ -2749,7 +2749,7 @@ function TabContractorsDetails({ list, loading }) {
         </div>
       ) : (
         <>
-          <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+          <div className="app-glass-card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-surface-50 border-b border-surface-200">
@@ -2783,7 +2783,7 @@ function TabContractorsDetails({ list, loading }) {
             <div className="fixed inset-0 z-50 flex justify-end">
               <div className="absolute inset-0 bg-black/30" onClick={() => { setSelectedContractor(null); setSelectedSubcontractor(null); }} aria-hidden />
               <div className="relative w-full max-w-xl bg-white shadow-xl overflow-y-auto flex flex-col max-h-full">
-                <div className="sticky top-0 px-4 py-3 border-b border-surface-200 bg-white flex items-center justify-between">
+                <div className="sticky top-0 z-10 px-4 py-3 border-b border-surface-200/60 bg-white/75 backdrop-blur-md flex items-center justify-between dark:border-white/10 dark:bg-surface-900/65">
                   <h4 className="font-semibold text-surface-900">{selectedContractor.tenantName || `Contractor ${selectedContractor.tenantId}`}</h4>
                   <button type="button" onClick={() => { setSelectedContractor(null); setSelectedSubcontractor(null); }} className="p-2 text-surface-500 hover:text-surface-800 rounded">✕</button>
                 </div>
@@ -3040,7 +3040,7 @@ function TabContractorExpiries() {
         </div>
       )}
       {!loading && !loadError && rows.length > 0 && (
-        <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-surface-50 border-b border-surface-200">
@@ -3128,23 +3128,23 @@ function TabReports() {
           Document shifts, investigations and performance. Fleet monitoring and logistics industry standard.
         </p>
       </CollapsibleSectionHelp>
-      <div className="inline-flex rounded-lg border border-surface-200 bg-white p-1">
+      <div className="app-glass-segmented">
         <button
           type="button"
           onClick={() => setReportsSubTab('compose')}
-          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'compose' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'}`}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'compose' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
         >
           Compose report
         </button>
         <button
           type="button"
           onClick={() => setReportsSubTab('template')}
-          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'template' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'}`}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'template' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
         >
           Shift report template
         </button>
       </div>
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         {reportsSubTab === 'template' ? (
           <ShiftReportTemplateTab user={user} />
         ) : !reportType ? (
@@ -3154,7 +3154,7 @@ function TabReports() {
                 key={r.id}
                 type="button"
                 onClick={() => setReportType(r.id)}
-                className="p-5 rounded-xl border-2 border-surface-200 text-left hover:bg-brand-50 hover:border-brand-300 transition-all shadow-sm"
+                className="p-5 rounded-xl border-2 border-surface-200/70 bg-white/40 backdrop-blur-xl text-left hover:bg-white/55 hover:border-brand-400/60 dark:bg-white/[0.06] dark:hover:bg-white/[0.1] dark:border-white/15 transition-all shadow-sm"
               >
                 <span className="font-semibold text-surface-900 block">{r.label}</span>
                 <p className="text-sm text-surface-500 mt-1">{r.description}</p>
@@ -3520,7 +3520,7 @@ function TabSavedReports() {
       >
         <p>Open a report to view, edit, submit for approval, or download (when approved).</p>
       </CollapsibleSectionHelp>
-      <div className="rounded-xl border border-surface-200 bg-white p-4">
+      <div className="app-glass-toolbar p-4">
         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <input
@@ -3545,12 +3545,12 @@ function TabSavedReports() {
       {loading ? (
         <p className="text-surface-500">Loading…</p>
       ) : filteredReports.length === 0 ? (
-        <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-600">No shift reports yet. Create one from Report composition.</div>
+        <div className="app-glass-card p-8 text-center text-surface-600">No shift reports yet. Create one from Report composition.</div>
       ) : (
-        <div className="rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-table">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-surface-50 border-b border-surface-200">
+              <tr className="app-glass-thead-row">
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Saved date</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Time</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Controller(s)</th>
@@ -3565,7 +3565,7 @@ function TabSavedReports() {
                 const timeStr = savedAt ? savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
                 const controllers = [r.controller1_name, r.controller2_name].filter(Boolean).join(', ') || '—';
                 return (
-                  <tr key={r.id} className="border-b border-surface-100 last:border-0 hover:bg-surface-50">
+                  <tr key={r.id} className="app-glass-data-row last:border-b-0">
                     <td className="px-4 py-3 text-surface-700">{dateStr}</td>
                     <td className="px-4 py-3 text-surface-700">{timeStr}</td>
                     <td className="px-4 py-3 text-surface-700">{controllers}</td>
@@ -4011,7 +4011,7 @@ function TabShiftItems({ setActiveTab }) {
         tabIndex={0}
         onClick={() => setSelectedReportId(r.id)}
         onKeyDown={(e) => e.key === 'Enter' && setSelectedReportId(r.id)}
-        className={`group rounded-xl border p-4 text-left transition-all hover:shadow-md hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${selectedReportId === r.id ? 'border-brand-500 bg-brand-50/50 shadow-sm' : 'border-surface-200 bg-white'}`}
+        className={`group rounded-xl border p-4 text-left backdrop-blur-sm transition-all hover:shadow-md hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${selectedReportId === r.id ? 'border-brand-500 bg-brand-50/55 shadow-sm' : 'border-surface-200/70 bg-white/45 dark:border-white/12 dark:bg-white/[0.06]'}`}
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="font-medium text-surface-900">{reportDate}</span>
@@ -4087,19 +4087,19 @@ function TabShiftItems({ setActiveTab }) {
       ) : !data ? null : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <div className="app-glass-panel-2xl p-5 shadow-sm">
               <p className="text-xs font-semibold text-surface-500 uppercase tracking-wider">Reports</p>
               <p className="text-2xl font-bold text-surface-900 mt-1">{summary.report_count ?? 0}</p>
             </div>
-            <div className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <div className="app-glass-panel-2xl p-5 shadow-sm">
               <p className="text-xs font-semibold text-surface-500 uppercase tracking-wider">Routes</p>
               <p className="text-2xl font-bold text-surface-900 mt-1">{summary.route_count ?? 0}</p>
             </div>
-            <div className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <div className="app-glass-panel-2xl p-5 shadow-sm">
               <p className="text-xs font-semibold text-surface-500 uppercase tracking-wider">From</p>
               <p className="text-lg font-semibold text-surface-900 mt-1">{data.dateFrom || '—'}</p>
             </div>
-            <div className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <div className="app-glass-panel-2xl p-5 shadow-sm">
               <p className="text-xs font-semibold text-surface-500 uppercase tracking-wider">To</p>
               <p className="text-lg font-semibold text-surface-900 mt-1">{data.dateTo || '—'}</p>
             </div>
@@ -4113,7 +4113,7 @@ function TabShiftItems({ setActiveTab }) {
           ) : viewMode === 'route' ? (
             <div className="space-y-6">
               {filteredByRoute.map(({ route, reports: routeReports }) => (
-                <section key={route} className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                <section key={route} className="app-glass-panel-2xl overflow-hidden shadow-sm">
                   <div className="px-6 py-4 bg-gradient-to-r from-surface-50 to-brand-50 border-b border-surface-100">
                     <h3 className="font-bold text-surface-900 flex items-center gap-2">
                       <span className="text-brand-600">{route}</span>
@@ -4129,7 +4129,7 @@ function TabShiftItems({ setActiveTab }) {
           ) : (
             <div className="space-y-6">
               {byDate.map(({ date, reports: dateReports }) => (
-                <section key={date} className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                <section key={date} className="app-glass-panel-2xl overflow-hidden shadow-sm">
                   <div className="px-6 py-4 bg-gradient-to-r from-surface-50 to-brand-50 border-b border-surface-100">
                     <h3 className="font-bold text-surface-900 flex items-center gap-2">
                       <span>{new Date(date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
@@ -4297,7 +4297,7 @@ function TabShiftReportExports() {
         </p>
       </CollapsibleSectionHelp>
 
-      <div className="rounded-2xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+      <div className="app-glass-panel-2xl shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
           <h3 className="font-semibold text-surface-900">Choose section and filters</h3>
           <p className="text-sm text-surface-600 mt-0.5">Data is taken from shift reports you created or are assigned to.</p>
@@ -4423,7 +4423,7 @@ function ControllerEvaluationForm({ reportId, existingEvaluation, onSaved, savin
     <form onSubmit={handleSubmit} className="space-y-6">
       <p className="text-sm text-surface-600">Evaluate how the controllers ran their shift. Every question requires Yes or No and a comment. Your evaluation is required before you can approve, reject, or grant provisional approval.</p>
       {CONTROLLER_EVALUATION_QUESTIONS.map((q, idx) => (
-        <div key={q.id} className="rounded-xl border border-surface-200 bg-white p-4">
+        <div key={q.id} className="app-glass-card p-4">
           <p className="font-medium text-surface-900 mb-2">{idx + 1}. {q.label}</p>
           <div className="flex flex-wrap gap-4 mb-3">
             <label className="inline-flex items-center gap-2 cursor-pointer">
@@ -4538,7 +4538,7 @@ function TabMessages() {
     <div className="space-y-4">
       {error && <p className="text-sm text-red-600">{error}</p>}
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <h3 className="font-medium text-surface-900">New message (commodity operations)</h3>
           <p className="text-sm text-surface-500 mt-1">Two-way communication is private per company. Select one contractor company per chat.</p>
           <form onSubmit={sendMessage} className="mt-3 space-y-3">
@@ -4556,7 +4556,7 @@ function TabMessages() {
             </button>
           </form>
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <h3 className="font-medium text-surface-900">Messages</h3>
           <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_200px]">
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search subject, body, sender, contractor" className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -4775,7 +4775,7 @@ function TabRequests() {
           ) : (
             <div className="space-y-3">
               {comments.map((c) => (
-                <div key={c.id} className={`rounded-lg border p-4 ${c.addressed ? 'bg-green-50/50 border-green-200' : 'bg-white border-surface-200 shadow-sm'}`}>
+                <div key={c.id} className={`rounded-lg border p-4 ${c.addressed ? 'bg-green-50/50 border-green-200' : 'border-surface-200/70 bg-white/45 backdrop-blur-sm shadow-sm dark:border-white/10 dark:bg-white/[0.06]'}`}>
                   <p className="text-base text-surface-900 leading-snug whitespace-pre-wrap">{c.comment_text}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-surface-600">— {c.user_name}</span>
@@ -4822,7 +4822,7 @@ function TabRequests() {
           approval. To change a decision you already made, open the report under &quot;Recently decided by you&quot; and request an override code.
         </p>
       </CollapsibleSectionHelp>
-      <div className="rounded-xl border border-surface-200 bg-white p-4">
+      <div className="app-glass-toolbar p-4">
         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <input
@@ -4848,14 +4848,14 @@ function TabRequests() {
       ) : (
         <>
           {pendingFiltered.length === 0 ? (
-            <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-600">No pending requests.</div>
+            <div className="app-glass-card p-8 text-center text-surface-600">No pending requests.</div>
           ) : (
-            <div className="rounded-xl border border-surface-200 overflow-hidden">
-              <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 bg-surface-50 border-b border-surface-100">Pending your review</h3>
-              <ul className="divide-y divide-surface-100">
+            <div className="app-glass-table">
+              <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 app-glass-thead-row border-b">Pending your review</h3>
+              <ul className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
                 {pendingFiltered.map((r) => (
                   <li key={r.id}>
-                    <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-surface-50 flex items-center justify-between gap-4">
+                    <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-white/45 dark:hover:bg-white/[0.06] flex items-center justify-between gap-4">
                       <span className="font-medium text-surface-900">{r.route || 'Shift report'} — from {r.created_by_name} · {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}</span>
                       <span className={`text-xs px-2 py-0.5 rounded-full ${r.status === 'provisional' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>{r.status}</span>
                     </button>
@@ -4865,13 +4865,13 @@ function TabRequests() {
             </div>
           )}
           {decidedFiltered.length > 0 && (
-            <div className="rounded-xl border border-surface-200 overflow-hidden">
-              <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 bg-surface-50 border-b border-surface-100">Recently decided by you</h3>
-              <p className="px-4 py-2 text-xs text-surface-500">Open a report to request an override code and change your decision.</p>
-              <ul className="divide-y divide-surface-100">
+            <div className="app-glass-table">
+              <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 app-glass-thead-row border-b">Recently decided by you</h3>
+              <p className="px-4 py-2 text-xs text-surface-500 bg-white/20 dark:bg-white/[0.03]">Open a report to request an override code and change your decision.</p>
+              <ul className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
                 {decidedFiltered.map((r) => (
                   <li key={r.id}>
-                    <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-surface-50 flex items-center justify-between gap-4">
+                    <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-white/45 dark:hover:bg-white/[0.06] flex items-center justify-between gap-4">
                       <span className="font-medium text-surface-900">{r.route || 'Shift report'} — {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}</span>
                       <span className={`text-xs px-2 py-0.5 rounded-full ${r.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{r.status}</span>
                     </button>
@@ -4905,10 +4905,10 @@ function ShiftReportReadOnlyView({ report }) {
   const commsLog = Array.isArray(r.communication_log) ? r.communication_log : [];
 
   return (
-    <div className="rounded-xl border border-surface-200 overflow-hidden">
-      <div className="px-4 py-3 flex flex-wrap gap-2 border-b border-surface-100 bg-surface-50">
+    <div className="app-glass-card overflow-hidden">
+      <div className="app-glass-form-pill-row !px-4">
         {sections.map((s) => (
-          <button key={s.id} type="button" onClick={() => setOpenSection((p) => (p === s.id ? null : s.id))} className={`text-xs px-3 py-1.5 rounded-full font-medium ${openSection === s.id ? 'bg-brand-600 text-white' : 'bg-surface-200 text-surface-600'}`}>{s.label}</button>
+          <button key={s.id} type="button" onClick={() => setOpenSection((p) => (p === s.id ? null : s.id))} className={`text-xs px-3 py-1.5 rounded-full font-medium transition ${openSection === s.id ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}>{s.label}</button>
         ))}
       </div>
       <div className="p-6 space-y-6">
@@ -5019,7 +5019,7 @@ function TruckSearchSelect({ value, onChange, placeholder = 'Search or type truc
         id={id}
       />
       {open && (options.length > 0 || search) && (
-        <ul className="absolute z-20 mt-0.5 left-0 right-0 max-h-40 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg py-1 text-sm">
+        <ul className="absolute z-20 mt-0.5 left-0 right-0 max-h-40 overflow-auto rounded-lg border border-surface-200/80 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-sm dark:bg-surface-900/95 dark:border-white/15">
           {options.length === 0 ? (
             <li className="px-2 py-1.5 text-surface-500">
               {(trucksList || []).length === 0 ? 'No trucks loaded. You can type a reg number.' : 'No match. You can type a reg number.'}
@@ -5071,7 +5071,7 @@ function DriverSearchSelect({ value, onChange, placeholder = 'Search or type dri
         id={id}
       />
       {open && (options.length > 0 || search) && (
-        <ul className="absolute z-20 mt-0.5 left-0 right-0 max-h-40 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg py-1 text-sm">
+        <ul className="absolute z-20 mt-0.5 left-0 right-0 max-h-40 overflow-auto rounded-lg border border-surface-200/80 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-sm dark:bg-surface-900/95 dark:border-white/15">
           {options.length === 0 ? <li className="px-2 py-1.5 text-surface-500">No match. You can type a name.</li> : options.map((opt, idx) => (
             <li key={`${opt.value}-${idx}`} role="button" tabIndex={0} onClick={() => { onChange(opt.value); setSearch(opt.value); setOpen(false); }} onKeyDown={(e) => e.key === 'Enter' && (onChange(opt.value), setSearch(opt.value), setOpen(false))} className="px-2 py-1.5 hover:bg-surface-100 cursor-pointer truncate">{opt.label}</li>
           ))}
@@ -5380,7 +5380,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
             <h3 className="font-semibold text-surface-900 mb-3 text-base">{canMarkAddressed ? 'Reviewer comments – address to complete approval' : 'Reviewer comments'}</h3>
             <div className="space-y-3">
               {(comments || []).map((c) => (
-                <div key={c.id} className={`rounded-lg border p-4 ${c.addressed ? 'bg-green-50/80 border-green-300' : 'bg-white border-surface-200 shadow-sm'}`}>
+                <div key={c.id} className={`rounded-lg border p-4 backdrop-blur-sm ${c.addressed ? 'bg-green-50/80 border-green-300' : 'border-surface-200/70 bg-white/45 shadow-sm dark:border-white/10 dark:bg-white/[0.06]'}`}>
                   <p className="text-base text-surface-900 leading-snug whitespace-pre-wrap">{c.comment_text}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-surface-600">— {c.user_name}</span>
@@ -5425,13 +5425,13 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   const set = (key) => (e) => setFormFields((f) => ({ ...f, [key]: e.target.value }));
   return (
     <>
-    <form onSubmit={handleSubmit} className="divide-y divide-surface-100">
-      <div className="p-4 bg-surface-50 border-b border-surface-200 flex items-center justify-between flex-wrap gap-2">
+    <form onSubmit={handleSubmit} className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
+      <div className="app-glass-form-topbar">
         <button type="button" onClick={onBack} className="text-sm text-surface-600 hover:text-surface-900 font-medium">
           {reportId ? '← Back to list' : '← Back to report types'}
         </button>
         <div className="flex gap-2">
-          <button type="button" onClick={() => setOpenSection(null)} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-100">Collapse all</button>
+          <button type="button" onClick={() => setOpenSection(null)} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300/80 bg-white/30 backdrop-blur-sm text-surface-700 hover:bg-white/50 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Collapse all</button>
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
             {saving ? 'Saving…' : 'Save shift report'}
           </button>
@@ -5446,13 +5446,13 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       ) : null}
 
       {/* Section nav (sticky on scroll could be added) */}
-      <div className="px-6 py-3 flex flex-wrap gap-2 border-b border-surface-100">
+      <div className="app-glass-form-pill-row">
         {sections.map((s) => (
           <button
             key={s.id}
             type="button"
             onClick={() => setOpenSection((prev) => (prev === s.id ? null : s.id))}
-            className={`text-xs px-3 py-1.5 rounded-full font-medium ${openSection === s.id ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-600 hover:bg-surface-200'}`}
+            className={`text-xs px-3 py-1.5 rounded-full font-medium transition ${openSection === s.id ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
           >
             {s.label}
           </button>
@@ -5756,8 +5756,8 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
         </SectionBlock>
       </div>
 
-      <div className="p-4 bg-surface-50 border-t border-surface-200 flex justify-end gap-2">
-        <button type="button" onClick={onBack} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-100">Cancel</button>
+      <div className="app-glass-form-footer">
+        <button type="button" onClick={onBack} className="px-4 py-2 text-sm rounded-lg border border-surface-300/80 bg-white/35 backdrop-blur-sm text-surface-700 hover:bg-white/55 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Cancel</button>
         <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
           {saving ? 'Saving…' : 'Save shift report'}
         </button>
@@ -5768,7 +5768,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
         <h3 className="font-semibold text-surface-900 mb-3 text-base">Reviewer comments – address to complete approval</h3>
         <div className="space-y-3">
           {(comments || []).map((c) => (
-            <div key={c.id} className={`rounded-lg border p-4 ${c.addressed ? 'bg-green-50/80 border-green-300' : 'bg-white border-surface-200 shadow-sm'}`}>
+            <div key={c.id} className={`rounded-lg border p-4 ${c.addressed ? 'bg-green-50/80 border-green-300' : 'border-surface-200/70 bg-white/45 backdrop-blur-sm shadow-sm dark:border-white/10 dark:bg-white/[0.06]'}`}>
               <p className="text-base text-surface-900 leading-snug whitespace-pre-wrap">{c.comment_text}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-surface-600">— {c.user_name}</span>
@@ -5846,14 +5846,14 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
   };
 
   return (
-    <form onSubmit={handleSubmit} className="divide-y divide-surface-100">
-      <div className="p-4 bg-surface-50 border-b border-surface-200 flex items-center justify-between flex-wrap gap-2">
+    <form onSubmit={handleSubmit} className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
+      <div className="app-glass-form-topbar">
         <div className="flex items-center gap-3">
           <button type="button" onClick={onBack} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to report types</button>
           <span className="text-xs font-semibold text-surface-500 uppercase tracking-wider">Investigation report</span>
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={() => setOpenSection(null)} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-100">Collapse all</button>
+          <button type="button" onClick={() => setOpenSection(null)} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300/80 bg-white/30 backdrop-blur-sm text-surface-700 hover:bg-white/50 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Collapse all</button>
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
             {saving ? 'Saving…' : 'Save investigation report'}
           </button>
@@ -5861,13 +5861,13 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
       </div>
       {message && <div className="px-6 py-3 bg-green-50 text-green-800 text-sm">{message}</div>}
 
-      <div className="px-6 py-3 flex flex-wrap gap-2 border-b border-surface-100">
+      <div className="app-glass-form-pill-row">
         {invSections.map((s) => (
           <button
             key={s.id}
             type="button"
             onClick={() => setOpenSection((p) => (p === s.id ? null : s.id))}
-            className={`text-xs px-3 py-1.5 rounded-full font-medium ${openSection === s.id ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-600 hover:bg-surface-200'}`}
+            className={`text-xs px-3 py-1.5 rounded-full font-medium transition ${openSection === s.id ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
           >
             {s.label}
           </button>
@@ -5963,7 +5963,7 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
           </div>
           <p className="text-xs font-semibold text-surface-600 mb-2">Transaction details under review</p>
           {transactions.map((row, i) => (
-            <div key={i} className="grid grid-cols-2 sm:grid-cols-7 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2">
+            <div key={i} className="grid grid-cols-2 sm:grid-cols-7 gap-2 p-3 mb-2 app-glass-nested-row">
               <input type="text" value={row.ref} onChange={(e) => updateRow(setTransactions, i, 'ref', e.target.value)} placeholder="Ref (e.g. M11754)" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
               <input type="date" value={row.date} onChange={(e) => updateRow(setTransactions, i, 'date', e.target.value)} placeholder="Date" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
               <input type="text" value={row.location} onChange={(e) => updateRow(setTransactions, i, 'location', e.target.value)} placeholder="Location" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
@@ -5981,7 +5981,7 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
         <SectionBlock title="Involved parties" open={openSection === 'inv_parties'} onToggle={() => setOpenSection((p) => (p === 'inv_parties' ? null : 'inv_parties'))}>
           <p className="text-xs text-surface-500 mb-3">Name, role, contact and statement for each party (transporter, driver, clerk, control room, etc.).</p>
           {parties.map((row, i) => (
-            <div key={i} className="p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2">
+            <div key={i} className="p-3 mb-2 app-glass-nested-row">
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
                 <input type="text" value={row.name} onChange={(e) => updateRow(setParties, i, 'name', e.target.value)} placeholder="Name (e.g. Dineo Mahlangu, Marazo logistics)" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
                 <input type="text" value={row.role} onChange={(e) => updateRow(setParties, i, 'role', e.target.value)} placeholder="Role (Transporter / Driver / Clerk)" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
@@ -6047,8 +6047,8 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
         </SectionBlock>
       </div>
 
-      <div className="p-4 bg-surface-50 border-t border-surface-200 flex justify-end gap-2">
-        <button type="button" onClick={onBack} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-100">Cancel</button>
+      <div className="app-glass-form-footer">
+        <button type="button" onClick={onBack} className="px-4 py-2 text-sm rounded-lg border border-surface-300/80 bg-white/35 backdrop-blur-sm text-surface-700 hover:bg-white/55 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Cancel</button>
         <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
           {saving ? 'Saving…' : 'Save investigation report'}
         </button>
@@ -6060,12 +6060,12 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
 function SectionBlock({ title, open, onToggle, children }) {
   const isOpen = open !== false;
   return (
-    <div className="border border-surface-200 rounded-xl overflow-hidden">
-      <button type="button" onClick={onToggle} className="w-full flex items-center justify-between px-4 py-3 bg-surface-50 hover:bg-surface-100 text-left">
-        <span className="font-semibold text-surface-900">{title}</span>
-        <span className="text-surface-500">{isOpen ? '−' : '+'}</span>
+    <div className="app-glass-section-shell">
+      <button type="button" onClick={onToggle} className="app-glass-section-trigger">
+        <span className="font-semibold text-surface-900 dark:text-surface-50">{title}</span>
+        <span className="text-surface-600 dark:text-surface-300">{isOpen ? '−' : '+'}</span>
       </button>
-      {isOpen && <div className="p-4 pt-2 bg-white">{children}</div>}
+      {isOpen && <div className="app-glass-section-body">{children}</div>}
     </div>
   );
 }
@@ -6086,7 +6086,7 @@ function GenericReportForm({ reportType, reportTypes, onBack, saving, setSaving,
   };
   const label = reportTypes.find((r) => r.id === reportType)?.label || 'Report';
   return (
-    <div className="p-6">
+    <div className="app-glass-card p-6">
       <button type="button" onClick={onBack} className="text-sm text-surface-500 hover:text-surface-700 mb-4">← Back to report types</button>
       <form onSubmit={handleSubmit} className="space-y-4 max-w-xl">
         <h3 className="font-semibold text-surface-900">{label}</h3>
@@ -6223,7 +6223,7 @@ function TabLibrary() {
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
           </span>
-          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by route, case number, controller…" className="w-full pl-10 pr-4 py-3 rounded-xl border border-surface-200 bg-white text-surface-900 placeholder:text-surface-400 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" />
+          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by route, case number, controller…" className="w-full pl-10 pr-4 py-3 rounded-xl border border-surface-200/70 bg-white/70 backdrop-blur-md text-surface-900 placeholder:text-surface-400 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 dark:bg-white/[0.08] dark:border-white/12 dark:text-surface-100" />
         </div>
         <div className="flex gap-2 items-center">
           <input ref={fileInputRef} type="file" onChange={handleUpload} disabled={uploading} className="hidden" id="library-file-upload" />
@@ -6236,7 +6236,7 @@ function TabLibrary() {
       {uploadError && <div className="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-2">{uploadError}</div>}
 
       {/* Approved Shift Reports */}
-      <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
         <div className="px-6 py-4 bg-gradient-to-r from-surface-50 to-white border-b border-surface-100">
           <h3 className="font-semibold text-surface-900 flex items-center gap-2">
             <span className="w-8 h-8 rounded-lg bg-brand-100 text-brand-600 flex items-center justify-center text-sm font-bold">S</span>
@@ -6270,7 +6270,7 @@ function TabLibrary() {
       </section>
 
       {/* Approved Investigation Reports */}
-      <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
         <div className="px-6 py-4 bg-gradient-to-r from-surface-50 to-white border-b border-surface-100">
           <h3 className="font-semibold text-surface-900 flex items-center gap-2">
             <span className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center text-sm font-bold">I</span>
@@ -6305,7 +6305,7 @@ function TabLibrary() {
       </section>
 
       {/* Uploaded files */}
-      <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
         <div className="px-6 py-4 bg-gradient-to-r from-surface-50 to-white border-b border-surface-100">
           <h3 className="font-semibold text-surface-900 flex items-center gap-2">
             <span className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center text-sm font-bold">F</span>
@@ -6617,7 +6617,7 @@ function TabCompliance({ user, inspections = [], setInspections }) {
       )}
 
       {/* Step 1: Search and select truck */}
-      <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
         <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
           <h3 className="font-semibold text-surface-900">1. Select truck</h3>
           <p className="text-sm text-surface-500 mt-0.5">Search by registration and click a truck. You must complete the truck inspection before selecting a driver.</p>
@@ -6699,7 +6699,7 @@ function TabCompliance({ user, inspections = [], setInspections }) {
       {/* Step 2: Truck inspection (driver cannot be selected until truck section is complete) */}
       {inspectionStarted && selectedTruck && (
         <>
-          <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
             <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
               <h3 className="font-semibold text-surface-900">2. Truck inspection</h3>
               <p className="text-sm text-surface-500 mt-0.5">Vehicle: {selectedTruck.registration} — {selectedTruck.make_model || '—'}. Complete all fields, then click &quot;Truck section complete — select driver&quot;.</p>
@@ -6755,7 +6755,7 @@ function TabCompliance({ user, inspections = [], setInspections }) {
 
           {/* Step 3: Select driver (only after truck section complete) */}
           {truckSectionComplete && (
-            <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+            <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
               <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
                 <h3 className="font-semibold text-surface-900">3. Select driver</h3>
                 <p className="text-sm text-surface-500 mt-0.5">Search and click the driver you are inspecting for this truck.</p>
@@ -6809,7 +6809,7 @@ function TabCompliance({ user, inspections = [], setInspections }) {
           {/* Step 4: Driver road safety (only when driver selected) */}
           {truckSectionComplete && selectedDriver && (
             <>
-              <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+              <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
                 <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
                   <h3 className="font-semibold text-surface-900">4. Driver — road safety</h3>
                   <p className="text-sm text-surface-500 mt-0.5">Driver: {selectedDriver.full_name || '—'}. If any item fails, the system will recommend driver suspension.</p>
@@ -7003,7 +7003,7 @@ function TabInspected({ inspections = [], setInspections }) {
         </div>
 
         {activeSubTab === 'trucks' && (
-          <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
             <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
               <h3 className="font-semibold text-surface-900">Inspected trucks</h3>
               <p className="text-sm text-surface-500 mt-0.5">One row per truck (latest inspection).</p>
@@ -7093,7 +7093,7 @@ function TabInspected({ inspections = [], setInspections }) {
         )}
 
         {activeSubTab === 'drivers' && (
-          <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
             <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
               <h3 className="font-semibold text-surface-900">Inspected drivers</h3>
               <p className="text-sm text-surface-500 mt-0.5">One row per driver (latest inspection).</p>
@@ -7195,7 +7195,7 @@ function TabInspected({ inspections = [], setInspections }) {
 
       {/* Side panel: full inspection record */}
       {viewingRecord && (
-        <div className="w-full max-w-md shrink-0 border-l border-surface-200 bg-white shadow-lg overflow-hidden flex flex-col">
+        <div className="w-full max-w-md shrink-0 border-l border-surface-200/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden flex flex-col dark:border-white/10 dark:bg-surface-900/75">
           <div className="p-4 border-b border-surface-100 flex justify-between items-center">
             <h3 className="font-semibold text-surface-900">Inspection record</h3>
             <button type="button" onClick={() => { setSidePanelRecord(null); setSidePanelHistory([]); }} className="text-surface-500 hover:text-surface-700 p-1" aria-label="Close">×</button>
@@ -7338,7 +7338,7 @@ function TabInspectionRecords({ inspections = [], setInspections }) {
           <p>Full trail of all truck inspections. Click a row to view details and contractor response. Trucks must be inspected every 24 hours.</p>
         </CollapsibleSectionHelp>
 
-        <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+        <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
             <h3 className="font-semibold text-surface-900">All inspection records</h3>
             <p className="text-sm text-surface-500 mt-0.5">Most recent first. Each row is one inspection (truck + driver at a point in time).</p>
@@ -7400,7 +7400,7 @@ function TabInspectionRecords({ inspections = [], setInspections }) {
 
       {/* Side panel: full record + contractor response */}
       {selectedRecord && (
-        <div className="w-full max-w-md shrink-0 border-l border-surface-200 bg-white shadow-lg overflow-hidden flex flex-col">
+        <div className="w-full max-w-md shrink-0 border-l border-surface-200/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden flex flex-col dark:border-white/10 dark:bg-surface-900/75">
           <div className="p-4 border-b border-surface-100 flex justify-between items-center">
             <h3 className="font-semibold text-surface-900">Inspection record</h3>
             <button type="button" onClick={() => setSelectedRecord(null)} className="text-surface-500 hover:text-surface-700 p-1" aria-label="Close">×</button>
@@ -7766,7 +7766,7 @@ function TabDeleteFleetDrivers() {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         {loading ? (
           <p className="p-6 text-surface-500">Loading…</p>
         ) : (
@@ -8004,7 +8004,7 @@ function TabContractorBlock() {
         />
       </div>
 
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         {loading ? (
           <p className="p-6 text-surface-500">Loading…</p>
         ) : filteredSuspensions.length === 0 ? (
@@ -8578,7 +8578,7 @@ function TabApplications() {
           )}
         </div>
 
-        <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+        <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
             <h3 className="font-semibold text-surface-900">Contract additions</h3>
             <p className="text-sm text-surface-500 mt-0.5">Click a row to view full details. Use checkboxes to select applications for export or bulk approve; use filters and Export CSV/Excel.</p>
@@ -9089,7 +9089,7 @@ function TabApplicationsIntegration() {
           Choose columns & download Excel
         </button>
       </div>
-      <section className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
         <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-semibold text-surface-900">Data table</h3>
@@ -9239,7 +9239,7 @@ function TabFleetVerification() {
         />
       </div>
 
-      <form onSubmit={onVerify} className="bg-white rounded-xl border border-surface-200 p-4 space-y-4">
+      <form onSubmit={onVerify} className="app-glass-card p-4 space-y-4">
         <div className="grid md:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-medium text-surface-600 mb-1">Tenant scope</label>
@@ -9278,7 +9278,7 @@ function TabFleetVerification() {
 
       {result ? (
         <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-surface-200 p-4">
+          <div className="app-glass-card p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-surface-900">Verification complete</p>
@@ -9307,7 +9307,7 @@ function TabFleetVerification() {
           </div>
 
           <div className="grid lg:grid-cols-2 gap-4">
-            <div className="bg-white rounded-xl border border-surface-200 p-4">
+            <div className="app-glass-card p-4">
               <p className="font-medium text-surface-900 mb-2">Preview: matched trucks</p>
               {(result.preview?.trucks || []).length === 0 ? (
                 <p className="text-sm text-surface-500">No already-enrolled trucks detected.</p>
@@ -9322,7 +9322,7 @@ function TabFleetVerification() {
                 </ul>
               )}
             </div>
-            <div className="bg-white rounded-xl border border-surface-200 p-4">
+            <div className="app-glass-card p-4">
               <p className="font-medium text-surface-900 mb-2">Preview: matched drivers</p>
               {(result.preview?.drivers || []).length === 0 ? (
                 <p className="text-sm text-surface-500">No already-enrolled drivers detected.</p>
@@ -9357,7 +9357,7 @@ function TabDelivery() {
       >
         <p>Document delivery stats per truck. Import transactions.</p>
       </CollapsibleSectionHelp>
-      <div className="bg-white rounded-xl border border-surface-200 p-6 space-y-4">
+      <div className="app-glass-card p-6 space-y-4">
         <div className="flex gap-3">
           <button type="button" className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Add delivery record</button>
           <button type="button" className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Import transactions</button>
@@ -9415,7 +9415,7 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-900">Manage tab access</h2>
       <p className="text-sm text-surface-600">Grant or revoke Command Centre tab access for users. Only super admins see this.</p>
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

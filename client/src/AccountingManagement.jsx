@@ -3523,7 +3523,7 @@ export default function AccountingManagement() {
     <div className="flex gap-0 w-full min-h-0 -m-4 sm:-m-6">
       {/* Side nav */}
       <nav
-        className={`shrink-0 flex flex-col border-r border-surface-200 bg-white transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        className={`shrink-0 flex flex-col app-glass-secondary-nav transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
         aria-label="Accounting management"
         aria-hidden={navHidden}
       >

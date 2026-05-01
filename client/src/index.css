@@ -6,7 +6,7 @@
    does not tint scrollbars, form controls, or html “gutter” behind the layout. */
 html:not(.dark) {
   color-scheme: light;
-  background-color: #fafafa;
+  background-color: #f8fafc;
 }
 
 body {
@@ -15,7 +15,7 @@ body {
 
 html.dark {
   color-scheme: dark;
-  background-color: #0a0a0a;
+  background-color: #020617;
 }
 
 html.dark body {
@@ -75,7 +75,7 @@ body,
 html.dark,
 html.dark body,
 html.dark #root {
-  scrollbar-color: #525252 #262626;
+  scrollbar-color: #475569 #0f172a;
 }
 
 /* WebKit (Chrome, Safari, Edge) – global */
@@ -107,18 +107,18 @@ body::-webkit-scrollbar-thumb:hover,
 html.dark::-webkit-scrollbar-track,
 html.dark body::-webkit-scrollbar-track,
 html.dark #root::-webkit-scrollbar-track {
-  background: #262626;
+  background: #0f172a;
 }
 html.dark::-webkit-scrollbar-thumb,
 html.dark body::-webkit-scrollbar-thumb,
 html.dark #root::-webkit-scrollbar-thumb {
-  background: #525252;
-  border-color: #262626;
+  background: #334155;
+  border-color: #0f172a;
 }
 html.dark::-webkit-scrollbar-thumb:hover,
 html.dark body::-webkit-scrollbar-thumb:hover,
 html.dark #root::-webkit-scrollbar-thumb:hover {
-  background: #737373;
+  background: #475569;
 }
 
 /* All scrollable containers (overflow-auto, overflow-y-auto, etc.) – Firefox */
@@ -166,6 +166,39 @@ html.dark #root::-webkit-scrollbar-thumb:hover {
   background: #64748b;
 }
 
+html.dark .overflow-auto,
+html.dark .overflow-y-auto,
+html.dark .overflow-x-auto,
+html.dark [class*='overflow-auto'],
+html.dark [class*='overflow-y-auto'],
+html.dark [class*='overflow-x-auto'] {
+  scrollbar-color: #475569 #0f172a;
+}
+html.dark [class*='overflow-auto']::-webkit-scrollbar-track,
+html.dark [class*='overflow-y-auto']::-webkit-scrollbar-track,
+html.dark [class*='overflow-x-auto']::-webkit-scrollbar-track,
+html.dark .overflow-auto::-webkit-scrollbar-track,
+html.dark .overflow-y-auto::-webkit-scrollbar-track,
+html.dark .overflow-x-auto::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+html.dark [class*='overflow-auto']::-webkit-scrollbar-thumb,
+html.dark [class*='overflow-y-auto']::-webkit-scrollbar-thumb,
+html.dark [class*='overflow-x-auto']::-webkit-scrollbar-thumb,
+html.dark .overflow-auto::-webkit-scrollbar-thumb,
+html.dark .overflow-y-auto::-webkit-scrollbar-thumb,
+html.dark .overflow-x-auto::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+html.dark [class*='overflow-auto']::-webkit-scrollbar-thumb:hover,
+html.dark [class*='overflow-y-auto']::-webkit-scrollbar-thumb:hover,
+html.dark [class*='overflow-x-auto']::-webkit-scrollbar-thumb:hover,
+html.dark .overflow-auto::-webkit-scrollbar-thumb:hover,
+html.dark .overflow-y-auto::-webkit-scrollbar-thumb:hover,
+html.dark .overflow-x-auto::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
 /* Thin scrollbar utility (optional, for tighter areas) */
 .scrollbar-thin::-webkit-scrollbar {
   width: 6px;
@@ -176,4 +209,210 @@ html.dark #root::-webkit-scrollbar-thumb:hover {
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
   @apply bg-surface-300 rounded-full hover:bg-surface-400;
+}
+
+@layer components {
+  /* Glass panels: use plain colors here — Tailwind @apply often rejects fractional opacity utilities not present in scanned content. */
+  /* Main nav: higher opacity than content glass so labels stay readable over photos */
+  .app-glass-main-sidebar {
+    @apply border-r backdrop-blur-2xl;
+    border-color: rgb(255 255 255 / 0.14);
+    background-color: rgb(2 6 23 / 0.86);
+    box-shadow:
+      4px 0 32px -12px rgba(0, 0, 0, 0.45),
+      inset 0 1px 0 rgb(255 255 255 / 0.06);
+  }
+  html.dark .app-glass-main-sidebar {
+    border-color: rgb(255 255 255 / 0.12);
+    background-color: rgb(2 6 23 / 0.88);
+    box-shadow:
+      4px 0 32px -12px rgba(0, 0, 0, 0.5),
+      inset 0 1px 0 rgb(255 255 255 / 0.05);
+  }
+
+  .app-glass-secondary-nav {
+    @apply border-r backdrop-blur-2xl;
+    border-color: rgb(226 232 240 / 0.55);
+    background-color: rgb(255 255 255 / 0.4);
+  }
+  html.dark .app-glass-secondary-nav {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(2 6 23 / 0.26);
+  }
+
+  .app-glass-toolbar {
+    @apply rounded-xl border backdrop-blur-xl shadow-sm;
+    border-color: rgb(226 232 240 / 0.65);
+    background-color: rgb(255 255 255 / 0.5);
+  }
+  html.dark .app-glass-toolbar {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(15 23 42 / 0.32);
+  }
+
+  .app-glass-table {
+    @apply rounded-xl border overflow-hidden backdrop-blur-xl;
+    border-color: rgb(226 232 240 / 0.65);
+    background-color: rgb(255 255 255 / 0.42);
+  }
+  html.dark .app-glass-table {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(15 23 42 / 0.26);
+  }
+
+  .app-glass-thead-row {
+    @apply backdrop-blur-md border-b;
+    border-color: rgb(226 232 240 / 0.75);
+    background-color: rgb(255 255 255 / 0.6);
+  }
+  html.dark .app-glass-thead-row {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(15 23 42 / 0.48);
+  }
+
+  .app-glass-data-row {
+    @apply border-b;
+    border-color: rgb(226 232 240 / 0.45);
+    background-color: rgb(255 255 255 / 0.28);
+  }
+  .app-glass-data-row:hover {
+    background-color: rgb(255 255 255 / 0.5);
+  }
+  html.dark .app-glass-data-row {
+    border-color: rgb(255 255 255 / 0.06);
+    background-color: rgb(255 255 255 / 0.04);
+  }
+  html.dark .app-glass-data-row:hover {
+    background-color: rgb(255 255 255 / 0.09);
+  }
+
+  .app-glass-card {
+    @apply rounded-xl border backdrop-blur-xl shadow-sm;
+    border-color: rgb(226 232 240 / 0.65);
+    background-color: rgb(255 255 255 / 0.48);
+  }
+  html.dark .app-glass-card {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(15 23 42 / 0.3);
+  }
+
+  .app-glass-panel-2xl {
+    @apply rounded-2xl border backdrop-blur-xl shadow-sm;
+    border-color: rgb(226 232 240 / 0.65);
+    background-color: rgb(255 255 255 / 0.44);
+  }
+  html.dark .app-glass-panel-2xl {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(15 23 42 / 0.28);
+  }
+
+  .app-glass-day-cell {
+    @apply border backdrop-blur-sm;
+    border-color: rgb(226 232 240 / 0.7);
+    background-color: rgb(255 255 255 / 0.35);
+  }
+  html.dark .app-glass-day-cell {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(255 255 255 / 0.06);
+  }
+
+  /* Long forms (shift / investigation reports): toolbars, section accordions, nested field groups */
+  .app-glass-form-topbar {
+    @apply p-4 border-b backdrop-blur-md flex items-center justify-between flex-wrap gap-2;
+    border-color: rgb(226 232 240 / 0.55);
+    background-color: rgb(255 255 255 / 0.5);
+  }
+  html.dark .app-glass-form-topbar {
+    border-color: rgb(255 255 255 / 0.08);
+    background-color: rgb(15 23 42 / 0.45);
+  }
+
+  .app-glass-form-pill-row {
+    @apply px-6 py-3 flex flex-wrap gap-2 border-b backdrop-blur-md;
+    border-color: rgb(226 232 240 / 0.45);
+    background-color: rgb(255 255 255 / 0.38);
+  }
+  html.dark .app-glass-form-pill-row {
+    border-color: rgb(255 255 255 / 0.06);
+    background-color: rgb(15 23 42 / 0.32);
+  }
+
+  .app-glass-form-footer {
+    @apply p-4 border-t backdrop-blur-md flex justify-end gap-2;
+    border-color: rgb(226 232 240 / 0.55);
+    background-color: rgb(255 255 255 / 0.5);
+  }
+  html.dark .app-glass-form-footer {
+    border-color: rgb(255 255 255 / 0.08);
+    background-color: rgb(15 23 42 / 0.45);
+  }
+
+  .app-glass-section-shell {
+    @apply rounded-xl overflow-hidden backdrop-blur-xl border shadow-sm;
+    border-color: rgb(226 232 240 / 0.65);
+    background-color: rgb(255 255 255 / 0.38);
+  }
+  html.dark .app-glass-section-shell {
+    border-color: rgb(255 255 255 / 0.1);
+    background-color: rgb(15 23 42 / 0.28);
+  }
+
+  .app-glass-section-trigger {
+    @apply w-full flex items-center justify-between px-4 py-3 text-left border-b backdrop-blur-md transition-colors;
+    border-color: rgb(226 232 240 / 0.45);
+    background-color: rgb(255 255 255 / 0.42);
+  }
+  html.dark .app-glass-section-trigger {
+    border-color: rgb(255 255 255 / 0.06);
+    background-color: rgb(255 255 255 / 0.05);
+  }
+  .app-glass-section-trigger:hover {
+    background-color: rgb(255 255 255 / 0.58);
+  }
+  html.dark .app-glass-section-trigger:hover {
+    background-color: rgb(255 255 255 / 0.1);
+  }
+
+  .app-glass-section-body {
+    @apply p-4 pt-2 backdrop-blur-sm;
+    background-color: rgb(255 255 255 / 0.28);
+  }
+  html.dark .app-glass-section-body {
+    background-color: rgb(255 255 255 / 0.04);
+  }
+
+  .app-glass-nested-row {
+    @apply rounded-lg border backdrop-blur-sm;
+    border-color: rgb(226 232 240 / 0.55);
+    background-color: rgb(255 255 255 / 0.4);
+  }
+  html.dark .app-glass-nested-row {
+    border-color: rgb(255 255 255 / 0.08);
+    background-color: rgb(255 255 255 / 0.05);
+  }
+
+  .app-glass-segmented {
+    @apply inline-flex rounded-lg border p-1 backdrop-blur-xl;
+    border-color: rgb(226 232 240 / 0.7);
+    background-color: rgb(255 255 255 / 0.48);
+  }
+  html.dark .app-glass-segmented {
+    border-color: rgb(255 255 255 / 0.12);
+    background-color: rgb(15 23 42 / 0.35);
+  }
+
+  .app-glass-pill-idle {
+    background-color: rgb(241 245 249 / 0.78);
+    color: rgb(51 65 85);
+  }
+  .app-glass-pill-idle:hover {
+    background-color: rgb(226 232 240 / 0.95);
+  }
+  html.dark .app-glass-pill-idle {
+    background-color: rgb(255 255 255 / 0.1);
+    color: rgb(226 232 240);
+  }
+  html.dark .app-glass-pill-idle:hover {
+    background-color: rgb(255 255 255 / 0.16);
+  }
 }

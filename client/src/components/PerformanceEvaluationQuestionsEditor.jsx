@@ -61,7 +61,7 @@ export default function PerformanceEvaluationQuestionsEditor({ onError }) {
         </p>
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm space-y-3 dark:border-surface-800 dark:bg-surface-900">
+      <div className="app-glass-card p-4 shadow-sm space-y-3">
         <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Add question</h2>
         <div className="flex flex-wrap gap-2 items-end">
           <div>
@@ -90,7 +90,7 @@ export default function PerformanceEvaluationQuestionsEditor({ onError }) {
         {questions.map((q) => (
           <li
             key={q.id}
-            className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-800 dark:bg-surface-900"
+            className="flex flex-wrap items-start justify-between gap-2 app-glass-nested-row p-3"
           >
             <div>
               <span className="text-[10px] font-semibold uppercase text-surface-500">{q.category}</span>

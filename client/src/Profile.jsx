@@ -474,7 +474,7 @@ export default function Profile() {
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
-      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
+      <nav className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -514,7 +514,7 @@ export default function Profile() {
 
       <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 flex flex-col">
         {navHidden && (
-          <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 text-sm font-medium shadow-sm" aria-label="Show navigation">
+          <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200/65 bg-white/50 backdrop-blur-md text-surface-700 hover:bg-white/70 text-sm font-medium shadow-sm" aria-label="Show navigation">
             <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
             Show navigation
           </button>
@@ -552,7 +552,7 @@ export default function Profile() {
                 )}
               </div>
               {!selectedScheduleDate && !dayDetailsRailExpanded && (
-                <div className="rounded-xl border border-dashed border-surface-300 bg-surface-50/90 px-4 py-3 text-sm text-surface-700">
+                <div className="rounded-xl border border-dashed border-surface-300/80 bg-white/35 backdrop-blur-md px-4 py-3 text-sm text-surface-700">
                   <strong className="font-medium text-surface-900">Day details hidden.</strong> The calendar uses the full width.{' '}
                   <button type="button" onClick={() => setDayDetailsRailExpanded(true)} className="text-brand-700 font-semibold hover:underline">
                     Show sidebar
@@ -562,7 +562,7 @@ export default function Profile() {
                 </div>
               )}
               {ccTeamPanelCollapsed ? (
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-dashed border-surface-300 bg-surface-50/80 px-4 py-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-dashed border-surface-300/80 bg-white/35 backdrop-blur-md px-4 py-3">
                   <div className="flex items-start gap-2 min-w-0">
                     <p className="text-sm font-medium text-surface-800 dark:text-surface-200 shrink-0">Command Centre team</p>
                     <InfoHint
@@ -573,13 +573,13 @@ export default function Profile() {
                   <button
                     type="button"
                     onClick={() => setCcTeamPanelCollapsed(false)}
-                    className="shrink-0 px-3 py-2 text-sm font-medium rounded-lg bg-white border border-surface-300 text-surface-800 hover:bg-surface-50"
+                    className="shrink-0 px-3 py-2 text-sm font-medium rounded-lg bg-white/55 backdrop-blur-md border border-surface-300/70 text-surface-800 hover:bg-white/75"
                   >
                     Show team picker
                   </button>
                 </div>
               ) : (
-                <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+                <div className="app-glass-card p-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <p className="text-sm font-medium text-surface-900 dark:text-surface-50">Command Centre team on my calendar</p>
@@ -656,7 +656,7 @@ export default function Profile() {
                         return (
                           <label
                             key={u.id}
-                            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white cursor-pointer text-sm"
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/60 cursor-pointer text-sm"
                           >
                             <input
                               type="checkbox"
@@ -689,7 +689,7 @@ export default function Profile() {
                   )}
                 </div>
               )}
-              <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
                   <button
                     type="button"
@@ -727,7 +727,7 @@ export default function Profile() {
                   </div>
                   <div className="grid grid-cols-7 gap-1">
                     {Array.from({ length: calendar.startPad }, (_, i) => (
-                      <div key={`pad-${i}`} className="min-h-[6.75rem] rounded-lg bg-surface-50" />
+                      <div key={`pad-${i}`} className="min-h-[6.75rem] rounded-lg bg-surface-100/35 backdrop-blur-sm" />
                     ))}
                     {Array.from({ length: calendar.days }, (_, i) => {
                       const day = i + 1;
@@ -754,8 +754,12 @@ export default function Profile() {
                           type="button"
                           onClick={() => setSelectedScheduleDate((prev) => (prev === dateStr ? null : dateStr))}
                           className={`min-h-[6.75rem] rounded-lg border p-1 flex flex-col items-stretch justify-start text-left text-xs cursor-pointer transition-colors relative gap-0.5 overflow-hidden ${
-                            isToday ? 'border-brand-500 bg-brand-50' : 'border-surface-200 bg-white'
-                          } ${isWeekend ? 'bg-surface-50' : ''} ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1' : ''} ${hasSwap ? 'border-violet-300' : ''} hover:bg-surface-50`}
+                            isToday
+                              ? 'border-brand-500 bg-brand-50/92 backdrop-blur-sm hover:bg-brand-100/88'
+                              : isWeekend
+                                ? 'border-surface-200/65 bg-surface-100/50 backdrop-blur-sm hover:bg-surface-100/70'
+                                : 'app-glass-day-cell hover:bg-white/55 dark:hover:bg-white/[0.12]'
+                          } ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1' : ''} ${hasSwap ? 'border-violet-300' : ''}`}
                         >
                           {hasSwap && (
                             <span className="absolute top-0.5 right-0.5 flex gap-0.5" title="Shift swap activity">
@@ -872,7 +876,7 @@ export default function Profile() {
                 }
               >
                 {selectedScheduleDate ? (
-                  <div className="pointer-events-auto w-full lg:w-96 min-h-0 max-h-[min(92vh,760px)] lg:max-h-none overflow-hidden rounded-t-2xl lg:rounded-xl border border-surface-200 bg-white shadow-2xl lg:shadow-none">
+                  <div className="pointer-events-auto w-full lg:w-96 min-h-0 max-h-[min(92vh,760px)] lg:max-h-none overflow-hidden rounded-t-2xl lg:rounded-xl border border-surface-200/70 bg-white/88 backdrop-blur-2xl shadow-2xl lg:shadow-none dark:border-white/12 dark:bg-surface-900/85">
                     <ScheduleSidePanel
                       selectedDate={selectedScheduleDate}
                       onClose={() => setSelectedScheduleDate(null)}
@@ -987,7 +991,7 @@ export default function Profile() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <p className="text-sm font-medium text-surface-700 mb-2">Warnings & cases</p>
                   {warnings.length === 0 ? (
                     <p className="text-sm text-surface-500">None on record.</p>
@@ -1003,7 +1007,7 @@ export default function Profile() {
                     </ul>
                   )}
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <p className="text-sm font-medium text-surface-700 mb-2">Rewards</p>
                   {rewards.length === 0 ? (
                     <p className="text-sm text-surface-500">None yet.</p>
@@ -1051,7 +1055,7 @@ export default function Profile() {
                   text="Preferences stored on this device. They apply to this browser only unless you sign in on another device."
                 />
               </div>
-              <div className="rounded-xl border border-surface-200 bg-white dark:bg-surface-900 dark:border-surface-700 p-4 shadow-sm">
+              <div className="app-glass-card p-4 shadow-sm">
                 <label className="flex items-start gap-3 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1197,7 +1201,7 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
         />
       </div>
       <div className="space-y-4">
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-sm font-medium text-surface-700 mb-2">Employee evaluations</p>
           {evaluations.length === 0 ? (
             <p className="text-surface-500 text-sm">No evaluations yet.</p>
@@ -1214,7 +1218,7 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
             </ul>
           )}
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-sm font-medium text-surface-700 mb-2">Performance improvement plan</p>
           {(!pipPlans || pipPlans.length === 0) ? (
             <p className="text-surface-500 text-sm">None assigned.</p>
@@ -1811,7 +1815,7 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
         />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Leave balance ({year})</p>
           {balance.length === 0 ? (
             <p className="mt-1 text-surface-500 text-sm">No balance on record</p>
@@ -1835,7 +1839,7 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
             </ul>
           )}
         </div>
-        <div className="md:col-span-2 bg-white rounded-xl border border-surface-200 p-4">
+        <div className="md:col-span-2 app-glass-card p-4">
           {!showForm ? (
             <>
               <p className="text-sm font-medium text-surface-700 mb-2">Apply for leave</p>
@@ -1887,7 +1891,7 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
         </div>
       </div>
       {leaveTypes.length > 0 && (
-        <div className="bg-white rounded-xl border border-surface-200 p-4 overflow-x-auto">
+        <div className="app-glass-card p-4 overflow-x-auto">
           <p className="text-sm font-medium text-surface-700 mb-1">Leave types &amp; typical day weights</p>
           <p className="text-xs text-surface-500 mb-3">
             Configured for your organisation (database). Management can add a South African starter set or custom types.
@@ -1914,7 +1918,7 @@ function LeaveTab({ balance, applications, leaveTypes = [], onRefresh, onError }
           </table>
         </div>
       )}
-      <div className="bg-white rounded-xl border border-surface-200 p-4">
+      <div className="app-glass-card p-4">
         <div className="flex justify-between items-center mb-2">
           <p className="text-sm font-medium text-surface-700">Leave application history</p>
           <button
@@ -1998,7 +2002,7 @@ function DocumentsTab({ documents, onRefresh, onError }) {
         <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Employee documents</h1>
         <InfoHint title="Employee documents help" text="Your personal document library. Upload files and download them when needed." />
       </div>
-      <div className="bg-white rounded-xl border border-surface-200 p-4">
+      <div className="app-glass-card p-4">
         <label className="inline-block">
           <span className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 cursor-pointer inline-block">
             {uploading ? 'Uploading…' : 'Upload document'}
@@ -2069,7 +2073,7 @@ function QueriesTab({ queries, onRefresh, onError }) {
           Submit a query
         </button>
       ) : (
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-surface-200 p-4 space-y-3 max-w-lg">
+        <form onSubmit={handleSubmit} className="app-glass-card p-4 space-y-3 max-w-lg">
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Subject *</label>
             <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required />
@@ -2086,7 +2090,7 @@ function QueriesTab({ queries, onRefresh, onError }) {
           </div>
         </form>
       )}
-      <div className="bg-white rounded-xl border border-surface-200 p-4">
+      <div className="app-glass-card p-4">
         <p className="text-sm font-medium text-surface-700 mb-2">My queries</p>
         {queries.length === 0 ? (
           <p className="text-sm text-surface-500">No queries submitted yet.</p>

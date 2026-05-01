@@ -134,7 +134,7 @@ export default function TeamLeaderAuditSection({ onError }) {
       </div>
 
       {leaders.length === 0 ? (
-        <div className="bg-white rounded-xl border border-surface-200 p-8 text-center text-surface-600 text-sm">
+        <div className="app-glass-card p-8 text-center text-surface-600 text-sm">
           No team leaders with the Team leader admin page role, and no matching submissions in this period. Grant the page role in User management, or widen questionnaire history.
         </div>
       ) : (
@@ -143,7 +143,7 @@ export default function TeamLeaderAuditSection({ onError }) {
             const open = openId === L.user_id;
             const fromSubOnly = L.leader_from_submissions_only === true;
             return (
-              <div key={L.user_id} className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+              <div key={L.user_id} className="app-glass-card shadow-sm overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setOpenId(open ? null : L.user_id)}

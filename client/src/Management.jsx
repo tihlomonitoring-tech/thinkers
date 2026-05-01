@@ -103,11 +103,11 @@ function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
         </button>
       </div>
       {show.length === 0 ? (
-        <p className="text-sm text-surface-500 bg-white rounded-xl border border-surface-200 p-6">
+        <p className="text-sm text-surface-500 app-glass-card p-6">
           {sub === 'pending' ? 'No swaps waiting for management right now.' : 'No completed or declined swaps yet.'}
         </p>
       ) : (
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[720px]">
               <thead className="bg-surface-50 border-b border-surface-200">
@@ -298,7 +298,7 @@ export default function Management() {
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
-      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
+      <nav className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1">
@@ -373,7 +373,7 @@ export default function Management() {
                   text="Monitor clock-ins, breaks, and overtime across the company. Alerts email staff and management when a break or shift exceeds policy (12 h on duty, break window)."
                 />
               </div>
-              <div className="bg-white rounded-xl border border-surface-200 overflow-hidden shadow-sm">
+              <div className="app-glass-card overflow-hidden shadow-sm">
                 <div className="px-4 py-3 border-b border-surface-100 bg-surface-50 flex justify-between items-center">
                   <span className="text-sm font-semibold text-surface-900">Recent sessions</span>
                   <button
@@ -474,7 +474,7 @@ export default function Management() {
               {libraryDocs.length === 0 ? (
                 <p className="text-surface-500 text-sm">No documents in library.</p>
               ) : (
-                <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+                <div className="app-glass-card overflow-hidden">
                   <table className="w-full text-sm">
                     <thead className="bg-surface-50 border-b border-surface-200">
                       <tr>
@@ -561,7 +561,7 @@ export default function Management() {
                   text="Structure career growth — goals, development paths, and inspiration. Use Configure growth structure to define career levels, development plans, and resources for employees."
                 />
               </div>
-              <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <div className="app-glass-card p-6">
                 <p className="text-sm text-surface-700 mb-2">Configure growth structure</p>
                 <button type="button" className="mt-3 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
                   Edit growth structure
@@ -717,7 +717,7 @@ function CompanyLibraryPolicySection({ user, onError }) {
         />
       </div>
 
-      <form onSubmit={handleSave} className="bg-white rounded-xl border border-surface-200 p-6 space-y-5">
+      <form onSubmit={handleSave} className="app-glass-card p-6 space-y-5">
         {tenants.length > 0 && (
           <div>
             <label className="block text-sm font-medium text-surface-800 mb-1">Organization</label>
@@ -1006,7 +1006,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
           </button>
         </div>
       ) : showForm ? (
-        <form onSubmit={handleCreate} className="bg-white rounded-xl border border-surface-200 p-4 space-y-3 max-w-md">
+        <form onSubmit={handleCreate} className="app-glass-card p-4 space-y-3 max-w-md">
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>
             <select value={scheduleUserId} onChange={(e) => setScheduleUserId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
@@ -1082,7 +1082,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
         </form>
       )}
 
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         <button
           type="button"
           onClick={() => setShowBulk(!showBulk)}
@@ -1152,7 +1152,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
         )}
       </div>
 
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         <div className="px-4 py-2 border-b border-surface-100 flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-surface-700">Schedules (per employee)</span>
           <select value={filterUserId} onChange={(e) => setFilterUserId(e.target.value)} className="rounded-lg border border-surface-300 px-2 py-1 text-sm">
@@ -1183,7 +1183,7 @@ function SchedulesSection({ schedules, tenantUsers, onRefresh, onError }) {
       </div>
 
       {selectedSchedule && (
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="font-medium text-surface-800 mb-2">Add shift to {selectedSchedule.user_name || selectedSchedule.user_email}&apos;s schedule: {selectedSchedule.title}</p>
           <form onSubmit={handleAddEntry} className="flex flex-wrap gap-2 items-end">
             <div>
@@ -1247,7 +1247,7 @@ function ScheduleEventsSection({ events, onRefresh, onError }) {
           text="Company events that appear on employee work schedules (e.g. training, meetings)."
         />
       </div>
-      <form onSubmit={handleCreate} className="bg-white rounded-xl border border-surface-200 p-4 max-w-md space-y-3">
+      <form onSubmit={handleCreate} className="app-glass-card p-4 max-w-md space-y-3">
         <div>
           <label className="block text-sm font-medium text-surface-700 mb-1">Title *</label>
           <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required />
@@ -1264,7 +1264,7 @@ function ScheduleEventsSection({ events, onRefresh, onError }) {
           {saving ? 'Creating…' : 'Create event'}
         </button>
       </form>
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         <p className="px-4 py-2 text-sm font-medium text-surface-700 border-b border-surface-100">Events (this month)</p>
         {events.length === 0 ? (
           <p className="p-4 text-sm text-surface-500">No events.</p>
@@ -1387,7 +1387,7 @@ function LeaveSection({
         />
       </div>
 
-      <div className="bg-white rounded-xl border border-surface-200 p-4">
+      <div className="app-glass-card p-4">
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <p className="text-sm font-medium text-surface-700">Leave types (database)</p>
           <InfoHint
@@ -1472,11 +1472,11 @@ function LeaveSection({
             <InfoHint title="Reviewing leave" text="Approve or reject pending applications. Optional review notes are saved with the decision." />
           </div>
           {pending.length === 0 ? (
-            <p className="text-surface-500 text-sm bg-white rounded-xl border border-surface-200 p-6">No pending applications.</p>
+            <p className="text-surface-500 text-sm app-glass-card p-6">No pending applications.</p>
           ) : (
             <ul className="space-y-4">
               {pending.map((a) => (
-                <li key={a.id} className="bg-white rounded-xl border border-surface-200 p-4">
+                <li key={a.id} className="app-glass-card p-4">
                   <p className="font-medium">{a.user_name} — {a.leave_type}</p>
                   <p className="text-sm text-surface-600">{formatDate(a.start_date)} to {formatDate(a.end_date)} ({a.days_requested} days)</p>
                   {a.reason && <p className="text-sm text-surface-500 mt-1">{a.reason}</p>}
@@ -1517,9 +1517,9 @@ function LeaveSection({
             className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
           />
           {filteredHistory.length === 0 ? (
-            <p className="text-surface-500 text-sm bg-white rounded-xl border border-surface-200 p-6">No records match.</p>
+            <p className="text-surface-500 text-sm app-glass-card p-6">No records match.</p>
           ) : (
-            <div className="bg-white rounded-xl border border-surface-200 overflow-hidden overflow-x-auto">
+            <div className="app-glass-card overflow-hidden overflow-x-auto">
               <table className="w-full text-sm min-w-[800px]">
                 <thead className="bg-surface-50 border-b border-surface-200 text-left">
                   <tr>
@@ -1570,9 +1570,9 @@ function LeaveSection({
             />
           </div>
           {teamBalances.length === 0 ? (
-            <p className="text-surface-500 text-sm bg-white rounded-xl border border-surface-200 p-6">No balance rows for this year.</p>
+            <p className="text-surface-500 text-sm app-glass-card p-6">No balance rows for this year.</p>
           ) : (
-            <div className="bg-white rounded-xl border border-surface-200 overflow-hidden overflow-x-auto">
+            <div className="app-glass-card overflow-hidden overflow-x-auto">
               <table className="w-full text-sm min-w-[720px]">
                 <thead className="bg-surface-50 border-b border-surface-200 text-left">
                   <tr>
@@ -1662,7 +1662,7 @@ function WarningsRewardsSection({ tenantUsers, warnings = [], rewards = [], onRe
     <div className="space-y-6">
       <h1 className="text-xl font-semibold text-surface-900">Warnings & rewards</h1>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-sm font-medium text-surface-700 mb-2">Issue warning</p>
           <form onSubmit={submitWarning} className="space-y-2">
             <select value={warningUser} onChange={(e) => setWarningUser(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
@@ -1678,7 +1678,7 @@ function WarningsRewardsSection({ tenantUsers, warnings = [], rewards = [], onRe
             </button>
           </form>
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-sm font-medium text-surface-700 mb-2">Issue reward</p>
           <form onSubmit={submitReward} className="space-y-2">
             <select value={rewardUser} onChange={(e) => setRewardUser(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
@@ -1696,7 +1696,7 @@ function WarningsRewardsSection({ tenantUsers, warnings = [], rewards = [], onRe
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <p className="px-4 py-2 text-sm font-medium text-surface-700 border-b border-surface-100">Warnings & cases (history)</p>
           {warnings.length === 0 ? (
             <p className="p-4 text-sm text-surface-500">No warnings on record.</p>
@@ -1714,7 +1714,7 @@ function WarningsRewardsSection({ tenantUsers, warnings = [], rewards = [], onRe
             </ul>
           )}
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <p className="px-4 py-2 text-sm font-medium text-surface-700 border-b border-surface-100">Rewards (history)</p>
           {rewards.length === 0 ? (
             <p className="p-4 text-sm text-surface-500">No rewards on record.</p>
@@ -1769,7 +1769,7 @@ function QueriesSection({ queries, onRefresh, onError }) {
       ) : (
         <ul className="space-y-4">
           {queries.map((q) => (
-            <li key={q.id} className="bg-white rounded-xl border border-surface-200 p-4">
+            <li key={q.id} className="app-glass-card p-4">
               <p className="font-medium">{q.subject}</p>
               <p className="text-sm text-surface-600">{q.user_name} — {formatDate(q.created_at)}</p>
               {q.body && <p className="text-sm text-surface-500 mt-1">{q.body}</p>}
@@ -1872,7 +1872,7 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
             New evaluation
           </button>
         ) : (
-          <form onSubmit={handleCreate} className="bg-white rounded-xl border border-surface-200 p-4 space-y-3 max-w-md">
+          <form onSubmit={handleCreate} className="app-glass-card p-4 space-y-3 max-w-md">
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>
               <select value={userId} onChange={(e) => setUserId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
@@ -1903,7 +1903,7 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
           </form>
         )}
         {evaluations.length > 0 && (
-          <div className="bg-white rounded-xl border border-surface-200 overflow-hidden mt-4">
+          <div className="app-glass-card overflow-hidden mt-4">
             <table className="w-full text-sm">
               <thead className="bg-surface-50 border-b border-surface-200">
                 <tr>
@@ -1956,7 +1956,7 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
         )}
         {controllerEvaluations.length > 0 && (
           <div className="grid gap-4 lg:grid-cols-2">
-            <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+            <div className="app-glass-card overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="bg-surface-50 border-b border-surface-200">
                   <tr>
@@ -2071,7 +2071,7 @@ function PIPSection({ plans, tenantUsers, onRefresh, onError }) {
           Draft PIP
         </button>
       ) : (
-        <form onSubmit={handleCreate} className="bg-white rounded-xl border border-surface-200 p-4 space-y-3 max-w-md">
+        <form onSubmit={handleCreate} className="app-glass-card p-4 space-y-3 max-w-md">
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Employee *</label>
             <select value={userId} onChange={(e) => setUserId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
@@ -2108,7 +2108,7 @@ function PIPSection({ plans, tenantUsers, onRefresh, onError }) {
         </form>
       )}
       {plans.length > 0 && (
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-surface-50 border-b border-surface-200">
               <tr>

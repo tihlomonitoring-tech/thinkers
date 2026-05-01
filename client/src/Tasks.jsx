@@ -360,7 +360,7 @@ export default function Tasks() {
 
   return (
     <div className="flex gap-0 w-full min-h-0 flex-1 -m-4 sm:-m-6 overflow-hidden">
-      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
+      <nav className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-surface-900">Tasks tracker</h2>
@@ -585,7 +585,7 @@ export default function Tasks() {
           {createTaskOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-black/30" onClick={() => setCreateTaskOpen(false)} />
-              <div className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-xl border border-surface-200 bg-white p-5">
+              <div className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto app-glass-card p-5">
                 <TabCreateTask
                   tenantUsers={tenantUsers}
                   tenantOptions={tenantOptions}
@@ -785,7 +785,7 @@ function TabTasksBoard({
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+      <div className="app-glass-card p-4 space-y-3">
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
           <input
             type="search"
@@ -1078,25 +1078,25 @@ function TabTaskList({
       )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Matching total</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{total}</p>
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Assigned to me (page)</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{assignedToMeCount}</p>
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Created by me (page)</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{createdByMeCount}</p>
         </div>
-        <div className="bg-white rounded-xl border border-surface-200 p-4">
+        <div className="app-glass-card p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Completed (page)</p>
           <p className="mt-1 text-2xl font-semibold text-surface-900">{completedCount}</p>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-surface-200 p-4 space-y-3">
+      <div className="app-glass-card p-4 space-y-3">
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
           <input
             type="search"
@@ -1186,7 +1186,7 @@ function TabTaskList({
       {loading ? (
         <p className="text-surface-500">Loading…</p>
       ) : (
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+        <div className="app-glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-surface-50 border-b border-surface-200">
               <tr>
@@ -1558,7 +1558,7 @@ function TaskDetailPanel({
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-4">
-          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+          <section className="app-glass-card p-5 shadow-sm">
             <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide mb-3">Overview</h3>
             {task.description ? (
               <p className="text-sm text-surface-700 whitespace-pre-wrap leading-relaxed">{task.description}</p>
@@ -1587,7 +1587,7 @@ function TaskDetailPanel({
             onRefreshDetail={onRefreshDetail}
           />
 
-          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+          <section className="app-glass-card p-5 shadow-sm">
             <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide mb-3">Schedule</h3>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -1601,7 +1601,7 @@ function TaskDetailPanel({
             </div>
           </section>
 
-          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+          <section className="app-glass-card p-5 shadow-sm space-y-4">
             <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Ownership &amp; classification</h3>
             <div>
               <label className={fieldLabel} htmlFor={`task-cat-${task.id}`}>Category</label>
@@ -1671,7 +1671,7 @@ function TaskDetailPanel({
             )}
           </section>
 
-          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+          <section className="app-glass-card p-5 shadow-sm space-y-4">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Progress</h3>
               <span className="text-sm font-semibold tabular-nums text-brand-700 bg-brand-50 border border-brand-100 px-2.5 py-0.5 rounded-md">
@@ -1751,7 +1751,7 @@ function TaskDetailPanel({
             )}
           </section>
 
-          <section className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-3">
+          <section className="app-glass-card p-5 shadow-sm space-y-3">
             <h3 className="text-xs font-bold text-surface-800 uppercase tracking-wide">Workflow</h3>
             <div>
               <label className={fieldLabel} htmlFor={`task-status-${task.id}`}>Status</label>
@@ -2141,7 +2141,7 @@ function TabCreateTask({ tenantUsers, tenantOptions = [], defaultTenantId = '', 
           <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2">{error}</div>
         )}
 
-        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
+        <div className="app-glass-card p-4 space-y-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Basic information</p>
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Task title *</label>
@@ -2237,7 +2237,7 @@ function TabCreateTask({ tenantUsers, tenantOptions = [], defaultTenantId = '', 
           </div>
         </div>
 
-        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-4">
+        <div className="app-glass-card p-4 space-y-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Planning and assignment</p>
           <div>
             <label className="block text-sm font-medium text-surface-700 mb-1">Key actions</label>
@@ -2299,7 +2299,7 @@ function TabCreateTask({ tenantUsers, tenantOptions = [], defaultTenantId = '', 
           </div>
         </div>
 
-        <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+        <div className="app-glass-card p-4 space-y-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Attachments</p>
           <label className="block text-sm font-medium text-surface-700">Upload files</label>
           <input
@@ -2434,7 +2434,7 @@ function TabLibrary() {
       )}
 
       <div className="flex gap-6 flex-1 min-h-0">
-        <div className="w-64 shrink-0 rounded-xl border border-surface-200 bg-white p-3">
+        <div className="w-64 shrink-0 app-glass-card p-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-surface-500 uppercase">Folders</span>
             <span className="text-xs text-surface-500">Select folder then create below</span>
@@ -2490,7 +2490,7 @@ function TabLibrary() {
           </form>
         </div>
 
-        <div className="flex-1 min-w-0 rounded-xl border border-surface-200 bg-white p-4">
+        <div className="flex-1 min-w-0 app-glass-card p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-semibold text-surface-900">
               {selectedFolderId == null ? 'Files in Root' : `Files in "${folders.find((x) => x.id === selectedFolderId)?.name || 'Folder'}"`}

@@ -102,7 +102,7 @@ export default function TrackingIntegration() {
   return (
     <div className="flex gap-0 w-full min-h-0 flex-1 -m-4 sm:-m-6 overflow-hidden">
       <nav
-        className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
         aria-label="Tracking and integration"
         aria-hidden={navHidden}
       >
@@ -886,7 +886,7 @@ function TabFleetMovement({ setError }) {
 
       <div className="space-y-6">
         <h2 className="text-lg font-semibold text-surface-900">Overview</h2>
-        <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm flex flex-wrap items-center gap-2">
+        <div className="app-glass-card p-4 shadow-sm flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-surface-500 uppercase tracking-wider mr-1">Status</span>
           {['all', 'pending', 'enroute', 'overdue', 'completed'].map((s) => (
             <button
@@ -909,7 +909,7 @@ function TabFleetMovement({ setError }) {
             { label: 'Pending', v: dash?.counts?.pending ?? '—' },
             { label: 'Unacked alarms (24h)', v: dash?.counts?.unacked_alarms_24h ?? '—', alert: true },
           ].map((k) => (
-            <div key={k.label} className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+            <div key={k.label} className="app-glass-card p-4 shadow-sm">
               <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{k.label}</p>
               <p
                 className={`mt-1 text-2xl font-semibold text-surface-900 tabular-nums ${
@@ -925,7 +925,7 @@ function TabFleetMovement({ setError }) {
 
       <div className="grid xl:grid-cols-3 gap-6">
         <div className="xl:col-span-1 space-y-4">
-          <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+          <div className="app-glass-card p-4 shadow-sm">
             <h3 className="font-semibold text-surface-900 mb-3">New trip / delivery</h3>
             <form onSubmit={createTrip} className="space-y-2 text-sm">
               <div>
@@ -1385,7 +1385,7 @@ function TabDeliveryRecords({ setError }) {
         </button>
       </header>
 
-      <div className="rounded-xl border border-surface-200 bg-white p-4 flex flex-wrap gap-3 items-end shadow-sm">
+      <div className="app-glass-card p-4 flex flex-wrap gap-3 items-end shadow-sm">
         <div>
           <label className="block text-xs text-surface-500 mb-1">From</label>
           <input type="date" className="rounded-lg border border-surface-300 px-3 py-2 text-sm" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} />
@@ -1507,7 +1507,7 @@ function TabAlarmRecords({ setError }) {
         </button>
       </header>
 
-      <div className="rounded-xl border border-surface-200 bg-white p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-3 shadow-sm">
+      <div className="app-glass-card p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-3 shadow-sm">
         <div>
           <label className="block text-xs text-surface-500 mb-1">From</label>
           <input type="date" className="w-full rounded-lg border border-surface-300 px-2 py-2 text-sm" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} />

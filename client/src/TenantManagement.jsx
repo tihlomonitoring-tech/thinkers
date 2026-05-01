@@ -192,7 +192,7 @@ export default function TenantManagement() {
           filteredTenants.map((t) => (
             <div
               key={t.id}
-              className="bg-white rounded-xl border border-surface-200 p-4 hover:border-brand-200 transition-colors"
+              className="app-glass-card p-4 hover:border-brand-200 transition-colors"
             >
               <div className="flex items-start justify-between gap-2">
                 <button type="button" onClick={() => openDetail(t)} className="text-left flex-1 min-w-0">

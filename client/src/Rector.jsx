@@ -698,7 +698,7 @@ export default function Rector() {
 
   return (
     <div className="flex gap-0 min-h-[calc(100vh-8rem)]">
-      <nav className={`shrink-0 border-r border-surface-200 bg-white flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-label="Rector" aria-hidden={navHidden}>
+      <nav className={`shrink-0 app-glass-secondary-nav flex flex-col transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-label="Rector" aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1">
@@ -818,7 +818,7 @@ export default function Rector() {
                   Drivers ({fleetDrivers.length})
                 </button>
               </div>
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 {fleetSubTab === 'trucks' ? (
                   <>
                     <h4 className="px-4 py-3 bg-surface-50 font-medium text-surface-800 border-b">Trucks ({fleetTrucks.length})</h4>
@@ -912,7 +912,7 @@ export default function Rector() {
                       <button type="button" onClick={() => { setContractorsDetailSearch(''); setContractorsDetailTypeFilter('all'); }} className="text-sm text-surface-600 hover:text-surface-900">Clear filters</button>
                     )}
                   </div>
-                  <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+                  <div className="app-glass-card overflow-hidden">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead className="bg-surface-50 border-b border-surface-200">
@@ -992,7 +992,7 @@ export default function Rector() {
                     <div className="fixed inset-0 z-50 flex justify-end">
                       <div className="absolute inset-0 bg-black/30" onClick={() => setContractorsDetailSelected(null)} aria-hidden />
                       <div className="relative w-full max-w-lg bg-white shadow-xl overflow-y-auto flex flex-col max-h-full">
-                        <div className="sticky top-0 px-4 py-3 border-b border-surface-200 bg-white flex items-center justify-between">
+                        <div className="sticky top-0 z-10 px-4 py-3 border-b border-surface-200/60 bg-white/75 backdrop-blur-md flex items-center justify-between dark:border-white/10 dark:bg-surface-900/65">
                           <h4 className="font-semibold text-surface-900">
                             {contractorsDetailSelected.type === 'contractor' && 'Contractor details'}
                             {contractorsDetailSelected.type === 'subcontractor' && 'Subcontractor details'}
@@ -1099,7 +1099,7 @@ export default function Rector() {
                   </div>
                 </div>
                 {incidentDetailId && (
-                  <div className="rounded-xl border border-surface-200 bg-white p-4 flex-1 overflow-y-auto max-h-[500px]">
+                  <div className="app-glass-card p-4 flex-1 overflow-y-auto max-h-[500px]">
                     <div className="flex justify-between items-start mb-2">
                       <h4 className="font-semibold">Incident details</h4>
                       <button type="button" onClick={() => setIncidentDetailId(null)} className="text-surface-500 hover:text-surface-700">Close</button>
@@ -1147,7 +1147,7 @@ export default function Rector() {
                   </button>
                 </div>
               </div>
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-surface-50 sticky top-0">
@@ -1194,7 +1194,7 @@ export default function Rector() {
                   </button>
                 </div>
               </div>
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-surface-50 sticky top-0">
@@ -1225,7 +1225,7 @@ export default function Rector() {
                 </div>
               </div>
               {complianceDetail && (
-                <div className="mt-4 rounded-xl border border-surface-200 bg-white p-4">
+                <div className="mt-4 app-glass-card p-4">
                   <div className="flex justify-between items-start mb-2">
                     <h4 className="font-semibold">Inspection details</h4>
                     <button type="button" onClick={() => setComplianceDetail(null)} className="text-surface-500 hover:text-surface-700">Close</button>
@@ -1281,7 +1281,7 @@ export default function Rector() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                <div className="app-glass-panel-2xl overflow-hidden shadow-sm">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -1489,7 +1489,7 @@ export default function Rector() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                <div className="app-glass-panel-2xl overflow-hidden shadow-sm">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -1681,7 +1681,7 @@ export default function Rector() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-2xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+                <div className="app-glass-panel-2xl overflow-hidden shadow-sm">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -1926,7 +1926,7 @@ export default function Rector() {
                   <option value="draft">Draft</option>
                 </select>
               </div>
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-surface-50 sticky top-0">
@@ -1978,7 +1978,7 @@ export default function Rector() {
                   className="rounded-lg border border-surface-200 px-3 py-1.5 text-sm"
                 />
               </div>
-              <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+              <div className="app-glass-card overflow-hidden">
                 <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-surface-50 sticky top-0">

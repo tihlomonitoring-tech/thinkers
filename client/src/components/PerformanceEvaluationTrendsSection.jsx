@@ -58,7 +58,7 @@ export default function PerformanceEvaluationTrendsSection({ onError }) {
 
       <div className="grid gap-4 sm:grid-cols-2">
         {byCat.map((r) => (
-          <div key={r.category} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm dark:border-surface-800 dark:bg-surface-900">
+          <div key={r.category} className="app-glass-card p-4 shadow-sm">
             <p className="text-[10px] font-semibold uppercase text-surface-500">{String(r.category || '').replace(/_/g, ' ')}</p>
             <p className="text-2xl font-semibold text-brand-700 tabular-nums mt-1">{r.avg_score != null ? Number(r.avg_score).toFixed(2) : '—'}</p>
             <p className="text-xs text-surface-500 mt-1">Avg (1–3) · {r.submission_count} submissions</p>
@@ -67,11 +67,11 @@ export default function PerformanceEvaluationTrendsSection({ onError }) {
         {byCat.length === 0 && <p className="text-sm text-surface-500 sm:col-span-2">No scored answers in this window yet.</p>}
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm dark:border-surface-800 dark:bg-surface-900">
+      <div className="app-glass-card overflow-hidden shadow-sm">
         <div className="px-4 py-2 border-b border-surface-100 text-sm font-semibold dark:border-surface-800">Recent submissions</div>
         <div className="overflow-x-auto max-h-56 overflow-y-auto">
           <table className="w-full text-sm">
-            <thead className="bg-surface-50 sticky top-0 dark:bg-surface-950">
+            <thead className="app-glass-thead-row sticky top-0 z-[1]">
               <tr className="text-left text-xs text-surface-500">
                 <th className="px-3 py-2">Date</th>
                 <th className="px-3 py-2">Period</th>
@@ -97,7 +97,7 @@ export default function PerformanceEvaluationTrendsSection({ onError }) {
         </div>
       </div>
 
-      <form onSubmit={saveWorkspace} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm space-y-3 dark:border-surface-800 dark:bg-surface-900">
+      <form onSubmit={saveWorkspace} className="app-glass-card p-4 shadow-sm space-y-3">
         <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Management workspace</h2>
         <div>
           <label className="text-xs text-surface-500">Trends &amp; observations</label>

@@ -1618,7 +1618,7 @@ export default function Contractor() {
     <div className="flex gap-0 w-full min-h-0 -m-4 sm:-m-6">
       {/* Contractor side nav */}
       <nav
-        className={`shrink-0 flex flex-col border-r border-surface-200 bg-white transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        className={`shrink-0 flex flex-col app-glass-secondary-nav transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
         aria-hidden={navHidden}
       >
         <div className="p-4 border-b border-surface-100 flex items-start justify-between gap-2 w-72">
@@ -1719,24 +1719,24 @@ export default function Contractor() {
               <div className="space-y-6">
                 <h2 className="text-lg font-semibold text-surface-900">Dashboard</h2>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+                  <div className="app-glass-card p-4 shadow-sm">
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Fleet</p>
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{trucksList.length}</p>
                     <p className="text-sm text-surface-500">trucks</p>
                   </div>
-                  <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+                  <div className="app-glass-card p-4 shadow-sm">
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Drivers</p>
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{driversList.length}</p>
                     <p className="text-sm text-surface-500">registered</p>
                   </div>
-                  <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+                  <div className="app-glass-card p-4 shadow-sm">
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Incidents</p>
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{incidentsList.length}</p>
                     <p className="text-sm text-surface-500">
                       {incidentsList.filter((i) => !(i.resolved_at ?? i.resolvedAt)).length} open
                     </p>
                   </div>
-                  <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+                  <div className="app-glass-card p-4 shadow-sm">
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Expiries</p>
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{expiriesList.length}</p>
                     <p className="text-sm text-surface-500">
@@ -1745,18 +1745,18 @@ export default function Contractor() {
                   </div>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+                  <div className="app-glass-card p-4 shadow-sm">
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Suspensions</p>
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{suspensionsList.length}</p>
                     <p className="text-sm text-surface-500">recorded</p>
                   </div>
-                  <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+                  <div className="app-glass-card p-4 shadow-sm">
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Messages</p>
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{messagesList.length}</p>
                     <p className="text-sm text-surface-500">inbox</p>
                   </div>
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h3 className="font-medium text-surface-900 mb-2">Quick links</h3>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => setActiveTab('trucks')} disabled={!pageRestrictions.allow_truck_manual} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100 disabled:opacity-40">Add truck</button>
@@ -1770,7 +1770,7 @@ export default function Contractor() {
 
             {activeTab === 'trucks' && (
               <div className="w-full space-y-6">
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Add truck (contract portal)</h2>
                   {!pageRestrictions.allow_truck_manual && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Manual truck add is restricted by Access Management.</p>
@@ -1801,7 +1801,7 @@ export default function Contractor() {
                     <button type="submit" disabled={saving || !pageRestrictions.allow_truck_manual} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add truck</button>
                   </form>
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import from Excel</h2>
                   {!pageRestrictions.allow_truck_import && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Truck import is restricted by Access Management.</p>
@@ -1828,7 +1828,7 @@ export default function Contractor() {
 
             {activeTab === 'fleet' && (
               <div className="w-full">
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Fleet</h2>
                   {canAccessPage(user, 'tracking_integration') && (
                     <p className="text-sm text-surface-600 mb-3">
@@ -1996,7 +1996,7 @@ export default function Contractor() {
 
             {activeTab === 'drivers' && (
               <div className="w-full space-y-6">
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Add driver</h2>
                   {!pageRestrictions.allow_driver_manual && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Manual driver add is restricted by Access Management.</p>
@@ -2012,7 +2012,7 @@ export default function Contractor() {
                     <button type="submit" disabled={saving || !pageRestrictions.allow_driver_manual} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add driver</button>
                   </form>
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import from Excel</h2>
                   {!pageRestrictions.allow_driver_import && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Driver import is restricted by Access Management.</p>
@@ -2039,7 +2039,7 @@ export default function Contractor() {
 
             {activeTab === 'driver-register' && (
               <div className="w-full">
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Driver register</h2>
                   <p className="text-xs text-surface-500 mb-3">Click a driver to view full details.</p>
                   <input
@@ -2208,7 +2208,7 @@ export default function Contractor() {
 
             {activeTab === 'import-all' && (
               <div className="w-full">
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import trucks and drivers at once</h2>
                   {(!pageRestrictions.allow_truck_import || !pageRestrictions.allow_driver_import) && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -2239,7 +2239,7 @@ export default function Contractor() {
 
             {activeTab === 'incidents' && (
               <div className="grid gap-6 lg:grid-cols-2">
-                <div className="bg-white rounded-xl border border-surface-200 p-6">
+                <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Report breakdown or incident</h2>
                   <form onSubmit={addIncident} className="space-y-4">
                     <div>
@@ -2417,7 +2417,7 @@ export default function Contractor() {
                     </button>
                   </form>
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h2 className="font-medium text-surface-900 mb-3">Breakdowns & incidents</h2>
                   <p className="text-xs text-surface-500 mb-2">Click an incident to view details and resolve it.</p>
                   <input
@@ -2681,7 +2681,7 @@ export default function Contractor() {
 
             {activeTab === 'expiries' && (
               <div className="grid gap-6 lg:grid-cols-2">
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h2 className="font-medium text-surface-900 mb-3">Add expiry (licence, roadworthy, permit)</h2>
                   <form onSubmit={addExpiry} className="space-y-3">
                     <div>
@@ -2755,7 +2755,7 @@ export default function Contractor() {
                     <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add expiry</button>
                   </form>
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h2 className="font-medium text-surface-900 mb-3">Expiries</h2>
                   <input
                     type="search"
@@ -2791,7 +2791,7 @@ export default function Contractor() {
             {activeTab === 'suspensions' && (
               <div className="flex flex-col lg:flex-row gap-4 lg:gap-0 lg:min-h-0">
                 <div className="space-y-6 flex-1 min-w-0 lg:overflow-auto">
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h2 className="font-medium text-surface-900 mb-2">Compliance records</h2>
                   <p className="text-sm text-surface-500 mb-3">Click a row to view full details in the side panel. Respond within 8 hours or the truck/driver will be auto-suspended.</p>
                   <div className="overflow-x-auto -mx-4 sm:mx-0">
@@ -2853,7 +2853,7 @@ export default function Contractor() {
                   </div>
                 </div>
                 <div className="grid gap-6 lg:grid-cols-2">
-                  <div className="bg-white rounded-xl border border-surface-200 p-4">
+                  <div className="app-glass-card p-4">
                     <h2 className="font-medium text-surface-900 mb-3">Record suspension</h2>
                     <form onSubmit={addSuspension} className="space-y-3">
                       <select name="entity_type" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
@@ -2888,7 +2888,7 @@ export default function Contractor() {
                       <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Record suspension</button>
                     </form>
                   </div>
-                  <div className="bg-white rounded-xl border border-surface-200 p-4">
+                  <div className="app-glass-card p-4">
                     <h2 className="font-medium text-surface-900 mb-3">Suspensions and appeals</h2>
                     <ul className="space-y-2 text-sm">
                       {suspensionsList.length === 0 ? <li className="text-surface-500">No suspensions.</li> : suspensionsList.map((s) => {
@@ -3107,7 +3107,7 @@ export default function Contractor() {
                 {routesList.length === 0 ? (
                   <p className="text-sm text-surface-500">No routes yet. Routes are created in Access Management.</p>
                 ) : (
-                  <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3 max-w-2xl">
+                  <div className="app-glass-card p-4 space-y-3 max-w-2xl">
                     <label className="block text-sm font-medium text-surface-700" htmlFor="enrollment-route-search">Search routes</label>
                     <p className="text-xs text-surface-500">Route names are not listed until you type at least {enrollmentRouteSearchMinChars} characters — this limits exposure of other operations.</p>
                     <input
@@ -3178,7 +3178,7 @@ export default function Contractor() {
                 )}
                 {enrollmentRouteId && (
                   <div className="grid gap-6 md:grid-cols-2">
-                    <div className="bg-white rounded-xl border border-surface-200 p-4">
+                    <div className="app-glass-card p-4">
                       <div className="flex items-center justify-between mb-3">
                         <h3 className="font-medium text-surface-900">Trucks on this route</h3>
                         <button
@@ -3212,7 +3212,7 @@ export default function Contractor() {
                         )}
                       </ul>
                     </div>
-                    <div className="bg-white rounded-xl border border-surface-200 p-4">
+                    <div className="app-glass-card p-4">
                       <div className="flex items-center justify-between mb-3">
                         <h3 className="font-medium text-surface-900">Drivers on this route</h3>
                         <button
@@ -3462,7 +3462,7 @@ export default function Contractor() {
 
             {activeTab === 'contractor-details' && (
               <div className="max-w-4xl">
-                <div className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+                <div className="app-glass-card shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-surface-200 bg-surface-50">
                     <h2 className="text-lg font-semibold text-surface-900">Details of the contractor</h2>
                     <p className="text-sm text-surface-500 mt-0.5">Company details, CIPC registration, administrator, control room, mechanic and emergency contacts.</p>
@@ -3575,7 +3575,7 @@ export default function Contractor() {
 
             {activeTab === 'subcontract-details' && (
               <div className="space-y-6">
-                <div className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+                <div className="app-glass-card shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h2 className="text-lg font-semibold text-surface-900">Subcontract details</h2>
@@ -3674,7 +3674,7 @@ export default function Contractor() {
 
             {activeTab === 'library' && (
               <div className="space-y-6">
-                <div className="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+                <div className="app-glass-card shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-surface-200 bg-surface-50">
                     <h2 className="text-lg font-semibold text-surface-900">Library</h2>
                     <p className="text-sm text-surface-500 mt-0.5">
@@ -3816,7 +3816,7 @@ export default function Contractor() {
 
             {activeTab === 'messages' && (
               <div className="grid gap-6 lg:grid-cols-2">
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h2 className="font-medium text-surface-900 mb-3">New message (commodity operations)</h2>
                   <form onSubmit={addMessage} className="space-y-3">
                     <input name="subject" placeholder="Subject" required className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -3825,7 +3825,7 @@ export default function Contractor() {
                     <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Send</button>
                   </form>
                 </div>
-                <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <div className="app-glass-card p-4">
                   <h2 className="font-medium text-surface-900 mb-3">Messages</h2>
                   <ul className="space-y-2 text-sm">
                     {messagesList.length === 0 ? <li className="text-surface-500">No messages.</li> : messagesList.map((m) => (

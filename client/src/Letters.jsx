@@ -51,7 +51,7 @@ const LAYOUTS = [
 ];
 
 const ACCENT_COLOURS = [
-  { id: 'brand', hex: '#b91c1c', name: 'Brand red' },
+  { id: 'brand', hex: '#0891b2', name: 'Brand accent' },
   { id: 'slate', hex: '#475569', name: 'Slate' },
   { id: 'blue', hex: '#1d4ed8', name: 'Blue' },
   { id: 'emerald', hex: '#047857', name: 'Emerald' },

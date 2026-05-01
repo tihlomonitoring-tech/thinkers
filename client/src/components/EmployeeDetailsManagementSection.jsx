@@ -118,7 +118,7 @@ export default function EmployeeDetailsManagementSection({ onError }) {
       </div>
       <p className="text-sm text-surface-600 max-w-3xl">Select an employee to review their submitted information. This view is read-only.</p>
 
-      <div className="bg-white rounded-xl border border-surface-200 p-4 shadow-sm space-y-4">
+      <div className="app-glass-card p-4 shadow-sm space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="flex flex-wrap gap-2">
             <button
@@ -173,7 +173,7 @@ export default function EmployeeDetailsManagementSection({ onError }) {
       </div>
 
       <div className="grid lg:grid-cols-12 gap-6 items-start">
-        <div className="lg:col-span-4 bg-white rounded-xl border border-surface-200 overflow-hidden shadow-sm">
+        <div className="lg:col-span-4 app-glass-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b border-surface-100 bg-surface-50 flex justify-between items-center">
             <span className="text-sm font-semibold text-surface-900">Employees</span>
             <button type="button" onClick={loadList} className="text-xs font-medium text-brand-600 hover:text-brand-700">
@@ -222,24 +222,24 @@ export default function EmployeeDetailsManagementSection({ onError }) {
         </div>
 
         <div className="lg:col-span-8 min-w-0">
-          {!selectedId && <p className="text-sm text-surface-500 bg-white rounded-xl border border-surface-200 p-6">Choose an employee from the list.</p>}
+          {!selectedId && <p className="text-sm text-surface-500 app-glass-card p-6">Choose an employee from the list.</p>}
           {selectedId && detailLoading && <p className="text-sm text-surface-500">Loading record…</p>}
           {selectedId && !detailLoading && bundle && (
             <div className="space-y-6">
-              <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6">
+              <div className="app-glass-card p-4 sm:p-6">
                 <h2 className="text-lg font-semibold text-surface-900">{bundle.user?.full_name || 'Employee'}</h2>
                 <p className="text-sm text-surface-500">{bundle.user?.email}</p>
                 <p className="text-xs text-surface-400 mt-2">Record last updated {formatDate(det.updatedAt)}</p>
               </div>
 
-              <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
+              <div className="app-glass-card p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
                 <Field label="First name(s) (ID)" value={det.legalFirstNames} />
                 <Field label="Surname (ID)" value={det.legalSurname} />
                 <Field label="ID / passport number" value={det.idDocumentNumber} />
                 <Field label="Residential address" value={det.residentialAddress} />
               </div>
 
-              <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
+              <div className="app-glass-card p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
                 <h3 className="sm:col-span-2 text-sm font-semibold text-surface-800">Next of kin</h3>
                 <Field label="Name" value={det.nextOfKinName} />
                 <Field label="Relationship" value={det.nextOfKinRelationship} />
@@ -247,7 +247,7 @@ export default function EmployeeDetailsManagementSection({ onError }) {
                 <Field label="Email" value={det.nextOfKinEmail} />
               </div>
 
-              <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
+              <div className="app-glass-card p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
                 <h3 className="sm:col-span-2 text-sm font-semibold text-surface-800">Medical aid</h3>
                 <Field label="Provider / scheme" value={det.medicalAidProvider} />
                 <Field label="Member number" value={det.medicalAidMemberNo} />
@@ -255,7 +255,7 @@ export default function EmployeeDetailsManagementSection({ onError }) {
                 <Field label="Notes" value={det.medicalAidNotes} />
               </div>
 
-              <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
+              <div className="app-glass-card p-4 sm:p-6 grid sm:grid-cols-2 gap-4">
                 <h3 className="sm:col-span-2 text-sm font-semibold text-surface-800">Banking</h3>
                 <Field label="Bank" value={det.bankName} />
                 <Field label="Account holder" value={det.bankAccountHolder} />
@@ -264,7 +264,7 @@ export default function EmployeeDetailsManagementSection({ onError }) {
                 <Field label="Account type" value={det.bankAccountType} />
               </div>
 
-              <div className="bg-white rounded-xl border border-surface-200 p-4 sm:p-6">
+              <div className="app-glass-card p-4 sm:p-6">
                 <h3 className="text-sm font-semibold text-surface-800 mb-3">Attachments</h3>
                 {(bundle.attachments || []).length === 0 ? (
                   <p className="text-sm text-surface-500">No attachments.</p>

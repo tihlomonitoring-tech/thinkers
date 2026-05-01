@@ -134,7 +134,7 @@ function FuelManageTabAccess({ isSuperAdmin, permissions, setPermissions, users,
           text="Grant or revoke Fuel supply management tabs for users. Super admins always see all tabs. Other users need this page in their role and at least one tab granted."
         />
       </div>
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="app-glass-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[640px]">
             <thead>
@@ -311,7 +311,7 @@ export default function FuelSupplyManagement() {
   return (
     <div className="flex gap-0 w-full min-h-0 -m-4 sm:-m-6 flex-col md:flex-row">
       <nav
-        className={`hidden md:flex shrink-0 flex-col border-r border-surface-200 bg-white transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        className={`hidden md:flex shrink-0 flex-col app-glass-secondary-nav transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
         aria-label="Fuel supply management"
         aria-hidden={navHidden}
       >
@@ -510,21 +510,21 @@ function DashboardTab({ orders, events, onRefresh }) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+        <div className="app-glass-card p-4 shadow-sm">
           <p className="text-xs font-medium text-surface-500 uppercase">In progress</p>
           <p className="text-2xl font-semibold text-surface-900 mt-1">{open}</p>
         </div>
-        <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+        <div className="app-glass-card p-4 shadow-sm">
           <p className="text-xs font-medium text-surface-500 uppercase">Delivered</p>
           <p className="text-2xl font-semibold text-surface-900 mt-1">{delivered}</p>
         </div>
-        <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+        <div className="app-glass-card p-4 shadow-sm">
           <p className="text-xs font-medium text-surface-500 uppercase">Reconciled</p>
           <p className="text-2xl font-semibold text-surface-900 mt-1">{reconciled}</p>
         </div>
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <div className="app-glass-card overflow-hidden shadow-sm">
         <div className="px-4 py-3 border-b border-surface-100 flex items-center gap-2">
           <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">Alerts &amp; events</h3>
           <InfoHint title="Alerts and events help" text="Collection and delivery notifications, plus other fuel supply events for your tenant." />
@@ -558,7 +558,7 @@ function DashboardTab({ orders, events, onRefresh }) {
         </ul>
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <div className="app-glass-card overflow-hidden shadow-sm">
         <div className="px-4 py-3 border-b border-surface-100">
           <h3 className="text-sm font-semibold text-surface-900">Recent diesel orders</h3>
         </div>
@@ -732,7 +732,7 @@ function CustomerDieselRequestsAdminPanel({ requests, onRefresh, onError }) {
 
       {review ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true">
-          <div className="bg-white rounded-xl border border-surface-200 shadow-xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
+          <div className="app-glass-card shadow-xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <h4 className="text-sm font-semibold text-surface-900">Review customer request</h4>
             <div className="text-xs text-surface-600 space-y-1">
               <p>
@@ -927,7 +927,7 @@ function AdministrationTab({ orders, customerRequests, onCreated, onError }) {
         />
       </div>
 
-      <form onSubmit={submit} className="max-w-3xl space-y-4 bg-white rounded-xl border border-surface-200 p-4 sm:p-6 shadow-sm">
+      <form onSubmit={submit} className="max-w-3xl space-y-4 app-glass-card p-4 sm:p-6 shadow-sm">
         <h3 className="text-sm font-semibold text-surface-800">New diesel order</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="sm:col-span-2">
@@ -992,7 +992,7 @@ function AdministrationTab({ orders, customerRequests, onCreated, onError }) {
         </button>
       </form>
 
-      <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+      <div className="app-glass-card overflow-hidden shadow-sm">
         <div className="px-4 py-3 border-b border-surface-100">
           <h3 className="text-sm font-semibold text-surface-900">All orders</h3>
         </div>
@@ -1044,7 +1044,7 @@ function AdministrationTab({ orders, customerRequests, onCreated, onError }) {
 
       {reorderFor ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true">
-          <div className="bg-white rounded-xl border border-surface-200 shadow-xl max-w-md w-full p-6 space-y-4">
+          <div className="app-glass-card shadow-xl max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold text-surface-900">Reorder diesel (same supply)</h3>
               <InfoHint
@@ -1167,7 +1167,7 @@ function SupplyActivitiesTab({ orders, onLogged, onError }) {
         />
       </div>
 
-      <form onSubmit={submit} className="max-w-2xl space-y-4 bg-white rounded-xl border border-surface-200 p-4 sm:p-6 shadow-sm">
+      <form onSubmit={submit} className="max-w-2xl space-y-4 app-glass-card p-4 sm:p-6 shadow-sm">
         <div>
           <label className="block text-xs font-medium text-surface-600 mb-1">Order</label>
           <select className={inputClass()} value={orderId} onChange={(e) => setOrderId(e.target.value)} required>
@@ -1274,7 +1274,7 @@ function DeliveryTab({ orders, onDone, onError }) {
         />
       </div>
 
-      <form onSubmit={submit} className="max-w-xl space-y-4 bg-white rounded-xl border border-surface-200 p-4 sm:p-6 shadow-sm">
+      <form onSubmit={submit} className="max-w-xl space-y-4 app-glass-card p-4 sm:p-6 shadow-sm">
         <div>
           <label className="block text-xs font-medium text-surface-600 mb-1">Order</label>
           <select className={inputClass()} value={orderId} onChange={(e) => setOrderId(e.target.value)} required>
@@ -1456,7 +1456,7 @@ function ReconciliationsTab({ orders, onRefresh, onError }) {
           </div>
         ) : null}
 
-        <div className="rounded-xl border border-surface-200 bg-white p-4 sm:p-6 shadow-sm space-y-4">
+        <div className="app-glass-card p-4 sm:p-6 shadow-sm space-y-4">
           <h3 className="text-sm font-semibold text-surface-900">Deliveries on this order</h3>
           {deliveries.length === 0 ? (
             <p className="text-surface-500 text-sm">No deliveries recorded yet.</p>
@@ -1485,7 +1485,7 @@ function ReconciliationsTab({ orders, onRefresh, onError }) {
           )}
         </div>
 
-        <form onSubmit={submit} className="rounded-xl border border-surface-200 bg-white p-4 sm:p-6 shadow-sm space-y-4">
+        <form onSubmit={submit} className="app-glass-card p-4 sm:p-6 shadow-sm space-y-4">
           <h3 className="text-sm font-semibold text-surface-900">New reconciliation</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
@@ -1527,7 +1527,7 @@ function ReconciliationsTab({ orders, onRefresh, onError }) {
           </button>
         </form>
 
-        <div className="rounded-xl border border-surface-200 bg-white overflow-hidden shadow-sm">
+        <div className="app-glass-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b border-surface-100">
             <h3 className="text-sm font-semibold text-surface-900">Reconciliation records</h3>
           </div>

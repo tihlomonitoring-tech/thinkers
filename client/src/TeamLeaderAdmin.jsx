@@ -603,7 +603,7 @@ export default function TeamLeaderAdmin() {
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden">
       <nav
-        className={`shrink-0 border-r border-surface-200 bg-white flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden dark:border-surface-800 dark:bg-surface-900 ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
+        className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`}
         aria-hidden={navHidden}
       >
         <div className="p-4 border-b border-surface-100 dark:border-surface-800 flex items-start justify-between gap-2 w-72">
