@@ -21,6 +21,7 @@ import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
 import FuelSupplyManagement from './FuelSupplyManagement';
 import FuelCustomerOrders from './FuelCustomerOrders';
+import FuelData from './FuelData';
 import TeamLeaderAdmin from './TeamLeaderAdmin';
 import PerformanceEvaluations from './PerformanceEvaluations';
 import Auditor from './Auditor';
@@ -94,6 +95,7 @@ function AppRoutes() {
         <Route path="command-centre" element={<PageGate pathKey="/command-centre"><CommandCentre /></PageGate>} />
         <Route path="fuel-supply-management" element={<PageGate pathKey="/fuel-supply-management"><FuelSupplyManagement /></PageGate>} />
         <Route path="fuel-customer-orders" element={<PageGate pathKey="/fuel-customer-orders"><FuelCustomerOrders /></PageGate>} />
+        <Route path="fuel-data" element={<PageGate pathKey="/fuel-data"><FuelData /></PageGate>} />
         <Route path="access-management" element={<PageGate pathKey="/access-management"><AccessManagement /></PageGate>} />
         <Route path="rector" element={<PageGate pathKey="/rector"><Rector /></PageGate>} />
         <Route path="tasks" element={<PageGate pathKey="/tasks"><Tasks /></PageGate>} />

@@ -130,7 +130,6 @@ export default function Login() {
           {/* Left — branding */}
           <section className="relative hidden lg:flex flex-col justify-between px-12 xl:px-20 py-14 xl:py-20 min-h-[50vh] lg:min-h-screen">
             <div className="pt-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-orange-200/90 mb-4">Thinkers</p>
               <h1
                 className="text-[clamp(3rem,5.5vw,4.75rem)] leading-[0.98] font-normal uppercase tracking-tight text-white drop-shadow-[0_4px_32px_rgba(0,0,0,0.45)]"
                 style={{ fontFamily: "'Anton', sans-serif" }}
@@ -175,7 +174,6 @@ export default function Login() {
           <section className="flex flex-col justify-center px-5 sm:px-10 py-12 lg:py-16 lg:pr-12 xl:pr-20">
             <div className="w-full max-w-[420px] mx-auto lg:ml-auto lg:mr-0">
               <div className="lg:hidden mb-8 text-center">
-                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-orange-200/90 mb-2">Thinkers</p>
                 <h1
                   className="text-[2.65rem] leading-[0.95] font-normal uppercase text-white"
                   style={{ fontFamily: "'Anton', sans-serif" }}

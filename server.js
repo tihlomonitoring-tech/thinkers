@@ -23,6 +23,7 @@ import monthlyPerformanceReportsRoutes from './src/routes/monthlyPerformanceRepo
 import recruitmentRoutes from './src/routes/recruitment.js';
 import accountingRoutes from './src/routes/accounting.js';
 import fuelSupplyRoutes from './src/routes/fuelSupply.js';
+import fuelDataRoutes from './src/routes/fuelData.js';
 import fuelCustomerPortalRoutes from './src/routes/fuelCustomerPortal.js';
 import teamGoalsRoutes from './src/routes/teamGoals.js';
 import performanceEvaluationsRoutes from './src/routes/performanceEvaluations.js';
@@ -144,6 +145,7 @@ app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
 app.use('/api/fuel-supply', fuelSupplyRoutes);
+app.use('/api/fuel-data', fuelDataRoutes);
 app.use('/api/fuel-customer-portal', fuelCustomerPortalRoutes);
 app.use('/api/team-goals', teamGoalsRoutes);
 app.use('/api/performance-evaluations', performanceEvaluationsRoutes);

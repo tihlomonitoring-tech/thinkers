@@ -31,5 +31,6 @@ ALTER TABLE dbo.user_page_roles ADD CONSTRAINT CK_user_page_roles_page_id CHECK 
   N'team_leader_admin',
   N'performance_evaluations',
   N'auditor',
-  N'company_library'
+  N'company_library',
+  N'fuel_data'
 ));

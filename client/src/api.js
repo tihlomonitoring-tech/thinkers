@@ -730,6 +730,129 @@ export const fuelSupply = {
     }),
 };
 
+export const fuelData = {
+  myTabs: () => request('/fuel-data/my-tabs'),
+  permissions: () => request('/fuel-data/permissions'),
+  grantPermission: (userId, tabId) =>
+    request('/fuel-data/permissions', { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
+  revokePermission: (userId, tabId) =>
+    request(
+      `/fuel-data/permissions?user_id=${encodeURIComponent(userId)}&tab_id=${encodeURIComponent(tabId)}`,
+      { method: 'DELETE' }
+    ),
+  suppliers: () => request('/fuel-data/suppliers'),
+  createSupplier: (body) => request('/fuel-data/suppliers', { method: 'POST', body: JSON.stringify(body) }),
+  patchSupplier: (id, body) =>
+    request(`/fuel-data/suppliers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  uploadSupplierLogo: (id, formData) =>
+    fetch(`${API}/fuel-data/suppliers/${encodeURIComponent(id)}/logo`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      })
+      .catch((err) => {
+        throw wrapNetworkError(err);
+      }),
+  supplierLogoUrl: (id) => `${API}/fuel-data/suppliers/${encodeURIComponent(id)}/logo`,
+  customers: () => request('/fuel-data/customers'),
+  createCustomer: (body) => request('/fuel-data/customers', { method: 'POST', body: JSON.stringify(body) }),
+  patchCustomer: (id, body) =>
+    request(`/fuel-data/customers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  customerReceipts: (customerId) => request(`/fuel-data/customers/${encodeURIComponent(customerId)}/receipts`),
+  uploadCustomerReceipt: (customerId, formData) =>
+    fetch(`${API}/fuel-data/customers/${encodeURIComponent(customerId)}/receipts`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      })
+      .catch((err) => {
+        throw wrapNetworkError(err);
+      }),
+  receiptDownloadUrl: (fileId) => `${API}/fuel-data/files/${encodeURIComponent(fileId)}/download`,
+  transactions: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return request(`/fuel-data/transactions${s ? `?${s}` : ''}`);
+  },
+  getTransaction: (id) => request(`/fuel-data/transactions/${encodeURIComponent(id)}`),
+  createTransaction: (body) => request('/fuel-data/transactions', { method: 'POST', body: JSON.stringify(body) }),
+  patchTransaction: (id, body) =>
+    request(`/fuel-data/transactions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  verifyTransaction: (id) =>
+    request(`/fuel-data/transactions/${encodeURIComponent(id)}/verify`, { method: 'POST', body: '{}' }),
+  deleteTransaction: (id) =>
+    request(`/fuel-data/transactions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteUnverifiedTransaction: (id) =>
+    request(`/fuel-data/transactions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  bulkDeleteTransactions: (ids) =>
+    request('/fuel-data/transactions/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+  uploadTransactionAttachment: (id, formData) =>
+    fetch(`${API}/fuel-data/transactions/${encodeURIComponent(id)}/attachments`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      })
+      .catch((err) => {
+        throw wrapNetworkError(err);
+      }),
+  transactionAttachmentUrl: (fileId) => `${API}/fuel-data/transaction-files/${encodeURIComponent(fileId)}/download`,
+  deleteTransactionAttachment: (fileId) =>
+    request(`/fuel-data/transaction-files/${encodeURIComponent(fileId)}`, { method: 'DELETE' }),
+  exportExcelUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return `${API}/fuel-data/export/excel${s ? `?${s}` : ''}`;
+  },
+  exportPdfUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return `${API}/fuel-data/export/pdf${s ? `?${s}` : ''}`;
+  },
+  emailTransactions: (body) =>
+    request('/fuel-data/export/email', { method: 'POST', body: JSON.stringify(body || {}) }),
+  analyticsSummary: () => request('/fuel-data/analytics/summary'),
+  analyticsInsights: () => request('/fuel-data/analytics/insights', { method: 'POST', body: '{}' }),
+  parseAttendantSlip: (formData) =>
+    fetch(`${API}/fuel-data/attendant/parse-slip`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      })
+      .catch((err) => {
+        throw wrapNetworkError(err);
+      }),
+  transactionSlipUrl: (id) => `${API}/fuel-data/transactions/${encodeURIComponent(id)}/slip-image`,
+};
+
 export const fuelCustomerPortal = {
   myRequests: () => request('/fuel-customer-portal/requests'),
   createRequest: (body) =>
