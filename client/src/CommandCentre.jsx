@@ -10,6 +10,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth, shiftClock, shiftScore } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
+import { buildMockSingleOpsShiftReport } from './lib/mockSingleOpsShiftReport.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
@@ -3104,9 +3105,11 @@ function TabReports() {
   const [message, setMessage] = useState('');
   const [openSection, setOpenSection] = useState('info');
   const [reportComposeHelpOpen, setReportComposeHelpOpen] = useState(false);
+  const canAccessShiftTemplates = user?.role === 'super_admin';
 
   const reportTypes = [
     { id: 'shift', label: 'Shift report', description: 'Official controller shift documentation for fleet monitoring & logistics' },
+    { id: 'single_ops_shift', label: 'Single operations shift report', description: 'Multi-route shift report with per-truck delivery account and loads per route (separate records from standard shift reports)' },
     { id: 'investigation', label: 'Investigation report', description: 'Record investigation findings and actions taken' },
     { id: 'performance', label: 'Performance report', description: 'Performance metrics and operational summary' },
   ];
@@ -3114,6 +3117,10 @@ function TabReports() {
   useEffect(() => {
     if (reportType === 'investigation') setOpenSection('inv_case');
   }, [reportType]);
+
+  useEffect(() => {
+    if (!canAccessShiftTemplates && reportsSubTab === 'template') setReportsSubTab('compose');
+  }, [canAccessShiftTemplates, reportsSubTab]);
 
   return (
     <div className="space-y-6">
@@ -3136,16 +3143,18 @@ function TabReports() {
         >
           Compose report
         </button>
-        <button
-          type="button"
-          onClick={() => setReportsSubTab('template')}
-          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'template' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
-        >
-          Shift report template
-        </button>
+        {canAccessShiftTemplates ? (
+          <button
+            type="button"
+            onClick={() => setReportsSubTab('template')}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${reportsSubTab === 'template' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
+          >
+            Shift report template
+          </button>
+        ) : null}
       </div>
       <div className="app-glass-card overflow-hidden">
-        {reportsSubTab === 'template' ? (
+        {reportsSubTab === 'template' && canAccessShiftTemplates ? (
           <ShiftReportTemplateTab user={user} />
         ) : !reportType ? (
           <div className="p-6 grid gap-4 sm:grid-cols-3">
@@ -3166,6 +3175,19 @@ function TabReports() {
             user={user}
             onBack={() => { setReportType(null); setMessage(''); }}
             onSaved={() => { setMessage('Shift report saved. Go to View saved shift reports to submit for approval.'); setReportType(null); }}
+            saving={saving}
+            setSaving={setSaving}
+            message={message}
+            setMessage={setMessage}
+            openSection={openSection}
+            setOpenSection={setOpenSection}
+          />
+        ) : reportType === 'single_ops_shift' ? (
+          <ShiftReportForm
+            reportKind="single_ops"
+            user={user}
+            onBack={() => { setReportType(null); setMessage(''); }}
+            onSaved={() => { setMessage('Single operations shift report saved. Open View saved shift reports, choose Single operations, then submit for approval.'); setReportType(null); }}
             saving={saving}
             setSaving={setSaving}
             message={message}
@@ -3205,6 +3227,7 @@ function ShiftReportTemplateTab({ user }) {
   const [routeName, setRouteName] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [downloadingWord, setDownloadingWord] = useState(false);
+  const [downloadingMockSingleOps, setDownloadingMockSingleOps] = useState(false);
 
   const buildShiftTemplatePayload = () => {
     const line = '____________________________';
@@ -3302,6 +3325,18 @@ function ShiftReportTemplateTab({ user }) {
     }
   };
 
+  const downloadMockSingleOpsPdf = async () => {
+    setDownloadingMockSingleOps(true);
+    try {
+      const mock = buildMockSingleOpsShiftReport(10, { createdByName: user?.full_name || 'Command Centre' });
+      const logoDataUrl = await loadTemplateLogoDataUrl();
+      const doc = generateShiftReportPdf(mock, logoDataUrl ? { logoDataUrl } : {});
+      doc.save(buildShiftReportDownloadFilename(mock, { tenantName: user?.tenant_name }));
+    } finally {
+      setDownloadingMockSingleOps(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-4">
       <h3 className="text-base font-semibold text-surface-900">Shift report template</h3>
@@ -3336,15 +3371,38 @@ function ShiftReportTemplateTab({ user }) {
           {downloadingWord ? 'Generating Word…' : 'Download Word template'}
         </button>
       </div>
+
+      <div className="mt-8 pt-6 border-t border-surface-200 space-y-3">
+        <h3 className="text-base font-semibold text-surface-900">Single operations shift report — PDF preview</h3>
+        <p className="text-sm text-surface-600 max-w-2xl">
+          Downloads a filled <strong>mock</strong> single-operations shift report (not saved to the database) with{' '}
+          <strong>10 rows</strong> in each table section: route load totals, truck delivery account, truck updates, incidents,
+          non-compliance, investigations, and communication log. Uses the same PDF layout as approved reports.
+        </p>
+        <button
+          type="button"
+          onClick={downloadMockSingleOpsPdf}
+          disabled={downloadingMockSingleOps || downloading || downloadingWord}
+          className="px-4 py-2 text-sm rounded-lg bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-50"
+        >
+          {downloadingMockSingleOps ? 'Generating PDF…' : 'Download mock single-ops PDF (10 rows per section)'}
+        </button>
+      </div>
     </div>
   );
 }
 
 function TabSavedReports() {
   const { user } = useAuth();
+  /** Standard shift reports vs single-operations (separate API + DB tables). */
+  const [listKind, setListKind] = useState('shift');
+  const listKindRef = useRef(listKind);
+  listKindRef.current = listKind;
+  const selectedIdRef = useRef(null);
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
+  selectedIdRef.current = selectedId;
   const [report, setReport] = useState(null);
   const [comments, setComments] = useState([]);
   const [error, setError] = useState('');
@@ -3360,23 +3418,61 @@ function TabSavedReports() {
   const [statusFilter, setStatusFilter] = useState('');
   const [savedReportsHelpOpen, setSavedReportsHelpOpen] = useState(false);
 
+  const listApiForKind = (kind) => (kind === 'single_ops' ? ccApi.singleOpsShiftReports : ccApi.shiftReports);
+  const listApi = () => listApiForKind(listKindRef.current);
+
   const loadList = () => {
+    const kind = listKindRef.current;
     setLoading(true);
-    ccApi.shiftReports.list(false)
-      .then((r) => { setReports(r.reports || []); setError(''); })
-      .catch((err) => setError(err?.message || 'Failed to load reports'))
-      .finally(() => setLoading(false));
+    listApiForKind(kind)
+      .list(false)
+      .then((r) => {
+        if (listKindRef.current !== kind) return;
+        setReports(r.reports || []);
+        setError('');
+      })
+      .catch((err) => {
+        if (listKindRef.current !== kind) return;
+        setError(err?.message || 'Failed to load reports');
+      })
+      .finally(() => {
+        if (listKindRef.current === kind) setLoading(false);
+      });
   };
 
-  useEffect(() => { loadList(); }, []);
+  useEffect(() => {
+    setSelectedId(null);
+    setReport(null);
+    setComments([]);
+    loadList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when switching list kind
+  }, [listKind]);
 
   useEffect(() => {
     setForceEditMode(false);
-    if (!selectedId) { setReport(null); setComments([]); return; }
-    ccApi.shiftReports.get(selectedId)
-      .then((r) => { setReport(r.report); setComments(r.comments || []); setError(''); })
-      .catch((err) => { setError(err?.message || 'Failed to load report'); setReport(null); });
-  }, [selectedId]);
+    if (!selectedId) {
+      setReport(null);
+      setComments([]);
+      return;
+    }
+    const kindAtFetch = listKindRef.current;
+    const idAtFetch = selectedId;
+    setReport(null);
+    setComments([]);
+    listApiForKind(kindAtFetch)
+      .get(idAtFetch)
+      .then((r) => {
+        if (listKindRef.current !== kindAtFetch || String(selectedIdRef.current) !== String(idAtFetch)) return;
+        setReport(r.report);
+        setComments(r.comments || []);
+        setError('');
+      })
+      .catch((err) => {
+        if (listKindRef.current !== kindAtFetch || String(selectedIdRef.current) !== String(idAtFetch)) return;
+        setError(err?.message || 'Failed to load report');
+        setReport(null);
+      });
+  }, [selectedId, listKind]);
 
   const openSubmitModal = () => {
     setSubmittingTo('');
@@ -3387,7 +3483,8 @@ function TabSavedReports() {
   const handleSubmitForApproval = () => {
     if (!submittingTo || !selectedId) return;
     setSubmitting(true);
-    ccApi.shiftReports.submit(selectedId, submittingTo)
+    listApi()
+      .submit(selectedId, submittingTo)
       .then((r) => { setReport(r.report); setSubmitModal(false); setSubmittingTo(''); loadList(); })
       .catch((err) => setError(err?.message || 'Submit failed'))
       .finally(() => setSubmitting(false));
@@ -3413,8 +3510,10 @@ function TabSavedReports() {
     if (statusFilter && String(r.status || '').toLowerCase() !== statusFilter) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
+    const routesBlob = Array.isArray(r.routes) && r.routes.length ? r.routes.join(' ').toLowerCase() : '';
     return (
       String(r.route || '').toLowerCase().includes(q) ||
+      routesBlob.includes(q) ||
       String(r.controller1_name || '').toLowerCase().includes(q) ||
       String(r.controller2_name || '').toLowerCase().includes(q) ||
       String(r.created_by_name || '').toLowerCase().includes(q) ||
@@ -3437,7 +3536,7 @@ function TabSavedReports() {
               <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report, tenantId: user?.tenant_id, tenantName: user?.tenant_name } })); }} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
             )}
             {canRevokeApproval && (
-              <button type="button" onClick={() => { setSavingReport(true); ccApi.shiftReports.revokeApproval(selectedId).then((r) => { setReport(r.report); loadList(); setSavingReport(false); }).catch((err) => { setError(err?.message || 'Revoke failed'); setSavingReport(false); }); }} disabled={savingReport} className="px-4 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">Revoke approval</button>
+              <button type="button" onClick={() => { setSavingReport(true); listApi().revokeApproval(selectedId).then((r) => { setReport(r.report); loadList(); setSavingReport(false); }).catch((err) => { setError(err?.message || 'Revoke failed'); setSavingReport(false); }); }} disabled={savingReport} className="px-4 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">Revoke approval</button>
             )}
             {canDeleteDraftSuperAdmin && (
               <button
@@ -3446,7 +3545,7 @@ function TabSavedReports() {
                   if (!window.confirm('Permanently delete this draft shift report? This cannot be undone.')) return;
                   setDeletingReport(true);
                   setError('');
-                  ccApi.shiftReports
+                  listApi()
                     .delete(selectedId)
                     .then(() => {
                       setSelectedId(null);
@@ -3471,13 +3570,14 @@ function TabSavedReports() {
         {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
         <ShiftReportForm
           key={`${report.id}-${report.updated_at || report.created_at || ''}`}
+          reportKind={listKind === 'single_ops' ? 'single_ops' : 'shift'}
           user={user}
           initialData={report}
           reportId={report.id}
           readOnly={actuallyReadOnly}
           onBack={() => { setSelectedId(null); setReport(null); }}
           onSaved={(updated) => { setReport(updated); loadList(); setSavingReport(false); setSaveMessage('Saved.'); }}
-          onCommentAddressed={() => { ccApi.shiftReports.get(selectedId).then((r) => { setReport(r.report); setComments(r.comments || []); }); loadList(); }}
+          onCommentAddressed={() => { listApi().get(selectedId).then((r) => { setReport(r.report); setComments(r.comments || []); }); loadList(); }}
           saving={savingReport}
           setSaving={setSavingReport}
           message={saveMessage}
@@ -3518,8 +3618,24 @@ function TabSavedReports() {
         setOpen={setSavedReportsHelpOpen}
         topic="saved shift reports"
       >
-        <p>Open a report to view, edit, submit for approval, or download (when approved).</p>
+        <p>Open a report to view, edit, submit for approval, or download (when approved). Use the toggle to switch between standard shift reports and single operations shift reports.</p>
       </CollapsibleSectionHelp>
+      <div className="app-glass-segmented mb-2">
+        <button
+          type="button"
+          onClick={() => setListKind('shift')}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${listKind === 'shift' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
+        >
+          Standard shift reports
+        </button>
+        <button
+          type="button"
+          onClick={() => setListKind('single_ops')}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${listKind === 'single_ops' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
+        >
+          Single operations shift reports
+        </button>
+      </div>
       <div className="app-glass-toolbar p-4">
         <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Advanced search</p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -3545,7 +3661,9 @@ function TabSavedReports() {
       {loading ? (
         <p className="text-surface-500">Loading…</p>
       ) : filteredReports.length === 0 ? (
-        <div className="app-glass-card p-8 text-center text-surface-600">No shift reports yet. Create one from Report composition.</div>
+        <div className="app-glass-card p-8 text-center text-surface-600">
+          {listKind === 'single_ops' ? 'No single operations shift reports yet. Create one from Report composition (Single operations shift report).' : 'No shift reports yet. Create one from Report composition.'}
+        </div>
       ) : (
         <div className="app-glass-table">
           <table className="w-full text-sm">
@@ -3554,7 +3672,7 @@ function TabSavedReports() {
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Saved date</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Time</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Controller(s)</th>
-                <th className="text-left font-semibold text-surface-700 px-4 py-3">Route / Report</th>
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">{listKind === 'single_ops' ? 'Routes / Report' : 'Route / Report'}</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Status</th>
               </tr>
             </thead>
@@ -3565,7 +3683,7 @@ function TabSavedReports() {
                 const timeStr = savedAt ? savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
                 const controllers = [r.controller1_name, r.controller2_name].filter(Boolean).join(', ') || '—';
                 return (
-                  <tr key={r.id} className="app-glass-data-row last:border-b-0">
+                  <tr key={`${listKind}-${r.id}`} className="app-glass-data-row last:border-b-0">
                     <td className="px-4 py-3 text-surface-700">{dateStr}</td>
                     <td className="px-4 py-3 text-surface-700">{timeStr}</td>
                     <td className="px-4 py-3 text-surface-700">{controllers}</td>
@@ -4383,7 +4501,7 @@ const CONTROLLER_EVALUATION_QUESTIONS = [
   { id: 'q11', label: 'Was the office space left clean in accordance with company policy?' },
 ];
 
-function ControllerEvaluationForm({ reportId, existingEvaluation, onSaved, saving, setSaving, error, setError }) {
+function ControllerEvaluationForm({ reportId, existingEvaluation, onSaved, saving, setSaving, error, setError, submitEvaluationFn }) {
   const [answers, setAnswers] = useState(() => {
     const init = {};
     CONTROLLER_EVALUATION_QUESTIONS.forEach((q) => { init[q.id] = { value: '', comment: '' }; });
@@ -4413,7 +4531,8 @@ function ControllerEvaluationForm({ reportId, existingEvaluation, onSaved, savin
     if (!String(overallComment).trim()) { setError('Overall comment is required.'); return; }
     setError('');
     setSaving(true);
-    ccApi.shiftReports.submitEvaluation(reportId, { answers: out, overall_comment: overallComment.trim() })
+    const submitEval = submitEvaluationFn || ((id, body) => ccApi.shiftReports.submitEvaluation(id, body));
+    submitEval(reportId, { answers: out, overall_comment: overallComment.trim() })
       .then(() => { onSaved?.(); })
       .catch((err) => setError(err?.message || 'Failed to save evaluation'))
       .finally(() => setSaving(false));
@@ -4607,6 +4726,8 @@ function TabRequests() {
   const [decidedByMe, setDecidedByMe] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
+  /** Which API owns the selected report (`shift` vs `single_ops`). */
+  const [selectedKind, setSelectedKind] = useState('shift');
   const [report, setReport] = useState(null);
   const [comments, setComments] = useState([]);
   const [evaluation, setEvaluation] = useState(null);
@@ -4622,29 +4743,61 @@ function TabRequests() {
   const [statusFilter, setStatusFilter] = useState('');
   const [requestsHelpOpen, setRequestsHelpOpen] = useState(false);
 
+  const tagRequestList = (arr, kind) => (arr || []).map((x) => ({ ...x, _requestKind: kind }));
+  const sortRequests = (a, b) => {
+    const da = new Date(a.report_date || a.created_at || 0).getTime();
+    const db = new Date(b.report_date || b.created_at || 0).getTime();
+    return db - da;
+  };
+
   const loadList = () => {
     setLoading(true);
-    Promise.all([ccApi.shiftReports.list(true), ccApi.shiftReports.listDecidedByMe()])
-      .then(([r, d]) => { setReports(r.reports || []); setDecidedByMe(d.reports || []); setError(''); })
+    Promise.all([
+      ccApi.shiftReports.list(true),
+      ccApi.shiftReports.listDecidedByMe(),
+      ccApi.singleOpsShiftReports.list(true),
+      ccApi.singleOpsShiftReports.listDecidedByMe(),
+    ])
+      .then(([r1, d1, r2, d2]) => {
+        setReports([...tagRequestList(r1.reports, 'shift'), ...tagRequestList(r2.reports, 'single_ops')].sort(sortRequests));
+        setDecidedByMe([...tagRequestList(d1.reports, 'shift'), ...tagRequestList(d2.reports, 'single_ops')].sort(sortRequests));
+        setError('');
+      })
       .catch((err) => setError(err?.message || 'Failed to load requests'))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { loadList(); }, []);
 
+  const detailApi = () => (selectedKind === 'single_ops' ? ccApi.singleOpsShiftReports : ccApi.shiftReports);
+
   useEffect(() => {
-    if (!selectedId) { setReport(null); setComments([]); setEvaluation(null); setOverrideRequested(false); setOverrideCode(''); return; }
+    if (!selectedId) {
+      setReport(null);
+      setComments([]);
+      setEvaluation(null);
+      setOverrideRequested(false);
+      setOverrideCode('');
+      setSelectedKind('shift');
+      return;
+    }
+    setReport(null);
+    setComments([]);
+    setEvaluation(null);
     setOverrideRequested(false);
     setOverrideCode('');
-    ccApi.shiftReports.get(selectedId)
+    detailApi()
+      .get(selectedId)
       .then((r) => { setReport(r.report); setComments(r.comments || []); setEvaluation(r.evaluation || null); setError(''); })
       .catch((err) => { setError(err?.message || 'Failed to load report'); setReport(null); setEvaluation(null); });
-  }, [selectedId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- detailApi follows selectedKind; refetch when id or kind changes
+  }, [selectedId, selectedKind]);
 
   const addComment = () => {
     if (!newComment.trim() || !selectedId) return;
     setAddingComment(true);
-    ccApi.shiftReports.addComment(selectedId, newComment.trim())
+    detailApi()
+      .addComment(selectedId, newComment.trim())
       .then((c) => { setComments((prev) => [...prev, { ...c.comment, user_name: user?.full_name }]); setNewComment(''); })
       .catch((err) => setError(err?.message || 'Failed to add comment'))
       .finally(() => setAddingComment(false));
@@ -4659,7 +4812,8 @@ function TabRequests() {
   const approve = () => {
     if (!selectedId) return;
     setActing(true);
-    ccApi.shiftReports.approve(selectedId, effectiveOverride || undefined)
+    detailApi()
+      .approve(selectedId, effectiveOverride || undefined)
       .then((r) => { setReport(r.report); setEvaluation(r.evaluation); loadList(); setOverrideCode(''); })
       .catch((err) => setError(err?.message || 'Failed to approve'))
       .finally(() => setActing(false));
@@ -4668,7 +4822,8 @@ function TabRequests() {
   const reject = () => {
     if (!selectedId) return;
     setActing(true);
-    ccApi.shiftReports.reject(selectedId, effectiveOverride || undefined)
+    detailApi()
+      .reject(selectedId, effectiveOverride || undefined)
       .then((r) => { setReport(r.report); loadList(); setOverrideCode(''); })
       .catch((err) => setError(err?.message || 'Failed to reject'))
       .finally(() => setActing(false));
@@ -4677,7 +4832,8 @@ function TabRequests() {
   const provisional = () => {
     if (!selectedId) return;
     setActing(true);
-    ccApi.shiftReports.provisional(selectedId, effectiveOverride || undefined)
+    detailApi()
+      .provisional(selectedId, effectiveOverride || undefined)
       .then((r) => { setReport(r.report); loadList(); setOverrideCode(''); })
       .catch((err) => setError(err?.message || 'Failed to set provisional'))
       .finally(() => setActing(false));
@@ -4686,7 +4842,8 @@ function TabRequests() {
   const requestOverride = () => {
     if (!selectedId) return;
     setRequestingOverride(true);
-    ccApi.shiftReports.requestOverride(selectedId)
+    detailApi()
+      .requestOverride(selectedId)
       .then(() => { setOverrideRequested(true); setError(''); })
       .catch((err) => setError(err?.message || 'Failed to request override'))
       .finally(() => setRequestingOverride(false));
@@ -4714,7 +4871,7 @@ function TabRequests() {
     return matchReport(r);
   });
 
-  if (selectedId && report) {
+  if (selectedId && report && String(report.id) === String(selectedId)) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
@@ -4725,7 +4882,7 @@ function TabRequests() {
           )}
         </div>
         {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
-        <ShiftReportReadOnlyView report={report} />
+        <ShiftReportReadOnlyView report={report} reportKind={selectedKind === 'single_ops' ? 'single_ops' : 'shift'} />
 
         {/* Controller evaluation (required before first decision) */}
         {showEvalForm && (
@@ -4734,7 +4891,12 @@ function TabRequests() {
             <ControllerEvaluationForm
               reportId={selectedId}
               existingEvaluation={evaluation}
-              onSaved={() => ccApi.shiftReports.get(selectedId).then((r) => { setReport(r.report); setEvaluation(r.evaluation || null); })}
+              onSaved={() => detailApi().get(selectedId).then((r) => { setReport(r.report); setEvaluation(r.evaluation || null); })}
+              submitEvaluationFn={
+                selectedKind === 'single_ops'
+                  ? (id, body) => ccApi.singleOpsShiftReports.submitEvaluation(id, body)
+                  : undefined
+              }
               saving={savingEval}
               setSaving={setSavingEval}
               error={error}
@@ -4818,8 +4980,9 @@ function TabRequests() {
         topic="shift report requests"
       >
         <p>
-          Shift reports submitted to you for approval. Complete the controller evaluation, then approve, reject, or grant provisional
-          approval. To change a decision you already made, open the report under &quot;Recently decided by you&quot; and request an override code.
+          Standard and single-operations shift reports submitted to you for approval appear here. Complete the controller evaluation, then
+          approve, reject, or grant provisional approval. To change a decision you already made, open the report under &quot;Recently decided by you&quot; and
+          request an override code.
         </p>
       </CollapsibleSectionHelp>
       <div className="app-glass-toolbar p-4">
@@ -4854,9 +5017,16 @@ function TabRequests() {
               <h3 className="px-4 py-2 text-sm font-semibold text-surface-600 app-glass-thead-row border-b">Pending your review</h3>
               <ul className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
                 {pendingFiltered.map((r) => (
-                  <li key={r.id}>
-                    <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-white/45 dark:hover:bg-white/[0.06] flex items-center justify-between gap-4">
-                      <span className="font-medium text-surface-900">{r.route || 'Shift report'} — from {r.created_by_name} · {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}</span>
+                  <li key={`${r._requestKind}-${r.id}`}>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedKind(r._requestKind || 'shift'); setSelectedId(r.id); }}
+                      className="w-full text-left px-4 py-3 hover:bg-white/45 dark:hover:bg-white/[0.06] flex items-center justify-between gap-4"
+                    >
+                      <span className="font-medium text-surface-900">
+                        {r._requestKind === 'single_ops' ? <span className="text-xs font-semibold text-brand-600 mr-2">[Single ops]</span> : null}
+                        {r.route || 'Shift report'} — from {r.created_by_name} · {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}
+                      </span>
                       <span className={`text-xs px-2 py-0.5 rounded-full ${r.status === 'provisional' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>{r.status}</span>
                     </button>
                   </li>
@@ -4870,9 +5040,16 @@ function TabRequests() {
               <p className="px-4 py-2 text-xs text-surface-500 bg-white/20 dark:bg-white/[0.03]">Open a report to request an override code and change your decision.</p>
               <ul className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
                 {decidedFiltered.map((r) => (
-                  <li key={r.id}>
-                    <button type="button" onClick={() => setSelectedId(r.id)} className="w-full text-left px-4 py-3 hover:bg-white/45 dark:hover:bg-white/[0.06] flex items-center justify-between gap-4">
-                      <span className="font-medium text-surface-900">{r.route || 'Shift report'} — {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}</span>
+                  <li key={`${r._requestKind}-${r.id}`}>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedKind(r._requestKind || 'shift'); setSelectedId(r.id); }}
+                      className="w-full text-left px-4 py-3 hover:bg-white/45 dark:hover:bg-white/[0.06] flex items-center justify-between gap-4"
+                    >
+                      <span className="font-medium text-surface-900">
+                        {r._requestKind === 'single_ops' ? <span className="text-xs font-semibold text-brand-600 mr-2">[Single ops]</span> : null}
+                        {r.route || 'Shift report'} — {r.report_date ? new Date(r.report_date).toLocaleDateString() : ''}
+                      </span>
                       <span className={`text-xs px-2 py-0.5 rounded-full ${r.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{r.status}</span>
                     </button>
                   </li>
@@ -4886,8 +5063,31 @@ function TabRequests() {
   );
 }
 
-function ShiftReportReadOnlyView({ report }) {
+/** Merge registered-route checkboxes with comma-separated route names (single-ops). */
+function mergeSingleOpsRouteNames(selectedRoutes, otherRoutesText) {
+  const fromCb = (selectedRoutes || []).map((x) => String(x).trim()).filter(Boolean);
+  const fromText = String(otherRoutesText || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...fromCb, ...fromText])];
+}
+
+function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' }) {
   const r = report || {};
+  const isSingleOps = reportKindProp === 'single_ops' || r.report_kind === 'single_ops';
+  const routesDisplay = isSingleOps
+    ? (Array.isArray(r.routes) && r.routes.length ? r.routes.join(', ') : r.route || '—')
+    : (r.route || '—');
+  const routeLoadTotalsRo = Array.isArray(r.route_load_totals) ? r.route_load_totals : [];
+  const truckDeliveriesRo = Array.isArray(r.truck_deliveries) ? r.truck_deliveries : [];
+  const routeLoadsNonEmpty = routeLoadTotalsRo.filter((row) => String(row?.route_name || '').trim() || String(row?.total_loads_delivered ?? '').trim());
+  const truckDelNonEmpty = truckDeliveriesRo.filter(
+    (row) => String(row?.truck_registration || '').trim()
+      || String(row?.driver_name || '').trim()
+      || String(row?.completed_deliveries ?? '').trim()
+      || String(row?.remarks || '').trim(),
+  );
   const sections = [
     { id: 'info', label: 'Report information' },
     { id: 'summary', label: 'Shift summary & overview' },
@@ -4914,7 +5114,10 @@ function ShiftReportReadOnlyView({ report }) {
       <div className="p-6 space-y-6">
         {openSection === 'info' && (
           <div className="grid gap-2 sm:grid-cols-2">
-            <div><span className="text-xs text-surface-500">Route</span><p className="font-medium">{r.route || '—'}</p></div>
+            <div className={isSingleOps ? 'sm:col-span-2' : ''}>
+              <span className="text-xs text-surface-500">{isSingleOps ? 'Routes' : 'Route'}</span>
+              <p className="font-medium whitespace-pre-wrap">{routesDisplay}</p>
+            </div>
             <div><span className="text-xs text-surface-500">Report date</span><p className="font-medium">{r.report_date ? new Date(r.report_date).toLocaleDateString() : '—'}</p></div>
             <div><span className="text-xs text-surface-500">Shift date</span><p className="font-medium">{r.shift_date ? new Date(r.shift_date).toLocaleDateString() : '—'}</p></div>
             <div><span className="text-xs text-surface-500">Shift start / end</span><p className="font-medium">{r.shift_start || '—'} / {r.shift_end || '—'}</p></div>
@@ -4939,6 +5142,60 @@ function ShiftReportReadOnlyView({ report }) {
               <div><span className="text-xs text-surface-500">Total pending deliveries</span><p className="font-medium">{r.total_pending_deliveries ?? '—'}</p></div>
               <div><span className="text-xs text-surface-500">Total loads delivered</span><p className="font-medium">{r.total_loads_delivered ?? '—'}</p></div>
             </div>
+            {isSingleOps && (
+              <>
+                <p className="text-xs font-semibold text-surface-600 pt-2">Total loads delivered per route</p>
+                {routeLoadsNonEmpty.length === 0 ? (
+                  <p className="text-surface-500 text-sm">None recorded.</p>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-surface-200">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-surface-100 border-b border-surface-200">
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Route</th>
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Loads delivered</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {routeLoadsNonEmpty.map((row, idx) => (
+                          <tr key={idx} className="border-b border-surface-100 last:border-0">
+                            <td className="px-3 py-2 align-top">{row.route_name || '—'}</td>
+                            <td className="px-3 py-2 align-top">{row.total_loads_delivered ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="text-xs font-semibold text-surface-600 pt-4">Deliveries per truck (performance account)</p>
+                {truckDelNonEmpty.length === 0 ? (
+                  <p className="text-surface-500 text-sm">None recorded.</p>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-surface-200">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-surface-100 border-b border-surface-200">
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Truck registration</th>
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Driver</th>
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Completed deliveries</th>
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Remarks</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {truckDelNonEmpty.map((row, idx) => (
+                          <tr key={idx} className="border-b border-surface-100 last:border-0">
+                            <td className="px-3 py-2 align-top font-medium">{row.truck_registration || '—'}</td>
+                            <td className="px-3 py-2 align-top">{row.driver_name || '—'}</td>
+                            <td className="px-3 py-2 align-top">{row.completed_deliveries ?? '—'}</td>
+                            <td className="px-3 py-2 align-top whitespace-pre-wrap">{row.remarks || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
             <div><span className="text-xs text-surface-500">Overall performance</span><p className="font-medium whitespace-pre-wrap">{r.overall_performance || '—'}</p></div>
             <div><span className="text-xs text-surface-500">Key highlights</span><p className="font-medium whitespace-pre-wrap">{r.key_highlights || '—'}</p></div>
           </div>
@@ -5081,17 +5338,66 @@ function DriverSearchSelect({ value, onChange, placeholder = 'Search or type dri
   );
 }
 
-function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, setMessage, openSection: openSectionProp, setOpenSection: setOpenSectionProp, initialData, reportId, readOnly, comments, setComments, showComments, canMarkAddressed, onCommentAddressed }) {
+function ShiftReportForm({
+  user,
+  onBack,
+  onSaved,
+  saving,
+  setSaving,
+  message,
+  setMessage,
+  openSection: openSectionProp,
+  setOpenSection: setOpenSectionProp,
+  initialData,
+  reportId,
+  readOnly,
+  comments,
+  setComments,
+  showComments,
+  canMarkAddressed,
+  onCommentAddressed,
+  reportKind = 'shift',
+}) {
   const [internalOpen, setInternalOpen] = useState('info');
   const parentControlsSection = openSectionProp != null && typeof setOpenSectionProp === 'function';
   const openSection = parentControlsSection ? openSectionProp : internalOpen;
   const setOpenSection = parentControlsSection ? setOpenSectionProp : setInternalOpen;
+  const reportApi = reportKind === 'single_ops' ? ccApi.singleOpsShiftReports : ccApi.shiftReports;
 
   const emptyTruck = { time: '', summary: '', delays: '' };
   const emptyIncident = { truck_reg: '', time_reported: '', driver_name: '', issue: '', status: '' };
   const emptyNonComp = { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' };
   const emptyInv = { truck_reg: '', time: '', location: '', issue_identified: '', findings: '', action_taken: '' };
   const emptyComm = { time: '', recipient: '', subject: '', method: '', action_required: '' };
+  const emptyTruckDelivery = { truck_registration: '', driver_name: '', completed_deliveries: '', remarks: '' };
+  const emptyRouteLoadTotal = { route_name: '', total_loads_delivered: '' };
+
+  const [selectedRoutes, setSelectedRoutes] = useState(() =>
+    reportKind === 'single_ops' && Array.isArray(initialData?.routes) ? initialData.routes.map((x) => String(x)) : []
+  );
+  const [otherRoutesText, setOtherRoutesText] = useState('');
+  const [truckDeliveries, setTruckDeliveries] = useState(() => {
+    if (reportKind !== 'single_ops') return [];
+    if (Array.isArray(initialData?.truck_deliveries) && initialData.truck_deliveries.length) {
+      return initialData.truck_deliveries.map((r) => ({
+        truck_registration: r.truck_registration || '',
+        driver_name: r.driver_name || '',
+        completed_deliveries: String(r.completed_deliveries ?? ''),
+        remarks: r.remarks || '',
+      }));
+    }
+    return [{ ...emptyTruckDelivery }];
+  });
+  const [routeLoadTotals, setRouteLoadTotals] = useState(() => {
+    if (reportKind !== 'single_ops') return [];
+    if (Array.isArray(initialData?.route_load_totals) && initialData.route_load_totals.length) {
+      return initialData.route_load_totals.map((r) => ({
+        route_name: r.route_name || '',
+        total_loads_delivered: String(r.total_loads_delivered ?? ''),
+      }));
+    }
+    return [{ ...emptyRouteLoadTotal }];
+  });
 
   const toDateVal = (v) => {
     if (v == null || v === '') return '';
@@ -5156,8 +5462,34 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   const lastAutoSavedSignatureRef = useRef('');
 
   useEffect(() => {
-    if (reportId && initialData && String(initialData.id) === String(reportId)) setFormFields(initFormFields(initialData));
-  }, [reportId, initialData]);
+    if (reportId && initialData && String(initialData.id) === String(reportId)) {
+      setFormFields(initFormFields(initialData));
+      if (reportKind === 'single_ops') {
+        if (Array.isArray(initialData.truck_deliveries) && initialData.truck_deliveries.length) {
+          setTruckDeliveries(
+            initialData.truck_deliveries.map((r) => ({
+              truck_registration: r.truck_registration || '',
+              driver_name: r.driver_name || '',
+              completed_deliveries: String(r.completed_deliveries ?? ''),
+              remarks: r.remarks || '',
+            }))
+          );
+        } else {
+          setTruckDeliveries([{ ...emptyTruckDelivery }]);
+        }
+        if (Array.isArray(initialData.route_load_totals) && initialData.route_load_totals.length) {
+          setRouteLoadTotals(
+            initialData.route_load_totals.map((r) => ({
+              route_name: r.route_name || '',
+              total_loads_delivered: String(r.total_loads_delivered ?? ''),
+            }))
+          );
+        } else {
+          setRouteLoadTotals([{ ...emptyRouteLoadTotal }]);
+        }
+      }
+    }
+  }, [reportId, initialData, reportKind]);
 
   useEffect(() => {
     setActiveReportId(reportId || initialData?.id || null);
@@ -5207,6 +5539,31 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       .then((r) => setReportedBreakdowns(Array.isArray(r?.breakdowns) ? r.breakdowns : []))
       .catch(() => setReportedBreakdowns([]));
   }, []);
+
+  /** Split saved `routes` into checkbox list vs comma-separated extras once route register is loaded. */
+  useEffect(() => {
+    if (reportKind !== 'single_ops' || !reportId || !initialData?.id || String(initialData.id) !== String(reportId)) return;
+    const raw = Array.isArray(initialData.routes) ? initialData.routes.map((x) => String(x).trim()).filter(Boolean) : [];
+    if (!raw.length) {
+      setSelectedRoutes([]);
+      setOtherRoutesText('');
+      return;
+    }
+    const names = new Set(routeList.map((r) => (r.name || '').trim()).filter(Boolean));
+    if (names.size === 0) {
+      setSelectedRoutes([]);
+      setOtherRoutesText(raw.join(', '));
+      return;
+    }
+    const onReg = [];
+    const offReg = [];
+    raw.forEach((s) => {
+      if (names.has(s)) onReg.push(s);
+      else offReg.push(s);
+    });
+    setSelectedRoutes(onReg);
+    setOtherRoutesText(offReg.join(', '));
+  }, [reportKind, reportId, initialData?.id, initialData?.routes, routeList]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5269,11 +5626,18 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   const clearController2 = () => {
     setFormFields((f) => ({ ...f, controller2_name: '', controller2_email: '' }));
   };
-  const selectedRoute = String(formFields.route || '').trim().toLowerCase();
+  const routeSetForBreakdowns = useMemo(() => {
+    if (reportKind === 'single_ops') {
+      return new Set(mergeSingleOpsRouteNames(selectedRoutes, otherRoutesText).map((x) => x.toLowerCase()));
+    }
+    const r = String(formFields.route || '').trim().toLowerCase();
+    return new Set(r ? [r] : []);
+  }, [reportKind, selectedRoutes, otherRoutesText, formFields.route]);
+  const hasBreakdownRouteFilter = routeSetForBreakdowns.size > 0;
   const filteredBreakdowns = (reportedBreakdowns || []).filter((b) => {
-    if (!selectedRoute) return true;
+    if (routeSetForBreakdowns.size === 0) return true;
     const routeName = String(b?.route_name || '').trim().toLowerCase();
-    return routeName && routeName === selectedRoute;
+    return routeName && routeSetForBreakdowns.has(routeName);
   });
   const handleImportBreakdownToIncident = () => {
     if (!selectedBreakdownToImport) return;
@@ -5303,13 +5667,22 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     const filteredNonCompliance = nonComplianceCalls.filter((n) => n.driver_name || n.truck_reg || n.rule_violated);
     const filteredInvestigations = investigations.filter((inv) => inv.truck_reg || inv.issue_identified || inv.findings);
     const filteredComms = commsLog.filter((c) => c.recipient || c.subject);
-    return {
+    const base = {
       ...formFields,
       truck_updates: filteredTruckUpdates,
       incidents: filteredIncidents,
       non_compliance_calls: filteredNonCompliance,
       investigations: filteredInvestigations,
       communication_log: filteredComms,
+    };
+    if (reportKind !== 'single_ops') return base;
+    const td = truckDeliveries.filter((r) => r.truck_registration || r.driver_name || r.completed_deliveries || r.remarks);
+    const rt = routeLoadTotals.filter((r) => r.route_name || r.total_loads_delivered);
+    return {
+      ...base,
+      routes: mergeSingleOpsRouteNames(selectedRoutes, otherRoutesText),
+      truck_deliveries: td,
+      route_load_totals: rt,
     };
   };
 
@@ -5321,7 +5694,13 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     ];
     if (keys.some((k) => String(payload?.[k] || '').trim())) return true;
     const arrays = ['truck_updates', 'incidents', 'non_compliance_calls', 'investigations', 'communication_log'];
-    return arrays.some((k) => Array.isArray(payload?.[k]) && payload[k].length > 0);
+    if (arrays.some((k) => Array.isArray(payload?.[k]) && payload[k].length > 0)) return true;
+    if (reportKind === 'single_ops') {
+      if (mergeSingleOpsRouteNames(selectedRoutes, otherRoutesText).length > 0) return true;
+      if (truckDeliveries.some((r) => r.truck_registration || r.driver_name || r.completed_deliveries || r.remarks)) return true;
+      if (routeLoadTotals.some((r) => r.route_name || r.total_loads_delivered)) return true;
+    }
+    return false;
   };
 
   useEffect(() => {
@@ -5342,9 +5721,9 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
         setAutoSaving(true);
         const targetId = activeReportId || reportId;
         if (targetId) {
-          await ccApi.shiftReports.update(targetId, latestPayload);
+          await reportApi.update(targetId, latestPayload);
         } else {
-          const res = await ccApi.shiftReports.create(latestPayload);
+          const res = await reportApi.create(latestPayload);
           if (res?.report?.id) setActiveReportId(res.report.id);
         }
         lastAutoSavedSignatureRef.current = JSON.stringify(latestPayload);
@@ -5359,7 +5738,24 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     };
-  }, [formFields, truckUpdates, incidents, nonComplianceCalls, investigations, commsLog, activeReportId, reportId, saving, readOnly]);
+  }, [
+    formFields,
+    truckUpdates,
+    incidents,
+    nonComplianceCalls,
+    investigations,
+    commsLog,
+    activeReportId,
+    reportId,
+    saving,
+    readOnly,
+    reportKind,
+    selectedRoutes,
+    otherRoutesText,
+    truckDeliveries,
+    routeLoadTotals,
+    reportApi,
+  ]);
 
   const sections = [
     { id: 'info', label: 'Report information' },
@@ -5374,7 +5770,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
   if (readOnly && initialData) {
     return (
       <>
-        <ShiftReportReadOnlyView report={initialData} />
+        <ShiftReportReadOnlyView report={initialData} reportKind={reportKind} />
         {showComments && comments && comments.length > 0 && (
           <div className="mt-4 rounded-xl border-2 border-amber-200 bg-amber-50/50 p-5">
             <h3 className="font-semibold text-surface-900 mb-3 text-base">{canMarkAddressed ? 'Reviewer comments – address to complete approval' : 'Reviewer comments'}</h3>
@@ -5387,7 +5783,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
                     {c.created_at && <span className="text-xs text-surface-500">{new Date(c.created_at).toLocaleString()}</span>}
                     {c.addressed ? <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-200 text-green-800">Addressed</span> : null}
                     {!c.addressed && reportId && canMarkAddressed && (
-                      <button type="button" disabled={markingAddressed === c.id} onClick={() => { setMarkingAddressed(c.id); ccApi.shiftReports.markCommentAddressed(reportId, c.id).then((r) => { if (setComments && r.comments) setComments(r.comments); onCommentAddressed?.(); }).finally(() => setMarkingAddressed(null)); }} className="ml-auto text-sm font-medium px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Mark as addressed</button>
+                      <button type="button" disabled={markingAddressed === c.id} onClick={() => { setMarkingAddressed(c.id); reportApi.markCommentAddressed(reportId, c.id).then((r) => { if (setComments && r.comments) setComments(r.comments); onCommentAddressed?.(); }).finally(() => setMarkingAddressed(null)); }} className="ml-auto text-sm font-medium px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Mark as addressed</button>
                     )}
                   </div>
                 </div>
@@ -5406,12 +5802,14 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
     const payload = buildShiftPayload();
     const targetId = activeReportId || reportId;
     if (targetId) {
-      ccApi.shiftReports.update(targetId, payload)
+      reportApi
+        .update(targetId, payload)
         .then((r) => { onSaved(r.report); setMessage?.('Saved.'); })
         .catch((err) => setMessage?.(err?.message || 'Save failed'))
         .finally(() => setSaving(false));
     } else {
-      ccApi.shiftReports.create(payload)
+      reportApi
+        .create(payload)
         .then((r) => {
           if (r?.report?.id) setActiveReportId(r.report.id);
           onSaved(r.report);
@@ -5463,34 +5861,76 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
         {/* 1. Report information */}
         <SectionBlock title="Report information" open={openSection === 'info'} onToggle={() => setOpenSection((p) => (p === 'info' ? null : 'info'))}>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Route</label>
-              {routeList.length > 0 ? (
+            <div className="sm:col-span-2 lg:col-span-3">
+              {reportKind === 'single_ops' ? (
                 <>
-                  <select
-                    name="route"
-                    value={routeList.some((r) => (r.name || '').trim() === (formFields.route || '').trim()) ? formFields.route : '__other__'}
-                    onChange={(e) => setFormFields((f) => ({ ...f, route: e.target.value === '__other__' ? f.route : e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  >
-                    <option value="">Select route</option>
-                    {routeList.map((r) => (
-                      <option key={r.id} value={r.name || ''}>{r.name || '—'}</option>
-                    ))}
-                    <option value="__other__">Other (specify below)</option>
-                  </select>
-                  {!routeList.some((r) => (r.name || '').trim() === (formFields.route || '').trim()) && (
-                    <input
-                      type="text"
-                      placeholder="e.g. Ntshovelo Colliery"
-                      value={formFields.route || ''}
-                      onChange={(e) => setFormFields((f) => ({ ...f, route: e.target.value }))}
-                      className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mt-2"
-                    />
-                  )}
+                  <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-2">Routes (select one or more)</label>
+                  <div className="flex flex-wrap gap-2 p-3 rounded-lg border border-surface-200 bg-surface-50/80 max-h-48 overflow-y-auto">
+                    {routeList.length > 0 ? (
+                      routeList.map((r) => {
+                        const nm = (r.name || '').trim();
+                        if (!nm) return null;
+                        const checked = selectedRoutes.some((x) => String(x).trim() === nm);
+                        return (
+                          <label key={r.id} className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setSelectedRoutes((prev) =>
+                                  checked ? prev.filter((x) => String(x).trim() !== nm) : [...prev, nm]
+                                );
+                              }}
+                              className="rounded border-surface-300"
+                            />
+                            <span>{nm}</span>
+                          </label>
+                        );
+                      })
+                    ) : (
+                      <p className="text-xs text-surface-500">No routes in contractor register — add routes below.</p>
+                    )}
+                  </div>
+                  <label className="block text-xs text-surface-500 mt-2">Additional route names (comma-separated, optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Route A, Route B"
+                    value={otherRoutesText}
+                    onChange={(e) => setOtherRoutesText(e.target.value)}
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mt-1"
+                  />
                 </>
               ) : (
-                <input name="route" type="text" placeholder="e.g. Ntshovelo Colliery (or add routes in Access Management)" value={formFields.route} onChange={set('route')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                <>
+                  <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Route</label>
+                  {routeList.length > 0 ? (
+                    <>
+                      <select
+                        name="route"
+                        value={routeList.some((r) => (r.name || '').trim() === (formFields.route || '').trim()) ? formFields.route : '__other__'}
+                        onChange={(e) => setFormFields((f) => ({ ...f, route: e.target.value === '__other__' ? f.route : e.target.value }))}
+                        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                      >
+                        <option value="">Select route</option>
+                        {routeList.map((r) => (
+                          <option key={r.id} value={r.name || ''}>{r.name || '—'}</option>
+                        ))}
+                        <option value="__other__">Other (specify below)</option>
+                      </select>
+                      {!routeList.some((r) => (r.name || '').trim() === (formFields.route || '').trim()) && (
+                        <input
+                          type="text"
+                          placeholder="e.g. Ntshovelo Colliery"
+                          value={formFields.route || ''}
+                          onChange={(e) => setFormFields((f) => ({ ...f, route: e.target.value }))}
+                          className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mt-2"
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <input name="route" type="text" placeholder="e.g. Ntshovelo Colliery (or add routes in Access Management)" value={formFields.route} onChange={set('route')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                  )}
+                </>
               )}
             </div>
             <div>
@@ -5589,6 +6029,77 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Key highlights</label>
             <textarea name="key_highlights" rows={2} placeholder="Brief bullet-style highlights (e.g. Majuba operations stable, backlog cleared)" value={formFields.key_highlights} onChange={set('key_highlights')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
           </div>
+          {reportKind === 'single_ops' && (
+            <>
+              <p className="text-xs font-semibold text-surface-600 mt-6 mb-2">Total loads delivered per route</p>
+              <p className="text-xs text-surface-500 mb-2">Enter each route covered in this report and the loads delivered on that route.</p>
+              {routeLoadTotals.map((row, i) => (
+                <div key={i} className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2">
+                  <input
+                    type="text"
+                    value={row.route_name}
+                    onChange={(e) => updateRow(setRouteLoadTotals, i, 'route_name', e.target.value)}
+                    placeholder="Route name"
+                    className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm sm:col-span-2"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    value={row.total_loads_delivered}
+                    onChange={(e) => updateRow(setRouteLoadTotals, i, 'total_loads_delivered', e.target.value)}
+                    placeholder="Loads delivered"
+                    className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
+                  />
+                  <button type="button" onClick={() => removeRow(setRouteLoadTotals, i)} className="text-sm text-surface-400 hover:text-red-600 text-left sm:text-right">Remove</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => addRow(setRouteLoadTotals, { ...emptyRouteLoadTotal })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add route total</button>
+
+              <p className="text-xs font-semibold text-surface-600 mt-6 mb-2">Deliveries per truck (performance account)</p>
+              <p className="text-xs text-surface-500 mb-2">Same structure as investigations: one row per truck — registration, driver, completed deliveries, remarks.</p>
+              {truckDeliveries.map((row, i) => (
+                <div key={i} className="p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2 space-y-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="relative sm:col-span-2">
+                      <TruckSearchSelect
+                        value={row.truck_registration}
+                        onChange={(v) => updateRow(setTruckDeliveries, i, 'truck_registration', v)}
+                        trucksList={trucksList}
+                        placeholder="Truck registration"
+                        id={`td-truck-${i}`}
+                      />
+                    </div>
+                    <div className="relative sm:col-span-2">
+                      <DriverSearchSelect
+                        value={row.driver_name}
+                        onChange={(v) => updateRow(setTruckDeliveries, i, 'driver_name', v)}
+                        driversList={driversList}
+                        placeholder="Driver name"
+                        id={`td-driver-${i}`}
+                      />
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      value={row.completed_deliveries}
+                      onChange={(e) => updateRow(setTruckDeliveries, i, 'completed_deliveries', e.target.value)}
+                      placeholder="Completed deliveries"
+                      className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm sm:col-span-2"
+                    />
+                  </div>
+                  <textarea
+                    value={row.remarks}
+                    onChange={(e) => updateRow(setTruckDeliveries, i, 'remarks', e.target.value)}
+                    placeholder="Remarks (e.g. conduct, delays, follow-up)"
+                    rows={2}
+                    className="w-full rounded-lg border border-surface-300 px-3 py-1.5 text-sm"
+                  />
+                  <button type="button" onClick={() => removeRow(setTruckDeliveries, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => addRow(setTruckDeliveries, { ...emptyTruckDelivery })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add truck row</button>
+            </>
+          )}
         </SectionBlock>
 
         {/* 3. Truck updates & logistics flow */}
@@ -5620,7 +6131,11 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
                 className="min-w-[280px] flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm"
               >
                 <option value="">
-                  {selectedRoute ? 'Select latest breakdown for this route' : 'Select latest breakdown'}
+                  {hasBreakdownRouteFilter
+                    ? reportKind === 'single_ops'
+                      ? 'Select latest breakdown for selected route(s)'
+                      : 'Select latest breakdown for this route'
+                    : 'Select latest breakdown'}
                 </option>
                 {filteredBreakdowns.map((b) => (
                   <option key={b.id} value={b.id}>
@@ -5637,8 +6152,12 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
                 Add to incidents
               </button>
             </div>
-            {selectedRoute && filteredBreakdowns.length === 0 && (
-              <p className="mt-2 text-xs text-surface-500">No reported breakdowns found for the selected route. Clear or change route to see more.</p>
+            {hasBreakdownRouteFilter && filteredBreakdowns.length === 0 && (
+              <p className="mt-2 text-xs text-surface-500">
+                {reportKind === 'single_ops'
+                  ? 'No reported breakdowns found for the selected routes. Add routes or clear filters to see more.'
+                  : 'No reported breakdowns found for the selected route. Clear or change route to see more.'}
+              </p>
             )}
           </div>
           <p className="text-xs font-semibold text-surface-600 mb-2">Incidents/breakdowns</p>
@@ -5759,7 +6278,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
       <div className="app-glass-form-footer">
         <button type="button" onClick={onBack} className="px-4 py-2 text-sm rounded-lg border border-surface-300/80 bg-white/35 backdrop-blur-sm text-surface-700 hover:bg-white/55 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Cancel</button>
         <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
-          {saving ? 'Saving…' : 'Save shift report'}
+          {saving ? 'Saving…' : reportKind === 'single_ops' ? 'Save single operations shift report' : 'Save shift report'}
         </button>
       </div>
     </form>
@@ -5775,7 +6294,7 @@ function ShiftReportForm({ user, onBack, onSaved, saving, setSaving, message, se
                 {c.created_at && <span className="text-xs text-surface-500">{new Date(c.created_at).toLocaleString()}</span>}
                 {c.addressed ? <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-200 text-green-800">Addressed</span> : null}
                 {!c.addressed && canMarkAddressed && (
-                  <button type="button" disabled={markingAddressed === c.id} onClick={() => { setMarkingAddressed(c.id); ccApi.shiftReports.markCommentAddressed(reportId, c.id).then((r) => { if (setComments && r.comments) setComments(r.comments); onCommentAddressed?.(); }).finally(() => setMarkingAddressed(null)); }} className="ml-auto text-sm font-medium px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Mark as addressed</button>
+                  <button type="button" disabled={markingAddressed === c.id} onClick={() => { setMarkingAddressed(c.id); reportApi.markCommentAddressed(reportId, c.id).then((r) => { if (setComments && r.comments) setComments(r.comments); onCommentAddressed?.(); }).finally(() => setMarkingAddressed(null)); }} className="ml-auto text-sm font-medium px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Mark as addressed</button>
                 )}
               </div>
             </div>

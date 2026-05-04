@@ -24,6 +24,7 @@
     "db:command-centre": "node scripts/run-command-centre-schema.js",
     "db:truck-analysis-handovers": "node scripts/run-truck-analysis-handovers.js",
     "db:command-centre-shift-reports": "node scripts/run-command-centre-shift-reports.js",
+    "db:command-centre-single-ops-shift-reports": "node scripts/run-command-centre-single-ops-shift-reports.js",
     "db:command-centre-controller-evaluations": "node scripts/run-command-centre-controller-evaluations.js",
     "db:command-centre-investigation-reports": "node scripts/run-command-centre-investigation-reports.js",
     "db:command-centre-library-documents": "node scripts/run-command-centre-library-documents.js",

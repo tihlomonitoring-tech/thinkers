@@ -28,6 +28,7 @@ import {
 import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
 import { todayYmd, addCalendarDays, toYmdFromDbOrString } from '../lib/appTime.js';
 import { getAiModel, getOpenAiClient, isAiConfigured } from '../lib/ai.js';
+import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
 const libraryUpload = multer({
@@ -92,6 +93,7 @@ function pruneFleetVerificationCache() {
 router.use(requireAuth);
 router.use(loadUser);
 router.use(requirePageAccess('command_centre'));
+registerCommandCentreSingleOpsShiftReports(router);
 
 /** GET my allowed tabs. Super_admin gets all; others get from grants. */
 router.get('/my-tabs', async (req, res, next) => {

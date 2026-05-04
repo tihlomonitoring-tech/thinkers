@@ -218,8 +218,12 @@ export function buildShiftReportDownloadFilename(report, options = {}) {
   const tenant = sanitizeFilenamePart(options.tenantName || report.tenant_name, 'Tihlo');
   const dayNight = inferDayOrNightShift(report);
   const dateStr = formatShiftReportFileDate(report);
-  const route = sanitizeFilenamePart(report.route, 'Route');
-  const base = `${tenant} ${dayNight} Shift Report ${dateStr} - ${route}`;
+  const isSo = report.report_kind === 'single_ops' || (Array.isArray(report.routes) && report.routes.length);
+  const routeLabel = isSo
+    ? sanitizeFilenamePart((report.routes || []).join(' + ') || 'Multi-route', 'Routes')
+    : sanitizeFilenamePart(report.route, 'Route');
+  const kindLabel = isSo ? 'Single operation shift report' : 'Shift Report';
+  const base = `${tenant} ${dayNight} ${kindLabel} ${dateStr} - ${routeLabel}`;
   return `${base}.pdf`;
 }
 
@@ -244,15 +248,22 @@ export function generateShiftReportPdf(report, options = {}) {
       headerY = 5 + logoSize + 5;
     } catch (_) {}
   }
+  const isSingleOps = report.report_kind === 'single_ops' || (Array.isArray(report.routes) && report.routes.length > 0);
   doc.setFont(FONT, 'bold');
   doc.setFontSize(18);
   doc.setTextColor(...BLACK);
-  const titleText = 'SHIFT REPORT';
+  const titleText = isSingleOps ? 'SINGLE OPERATION SHIFT REPORT' : 'SHIFT REPORT';
   doc.text(titleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(titleText) / 2, headerY);
   doc.setFont(FONT, 'normal');
   doc.setFontSize(FONT_SIZE_BODY);
   doc.setTextColor(...TEXT_MUTED);
-  const routeText = report.route ? `Route: ${report.route}` : 'Route: —';
+  const routeText = isSingleOps
+    ? report.routes && report.routes.length
+      ? `Routes: ${report.routes.join(', ')}`
+      : 'Routes: —'
+    : report.route
+      ? `Route: ${report.route}`
+      : 'Route: —';
   doc.text(routeText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(routeText) / 2, headerY + 5);
   const subtitleText = "Thinkers Afrika's Official Controller Shift Documentation";
   doc.text(subtitleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(subtitleText) / 2, headerY + 10);
@@ -265,7 +276,7 @@ export function generateShiftReportPdf(report, options = {}) {
   // —— REPORT INFORMATION ——
   sectionBar(doc, yRef, 'Report information');
   keyValueTable(doc, yRef, [
-    ['Route', report.route],
+    [isSingleOps ? 'Routes' : 'Route', isSingleOps ? (report.routes && report.routes.length ? report.routes.join(', ') : '—') : report.route],
     ['Report Date', report.report_date ? new Date(report.report_date).toLocaleDateString() : null],
     ['Shift Date', report.shift_date ? new Date(report.shift_date).toLocaleDateString() : null],
     ['Shift Time', [report.shift_start, report.shift_end].filter(Boolean).join(' - ') || null],
@@ -290,6 +301,35 @@ export function generateShiftReportPdf(report, options = {}) {
   if ((report.overall_performance || '').trim()) summaryEntries.push(['Overall Performance', report.overall_performance]);
   if ((report.key_highlights || '').trim()) summaryEntries.push(['Key Highlights', report.key_highlights]);
   if (summaryEntries.length) keyValueTable(doc, yRef, summaryEntries);
+
+  const routeLoadTotals = Array.isArray(report.route_load_totals) ? report.route_load_totals : [];
+  if (isSingleOps && routeLoadTotals.length) {
+    sectionBar(doc, yRef, 'Total loads delivered per route');
+    drawTable(
+      doc,
+      yRef,
+      ['Route', 'Total loads delivered'],
+      routeLoadTotals.map((row) => [row.route_name || '—', row.total_loads_delivered != null && row.total_loads_delivered !== '' ? String(row.total_loads_delivered) : '—']),
+      cols(72, CONTENT_WIDTH - 72)
+    );
+  }
+
+  const truckDel = Array.isArray(report.truck_deliveries) ? report.truck_deliveries : [];
+  if (isSingleOps && truckDel.length) {
+    sectionBar(doc, yRef, 'Deliveries per truck (performance account)');
+    drawTable(
+      doc,
+      yRef,
+      ['Truck registration', 'Driver', 'Completed deliveries', 'Remarks'],
+      truckDel.map((row) => [
+        row.truck_registration || '—',
+        row.driver_name || '—',
+        row.completed_deliveries != null && row.completed_deliveries !== '' ? String(row.completed_deliveries) : '—',
+        row.remarks || '—',
+      ]),
+      cols(28, 36, 28, CONTENT_WIDTH - 28 - 36 - 28)
+    );
+  }
 
   const truckUpdates = Array.isArray(report.truck_updates) ? report.truck_updates : [];
   if (truckUpdates.length) {

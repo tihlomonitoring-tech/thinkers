@@ -477,6 +477,31 @@ export const commandCentre = {
     provisional: (id, overrideCode) => request(`/command-centre/shift-reports/${id}/provisional`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
     revokeApproval: (id) => request(`/command-centre/shift-reports/${id}/revoke-approval`, { method: 'PATCH' }),
   },
+  /** Multi-route shift documentation; separate DB tables from standard shift reports. */
+  singleOpsShiftReports: {
+    list: (requestsOnly) => request(`/command-centre/single-ops-shift-reports${requestsOnly ? '?requests=1' : ''}`),
+    listDecidedByMe: () => request('/command-centre/single-ops-shift-reports?decidedByMe=1'),
+    get: (id) => request(`/command-centre/single-ops-shift-reports/${id}`),
+    create: (body) => request('/command-centre/single-ops-shift-reports', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => request(`/command-centre/single-ops-shift-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => request(`/command-centre/single-ops-shift-reports/${id}`, { method: 'DELETE' }),
+    submit: (id, submitted_to_user_id) =>
+      request(`/command-centre/single-ops-shift-reports/${id}/submit`, { method: 'POST', body: JSON.stringify({ submitted_to_user_id }) }),
+    addComment: (id, comment_text) =>
+      request(`/command-centre/single-ops-shift-reports/${id}/comments`, { method: 'POST', body: JSON.stringify({ comment_text }) }),
+    markCommentAddressed: (reportId, commentId) =>
+      request(`/command-centre/single-ops-shift-reports/${reportId}/comments/${commentId}/addressed`, { method: 'PATCH' }),
+    getEvaluation: (id) => request(`/command-centre/single-ops-shift-reports/${id}/evaluation`),
+    submitEvaluation: (id, body) => request(`/command-centre/single-ops-shift-reports/${id}/evaluation`, { method: 'POST', body: JSON.stringify(body) }),
+    requestOverride: (id) => request(`/command-centre/single-ops-shift-reports/${id}/request-override`, { method: 'POST' }),
+    approve: (id, overrideCode) =>
+      request(`/command-centre/single-ops-shift-reports/${id}/approve`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
+    reject: (id, overrideCode) =>
+      request(`/command-centre/single-ops-shift-reports/${id}/reject`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
+    provisional: (id, overrideCode) =>
+      request(`/command-centre/single-ops-shift-reports/${id}/provisional`, { method: 'PATCH', body: JSON.stringify(overrideCode ? { override_code: overrideCode } : {}) }),
+    revokeApproval: (id) => request(`/command-centre/single-ops-shift-reports/${id}/revoke-approval`, { method: 'PATCH' }),
+  },
   shiftItems: (params = {}) => {
     const q = new URLSearchParams();
     if (params.days != null) q.set('days', params.days);
