@@ -35,6 +35,7 @@ import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
 import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
+import { runFuelDataAutoShareDistributions } from './src/lib/fuelDataAutoShareRunner.js';
 
 const app = express();
 // Azure App Service / reverse proxies: correct req.secure, req.ip, and secure session cookies
@@ -249,6 +250,11 @@ const server = app.listen(PORT, () => {
   setInterval(() => {
     runCommandCentreReminderNotifications().catch((e) => console.error('[cc-reminder]', e?.message || e));
   }, CC_REMINDER_MS);
+  // Fuel Data — Auto Share schedules — check every minute
+  const FUEL_AUTO_SHARE_MS = 60 * 1000;
+  setInterval(() => {
+    runFuelDataAutoShareDistributions().catch((e) => console.error('[fuel-auto-share]', e?.message || e));
+  }, FUEL_AUTO_SHARE_MS);
 });
 
 server.on('error', (err) => {

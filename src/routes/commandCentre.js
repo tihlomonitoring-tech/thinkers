@@ -56,6 +56,8 @@ const router = Router();
 /** Tab IDs that exist in Command Centre (must match client CC_TABS) */
 export const CC_TAB_IDS = [
   'dashboard',
+  'single_operations_dashboard',
+  'data_presentation',
   'reports',
   'saved_reports',
   'trends',
@@ -194,17 +196,42 @@ router.post('/compliance-inspections', async (req, res, next) => {
     const now = new Date();
     const responseDueAt = new Date(now.getTime() + RESPONSE_DUE_HOURS * 60 * 60 * 1000);
     const driverItemsJson = typeof body.driverItems === 'string' ? body.driverItems : JSON.stringify(body.driverItems || []);
+    const contractorId = body.contractorId ?? body.contractor_id ?? null;
+    const routeId = body.routeId ?? body.route_id ?? null;
+    const routeName = body.routeName ?? body.route_name ?? null;
+    let contractorNameSnapshot = body.contractorName ?? body.contractor_name ?? null;
+    if (contractorId && !contractorNameSnapshot) {
+      try {
+        const cRow = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: contractorId });
+        contractorNameSnapshot = cRow.recordset?.[0]?.name ?? null;
+      } catch (_) {}
+    }
+    let resolvedRouteName = routeName;
+    if (routeId && !resolvedRouteName) {
+      try {
+        const rRow = await query(`SELECT name FROM contractor_routes WHERE id = @rid`, { rid: routeId });
+        resolvedRouteName = rRow.recordset?.[0]?.name ?? null;
+      } catch (_) {}
+    }
+    const shiftStartedAtRaw = body.shiftStartedAt ?? body.shift_started_at ?? null;
+    let shiftStartedAt = null;
+    if (shiftStartedAtRaw) {
+      const d = new Date(shiftStartedAtRaw);
+      if (!Number.isNaN(d.getTime())) shiftStartedAt = d;
+    }
     const result = await query(
       `INSERT INTO cc_compliance_inspections (
         tenant_id, truck_id, driver_id, inspector_user_id,
         truck_registration, truck_make_model, driver_name, driver_id_number, license_number,
         gps_status, gps_comment, camera_status, camera_comment, camera_visibility, camera_visibility_comment,
-        driver_items_json, recommend_suspend_truck, recommend_suspend_driver, response_due_at, [status]
+        driver_items_json, recommend_suspend_truck, recommend_suspend_driver, response_due_at, [status],
+        contractor_id, contractor_name_snapshot, route_id, route_name, shift_started_at
       ) OUTPUT INSERTED.* VALUES (
         @tenantId, @truckId, @driverId, @inspectorUserId,
         @truckRegistration, @truckMakeModel, @driverName, @driverIdNumber, @licenseNumber,
         @gpsStatus, @gpsComment, @cameraStatus, @cameraComment, @cameraVisibility, @cameraVisibilityComment,
-        @driverItemsJson, @recommendSuspendTruck, @recommendSuspendDriver, @responseDueAt, @status
+        @driverItemsJson, @recommendSuspendTruck, @recommendSuspendDriver, @responseDueAt, @status,
+        @contractorId, @contractorNameSnapshot, @routeId, @routeName, @shiftStartedAt
       )`,
       {
         tenantId,
@@ -227,6 +254,11 @@ router.post('/compliance-inspections', async (req, res, next) => {
         recommendSuspendDriver: body.recommendSuspendDriver === true || body.recommend_suspend_driver === true ? 1 : 0,
         responseDueAt,
         status: COMPLIANCE_STATUS.PENDING_RESPONSE,
+        contractorId,
+        contractorNameSnapshot,
+        routeId,
+        routeName: resolvedRouteName,
+        shiftStartedAt,
       }
     );
     const row = result.recordset[0];
@@ -315,11 +347,31 @@ function rowToComplianceInspection(r, responseAttachments = []) {
     const raw = getRow(r, 'driver_items_json');
     if (raw) driverItems = JSON.parse(raw);
   } catch (_) {}
+  const graceExpiresAt = getRow(r, 'grace_period_expires_at');
+  const graceResolvedAt = getRow(r, 'grace_period_resolved_at');
+  let gracePeriodStatus = null; // null | 'active' | 'expired' | 'resolved'
+  if (graceExpiresAt) {
+    if (graceResolvedAt) gracePeriodStatus = 'resolved';
+    else if (new Date(graceExpiresAt).getTime() < Date.now()) gracePeriodStatus = 'expired';
+    else gracePeriodStatus = 'active';
+  }
   return {
     id: getRow(r, 'id'),
     tenant_id: getRow(r, 'tenant_id'),
     truckId: getRow(r, 'truck_id'),
     driverId: getRow(r, 'driver_id'),
+    contractorId: getRow(r, 'contractor_id') || null,
+    contractorNameSnapshot: getRow(r, 'contractor_name_snapshot') || null,
+    routeId: getRow(r, 'route_id') || null,
+    routeName: getRow(r, 'route_name') || null,
+    gracePeriodGrantedAt: getRow(r, 'grace_period_granted_at') || null,
+    gracePeriodDays: getRow(r, 'grace_period_days') ?? null,
+    gracePeriodExpiresAt: graceExpiresAt || null,
+    gracePeriodReason: getRow(r, 'grace_period_reason') || null,
+    gracePeriodResolvedAt: graceResolvedAt || null,
+    gracePeriodStatus,
+    pendingSuspension: gracePeriodStatus === 'expired' && !graceResolvedAt,
+    shiftStartedAt: getRow(r, 'shift_started_at') || null,
     truckRegistration: getRow(r, 'truck_registration'),
     truckMakeModel: getRow(r, 'truck_make_model'),
     driverName: getRow(r, 'driver_name'),
@@ -768,6 +820,411 @@ router.patch('/compliance-inspections/:id/reply', async (req, res, next) => {
     );
     if (!result.recordset?.length) return res.status(404).json({ error: 'Inspection not found' });
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH compliance inspection meta: contractor / route / shift_started_at */
+router.patch('/compliance-inspections/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const existing = await query(`SELECT id FROM cc_compliance_inspections WHERE id = @id`, { id });
+    if (!existing.recordset?.length) return res.status(404).json({ error: 'Not found' });
+    const sets = [];
+    const params = { id };
+    if (Object.prototype.hasOwnProperty.call(body, 'contractor_id') || Object.prototype.hasOwnProperty.call(body, 'contractorId')) {
+      const cid = body.contractor_id ?? body.contractorId ?? null;
+      sets.push('contractor_id = @contractorId');
+      params.contractorId = cid;
+      if (cid) {
+        try {
+          const c = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid });
+          sets.push('contractor_name_snapshot = @contractorName');
+          params.contractorName = c.recordset?.[0]?.name ?? null;
+        } catch (_) {
+          sets.push('contractor_name_snapshot = @contractorName');
+          params.contractorName = body.contractor_name ?? body.contractorName ?? null;
+        }
+      } else {
+        sets.push('contractor_name_snapshot = @contractorName');
+        params.contractorName = null;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'route_id') || Object.prototype.hasOwnProperty.call(body, 'routeId')) {
+      const rid = body.route_id ?? body.routeId ?? null;
+      sets.push('route_id = @routeId');
+      params.routeId = rid;
+      if (rid) {
+        try {
+          const r = await query(`SELECT name FROM contractor_routes WHERE id = @rid`, { rid });
+          sets.push('route_name = @routeName');
+          params.routeName = r.recordset?.[0]?.name ?? null;
+        } catch (_) {
+          sets.push('route_name = @routeName');
+          params.routeName = body.route_name ?? body.routeName ?? null;
+        }
+      } else {
+        sets.push('route_name = @routeName');
+        params.routeName = null;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'shift_started_at') || Object.prototype.hasOwnProperty.call(body, 'shiftStartedAt')) {
+      const raw = body.shift_started_at ?? body.shiftStartedAt;
+      let dt = null;
+      if (raw) {
+        const d = new Date(raw);
+        if (!Number.isNaN(d.getTime())) dt = d;
+      }
+      sets.push('shift_started_at = @shiftStartedAt');
+      params.shiftStartedAt = dt;
+    }
+    if (sets.length === 0) return res.json({ ok: true, changed: false });
+    sets.push('updated_at = SYSUTCDATETIME()');
+    await query(`UPDATE cc_compliance_inspections SET ${sets.join(', ')} WHERE id = @id`, params);
+    const refreshed = await query(
+      `SELECT c.*, t.name AS contractor_name FROM cc_compliance_inspections c LEFT JOIN tenants t ON t.id = c.tenant_id WHERE c.id = @id`,
+      { id }
+    );
+    res.json({ inspection: rowToComplianceInspection(refreshed.recordset?.[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST award / update grace period for a compliance inspection */
+router.post('/compliance-inspections/:id/grace-period', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const days = Number(req.body?.days);
+    if (!Number.isFinite(days) || days <= 0 || days > 365) return res.status(400).json({ error: 'days must be 1-365' });
+    const reason = req.body?.reason != null ? String(req.body.reason).trim() : '';
+    const existing = await query(`SELECT id FROM cc_compliance_inspections WHERE id = @id`, { id });
+    if (!existing.recordset?.length) return res.status(404).json({ error: 'Not found' });
+    const grantedAt = new Date();
+    const expiresAt = new Date(grantedAt.getTime() + days * 24 * 60 * 60 * 1000);
+    await query(
+      `UPDATE cc_compliance_inspections
+         SET grace_period_granted_at = @grantedAt,
+             grace_period_days = @days,
+             grace_period_expires_at = @expiresAt,
+             grace_period_reason = @reason,
+             grace_period_resolved_at = NULL,
+             updated_at = SYSUTCDATETIME()
+       WHERE id = @id`,
+      { id, grantedAt, days, expiresAt, reason: reason || null }
+    );
+    const refreshed = await query(
+      `SELECT c.*, t.name AS contractor_name FROM cc_compliance_inspections c LEFT JOIN tenants t ON t.id = c.tenant_id WHERE c.id = @id`,
+      { id }
+    );
+    res.json({ inspection: rowToComplianceInspection(refreshed.recordset?.[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST mark grace period as resolved (compliance corrected) */
+router.post('/compliance-inspections/:id/grace-period/resolve', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const existing = await query(`SELECT id FROM cc_compliance_inspections WHERE id = @id`, { id });
+    if (!existing.recordset?.length) return res.status(404).json({ error: 'Not found' });
+    await query(
+      `UPDATE cc_compliance_inspections
+         SET grace_period_resolved_at = SYSUTCDATETIME(),
+             updated_at = SYSUTCDATETIME()
+       WHERE id = @id`,
+      { id }
+    );
+    const refreshed = await query(
+      `SELECT c.*, t.name AS contractor_name FROM cc_compliance_inspections c LEFT JOIN tenants t ON t.id = c.tenant_id WHERE c.id = @id`,
+      { id }
+    );
+    res.json({ inspection: rowToComplianceInspection(refreshed.recordset?.[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET compliance communication logs for an inspection */
+router.get('/compliance-inspections/:id/comm-logs', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT * FROM cc_compliance_comm_logs WHERE inspection_id = @id ORDER BY created_at ASC`,
+      { id }
+    );
+    const logs = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      tenantId: getRow(r, 'tenant_id'),
+      inspectionId: getRow(r, 'inspection_id'),
+      controllerUserId: getRow(r, 'controller_user_id'),
+      controllerName: getRow(r, 'controller_name'),
+      shiftStartedAt: getRow(r, 'shift_started_at'),
+      time: getRow(r, 'log_time'),
+      recipient: getRow(r, 'recipient'),
+      subject: getRow(r, 'subject'),
+      method: getRow(r, 'method'),
+      actionRequired: getRow(r, 'action_required'),
+      notes: getRow(r, 'notes'),
+      createdAt: getRow(r, 'created_at'),
+    }));
+    res.json({ logs });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST add a compliance communication log entry */
+router.post('/compliance-inspections/:id/comm-logs', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const insp = await query(
+      `SELECT tenant_id, shift_started_at FROM cc_compliance_inspections WHERE id = @id`,
+      { id }
+    );
+    const inspRow = insp.recordset?.[0];
+    if (!inspRow) return res.status(404).json({ error: 'Inspection not found' });
+    const tenantId = getRow(inspRow, 'tenant_id');
+    const shiftStartedAt = getRow(inspRow, 'shift_started_at') || null;
+    const result = await query(
+      `INSERT INTO cc_compliance_comm_logs (
+         tenant_id, inspection_id, controller_user_id, controller_name, shift_started_at,
+         log_time, recipient, subject, method, action_required, notes
+       ) OUTPUT INSERTED.* VALUES (
+         @tenantId, @id, @controllerUserId, @controllerName, @shiftStartedAt,
+         @logTime, @recipient, @subject, @method, @actionRequired, @notes
+       )`,
+      {
+        id,
+        tenantId,
+        controllerUserId: req.user?.id ?? null,
+        controllerName: req.user?.full_name ?? null,
+        shiftStartedAt,
+        logTime: body.time ?? body.log_time ?? null,
+        recipient: body.recipient ?? null,
+        subject: body.subject ?? null,
+        method: body.method ?? null,
+        actionRequired: body.action_required ?? body.actionRequired ?? null,
+        notes: body.notes ?? null,
+      }
+    );
+    const r = result.recordset?.[0];
+    res.status(201).json({
+      log: {
+        id: getRow(r, 'id'),
+        tenantId: getRow(r, 'tenant_id'),
+        inspectionId: getRow(r, 'inspection_id'),
+        controllerUserId: getRow(r, 'controller_user_id'),
+        controllerName: getRow(r, 'controller_name'),
+        shiftStartedAt: getRow(r, 'shift_started_at'),
+        time: getRow(r, 'log_time'),
+        recipient: getRow(r, 'recipient'),
+        subject: getRow(r, 'subject'),
+        method: getRow(r, 'method'),
+        actionRequired: getRow(r, 'action_required'),
+        notes: getRow(r, 'notes'),
+        createdAt: getRow(r, 'created_at'),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE a compliance communication log entry */
+router.delete('/compliance-inspections/:id/comm-logs/:logId', async (req, res, next) => {
+  try {
+    const { id, logId } = req.params;
+    await query(`DELETE FROM cc_compliance_comm_logs WHERE id = @logId AND inspection_id = @id`, { id, logId });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET non-compliance entries for an inspection */
+router.get('/compliance-inspections/:id/non-compliance', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT * FROM cc_compliance_non_compliance WHERE inspection_id = @id ORDER BY created_at ASC`,
+      { id }
+    );
+    const items = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      tenantId: getRow(r, 'tenant_id'),
+      inspectionId: getRow(r, 'inspection_id'),
+      controllerUserId: getRow(r, 'controller_user_id'),
+      controllerName: getRow(r, 'controller_name'),
+      shiftStartedAt: getRow(r, 'shift_started_at'),
+      driverName: getRow(r, 'driver_name'),
+      truckReg: getRow(r, 'truck_reg'),
+      ruleViolated: getRow(r, 'rule_violated'),
+      timeOfCall: getRow(r, 'time_of_call'),
+      summary: getRow(r, 'summary'),
+      driverResponse: getRow(r, 'driver_response'),
+      severity: getRow(r, 'severity'),
+      createdAt: getRow(r, 'created_at'),
+    }));
+    res.json({ items });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST add a non-compliance entry to an inspection */
+router.post('/compliance-inspections/:id/non-compliance', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const insp = await query(
+      `SELECT tenant_id, shift_started_at, truck_registration, driver_name FROM cc_compliance_inspections WHERE id = @id`,
+      { id }
+    );
+    const inspRow = insp.recordset?.[0];
+    if (!inspRow) return res.status(404).json({ error: 'Inspection not found' });
+    const tenantId = getRow(inspRow, 'tenant_id');
+    const shiftStartedAt = getRow(inspRow, 'shift_started_at') || null;
+    const truckReg = body.truck_reg ?? body.truckReg ?? getRow(inspRow, 'truck_registration') ?? null;
+    const driverName = body.driver_name ?? body.driverName ?? getRow(inspRow, 'driver_name') ?? null;
+    const result = await query(
+      `INSERT INTO cc_compliance_non_compliance (
+         tenant_id, inspection_id, controller_user_id, controller_name, shift_started_at,
+         driver_name, truck_reg, rule_violated, time_of_call, summary, driver_response, severity
+       ) OUTPUT INSERTED.* VALUES (
+         @tenantId, @id, @controllerUserId, @controllerName, @shiftStartedAt,
+         @driverName, @truckReg, @ruleViolated, @timeOfCall, @summary, @driverResponse, @severity
+       )`,
+      {
+        id,
+        tenantId,
+        controllerUserId: req.user?.id ?? null,
+        controllerName: req.user?.full_name ?? null,
+        shiftStartedAt,
+        driverName,
+        truckReg,
+        ruleViolated: body.rule_violated ?? body.ruleViolated ?? null,
+        timeOfCall: body.time_of_call ?? body.timeOfCall ?? null,
+        summary: body.summary ?? null,
+        driverResponse: body.driver_response ?? body.driverResponse ?? null,
+        severity: body.severity ?? null,
+      }
+    );
+    const r = result.recordset?.[0];
+    res.status(201).json({
+      item: {
+        id: getRow(r, 'id'),
+        tenantId: getRow(r, 'tenant_id'),
+        inspectionId: getRow(r, 'inspection_id'),
+        controllerUserId: getRow(r, 'controller_user_id'),
+        controllerName: getRow(r, 'controller_name'),
+        shiftStartedAt: getRow(r, 'shift_started_at'),
+        driverName: getRow(r, 'driver_name'),
+        truckReg: getRow(r, 'truck_reg'),
+        ruleViolated: getRow(r, 'rule_violated'),
+        timeOfCall: getRow(r, 'time_of_call'),
+        summary: getRow(r, 'summary'),
+        driverResponse: getRow(r, 'driver_response'),
+        severity: getRow(r, 'severity'),
+        createdAt: getRow(r, 'created_at'),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE non-compliance entry */
+router.delete('/compliance-inspections/:id/non-compliance/:itemId', async (req, res, next) => {
+  try {
+    const { id, itemId } = req.params;
+    await query(
+      `DELETE FROM cc_compliance_non_compliance WHERE id = @itemId AND inspection_id = @id`,
+      { id, itemId }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET compliance entries created during a controller's shift, scoped to that controller only.
+ * Used by the shift report "Export from system" feature.
+ * Query params:
+ *   - shift_started_at (ISO datetime, required) — start of the controller's shift
+ *   - shift_ended_at (ISO datetime, optional) — end of shift, defaults to now
+ *   - controller_user_id (optional, defaults to current user)
+ */
+router.get('/compliance-shift-export', async (req, res, next) => {
+  try {
+    const tenantId = req.user?.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const startRaw = req.query.shift_started_at || req.query.shiftStartedAt;
+    if (!startRaw) return res.status(400).json({ error: 'shift_started_at is required' });
+    const startDate = new Date(startRaw);
+    if (Number.isNaN(startDate.getTime())) return res.status(400).json({ error: 'invalid shift_started_at' });
+    const endRaw = req.query.shift_ended_at || req.query.shiftEndedAt;
+    let endDate = endRaw ? new Date(endRaw) : new Date();
+    if (Number.isNaN(endDate.getTime())) endDate = new Date();
+    const controllerUserId = req.query.controller_user_id || req.query.controllerUserId || req.user?.id || null;
+    const params = { tenantId, startDate, endDate, controllerUserId };
+    const commsResult = await query(
+      `SELECT * FROM cc_compliance_comm_logs
+         WHERE tenant_id = @tenantId
+           AND created_at >= @startDate
+           AND created_at <= @endDate
+           AND (@controllerUserId IS NULL OR controller_user_id = @controllerUserId)
+         ORDER BY created_at ASC`,
+      params
+    );
+    const noncompResult = await query(
+      `SELECT n.*, i.contractor_name_snapshot, i.route_name
+         FROM cc_compliance_non_compliance n
+         LEFT JOIN cc_compliance_inspections i ON i.id = n.inspection_id
+         WHERE n.tenant_id = @tenantId
+           AND n.created_at >= @startDate
+           AND n.created_at <= @endDate
+           AND (@controllerUserId IS NULL OR n.controller_user_id = @controllerUserId)
+         ORDER BY n.created_at ASC`,
+      params
+    );
+    const communicationLog = (commsResult.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      time: getRow(r, 'log_time') || '',
+      recipient: getRow(r, 'recipient') || '',
+      subject: getRow(r, 'subject') || '',
+      method: getRow(r, 'method') || '',
+      action_required: getRow(r, 'action_required') || '',
+      source: 'compliance_inspection',
+      controller_name: getRow(r, 'controller_name') || '',
+      created_at: getRow(r, 'created_at'),
+    }));
+    const nonCompliance = (noncompResult.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      driver_name: getRow(r, 'driver_name') || '',
+      truck_reg: getRow(r, 'truck_reg') || '',
+      rule_violated: getRow(r, 'rule_violated') || '',
+      time_of_call: getRow(r, 'time_of_call') || '',
+      summary: getRow(r, 'summary') || '',
+      driver_response: getRow(r, 'driver_response') || '',
+      contractor_name: getRow(r, 'contractor_name_snapshot') || '',
+      route: getRow(r, 'route_name') || '',
+      source: 'compliance_inspection',
+      controller_name: getRow(r, 'controller_name') || '',
+      created_at: getRow(r, 'created_at'),
+    }));
+    res.json({
+      shift_started_at: startDate.toISOString(),
+      shift_ended_at: endDate.toISOString(),
+      controller_user_id: controllerUserId,
+      communication_log: communicationLog,
+      non_compliance: nonCompliance,
+    });
   } catch (err) {
     next(err);
   }
@@ -2559,6 +3016,623 @@ router.get('/trends', async (req, res, next) => {
         avg_loads_delivered_per_report: n ? Math.round((totalLoadsDelivered / n) * 10) / 10 : 0,
       },
       insights,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * AI sometimes returns overview/prediction as objects or array items as objects.
+ * Coerce to strings so the client never prints raw JSON in Data presentation.
+ */
+function normalizeDataPresentationNarrative(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const narrativeToText = (val) => {
+    if (val == null) return '';
+    if (typeof val === 'string') return val.trim();
+    if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    if (Array.isArray(val)) return val.map(narrativeToText).filter(Boolean).join(' ');
+    if (typeof val === 'object') {
+      if (val.trend_analysis != null || val.projected_weekly_loads != null) {
+        const bits = [];
+        if (val.projected_weekly_loads != null) bits.push(`Projected weekly loads: ${val.projected_weekly_loads}.`);
+        if (val.trend_analysis != null) bits.push(String(val.trend_analysis));
+        return bits.join(' ');
+      }
+      if (val.total_loads_delivered != null && val.approved_reports != null) {
+        const parts = [
+          `${val.approved_reports} approved reports`,
+          `${val.total_loads_delivered} delivered loads`,
+        ];
+        if (val.avg_daily_deliveries != null) parts.push(`avg daily ${val.avg_daily_deliveries}`);
+        if (val.contractors_covered != null) parts.push(`${val.contractors_covered} contractors`);
+        if (val.trucks_covered != null) parts.push(`${val.trucks_covered} trucks`);
+        if (val.drivers_covered != null) parts.push(`${val.drivers_covered} drivers`);
+        return `${parts.join(', ')}.`;
+      }
+      if (typeof val.summary === 'string') return val.summary;
+      if (typeof val.text === 'string') return val.text;
+    }
+    return '';
+  };
+
+  const out = { ...raw };
+  if (out.overview != null && typeof out.overview !== 'string') {
+    const t = narrativeToText(out.overview);
+    out.overview = t || JSON.stringify(out.overview);
+  }
+  if (out.prediction != null && typeof out.prediction !== 'string') {
+    const t = narrativeToText(out.prediction);
+    out.prediction = t || JSON.stringify(out.prediction);
+  }
+  for (const key of ['operations_findings', 'contractor_findings', 'driver_truck_findings', 'recommendations']) {
+    if (!Array.isArray(out[key])) continue;
+    out[key] = out[key].map((item) => {
+      if (item == null) return '';
+      if (typeof item === 'string') return item;
+      const t = narrativeToText(item);
+      return t || (typeof item === 'object' ? JSON.stringify(item) : String(item));
+    });
+  }
+  return out;
+}
+
+/** GET data-presentation/shift-analysis: single-ops performance view for live presentations. */
+router.get('/data-presentation/shift-analysis', async (req, res, next) => {
+  try {
+    const inputDateFrom = (req.query.dateFrom || '').toString().trim();
+    const inputDateTo = (req.query.dateTo || '').toString().trim();
+    const contractorId = (req.query.contractorId || '').toString().trim();
+    const shiftType = (req.query.shiftType || 'all').toString().trim().toLowerCase();
+    const tenantId = req.user?.tenant_id ?? null;
+    const dateTo = inputDateTo || todayYmd();
+    const dateFrom = inputDateFrom || addCalendarDays(dateTo, -29);
+
+    let sql = `
+      SELECT
+        r.id AS report_id,
+        r.routes_json,
+        r.report_date,
+        r.shift_date,
+        r.shift_start,
+        r.approved_at,
+        r.created_at,
+        r.total_loads_delivered,
+        r.total_loads_dispatched,
+        r.total_pending_deliveries,
+        td.truck_registration,
+        td.driver_name,
+        td.completed_deliveries,
+        rt.route_name,
+        rt.total_loads_delivered AS route_loads_delivered,
+        c.id AS contractor_id,
+        c.name AS contractor_name
+      FROM command_centre_single_ops_shift_reports r
+      LEFT JOIN users creator ON creator.id = r.created_by_user_id
+      LEFT JOIN command_centre_single_ops_truck_deliveries td ON td.report_id = r.id
+      LEFT JOIN command_centre_single_ops_route_load_totals rt ON rt.report_id = r.id
+      LEFT JOIN contractor_trucks ct
+        ON UPPER(LTRIM(RTRIM(ISNULL(ct.registration, N'')))) = UPPER(LTRIM(RTRIM(ISNULL(td.truck_registration, N''))))
+        AND (@tenantId IS NULL OR ct.tenant_id = @tenantId)
+      LEFT JOIN contractors c ON c.id = ct.contractor_id
+      WHERE LOWER(LTRIM(RTRIM(ISNULL(r.status, N'')))) = N'approved'
+        AND (@tenantId IS NULL OR creator.tenant_id = @tenantId)`;
+    const params = { tenantId };
+    sql += ` AND COALESCE(CONVERT(date, r.approved_at), r.report_date, r.shift_date, CONVERT(date, r.created_at)) >= @dateFrom`;
+    sql += ` AND COALESCE(CONVERT(date, r.approved_at), r.report_date, r.shift_date, CONVERT(date, r.created_at)) <= @dateTo`;
+    params.dateFrom = dateFrom;
+    params.dateTo = dateTo;
+    if (contractorId) {
+      sql += ` AND c.id = @contractorId`;
+      params.contractorId = contractorId;
+    }
+    if (shiftType === 'day') {
+      sql += ` AND TRY_CONVERT(time, r.shift_start) >= '06:00' AND TRY_CONVERT(time, r.shift_start) < '18:00'`;
+    } else if (shiftType === 'night') {
+      sql += ` AND (TRY_CONVERT(time, r.shift_start) >= '18:00' OR TRY_CONVERT(time, r.shift_start) < '06:00')`;
+    }
+    sql += ` ORDER BY COALESCE(CONVERT(date, r.approved_at), r.report_date, r.shift_date, CONVERT(date, r.created_at)) ASC`;
+
+    const result = await query(sql, params);
+    const rows = result.recordset || [];
+
+    const toNum = (v) => {
+      const n = parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const reportsSet = new Set();
+    /** Dedupe truck rows: SQL joins truck_deliveries × route_totals creates a cross-product — never sum `delivered` per raw row. */
+    const truckDeliveryMap = new Map();
+    const routeDeliveryMap = new Map();
+    const reportHeaderDelivered = {};
+    const reportDayById = {};
+    const reportShiftById = {};
+    const parsedRoutesTotalByReport = {};
+    const inferShiftBucket = (rawShiftStart) => {
+      const text = String(rawShiftStart || '').trim();
+      if (!text) return 'unknown';
+      const hh = parseInt(text.slice(0, 2), 10);
+      if (!Number.isFinite(hh)) return 'unknown';
+      return hh >= 6 && hh < 18 ? 'day' : 'night';
+    };
+    const parseRoutesJsonDelivered = (rawValue) => {
+      if (!rawValue) return 0;
+      try {
+        const payload = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+        const toDelivered = (item) => Math.max(
+          toNum(item?.total_loads_delivered),
+          toNum(item?.loads_delivered),
+          toNum(item?.delivered),
+          toNum(item?.completed_deliveries),
+          0
+        );
+        if (Array.isArray(payload)) {
+          return payload.reduce((sum, item) => sum + toDelivered(item), 0);
+        }
+        if (payload && typeof payload === 'object') {
+          if (Array.isArray(payload.routes)) {
+            return payload.routes.reduce((sum, item) => sum + toDelivered(item), 0);
+          }
+          return toDelivered(payload);
+        }
+      } catch (_) {
+        return 0;
+      }
+      return 0;
+    };
+
+    rows.forEach((row, rowIdx) => {
+      const reportId = getRow(row, 'report_id');
+      const reportKey = reportId ? String(reportId) : `row-${rowIdx}`;
+      if (reportId) reportsSet.add(String(reportId));
+
+      const contractorName = String(getRow(row, 'contractor_name') || 'Unmapped contractor').trim() || 'Unmapped contractor';
+      const contractorId = getRow(row, 'contractor_id') || null;
+      const truck = String(getRow(row, 'truck_registration') || '').trim();
+      const driver = String(getRow(row, 'driver_name') || '').trim();
+      const completed = toNum(getRow(row, 'completed_deliveries'));
+      const routeLoads = toNum(getRow(row, 'route_loads_delivered'));
+      const routeName = String(getRow(row, 'route_name') || '').trim();
+      const reportDeliveredFromMain = Math.max(
+        toNum(getRow(row, 'total_loads_delivered')),
+        toNum(getRow(row, 'total_loads_dispatched')) - toNum(getRow(row, 'total_pending_deliveries')),
+        0
+      );
+      const day = toYmdFromDbOrString(
+        getRow(row, 'approved_at')
+        || getRow(row, 'report_date')
+        || getRow(row, 'shift_date')
+        || getRow(row, 'created_at')
+      ) || '';
+      const shiftStart = getRow(row, 'shift_start');
+
+      if (!Object.prototype.hasOwnProperty.call(parsedRoutesTotalByReport, reportKey)) {
+        parsedRoutesTotalByReport[reportKey] = parseRoutesJsonDelivered(getRow(row, 'routes_json'));
+      }
+      reportHeaderDelivered[reportKey] = Math.max(Number(reportHeaderDelivered[reportKey] || 0), reportDeliveredFromMain);
+
+      if (day && !reportDayById[reportKey]) reportDayById[reportKey] = day;
+      if (!reportShiftById[reportKey]) reportShiftById[reportKey] = inferShiftBucket(shiftStart);
+
+      if (truck && reportId) {
+        const tk = `${String(reportId)}|${truck.toUpperCase()}`;
+        const prev = truckDeliveryMap.get(tk);
+        const nextCompleted = Math.max(prev?.completed_deliveries || 0, completed);
+        truckDeliveryMap.set(tk, {
+          report_id: String(reportId),
+          truck_registration: truck,
+          completed_deliveries: nextCompleted,
+          driver_name: (nextCompleted > (prev?.completed_deliveries || 0) ? driver : prev?.driver_name) || driver || prev?.driver_name || '',
+          contractor_id: contractorId ?? prev?.contractor_id ?? null,
+          contractor_name: contractorName || prev?.contractor_name || 'Unmapped contractor',
+          day,
+          shift_start: shiftStart,
+        });
+      }
+
+      if (routeName && reportId) {
+        const rk = `${String(reportId)}|${routeName.toLowerCase()}`;
+        const prev = routeDeliveryMap.get(rk);
+        routeDeliveryMap.set(rk, {
+          report_id: String(reportId),
+          route_name: routeName,
+          loads: Math.max(prev?.loads || 0, routeLoads),
+          day: day || prev?.day || '',
+        });
+      }
+    });
+
+    const sumTrucksForReport = (rid) => {
+      let s = 0;
+      for (const v of truckDeliveryMap.values()) {
+        if (v.report_id === String(rid)) s += v.completed_deliveries;
+      }
+      return s;
+    };
+    const sumRoutesForReport = (rid) => {
+      let s = 0;
+      for (const v of routeDeliveryMap.values()) {
+        if (v.report_id === String(rid)) s += v.loads;
+      }
+      return s;
+    };
+
+    const reportDailyDelivered = {};
+    reportsSet.forEach((rid) => {
+      const truckSum = sumTrucksForReport(rid);
+      const routeSum = sumRoutesForReport(rid);
+      const header = reportHeaderDelivered[rid] || 0;
+      const pj = parsedRoutesTotalByReport[rid] || 0;
+      reportDailyDelivered[rid] = truckSum > 0 ? truckSum : Math.max(header, pj, routeSum);
+    });
+
+    const contractors = {};
+    const contractorReportSets = {};
+    const trucks = {};
+    const drivers = {};
+    for (const tv of truckDeliveryMap.values()) {
+      const contractorKey = String(tv.contractor_id || tv.contractor_name || 'Unmapped contractor');
+      if (!contractors[contractorKey]) {
+        contractors[contractorKey] = {
+          contractor_id: tv.contractor_id,
+          contractor_name: tv.contractor_name || 'Unmapped contractor',
+          loads_delivered: 0,
+          trucks: new Set(),
+          drivers: new Set(),
+        };
+        contractorReportSets[contractorKey] = new Set();
+      }
+      contractors[contractorKey].loads_delivered += tv.completed_deliveries;
+      contractorReportSets[contractorKey].add(tv.report_id);
+      if (tv.truck_registration) contractors[contractorKey].trucks.add(tv.truck_registration);
+      if (tv.driver_name) contractors[contractorKey].drivers.add(tv.driver_name);
+      const tr = tv.truck_registration;
+      if (tr) trucks[tr] = (trucks[tr] || 0) + tv.completed_deliveries;
+      const dr = tv.driver_name;
+      if (dr) drivers[dr] = (drivers[dr] || 0) + tv.completed_deliveries;
+    }
+
+    const routePerf = {};
+    for (const rv of routeDeliveryMap.values()) {
+      const rn = rv.route_name;
+      if (!routePerf[rn]) {
+        routePerf[rn] = { route_name: rn, loads_delivered: 0, trucks: new Set(), samples: 0, _reportIds: new Set() };
+      }
+      routePerf[rn].loads_delivered += rv.loads;
+      routePerf[rn].samples += 1;
+      routePerf[rn]._reportIds.add(rv.report_id);
+    }
+    for (const rn of Object.keys(routePerf)) {
+      const rSet = routePerf[rn]._reportIds;
+      for (const tv of truckDeliveryMap.values()) {
+        if (rSet.has(tv.report_id) && tv.truck_registration) routePerf[rn].trucks.add(tv.truck_registration);
+      }
+      delete routePerf[rn]._reportIds;
+    }
+
+    const daily = {};
+    const dailyShift = {};
+    Object.keys(reportDailyDelivered).forEach((reportKey) => {
+      const day = reportDayById[reportKey];
+      if (!day) return;
+      const delivered = Number(reportDailyDelivered[reportKey] || 0);
+      const shiftBucket = reportShiftById[reportKey] || 'unknown';
+      daily[day] = (daily[day] || 0) + delivered;
+      if (!dailyShift[day]) dailyShift[day] = { day_delivered: 0, night_delivered: 0, total_delivered: 0 };
+      if (shiftBucket === 'day') dailyShift[day].day_delivered += delivered;
+      else if (shiftBucket === 'night') dailyShift[day].night_delivered += delivered;
+      dailyShift[day].total_delivered += delivered;
+    });
+
+    const contractorPerformance = Object.keys(contractors)
+      .map((k) => ({
+        contractor_id: contractors[k].contractor_id,
+        contractor_name: contractors[k].contractor_name,
+        loads_delivered: Math.round(contractors[k].loads_delivered * 10) / 10,
+        report_rows: contractorReportSets[k]?.size || 0,
+        trucks_involved: contractors[k].trucks.size,
+        drivers_involved: contractors[k].drivers.size,
+      }))
+      .sort((a, b) => b.loads_delivered - a.loads_delivered);
+
+    const topTrucks = Object.entries(trucks)
+      .map(([truck_registration, loads_delivered]) => ({ truck_registration, loads_delivered: Math.round(loads_delivered * 10) / 10 }))
+      .sort((a, b) => b.loads_delivered - a.loads_delivered)
+      .slice(0, 10);
+    const topDrivers = Object.entries(drivers)
+      .map(([driver_name, loads_delivered]) => ({ driver_name, loads_delivered: Math.round(loads_delivered * 10) / 10 }))
+      .sort((a, b) => b.loads_delivered - a.loads_delivered)
+      .slice(0, 10);
+
+    const rangeDays = [];
+    let cursor = dateFrom;
+    while (cursor <= dateTo) {
+      rangeDays.push(cursor);
+      cursor = addCalendarDays(cursor, 1);
+    }
+    const dailySeries = rangeDays.map((date) => ({ date, delivered: Math.round((daily[date] || 0) * 10) / 10 }));
+    const dailyShiftSeries = rangeDays.map((date) => {
+      const row = dailyShift[date] || { day_delivered: 0, night_delivered: 0, total_delivered: 0 };
+      return {
+        date,
+        day_delivered: Math.round((row.day_delivered || 0) * 10) / 10,
+        night_delivered: Math.round((row.night_delivered || 0) * 10) / 10,
+        total_delivered: Math.round((row.total_delivered || 0) * 10) / 10,
+      };
+    });
+    const avgDaily = dailySeries.length ? dailySeries.reduce((s, d) => s + d.delivered, 0) / dailySeries.length : 0;
+    const recent = dailySeries.slice(-Math.min(7, dailySeries.length));
+    const prior = dailySeries.slice(Math.max(0, dailySeries.length - 14), Math.max(0, dailySeries.length - 7));
+    const recentAvg = recent.length ? recent.reduce((s, d) => s + d.delivered, 0) / recent.length : 0;
+    const priorAvg = prior.length ? prior.reduce((s, d) => s + d.delivered, 0) / prior.length : recentAvg;
+    const projectedWeeklyLoads = Math.max(0, Math.round(recentAvg * 7 * 10) / 10);
+    const trendPct = priorAvg > 0 ? Math.round(((recentAvg - priorAvg) / priorAvg) * 100) : 0;
+
+    const summary = {
+      approved_reports: reportsSet.size,
+      total_loads_delivered: Math.round(dailySeries.reduce((s, d) => s + d.delivered, 0) * 10) / 10,
+      avg_daily_deliveries: Math.round(avgDaily * 10) / 10,
+      contractors_covered: contractorPerformance.length,
+      trucks_covered: Object.keys(trucks).length,
+      drivers_covered: Object.keys(drivers).length,
+    };
+
+    let targetRegRows = [];
+    try {
+      const targetResult = await query(
+        `SELECT t.route_id, r.name AS route_name, t.deliveries_per_truck_target
+         FROM access_route_target_regulations t
+         INNER JOIN contractor_routes r ON r.id = t.route_id AND r.tenant_id = t.tenant_id
+         WHERE t.tenant_id = @tenantId`,
+        { tenantId }
+      );
+      targetRegRows = targetResult.recordset || [];
+    } catch (_) {
+      targetRegRows = [];
+    }
+    const targetByRouteName = Object.fromEntries(
+      targetRegRows.map((r) => [String(getRow(r, 'route_name') || '').trim().toLowerCase(), toNum(getRow(r, 'deliveries_per_truck_target'))]).filter(([k]) => k)
+    );
+    const routePerformance = Object.values(routePerf)
+      .map((r) => {
+        const trucksCount = Math.max(1, r.trucks.size);
+        const deliveriesPerTruck = r.loads_delivered / trucksCount;
+        const target = targetByRouteName[String(r.route_name || '').toLowerCase()];
+        const achieved = target > 0 ? deliveriesPerTruck >= target : null;
+        return {
+          route_name: r.route_name,
+          loads_delivered: Math.round(r.loads_delivered * 10) / 10,
+          trucks_involved: r.trucks.size,
+          deliveries_per_truck: Math.round(deliveriesPerTruck * 100) / 100,
+          deliveries_per_truck_target: target || null,
+          target_achieved: achieved,
+          target_gap: target > 0 ? Math.round((deliveriesPerTruck - target) * 100) / 100 : null,
+        };
+      })
+      .sort((a, b) => (b.loads_delivered - a.loads_delivered));
+    const missedTargets = routePerformance.filter((r) => r.target_achieved === false);
+    const targetMissReason =
+      missedTargets.length > 0
+        ? `Target not achieved mainly due to lower deliveries per truck on ${missedTargets.length} route(s). Typical gaps are ${missedTargets.slice(0, 3).map((r) => `${r.route_name} (${Math.abs(r.target_gap)} below target)`).join(', ')}.`
+        : (routePerformance.some((r) => r.target_achieved === true)
+            ? 'Configured route targets are currently being met on the measured routes.'
+            : 'No route target regulations are configured yet; set per-route targets in Rector -> Targets regulations per route.');
+
+    let aiForecastDaily = [];
+    if (dailySeries.length > 0) {
+      if (isAiConfigured()) {
+        try {
+          const client = getOpenAiClient();
+          const model = getAiModel();
+          const prompt = [
+            'You are forecasting delivered loads for the next 7 days.',
+            'Use only the provided daily delivered loads history and return strict JSON:',
+            '{"forecast":[{"date":"YYYY-MM-DD","delivered_loads":number}]}',
+            `History: ${JSON.stringify(dailySeries.slice(-45))}`,
+          ].join('\n');
+          const response = await client.responses.create({
+            model,
+            input: [{ role: 'user', content: prompt }],
+            max_output_tokens: 450,
+          });
+          const raw = String(response?.output_text || '').trim();
+          const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+          const start = cleaned.indexOf('{');
+          const end = cleaned.lastIndexOf('}');
+          const parsed = JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned);
+          const list = Array.isArray(parsed?.forecast) ? parsed.forecast : [];
+          aiForecastDaily = list
+            .map((x, i) => {
+              const d = String(x?.date || '').slice(0, 10) || addCalendarDays(todayYmd(), i + 1);
+              const v = toNum(x?.delivered_loads);
+              return { date: d, delivered_loads: Math.max(0, Math.round(v * 10) / 10) };
+            })
+            .slice(0, 7);
+        } catch (_) {
+          aiForecastDaily = [];
+        }
+      }
+      if (aiForecastDaily.length === 0) {
+        const hist = dailySeries.slice(-14);
+        const avg = hist.length ? hist.reduce((s, d) => s + d.delivered, 0) / hist.length : 0;
+        aiForecastDaily = Array.from({ length: 7 }).map((_, i) => ({
+          date: addCalendarDays(todayYmd(), i + 1),
+          delivered_loads: Math.max(0, Math.round(avg * 10) / 10),
+        }));
+      }
+    }
+
+    const routesByReport = new Map();
+    for (const rv of routeDeliveryMap.values()) {
+      if (!routesByReport.has(rv.report_id)) routesByReport.set(rv.report_id, new Set());
+      routesByReport.get(rv.report_id).add(rv.route_name);
+    }
+
+    const contractorTruckMap = {};
+    const contractorTruckShiftMap = {};
+    for (const tv of truckDeliveryMap.values()) {
+      const contractorName = tv.contractor_name || 'Unmapped contractor';
+      const contractorKey = String(tv.contractor_id || contractorName);
+      const truck = tv.truck_registration || 'Unknown truck';
+      const reportKey = tv.report_id;
+      const shiftDate = tv.day || '';
+      const shiftBucket = inferShiftBucket(tv.shift_start);
+      const shiftLabel = shiftBucket === 'day' ? 'Day shift' : (shiftBucket === 'night' ? 'Night shift' : 'Unclassified');
+      const completed = tv.completed_deliveries;
+      let routeTarget = 0;
+      const routeNames = routesByReport.get(String(reportKey));
+      if (routeNames) {
+        for (const name of routeNames) {
+          routeTarget = Math.max(routeTarget, targetByRouteName[String(name).toLowerCase()] || 0);
+        }
+      }
+      if (!contractorTruckMap[contractorKey]) {
+        contractorTruckMap[contractorKey] = {
+          contractor_id: tv.contractor_id || null,
+          contractor_name: contractorName,
+          trucks: {},
+        };
+      }
+      if (!contractorTruckShiftMap[contractorKey]) contractorTruckShiftMap[contractorKey] = {};
+      const shiftKey = `${truck}|${reportKey}|${shiftDate}|${shiftBucket}`;
+      if (!contractorTruckShiftMap[contractorKey][shiftKey]) {
+        contractorTruckShiftMap[contractorKey][shiftKey] = {
+          truck_registration: truck,
+          shift_date: shiftDate || null,
+          shift_label: shiftLabel,
+          completed_loads: 0,
+          actual_target: 0,
+        };
+      }
+      contractorTruckShiftMap[contractorKey][shiftKey].completed_loads = Math.max(
+        contractorTruckShiftMap[contractorKey][shiftKey].completed_loads,
+        completed
+      );
+      contractorTruckShiftMap[contractorKey][shiftKey].actual_target = Math.max(
+        contractorTruckShiftMap[contractorKey][shiftKey].actual_target,
+        routeTarget
+      );
+    }
+
+    const aiTruckRemark = (completedLoads, actualTarget) => {
+      if (!actualTarget || actualTarget <= 0) return 'No route target configured yet; add target regulation for clearer performance tracking.';
+      const ratio = completedLoads / actualTarget;
+      if (ratio >= 1.1) return 'Above target. Sustain this rhythm and replicate route discipline across lower-performing shifts.';
+      if (ratio >= 0.95) return 'Near target. Small dispatch improvements and tighter turnaround can close the remaining gap.';
+      if (ratio >= 0.8) return 'Below target. Improve loading/offloading cycle time and reduce non-productive waiting periods.';
+      return 'Significantly below target. Immediate intervention needed: route planning, shift execution, and truck readiness review.';
+    };
+
+    const contractorPresentationPages = Object.values(contractorTruckMap)
+      .map((c) => {
+        const trucksList = Object.values(contractorTruckShiftMap[String(c.contractor_id || c.contractor_name)] || {})
+          .map((t) => {
+            const completedLoads = Math.round(t.completed_loads * 10) / 10;
+            const actualTarget = Math.round(t.actual_target * 10) / 10;
+            return {
+              truck_registration: t.truck_registration,
+              shift_date: t.shift_date,
+              shift_label: t.shift_label,
+              completed_loads: completedLoads,
+              actual_target: actualTarget,
+              ai_remarks: aiTruckRemark(completedLoads, actualTarget),
+            };
+          })
+          .sort((a, b) => {
+            const ad = String(a.shift_date || '');
+            const bd = String(b.shift_date || '');
+            if (ad !== bd) return bd.localeCompare(ad);
+            return b.completed_loads - a.completed_loads;
+          });
+        return {
+          contractor_id: c.contractor_id,
+          contractor_name: c.contractor_name,
+          trucks: trucksList,
+        };
+      })
+      .sort((a, b) => a.contractor_name.localeCompare(b.contractor_name));
+
+    let aiNarrative = null;
+    if (isAiConfigured()) {
+      try {
+        const client = getOpenAiClient();
+        const model = getAiModel();
+        const prompt = [
+          'You are generating a live presentation briefing for transport operations leadership.',
+          'Audience: Thinkers Africa operations team. Be direct, advanced, and highly informative.',
+          'Focus ONLY on the provided single-operations shift report data.',
+          'Return STRICT JSON with keys: overview, operations_findings[], contractor_findings[], driver_truck_findings[], recommendations[], prediction.',
+          'overview and prediction MUST be single plain-text strings (never nested JSON objects).',
+          'Each array should have 3-6 concise but specific bullets.',
+          `Data summary: ${JSON.stringify(summary)}`,
+          `Top contractors: ${JSON.stringify(contractorPerformance.slice(0, 8))}`,
+          `Top trucks: ${JSON.stringify(topTrucks.slice(0, 8))}`,
+          `Top drivers: ${JSON.stringify(topDrivers.slice(0, 8))}`,
+          `Route performance vs targets: ${JSON.stringify(routePerformance.slice(0, 12))}`,
+          `Daily deliveries: ${JSON.stringify(dailySeries.slice(-30))}`,
+          `Trend context: ${JSON.stringify({ recentAvg: Math.round(recentAvg * 10) / 10, priorAvg: Math.round(priorAvg * 10) / 10, trendPct, projectedWeeklyLoads })}`,
+        ].join('\n');
+        const response = await client.responses.create({
+          model,
+          input: [{ role: 'user', content: prompt }],
+          max_output_tokens: 1200,
+        });
+        const raw = String(response?.output_text || '').trim();
+        const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+        const start = cleaned.indexOf('{');
+        const end = cleaned.lastIndexOf('}');
+        const parsed = JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned);
+        aiNarrative = normalizeDataPresentationNarrative(parsed);
+      } catch (_) {
+        aiNarrative = null;
+      }
+    }
+
+    if (!aiNarrative) {
+      aiNarrative = {
+        overview: `Single-operations performance shows ${summary.total_loads_delivered} delivered loads across ${summary.approved_reports} approved reports. Current momentum is ${trendPct >= 0 ? 'upward' : 'downward'} (${trendPct}%).`,
+        operations_findings: [
+          `Average daily delivered loads are ${summary.avg_daily_deliveries}.`,
+          `Projected delivered loads next 7 days: ${projectedWeeklyLoads}.`,
+          `Coverage spans ${summary.contractors_covered} contractors with ${summary.trucks_covered} trucks and ${summary.drivers_covered} drivers.`,
+        ],
+        contractor_findings: contractorPerformance.slice(0, 4).map((c) => `${c.contractor_name}: ${c.loads_delivered} delivered loads, ${c.trucks_involved} trucks, ${c.drivers_involved} drivers.`),
+        driver_truck_findings: [
+          ...topTrucks.slice(0, 3).map((t) => `Truck ${t.truck_registration}: ${t.loads_delivered} delivered loads.`),
+          ...topDrivers.slice(0, 3).map((d) => `Driver ${d.driver_name}: ${d.loads_delivered} delivered loads.`),
+        ],
+        recommendations: [
+          'Reallocate route capacity from underperforming contractor/truck clusters to top-performing clusters.',
+          'Prioritize coaching and shift handovers for routes where daily delivered loads are below period average.',
+          'Use contractor-level scorecards weekly to enforce accountability on delivery throughput.',
+        ],
+        prediction: `If current pace holds, expected delivered loads for the next week are approximately ${projectedWeeklyLoads}, with trend change of ${trendPct}% vs prior week.`,
+        target_reason: targetMissReason,
+      };
+    }
+
+    aiNarrative = normalizeDataPresentationNarrative(aiNarrative);
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      filters: { dateFrom, dateTo, contractorId: contractorId || null, shiftType },
+      summary,
+      daily_series: dailySeries,
+      daily_shift_series: dailyShiftSeries,
+      contractor_performance: contractorPerformance,
+      top_trucks: topTrucks,
+      top_drivers: topDrivers,
+      route_performance: routePerformance,
+      target_reason: aiNarrative?.target_reason || targetMissReason,
+      contractor_presentation_pages: contractorPresentationPages,
+      ai_forecast_daily: aiForecastDaily,
+      predictions: {
+        projected_weekly_loads: projectedWeeklyLoads,
+        trend_percent_vs_prior_week: trendPct,
+      },
+      narrative: aiNarrative,
     });
   } catch (err) {
     next(err);

@@ -5,7 +5,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { getApiBase } from './lib/apiBase.js';
-import { buildAccountingPdfFilename } from './lib/accountingDocumentPdfFilename.js';
+import { buildAccountingPdfFilename, buildCustomerStatementPdfFilename } from './lib/accountingDocumentPdfFilename.js';
 import InfoHint from './components/InfoHint.jsx';
 
 const NAV_SECTIONS = [
@@ -81,6 +81,138 @@ async function downloadAccountingCommercialPdf(url, { partyName, reference, issu
   }
   const filename = buildAccountingPdfFilename({ partyName, reference, companyName, issueDate });
   await downloadAttachmentWithAuth(url, filename);
+}
+
+async function downloadStatementPdf(url, statement) {
+  let companyName = '';
+  try {
+    const c = await accountingApi.companySettings.get();
+    companyName = c?.company_name;
+  } catch (_) {
+    companyName = '';
+  }
+  const filename = buildCustomerStatementPdfFilename({
+    customerName: statement?.customer_name,
+    companyName,
+    statementDate: statement?.statement_date,
+  });
+  await downloadAttachmentWithAuth(url, filename);
+}
+
+/** Searchable recipient picker with chips. Used in statement email modal. */
+function RecipientPicker({ label, placeholder, recipients, selected, onChange }) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const selectedList = (Array.isArray(selected) ? selected : []);
+  const recipientList = Array.isArray(recipients) ? recipients : [];
+
+  const matches = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return recipientList.slice(0, 12);
+    return recipientList
+      .filter((r) => {
+        const fields = [r.email, r.full_name, r.role].filter(Boolean).map((v) => String(v).toLowerCase());
+        return fields.some((v) => v.includes(q));
+      })
+      .slice(0, 20);
+  })();
+
+  const add = (email) => {
+    if (!email) return;
+    if (selectedList.includes(email)) return;
+    onChange([...selectedList, email]);
+    setSearch('');
+  };
+
+  const remove = (email) => {
+    onChange(selectedList.filter((e) => e !== email));
+  };
+
+  const recipientByEmail = (email) => recipientList.find((r) => r.email === email);
+
+  return (
+    <div className="relative">
+      <label className="block text-sm font-medium text-surface-700 mb-1">{label}</label>
+
+      <div className="rounded-lg border border-surface-300 bg-white p-2 min-h-[42px] flex flex-wrap items-center gap-1">
+        {selectedList.length === 0 && (
+          <span className="text-xs text-surface-400 px-1">No recipients selected.</span>
+        )}
+        {selectedList.map((email) => {
+          const r = recipientByEmail(email);
+          return (
+            <span
+              key={email}
+              className={`inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-xs font-medium border ${r?.is_super_admin ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-brand-50 border-brand-200 text-brand-800'}`}
+              title={r?.is_super_admin ? 'Super admin' : email}
+            >
+              {r?.is_super_admin ? <span className="px-1 rounded bg-amber-200 text-amber-900 text-[10px] uppercase tracking-wider">Super</span> : null}
+              <span>{r?.full_name || email}</span>
+              <button
+                type="button"
+                onClick={() => remove(email)}
+                className="ml-0.5 w-5 h-5 rounded-full hover:bg-black/5 text-surface-500 hover:text-surface-700"
+                aria-label={`Remove ${email}`}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+      </div>
+
+      <input
+        type="text"
+        value={search}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && search.includes('@')) {
+            e.preventDefault();
+            add(search.trim());
+          }
+        }}
+        placeholder={placeholder}
+        className="mt-2 w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm"
+      />
+
+      {open && matches.length > 0 && (
+        <div className="absolute z-30 left-0 right-0 mt-1 max-h-60 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg">
+          {matches.map((r) => {
+            const isSelected = selectedList.includes(r.email);
+            return (
+              <button
+                type="button"
+                key={r.id || r.email}
+                onMouseDown={(e) => { e.preventDefault(); add(r.email); }}
+                disabled={isSelected}
+                className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 text-sm border-b border-surface-100 last:border-b-0 ${isSelected ? 'opacity-40 cursor-not-allowed' : 'hover:bg-surface-50'}`}
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  {r.is_super_admin && (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-bold uppercase tracking-wider">Super admin</span>
+                  )}
+                  <span className="truncate">
+                    <span className="font-medium text-surface-900">{r.full_name || r.email}</span>
+                    {r.full_name && <span className="text-surface-500 ml-1">· {r.email}</span>}
+                  </span>
+                </span>
+                {isSelected ? <span className="text-xs text-surface-400">Added</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {open && matches.length === 0 && search.trim() && (
+        <div className="absolute z-30 left-0 right-0 mt-1 rounded-lg border border-surface-200 bg-white shadow-sm px-3 py-2 text-sm text-surface-500">
+          No matching recipients. Press Enter to add "<span className="font-medium">{search.trim()}</span>" as a free-text email.
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CompanySettingsTab() {
@@ -2354,29 +2486,61 @@ function StatementsTab() {
       )}
       {emailModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-            <h3 className="font-semibold text-surface-900 mb-4">Email statement</h3>
-            <p className="text-sm text-surface-600 mb-2">To (select from system):</p>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {recipients.map((r) => (
-                <label key={r.id} className="inline-flex items-center gap-1 px-2 py-1 rounded border border-surface-200">
-                  <input type="checkbox" checked={emailModal.to_emails.includes(r.email)} onChange={(e) => setEmailModal((m) => ({ ...m, to_emails: e.target.checked ? [...m.to_emails, r.email] : m.to_emails.filter((x) => x !== r.email) }))} />
-                  <span className="text-sm">{r.full_name || r.email}</span>
-                </label>
-              ))}
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-auto">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="font-semibold text-surface-900">Email statement</h3>
+                <p className="text-xs text-surface-500 mt-0.5">{emailModal.statement?.title || 'Statement'} · {emailModal.statement?.statement_ref || '—'}</p>
+              </div>
+              <button type="button" onClick={() => setEmailModal(null)} className="text-surface-400 hover:text-surface-600 text-xl leading-none">×</button>
             </div>
-            <p className="text-sm text-surface-600 mb-2">CC:</p>
-            <div className="flex flex-wrap gap-2 mb-4">
-              {recipients.map((r) => (
-                <label key={r.id} className="inline-flex items-center gap-1 px-2 py-1 rounded border border-surface-200">
-                  <input type="checkbox" checked={emailModal.cc_emails.includes(r.email)} onChange={(e) => setEmailModal((m) => ({ ...m, cc_emails: e.target.checked ? [...m.cc_emails, r.email] : m.cc_emails.filter((x) => x !== r.email) }))} />
-                  <span className="text-sm">{r.full_name || r.email}</span>
-                </label>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button type="button" onClick={sendStatementEmail} className="px-4 py-2 rounded-lg bg-brand-600 text-white">Send</button>
-              <button type="button" onClick={() => setEmailModal(null)} className="px-4 py-2 rounded-lg border border-surface-300">Cancel</button>
+
+            <div className="space-y-4">
+              <RecipientPicker
+                label="To"
+                placeholder="Search recipients by name or email…"
+                recipients={recipients}
+                selected={emailModal.to_emails}
+                onChange={(emails) => setEmailModal((m) => ({ ...m, to_emails: emails }))}
+              />
+              <RecipientPicker
+                label="CC"
+                placeholder="Search recipients to CC…"
+                recipients={recipients}
+                selected={emailModal.cc_emails}
+                onChange={(emails) => setEmailModal((m) => ({ ...m, cc_emails: emails }))}
+              />
+
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Subject</label>
+                <input
+                  value={emailModal.subject}
+                  onChange={(e) => setEmailModal((m) => ({ ...m, subject: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Message</label>
+                <textarea
+                  value={emailModal.message}
+                  onChange={(e) => setEmailModal((m) => ({ ...m, message: e.target.value }))}
+                  rows={4}
+                  className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm"
+                  placeholder="Optional note. The PDF statement will be attached."
+                />
+              </div>
+
+              <div className="flex gap-2 justify-end pt-2 border-t border-surface-100">
+                <button type="button" onClick={() => setEmailModal(null)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Cancel</button>
+                <button
+                  type="button"
+                  onClick={sendStatementEmail}
+                  disabled={!emailModal.to_emails.length}
+                  className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+                >
+                  Send statement
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2413,6 +2577,13 @@ function StatementsTab() {
             {viewStatement.content ? <div className="mt-4 p-4 rounded-lg bg-surface-50 text-surface-800 whitespace-pre-wrap text-sm"><span className="text-xs font-semibold text-surface-500 uppercase">Banking / footer</span><br />{viewStatement.content}</div> : null}
             <div className="mt-4 flex gap-2 flex-wrap">
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.statements.pdfUrl(viewId))} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">View PDF</button>
+              <button
+                type="button"
+                onClick={() => downloadStatementPdf(accountingApi.statements.pdfUrl(viewId), viewStatement)}
+                className="px-4 py-2 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 text-sm font-medium hover:bg-brand-100"
+              >
+                Download PDF
+              </button>
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.statements.excelUrl(viewId))} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Download Excel</button>
               <button type="button" onClick={() => openEmailModal(viewStatement)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Email</button>
               <button type="button" onClick={() => setViewId(null)} className="px-4 py-2 rounded-lg border border-surface-300 text-sm">Close</button>

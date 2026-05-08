@@ -31,3 +31,14 @@ export function buildAccountingPdfFilename({ partyName, reference, companyName, 
   const datePart = issueDateSlugForPdf(issueDate);
   return `${party} - ${ref} - ${company} - ${datePart}.pdf`;
 }
+
+/**
+ * Statement of account PDF download name:
+ * Customer statement — customer name — company name — date.pdf
+ */
+export function buildCustomerStatementPdfFilename({ customerName, companyName, statementDate }) {
+  const cust = sanitizeAccountingPdfPart(customerName, 'Customer') || 'Customer';
+  const co = sanitizeAccountingPdfPart(companyName, 'Company') || 'Company';
+  const datePart = issueDateSlugForPdf(statementDate);
+  return `Customer statement - ${cust} - ${co} - ${datePart}.pdf`;
+}

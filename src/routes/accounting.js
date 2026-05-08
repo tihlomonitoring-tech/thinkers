@@ -6,11 +6,36 @@ import { query, sql, request as poolRequest } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { renderCommercialPdf, stampCommercialPdfFooters, formatDate } from '../lib/accountingPdfLayout.js';
-import { renderStatementPdf } from '../lib/statementAccountPdf.js';
+import { renderStatementPdf, stampStatementPdfFooters } from '../lib/statementAccountPdf.js';
 import { computeStatementLineBalances, invoiceGrandTotal } from '../lib/statementLineBalance.js';
 import { todayYmd, toYmdFromDbOrString } from '../lib/appTime.js';
 
 const router = Router();
+
+function sanitizeStatementPdfFilenamePart(value, fallback = '') {
+  const raw = value != null && String(value).trim() ? String(value).trim() : '';
+  const base = raw || String(fallback || '');
+  if (!base) return '';
+  return base.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+/** Customer statement PDF file name: Customer statement — customer — company — date.pdf */
+function buildCustomerStatementPdfFilename(statement, company) {
+  const customer = sanitizeStatementPdfFilenamePart(statement.customer_name, 'Customer');
+  const co = sanitizeStatementPdfFilenamePart(company?.company_name, 'Company');
+  const datePart = statement.statement_date ? toYmdFromDbOrString(statement.statement_date) : 'no-date';
+  return `Customer statement - ${customer} - ${co} - ${datePart}.pdf`;
+}
+
+/** PDF viewer metadata title */
+function buildCustomerStatementPdfTitle(statement, company) {
+  const customer = sanitizeStatementPdfFilenamePart(statement.customer_name, 'Customer');
+  const co = sanitizeStatementPdfFilenamePart(company?.company_name, 'Company');
+  const datePart = statement.statement_date ? toYmdFromDbOrString(statement.statement_date) : '';
+  const parts = ['Customer statement', customer, co];
+  if (datePart) parts.push(datePart);
+  return parts.join(', ');
+}
 
 async function fetchStatementLines(statementId) {
   try {
@@ -1682,8 +1707,25 @@ router.get('/statements/recipients', async (req, res, next) => {
   try {
     const tenantId = req.user?.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
-    const result = await query(`SELECT id, email, full_name FROM users WHERE tenant_id = @tenantId AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N'' ORDER BY full_name, email`, { tenantId });
-    res.json({ recipients: result.recordset || [] });
+    const result = await query(
+      `SELECT id, email, full_name, role
+       FROM users
+       WHERE email IS NOT NULL
+         AND LTRIM(RTRIM(email)) <> N''
+         AND (tenant_id = @tenantId OR role = N'super_admin')
+       ORDER BY
+         CASE WHEN role = N'super_admin' THEN 0 ELSE 1 END,
+         full_name, email`,
+      { tenantId }
+    );
+    const recipients = (result.recordset || []).map((r) => ({
+      id: r.id,
+      email: r.email,
+      full_name: r.full_name,
+      role: r.role || null,
+      is_super_admin: r.role === 'super_admin',
+    }));
+    res.json({ recipients });
   } catch (err) {
     next(err);
   }
@@ -1869,12 +1911,21 @@ router.delete('/statements/:id', async (req, res, next) => {
 
 async function buildStatementPdf(statement, company, logoBuffer) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: statement.title || 'Statement' } });
+    const doc = new PDFDocument({
+      size: 'A4',
+      margin: 48,
+      bufferPages: true,
+      info: { Title: buildCustomerStatementPdfTitle(statement, company) },
+    });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     renderStatementPdf(doc, statement, company, logoBuffer);
+    const refBits = [];
+    if (statement?.title) refBits.push(String(statement.title).trim());
+    if (statement?.statement_ref) refBits.push(String(statement.statement_ref).trim());
+    stampStatementPdfFooters(doc, company, { documentRef: refBits.filter(Boolean).join(' · ') });
     doc.end();
   });
 }
@@ -1894,12 +1945,8 @@ router.get('/statements/:id/pdf', async (req, res, next) => {
     if (company.logo_path) { const fp = path.join(process.cwd(), (company.logo_path || '').replace(/\//g, path.sep)); if (fs.existsSync(fp) && fp.startsWith(uploadsRoot)) logoBuffer = fs.readFileSync(fp); }
     const pdf = await buildStatementPdf(statement, company, logoBuffer);
     res.setHeader('Content-Type', 'application/pdf');
-    const safeTitle = String(statement.title || 'statement')
-      .replace(/[^\w\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-')
-      .slice(0, 80);
-    res.setHeader('Content-Disposition', `inline; filename="statement-${safeTitle || statement.id}.pdf"`);
+    const filename = buildCustomerStatementPdfFilename(statement, company).replace(/"/g, '');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     res.send(pdf);
   } catch (err) {
     next(err);
@@ -1987,7 +2034,15 @@ router.post('/statements/:id/send-email', async (req, res, next) => {
     if (company.logo_path) { const fp = path.join(process.cwd(), (company.logo_path || '').replace(/\//g, path.sep)); if (fs.existsSync(fp) && fp.startsWith(uploadsRoot)) logoBuffer = fs.readFileSync(fp); }
     const pdf = await buildStatementPdf(statement, company, logoBuffer);
     if (!isEmailConfigured()) return res.status(503).json({ error: 'Email is not configured' });
-    await sendEmail({ to: toList.join(', '), cc: ccList.length ? ccList.join(', ') : undefined, subject: subject || (statement.title || 'Statement'), body: message || 'Please find attached statement.', html: false, attachments: [{ filename: `statement-${statement.id}.pdf`, content: pdf }] });
+    const attachmentName = buildCustomerStatementPdfFilename(statement, company).replace(/"/g, '');
+    await sendEmail({
+      to: toList.join(', '),
+      cc: ccList.length ? ccList.join(', ') : undefined,
+      subject: subject || (statement.title || 'Statement'),
+      body: message || 'Please find attached statement.',
+      html: false,
+      attachments: [{ filename: attachmentName, content: pdf }],
+    });
     res.json({ ok: true });
   } catch (err) {
     next(err);

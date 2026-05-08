@@ -82,6 +82,8 @@ const FLEET_INTEGRATION_EXPORT_COLUMNS = [
 
 const CC_TABS = [
   { id: 'dashboard', label: 'Main dashboard', icon: 'dashboard', section: 'Overview' },
+  { id: 'single_operations_dashboard', label: 'Single operations dashboard', icon: 'dashboard', section: 'Overview' },
+  { id: 'data_presentation', label: 'Data presentation', icon: 'chart', section: 'Overview' },
   { id: 'reports', label: 'Report composition', icon: 'file', section: 'Operations' },
   { id: 'saved_reports', label: 'View saved shift reports', icon: 'folder', section: 'Operations' },
   { id: 'trends', label: 'Trends', icon: 'chart', section: 'Analytics' },
@@ -518,7 +520,23 @@ export default function CommandCentre() {
             />
           )}
 
-          {activeTab === 'dashboard' && canSeeTab('dashboard') && <TabDashboard setActiveTab={setActiveTab} canSeeTab={canSeeTab} />}
+          {activeTab === 'dashboard' && canSeeTab('dashboard') && (
+            <TabDashboard
+              setActiveTab={setActiveTab}
+              canSeeTab={canSeeTab}
+              dashboardKind="standard"
+              title="Main dashboard"
+            />
+          )}
+          {activeTab === 'single_operations_dashboard' && canSeeTab('single_operations_dashboard') && (
+            <TabDashboard
+              setActiveTab={setActiveTab}
+              canSeeTab={canSeeTab}
+              dashboardKind="single_ops"
+              title="Single operations dashboard"
+            />
+          )}
+          {activeTab === 'data_presentation' && canSeeTab('data_presentation') && <TabDataPresentation />}
           {activeTab === 'reports' && canSeeTab('reports') && <TabReports />}
           {activeTab === 'saved_reports' && canSeeTab('saved_reports') && <TabSavedReports />}
           {activeTab === 'trends' && canSeeTab('trends') && <TabTrends />}
@@ -946,7 +964,7 @@ function DeliveryInsightsRotator({
   );
 }
 
-function TabDashboard({ setActiveTab, canSeeTab }) {
+function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', title = 'Main dashboard' }) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const [loading, setLoading] = useState(true);
@@ -1018,9 +1036,10 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
     promises.push(ccApi.breakdowns.list({ resolved: 'false' }).then((r) => ({ breakdowns: r.breakdowns || [] })).catch(() => ({ breakdowns: [] })));
     promises.push(ccApi.suspensions.list('under_appeal').then((r) => ({ underAppeal: (r.suspensions || []).length })).catch(() => ({ underAppeal: 0 })));
     promises.push(ccApi.complianceInspections.list().then((r) => ({ inspections: r.inspections || [] })).catch(() => ({ inspections: [] })));
-    promises.push(ccApi.shiftReports.list(true).then((r) => ({ requests: (r.reports || []).length })).catch(() => ({ requests: 0 })));
+    const reportListApi = dashboardKind === 'single_ops' ? ccApi.singleOpsShiftReports : ccApi.shiftReports;
+    promises.push(reportListApi.list(true).then((r) => ({ requests: (r.reports || []).length })).catch(() => ({ requests: 0 })));
     promises.push(ccApi.deliveryTimeline(timelineDays).then((r) => ({ timeline: r })).catch(() => ({ timeline: { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } } })));
-    promises.push(ccApi.shiftReports.list(false).then((r) => ({ allReports: r.reports || [] })).catch(() => ({ allReports: [] })));
+    promises.push(reportListApi.list(false).then((r) => ({ allReports: r.reports || [] })).catch(() => ({ allReports: [] })));
     promises.push(shiftScore.commandCentreDashboard({ days: 30 }).then((r) => ({ shiftDash: r })).catch(() => ({ shiftDash: null })));
 
     Promise.all(promises).then((results) => {
@@ -1055,7 +1074,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
       setDashboardShiftReports(Array.isArray(allReports) ? allReports : []);
     }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [timelineDays]);
+  }, [dashboardKind, timelineDays]);
 
   const pendingCompliance = inspections.filter((i) => i.status === 'pending_response' || i.status === 'auto_suspended').length;
   const formatDashboardTime = (d) => d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—';
@@ -1095,7 +1114,7 @@ function TabDashboard({ setActiveTab, canSeeTab }) {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Main dashboard</h1>
+      <h1 className="text-xl font-semibold text-surface-900">{title}</h1>
 
       <div className="space-y-6">
         {/* KPI cards */}
@@ -3918,7 +3937,7 @@ function TrendsDeliveredBarChart({ timeSeries, maxDelivered }) {
 }
 
 function TabTrends() {
-  const [dateFrom, setDateFrom] = useState(() => addCalendarDays(todayYmd(), -30));
+  const [dateFrom, setDateFrom] = useState(() => addCalendarDays(todayYmd(), -29));
   const [dateTo, setDateTo] = useState(() => todayYmd());
   const [route, setRoute] = useState('');
   const [data, setData] = useState(null);
@@ -4075,6 +4094,680 @@ function TabTrends() {
             </div>
           </section>
         </>
+      )}
+    </div>
+  );
+}
+
+function TabDataPresentation() {
+  const [viewTab, setViewTab] = useState('shift_analysis');
+  const [dateFrom, setDateFrom] = useState(() => addCalendarDays(todayYmd(), -29));
+  const [dateTo, setDateTo] = useState(() => todayYmd());
+  const [compareEnabled, setCompareEnabled] = useState(false);
+  const [compareFrom, setCompareFrom] = useState(() => addCalendarDays(todayYmd(), -60));
+  const [compareTo, setCompareTo] = useState(() => addCalendarDays(todayYmd(), -31));
+  const [shiftType, setShiftType] = useState('all');
+  const [contractorId, setContractorId] = useState('');
+  const [observationFilter, setObservationFilter] = useState('all');
+  const [slidesMode, setSlidesMode] = useState('single');
+  const [contractorOptions, setContractorOptions] = useState([]);
+  const [data, setData] = useState(null);
+  const [compareData, setCompareData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [presentationStep, setPresentationStep] = useState(0);
+
+  const load = () => {
+    setLoading(true);
+    setError('');
+    const primaryReq = ccApi.dataPresentation.shiftAnalysis({
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      contractorId: contractorId || undefined,
+      shiftType,
+    });
+    const compareReq = compareEnabled
+      ? ccApi.dataPresentation.shiftAnalysis({
+          dateFrom: compareFrom || undefined,
+          dateTo: compareTo || undefined,
+          contractorId: contractorId || undefined,
+          shiftType,
+        }).catch(() => null)
+      : Promise.resolve(null);
+    Promise.all([
+      primaryReq,
+      compareReq,
+      ccApi.contractorsDetails().catch(() => ({ contractors: [] })),
+    ])
+      .then(([analysis, compareAnalysis, contractorsResp]) => {
+        setData(analysis);
+        setCompareData(compareAnalysis);
+        setContractorOptions(contractorsResp?.contractors || []);
+      })
+      .catch((e) => {
+        setError(e?.message || 'Failed to load data presentation');
+        setData(null);
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, [dateFrom, dateTo, contractorId, shiftType, compareEnabled, compareFrom, compareTo]);
+
+  const summary = data?.summary || {};
+  const compareSummary = compareData?.summary || {};
+  const narrative = data?.narrative || {};
+  const contractorPerformance = data?.contractor_performance || [];
+  const topTrucks = data?.top_trucks || [];
+  const topDrivers = data?.top_drivers || [];
+  const routePerformance = data?.route_performance || [];
+  const contractorPresentationPages = data?.contractor_presentation_pages || [];
+  const aiForecastDaily = data?.ai_forecast_daily || [];
+  const dailySeries = Array.isArray(data?.daily_series) ? data.daily_series : [];
+  const dailyShiftSeries = Array.isArray(data?.daily_shift_series) ? data.daily_shift_series : [];
+  const targetReason = data?.target_reason || '';
+  const prediction = data?.predictions || {};
+  const slideDailySeries = dailySeries;
+  const slideShiftTimeline = {
+    dates: dailyShiftSeries.map((d) => d.date),
+    routes: [
+      { route: 'Day shift', points: dailyShiftSeries.map((d) => ({ date: d.date, delivered: Number(d.day_delivered || 0) })) },
+      { route: 'Night shift', points: dailyShiftSeries.map((d) => ({ date: d.date, delivered: Number(d.night_delivered || 0) })) },
+      { route: 'Combined', points: dailyShiftSeries.map((d) => ({ date: d.date, delivered: Number(d.total_delivered || 0) })) },
+    ],
+    summary: {
+      total_completed_deliveries: dailyShiftSeries.reduce((sum, d) => sum + Number(d.total_delivered || 0), 0),
+      routes_count: 3,
+    },
+  };
+
+  useEffect(() => {
+    setPresentationStep(0);
+  }, [dateFrom, dateTo, contractorId, shiftType, observationFilter, compareEnabled, compareFrom, compareTo]);
+
+  const toDisplayText = (value, fallback = '—') => {
+    if (value == null) return fallback;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      const text = String(value).trim();
+      return text || fallback;
+    }
+    if (Array.isArray(value)) {
+      const text = value.map((v) => toDisplayText(v, '')).filter(Boolean).join(' • ');
+      return text || fallback;
+    }
+    if (typeof value === 'object') {
+      const o = value;
+      if (o.trend_analysis != null || o.projected_weekly_loads != null) {
+        const bits = [];
+        if (o.projected_weekly_loads != null) bits.push(`Projected weekly loads: ${o.projected_weekly_loads}.`);
+        if (o.trend_analysis != null) bits.push(String(o.trend_analysis));
+        const joined = bits.join(' ').trim();
+        return joined || fallback;
+      }
+      if (o.approved_reports != null && o.total_loads_delivered != null) {
+        const parts = [
+          `${o.approved_reports} approved reports`,
+          `${o.total_loads_delivered} delivered loads`,
+        ];
+        if (o.avg_daily_deliveries != null) parts.push(`avg daily ${o.avg_daily_deliveries}`);
+        if (o.contractors_covered != null) parts.push(`${o.contractors_covered} contractors`);
+        if (o.trucks_covered != null) parts.push(`${o.trucks_covered} trucks`);
+        if (o.drivers_covered != null) parts.push(`${o.drivers_covered} drivers`);
+        return `${parts.join(', ')}.` || fallback;
+      }
+      if (typeof o.summary === 'string' && o.summary.trim()) return o.summary.trim();
+      if (typeof o.text === 'string' && o.text.trim()) return o.text.trim();
+      try {
+        return JSON.stringify(value);
+      } catch (_) {
+        return fallback;
+      }
+    }
+    return fallback;
+  };
+
+  const renderNarrativeList = (items) => {
+    if (!Array.isArray(items) || items.length === 0) return <p className="text-sm text-surface-500">No generated points yet.</p>;
+    return (
+      <ul className="space-y-2">
+        {items.map((item, idx) => (
+          <li key={`${idx}-${toDisplayText(item, `item-${idx}`)}`} className="text-sm text-surface-700 bg-surface-50 border border-surface-200 rounded-lg px-3 py-2">
+            {toDisplayText(item)}
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
+  const deltaLoads = (summary.total_loads_delivered ?? 0) - (compareSummary.total_loads_delivered ?? 0);
+  const filteredSlidePages = contractorPresentationPages.map((p) => ({
+    ...p,
+    trucks: (p.trucks || []).filter((t) => {
+      if (observationFilter === 'all') return true;
+      const target = Number(t.actual_target || 0);
+      const completed = Number(t.completed_loads || 0);
+      if (observationFilter === 'below_target') return target > 0 && completed < target;
+      if (observationFilter === 'achieved_target') return target > 0 && completed >= target;
+      if (observationFilter === 'no_target') return !target;
+      return true;
+    }),
+  })).filter((p) => p.trucks.length > 0 || observationFilter === 'all');
+  const totalPresentationSlides = 4 + filteredSlidePages.length;
+  const isHaulierSlide = presentationStep >= 3 && presentationStep < 3 + filteredSlidePages.length;
+  const currentHaulier = isHaulierSlide ? filteredSlidePages[presentationStep - 3] : null;
+  const loadingChallengeRows = (narrative.operations_findings || []).slice(0, 3).map((x) => toDisplayText(x, 'No major loading challenge noted.'));
+  const roadChallengeRows = (narrative.contractor_findings || []).slice(0, 3).map((x) => toDisplayText(x, 'No major road challenge noted.'));
+  const unloadingChallengeRows = [
+    toDisplayText(targetReason, 'No major unloading challenge noted.'),
+    ...((narrative.driver_truck_findings || []).slice(0, 2).map((x) => toDisplayText(x, 'No major unloading challenge noted.'))),
+  ].slice(0, 3);
+  const summaryRows = [0, 1, 2].map((i) => ({
+    loading: loadingChallengeRows[i] || 'No significant issue recorded.',
+    road: roadChallengeRows[i] || 'No significant issue recorded.',
+    unloading: unloadingChallengeRows[i] || 'No significant issue recorded.',
+  }));
+  const buildPolylinePoints = (arr, accessor, width, height, pad) => {
+    if (!arr.length) return '';
+    const maxY = Math.max(1, ...arr.map((x, i) => Number(accessor(x, i, arr) || 0)));
+    return arr.map((d, i) => {
+      const x = pad + (i * (width - pad * 2)) / Math.max(1, arr.length - 1);
+      const y = height - pad - ((Number(accessor(d, i, arr) || 0) / maxY) * (height - pad * 2));
+      return `${x},${y}`;
+    }).join(' ');
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-semibold text-surface-900">Data presentation</h2>
+
+      <div className="inline-flex rounded-xl border border-surface-200 bg-white p-1 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setViewTab('shift_analysis')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+            viewTab === 'shift_analysis' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'
+          }`}
+        >
+          Shift Analysis
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewTab('present_mode')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+            viewTab === 'present_mode' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'
+          }`}
+        >
+          Present mode
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewTab('contractor_slides')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+            viewTab === 'contractor_slides' ? 'bg-brand-600 text-white' : 'text-surface-700 hover:bg-surface-100'
+          }`}
+        >
+          Contractor slides
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-surface-200 bg-white p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">From</label>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">To</label>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+          </div>
+          <div className="min-w-[240px]">
+            <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Observation filter (contractor)</label>
+            <select
+              value={contractorId}
+              onChange={(e) => setContractorId(e.target.value)}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            >
+              <option value="">All contractors</option>
+              {contractorOptions.map((c, idx) => (
+                <option key={`${c.contractorId || c.id || 'contractor'}-${idx}`} value={c.contractorId || c.id}>
+                  {c.contractorName || c.name || 'Unnamed contractor'}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Shift time</label>
+            <select value={shiftType} onChange={(e) => setShiftType(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <option value="all">All shifts</option>
+              <option value="day">Day shift</option>
+              <option value="night">Night shift</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Compare period</label>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={compareEnabled} onChange={(e) => setCompareEnabled(e.target.checked)} />
+              <span className="text-sm text-surface-700">Enable</span>
+            </div>
+          </div>
+          {compareEnabled && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Compare from</label>
+                <input type="date" value={compareFrom} onChange={(e) => setCompareFrom(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Compare to</label>
+                <input type="date" value={compareTo} onChange={(e) => setCompareTo(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              </div>
+            </>
+          )}
+          <button type="button" onClick={load} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
+            Refresh analysis
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 text-red-800 px-4 py-3 text-sm flex justify-between items-center">
+          <span>{error}</span>
+          <button type="button" className="font-semibold hover:underline" onClick={() => setError('')}>Dismiss</button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="rounded-2xl border border-surface-200 bg-white p-10 text-center text-surface-500">Loading shift analysis…</div>
+      ) : viewTab === 'shift_analysis' ? (
+        <>
+          {compareEnabled && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+              Comparison active: current period vs selected period. Loads delta: <strong>{deltaLoads >= 0 ? `+${deltaLoads}` : deltaLoads}</strong>.
+            </div>
+          )}
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+            {[
+              { label: 'Approved reports', value: summary.approved_reports ?? 0 },
+              { label: 'Delivered loads', value: summary.total_loads_delivered ?? 0 },
+              { label: 'Avg daily deliveries', value: summary.avg_daily_deliveries ?? 0 },
+              { label: 'Contractors covered', value: summary.contractors_covered ?? 0 },
+              { label: 'Trucks covered', value: summary.trucks_covered ?? 0 },
+              { label: 'Drivers covered', value: summary.drivers_covered ?? 0 },
+            ].map((k) => (
+              <div key={k.label} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">{k.label}</p>
+                <p className="mt-1 text-2xl font-bold text-surface-900 tabular-nums">{k.value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4">
+            <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+              <h3 className="text-lg font-semibold text-surface-900">Executive overview</h3>
+              <p className="mt-2 text-sm text-surface-700">{toDisplayText(narrative.overview, 'No overview generated yet.')}</p>
+              <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+                <p className="text-xs uppercase tracking-wider font-semibold text-indigo-700">Prediction</p>
+                <p className="text-sm text-indigo-900 mt-1">{toDisplayText(narrative.prediction, 'Prediction pending.')}</p>
+                <p className="text-xs text-indigo-800 mt-2">
+                  Projected weekly loads: <strong>{prediction.projected_weekly_loads ?? 0}</strong> · Trend vs prior week: <strong>{prediction.trend_percent_vs_prior_week ?? 0}%</strong>
+                </p>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+              <h3 className="text-lg font-semibold text-surface-900">Operations findings</h3>
+              <div className="mt-3">{renderNarrativeList(narrative.operations_findings)}</div>
+            </section>
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-4">
+            <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm lg:col-span-2">
+              <h3 className="text-lg font-semibold text-surface-900">Contractor performance observations</h3>
+              <div className="mt-3 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-surface-500 border-b border-surface-200">
+                      <th className="py-2 pr-3">Contractor</th>
+                      <th className="py-2 pr-3">Delivered loads</th>
+                      <th className="py-2 pr-3">Rows</th>
+                      <th className="py-2 pr-3">Trucks</th>
+                      <th className="py-2">Drivers</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contractorPerformance.slice(0, 12).map((c) => (
+                      <tr key={`${c.contractor_id || c.contractor_name}`} className="border-b border-surface-100">
+                        <td className="py-2 pr-3 text-surface-800">{c.contractor_name}</td>
+                        <td className="py-2 pr-3 tabular-nums font-medium">{c.loads_delivered}</td>
+                        <td className="py-2 pr-3 tabular-nums">{c.report_rows}</td>
+                        <td className="py-2 pr-3 tabular-nums">{c.trucks_involved}</td>
+                        <td className="py-2 tabular-nums">{c.drivers_involved}</td>
+                      </tr>
+                    ))}
+                    {contractorPerformance.length === 0 && (
+                      <tr><td className="py-3 text-surface-500" colSpan={5}>No contractor performance records for selected filters.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-4">{renderNarrativeList(narrative.contractor_findings)}</div>
+            </section>
+
+            <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+              <h3 className="text-lg font-semibold text-surface-900">Drivers & trucks intelligence</h3>
+              <p className="text-xs uppercase tracking-wider font-semibold text-surface-500 mt-3">Top trucks</p>
+              <ul className="mt-2 space-y-1.5">
+                {topTrucks.slice(0, 6).map((t) => (
+                  <li key={t.truck_registration} className="text-sm text-surface-700 flex justify-between gap-2">
+                    <span className="truncate">{t.truck_registration}</span>
+                    <span className="tabular-nums font-semibold">{t.loads_delivered}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs uppercase tracking-wider font-semibold text-surface-500 mt-4">Top drivers</p>
+              <ul className="mt-2 space-y-1.5">
+                {topDrivers.slice(0, 6).map((d) => (
+                  <li key={d.driver_name} className="text-sm text-surface-700 flex justify-between gap-2">
+                    <span className="truncate">{d.driver_name}</span>
+                    <span className="tabular-nums font-semibold">{d.loads_delivered}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-4">{renderNarrativeList(narrative.driver_truck_findings)}</div>
+            </section>
+          </div>
+
+          <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <h3 className="text-lg font-semibold text-surface-900">Advanced recommendations</h3>
+            <div className="mt-3">{renderNarrativeList(narrative.recommendations)}</div>
+          </section>
+        </>
+      ) : viewTab === 'present_mode' ? (
+        <div className="space-y-4">
+          <section className="rounded-2xl border border-surface-200 bg-surface-900 text-white p-6 shadow-sm">
+            <h3 className="text-2xl font-semibold tracking-wide">Operations performance brief</h3>
+            <p className="mt-2 text-surface-200 max-w-4xl">{toDisplayText(narrative.overview, 'Overview is being prepared from the selected data.')}</p>
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="rounded-lg bg-white/10 p-3"><p className="text-xs uppercase text-surface-300">Delivered loads</p><p className="text-2xl font-bold tabular-nums">{summary.total_loads_delivered ?? 0}</p></div>
+              <div className="rounded-lg bg-white/10 p-3"><p className="text-xs uppercase text-surface-300">Approved reports</p><p className="text-2xl font-bold tabular-nums">{summary.approved_reports ?? 0}</p></div>
+              <div className="rounded-lg bg-white/10 p-3"><p className="text-xs uppercase text-surface-300">Weekly projection</p><p className="text-2xl font-bold tabular-nums">{prediction.projected_weekly_loads ?? 0}</p></div>
+              <div className="rounded-lg bg-white/10 p-3"><p className="text-xs uppercase text-surface-300">Trend</p><p className="text-2xl font-bold tabular-nums">{prediction.trend_percent_vs_prior_week ?? 0}%</p></div>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <h3 className="text-lg font-semibold text-surface-900">Why target was not achieved</h3>
+            <p className="mt-2 text-sm text-surface-700">{toDisplayText(targetReason, 'No target-gap explanation available yet. Configure route target regulations in Rector and refresh analysis.')}</p>
+          </section>
+
+          <section className="rounded-2xl border border-surface-200 bg-white p-5 shadow-sm">
+            <h3 className="text-lg font-semibold text-surface-900">Route target performance</h3>
+            <div className="mt-3 overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-surface-500 border-b border-surface-200">
+                    <th className="py-2 pr-3">Route</th>
+                    <th className="py-2 pr-3">Loads delivered</th>
+                    <th className="py-2 pr-3">Trucks</th>
+                    <th className="py-2 pr-3">Deliveries / truck</th>
+                    <th className="py-2 pr-3">Target / truck</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {routePerformance.slice(0, 16).map((r) => (
+                    <tr key={r.route_name} className="border-b border-surface-100">
+                      <td className="py-2 pr-3 text-surface-800">{r.route_name}</td>
+                      <td className="py-2 pr-3 tabular-nums">{r.loads_delivered}</td>
+                      <td className="py-2 pr-3 tabular-nums">{r.trucks_involved}</td>
+                      <td className="py-2 pr-3 tabular-nums">{r.deliveries_per_truck}</td>
+                      <td className="py-2 pr-3 tabular-nums">{r.deliveries_per_truck_target ?? '—'}</td>
+                      <td className="py-2">
+                        {r.target_achieved == null ? <span className="text-surface-500">No target</span> : (
+                          <span className={r.target_achieved ? 'text-emerald-700 font-medium' : 'text-red-700 font-medium'}>
+                            {r.target_achieved ? 'Achieved' : 'Below target'}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {routePerformance.length === 0 && (
+                    <tr><td colSpan={6} className="py-3 text-surface-500">No route performance data for selected filters.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <section className="rounded-2xl border border-surface-200 bg-gradient-to-br from-slate-900 to-slate-800 text-white p-6 shadow-sm space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <h3 className="text-xl font-semibold tracking-wide">Contractor truck presentation slides</h3>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white/10 border border-white/20">
+                Slide {Math.min(presentationStep + 1, totalPresentationSlides)} / {totalPresentationSlides}
+              </span>
+              <select value={observationFilter} onChange={(e) => setObservationFilter(e.target.value)} className="rounded-lg border border-white/25 bg-white/10 px-3 py-1.5 text-sm text-white">
+                <option value="all" className="text-black">All observations</option>
+                <option value="below_target" className="text-black">Below target only</option>
+                <option value="achieved_target" className="text-black">Achieved target only</option>
+                <option value="no_target" className="text-black">No target set</option>
+              </select>
+              {isHaulierSlide && (
+                <select value={slidesMode} onChange={(e) => setSlidesMode(e.target.value)} className="rounded-lg border border-white/25 bg-white/10 px-3 py-1.5 text-sm text-white">
+                  <option value="single" className="text-black">One haulier</option>
+                  <option value="all" className="text-black">All hauliers</option>
+                </select>
+              )}
+            </div>
+          </div>
+
+          {filteredSlidePages.length === 0 ? (
+            <p className="text-surface-200">No contractors/trucks match selected filters.</p>
+          ) : presentationStep === 0 ? (
+            <div className="space-y-4 rounded-xl border border-white/20 bg-black/20 p-4">
+              <div className="flex items-end justify-between gap-3 flex-wrap">
+                <h4 className="text-4xl font-semibold tracking-wider">OVERALL PERFORMANCE SUMMARY</h4>
+                <div className="grid grid-cols-2 gap-2 text-right">
+                  <div className="rounded-md bg-white/10 px-2 py-1"><span className="text-[10px] uppercase text-slate-300">Delivered</span><p className="text-lg font-bold tabular-nums">{summary.total_loads_delivered ?? 0}</p></div>
+                  <div className="rounded-md bg-white/10 px-2 py-1"><span className="text-[10px] uppercase text-slate-300">Trend</span><p className="text-lg font-bold tabular-nums">{prediction.trend_percent_vs_prior_week ?? 0}%</p></div>
+                </div>
+              </div>
+              <p className="text-slate-200 text-sm max-w-5xl">{toDisplayText(narrative.overview, 'AI summary will appear here based on filtered single-ops reports.')}</p>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-300">Overall performance across shift reports</p>
+                  <p className="mt-2 text-sm text-slate-100">
+                    {summary.approved_reports ?? 0} approved shift report(s) analyzed, covering {summary.contractors_covered ?? 0} contractor(s), {summary.trucks_covered ?? 0} truck(s), and {summary.drivers_covered ?? 0} driver(s).
+                  </p>
+                  <p className="mt-2 text-sm text-slate-100">
+                    Total loads delivered: <strong>{summary.total_loads_delivered ?? 0}</strong>
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-300">Comparison from selected period</p>
+                  <p className="mt-2 text-sm text-slate-100">
+                    Current vs comparison delivered loads delta: <strong>{deltaLoads >= 0 ? `+${deltaLoads}` : deltaLoads}</strong>
+                  </p>
+                  <p className="mt-2 text-sm text-slate-100">
+                    Weekly trend movement: <strong>{prediction.trend_percent_vs_prior_week ?? 0}%</strong>
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-300 mb-2">Key highlights</p>
+                  <ul className="space-y-2 text-sm text-slate-100">
+                    {(narrative.operations_findings || []).slice(0, 4).map((item, idx) => (
+                      <li key={`khi-${idx}`}>- {toDisplayText(item)}</li>
+                    ))}
+                    {(!Array.isArray(narrative.operations_findings) || narrative.operations_findings.length === 0) && (
+                      <li>- No key highlights available for this filter range.</li>
+                    )}
+                  </ul>
+                </div>
+                <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-300 mb-2">Poor performers (trucks/contractors)</p>
+                  <ul className="space-y-2 text-sm text-slate-100">
+                    {(narrative.driver_truck_findings || []).slice(0, 2).map((item, idx) => (
+                      <li key={`poor-truck-${idx}`}>- {toDisplayText(item)}</li>
+                    ))}
+                    {(narrative.contractor_findings || []).slice(0, 2).map((item, idx) => (
+                      <li key={`poor-contractor-${idx}`}>- {toDisplayText(item)}</li>
+                    ))}
+                    {((!Array.isArray(narrative.driver_truck_findings) || narrative.driver_truck_findings.length === 0) &&
+                      (!Array.isArray(narrative.contractor_findings) || narrative.contractor_findings.length === 0)) && (
+                      <li>- No poor performer insights generated yet.</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          ) : presentationStep === 1 ? (
+            <div className="space-y-4 rounded-xl border border-white/20 bg-black/20 p-5">
+              <h4 className="text-2xl font-bold tracking-wide">Monthly performance (30-day period)</h4>
+              <p className="text-slate-200 text-sm">Day shift, night shift, and combined delivered loads in one view.</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-lg border border-white/15 bg-slate-900/70 p-3"><p className="text-[11px] uppercase text-slate-300">Delivered loads</p><p className="text-xl font-bold tabular-nums">{summary.total_loads_delivered ?? 0}</p></div>
+                <div className="rounded-lg border border-white/15 bg-slate-900/70 p-3"><p className="text-[11px] uppercase text-slate-300">Avg daily</p><p className="text-xl font-bold tabular-nums">{summary.avg_daily_deliveries ?? 0}</p></div>
+                <div className="rounded-lg border border-white/15 bg-slate-900/70 p-3"><p className="text-[11px] uppercase text-slate-300">Projected weekly</p><p className="text-xl font-bold tabular-nums">{prediction.projected_weekly_loads ?? 0}</p></div>
+                <div className="rounded-lg border border-white/15 bg-slate-900/70 p-3"><p className="text-[11px] uppercase text-slate-300">Trend</p><p className="text-xl font-bold tabular-nums">{prediction.trend_percent_vs_prior_week ?? 0}%</p></div>
+              </div>
+              <div className="rounded-xl border border-white/15 bg-slate-900/55 p-4">
+                <p className="text-xs uppercase tracking-wider text-slate-300 mb-3">Monthly performance (day vs night vs combined)</p>
+                <div className="rounded-xl border border-slate-700/60 bg-slate-950/70 p-3">
+                  <DeliveryTimelineChart
+                    timeline={slideShiftTimeline}
+                    loading={false}
+                    isDark
+                  />
+                </div>
+              </div>
+            </div>
+          ) : presentationStep === 2 ? (
+            <div className="space-y-4 rounded-xl border border-white/20 bg-black/20 p-5">
+              <h4 className="text-2xl font-bold tracking-wide">AI forecast graph (slide view)</h4>
+              <p className="text-slate-200 text-sm">Forecast projection displayed as a dedicated slide for presentation flow.</p>
+              <div className="rounded-xl border border-white/15 bg-slate-900/55 p-4">
+                <p className="text-xs uppercase tracking-wider text-slate-300 mb-3">AI forecast</p>
+                <div className="rounded-xl border border-violet-800/45 bg-violet-950/20 p-3">
+                  <DeliveryForecastChart
+                    deliveryTimeline={{
+                      dates: slideDailySeries.map((d) => d.date),
+                      routes: [{ route: 'Delivered loads', points: slideDailySeries.map((d) => ({ date: d.date, delivered: d.delivered })) }],
+                      summary: { total_completed_deliveries: summary.total_loads_delivered ?? 0, routes_count: 1 },
+                    }}
+                    shiftReports={(slideDailySeries || []).map((d) => ({ status: 'approved', approved_at: d.date, total_loads_delivered: d.delivered, route: 'Delivered loads' }))}
+                    loading={false}
+                    isDark
+                  />
+                </div>
+              </div>
+              {Array.isArray(aiForecastDaily) && aiForecastDaily.length > 0 && (
+                <p className="text-xs text-slate-300">
+                  AI next 7 days: {aiForecastDaily.map((d) => `${d.date}: ${d.delivered_loads ?? 0}`).join(' | ')}
+                </p>
+              )}
+            </div>
+          ) : isHaulierSlide ? (
+            slidesMode === 'all' ? (
+              <div className="space-y-3">
+                {filteredSlidePages.map((page) => (
+                  <div key={`all-${page.contractor_id || page.contractor_name}`} className="rounded-xl border border-white/20 bg-black/20 p-4">
+                    <h4 className="text-lg font-semibold mb-2">{page.contractor_name}</h4>
+                    <div className="overflow-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-black/35">
+                          <tr className="text-left text-slate-200">
+                            <th className="py-2 px-3">Date</th>
+                            <th className="py-2 px-3">Shift</th>
+                            <th className="py-2 px-3">Truck</th>
+                            <th className="py-2 px-3">Completed loads</th>
+                            <th className="py-2 px-3">Actual target</th>
+                            <th className="py-2 px-3">AI remarks</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(page.trucks || []).map((t, idx) => (
+                            <tr key={`${page.contractor_name}-${t.truck_registration}-${t.shift_date || 'na'}-${t.shift_label || 'na'}-${idx}`} className="border-t border-white/10">
+                              <td className="py-2 px-3 tabular-nums">{t.shift_date || '—'}</td>
+                              <td className="py-2 px-3">{t.shift_label || '—'}</td>
+                              <td className="py-2 px-3">{t.truck_registration}</td>
+                              <td className="py-2 px-3 tabular-nums">{t.completed_loads}</td>
+                              <td className="py-2 px-3 tabular-nums">{t.actual_target || '—'}</td>
+                              <td className="py-2 px-3">{t.ai_remarks}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="rounded-xl border border-white/15 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-300">Haulier breakdown</p>
+                  <h4 className="text-2xl font-bold mt-1">{currentHaulier?.contractor_name || '—'}</h4>
+                </div>
+                <div className="rounded-xl border border-white/15 bg-white/5 overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-black/35">
+                      <tr className="text-left text-slate-200">
+                        <th className="py-3 px-3">Date</th>
+                        <th className="py-3 px-3">Shift</th>
+                        <th className="py-3 px-3">Truck</th>
+                        <th className="py-3 px-3">Completed loads</th>
+                        <th className="py-3 px-3">Actual target</th>
+                        <th className="py-3 px-3">AI remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(currentHaulier?.trucks || []).map((t, idx) => (
+                        <tr key={`${currentHaulier?.contractor_name}-${t.truck_registration}-${t.shift_date || 'na'}-${t.shift_label || 'na'}-${idx}`} className="border-t border-white/10">
+                          <td className="py-2.5 px-3 tabular-nums text-slate-100">{t.shift_date || '—'}</td>
+                          <td className="py-2.5 px-3 text-slate-100">{t.shift_label || '—'}</td>
+                          <td className="py-2.5 px-3 font-medium text-white">{t.truck_registration}</td>
+                          <td className="py-2.5 px-3 tabular-nums text-slate-100">{t.completed_loads}</td>
+                          <td className="py-2.5 px-3 tabular-nums text-slate-100">{t.actual_target || '—'}</td>
+                          <td className="py-2.5 px-3 text-slate-200">{t.ai_remarks}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )
+          ) : (
+            <div className="space-y-3 rounded-xl border border-white/20 bg-black/20 p-4">
+              <h4 className="text-2xl font-bold">Conclusion and final remarks</h4>
+              <p className="text-slate-200">{toDisplayText(narrative.prediction, 'AI conclusion will appear here.')}</p>
+              <p className="text-slate-200">{toDisplayText(targetReason, 'Target-achievement reason not available.')}</p>
+              <div>{renderNarrativeList(narrative.recommendations)}</div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setPresentationStep((s) => Math.max(0, s - 1))}
+              disabled={presentationStep <= 0}
+              className="rounded-lg border border-white/25 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20 disabled:opacity-40"
+            >
+              Previous slide
+            </button>
+            <button
+              type="button"
+              onClick={() => setPresentationStep((s) => Math.min(totalPresentationSlides - 1, s + 1))}
+              disabled={presentationStep >= totalPresentationSlides - 1}
+              className="rounded-lg border border-white/25 bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20 disabled:opacity-40"
+            >
+              Next slide
+            </button>
+          </div>
+        </section>
       )}
     </div>
   );
@@ -5448,6 +6141,9 @@ function ShiftReportForm({
   const [nonComplianceCalls, setNonComplianceCalls] = useState(() => (Array.isArray(initialData?.non_compliance_calls) && initialData.non_compliance_calls.length) ? initialData.non_compliance_calls : [emptyNonComp]);
   const [investigations, setInvestigations] = useState(() => (Array.isArray(initialData?.investigations) && initialData.investigations.length) ? initialData.investigations : [emptyInv]);
   const [commsLog, setCommsLog] = useState(() => (Array.isArray(initialData?.communication_log) && initialData.communication_log.length) ? initialData.communication_log : [emptyComm]);
+  const [exportingFromSystem, setExportingFromSystem] = useState(false);
+  const [exportFromSystemMessage, setExportFromSystemMessage] = useState('');
+  const [exportFromSystemError, setExportFromSystemError] = useState('');
   const [trucksList, setTrucksList] = useState([]);
   const [driversList, setDriversList] = useState([]);
   const [routeList, setRouteList] = useState([]);
@@ -5599,6 +6295,91 @@ function ShiftReportForm({
   const updateRow = (setter, index, field, value) => setter((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
   const removeRow = (setter, index) => setter((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
   const todayDate = () => todayYmd();
+
+  // "Export from system" - pulls comm logs and non-compliance entries created during this controller's shift
+  // on the Fleet & driver compliance page. Scoped to current shift_date+shift_start..shift_end and current user.
+  const exportFromSystem = async (target /* 'communication_log' | 'non_compliance' | 'all' */) => {
+    setExportFromSystemError('');
+    setExportFromSystemMessage('');
+    if (!formFields.shift_date || !formFields.shift_start) {
+      setExportFromSystemError('Set the shift date and shift start time first.');
+      return;
+    }
+    const startedAt = new Date(`${formFields.shift_date}T${formFields.shift_start}:00`);
+    if (Number.isNaN(startedAt.getTime())) {
+      setExportFromSystemError('Invalid shift date / start time.');
+      return;
+    }
+    let endedAt = new Date();
+    if (formFields.shift_end) {
+      const tentative = new Date(`${formFields.shift_date}T${formFields.shift_end}:00`);
+      if (!Number.isNaN(tentative.getTime())) {
+        // If shift_end < shift_start, treat as next day
+        if (tentative.getTime() <= startedAt.getTime()) {
+          tentative.setDate(tentative.getDate() + 1);
+        }
+        endedAt = tentative;
+      }
+    }
+    setExportingFromSystem(true);
+    try {
+      const data = await ccApi.complianceInspections.shiftExport({
+        shift_started_at: startedAt.toISOString(),
+        shift_ended_at: endedAt.toISOString(),
+      });
+      let added = { comms: 0, nc: 0 };
+      if (target === 'communication_log' || target === 'all') {
+        const incoming = (data.communication_log || []).map((c) => ({
+          time: c.time || '',
+          recipient: c.recipient || '',
+          subject: c.subject || '',
+          method: c.method || '',
+          action_required: c.action_required || '',
+        }));
+        if (incoming.length) {
+          setCommsLog((prev) => {
+            const existingKeys = new Set(prev.map((p) => `${(p.time || '').trim()}|${(p.recipient || '').trim().toLowerCase()}|${(p.subject || '').trim().toLowerCase()}`));
+            const dedup = incoming.filter((p) => !existingKeys.has(`${(p.time || '').trim()}|${(p.recipient || '').trim().toLowerCase()}|${(p.subject || '').trim().toLowerCase()}`));
+            const blanksRemoved = prev.filter((p) => p.time || p.recipient || p.subject || p.method || p.action_required);
+            added.comms = dedup.length;
+            return [...blanksRemoved, ...dedup, ...(blanksRemoved.length === 0 && dedup.length === 0 ? [emptyComm] : [])];
+          });
+        }
+      }
+      if (target === 'non_compliance' || target === 'all') {
+        const incoming = (data.non_compliance || []).map((n) => ({
+          driver_name: n.driver_name || '',
+          truck_reg: n.truck_reg || '',
+          rule_violated: n.rule_violated || '',
+          time_of_call: n.time_of_call || '',
+          summary: n.summary || '',
+          driver_response: n.driver_response || '',
+        }));
+        if (incoming.length) {
+          setNonComplianceCalls((prev) => {
+            const key = (p) => `${(p.driver_name || '').toLowerCase().trim()}|${(p.truck_reg || '').toLowerCase().trim()}|${(p.rule_violated || '').toLowerCase().trim()}|${(p.summary || '').toLowerCase().trim()}`;
+            const existingKeys = new Set(prev.map(key));
+            const dedup = incoming.filter((p) => !existingKeys.has(key(p)));
+            const blanksRemoved = prev.filter((p) => p.driver_name || p.truck_reg || p.rule_violated || p.summary || p.driver_response || p.time_of_call);
+            added.nc = dedup.length;
+            return [...blanksRemoved, ...dedup, ...(blanksRemoved.length === 0 && dedup.length === 0 ? [emptyNonComp] : [])];
+          });
+        }
+      }
+      const parts = [];
+      if (added.comms) parts.push(`${added.comms} communication${added.comms === 1 ? '' : 's'}`);
+      if (added.nc) parts.push(`${added.nc} non-compliance entr${added.nc === 1 ? 'y' : 'ies'}`);
+      if (parts.length === 0) {
+        setExportFromSystemMessage('No new entries found for this shift on Fleet & driver compliance.');
+      } else {
+        setExportFromSystemMessage(`Exported ${parts.join(' and ')} from Fleet & driver compliance for your shift.`);
+      }
+    } catch (e) {
+      setExportFromSystemError(e?.message || 'Export from system failed');
+    } finally {
+      setExportingFromSystem(false);
+    }
+  };
   const selectedController2 =
     controller2Options.find((u) => {
       const selectedEmail = String(formFields.controller2_email || '').trim().toLowerCase();
@@ -6212,7 +6993,25 @@ function ShiftReportForm({
               <button type="button" onClick={() => removeRow(setNonComplianceCalls, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
             </div>
           ))}
-          <button type="button" onClick={() => addRow(setNonComplianceCalls, { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium mb-4">+ Add non-compliance call</button>
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <button type="button" onClick={() => addRow(setNonComplianceCalls, { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add non-compliance call</button>
+            <button
+              type="button"
+              onClick={() => exportFromSystem('non_compliance')}
+              disabled={exportingFromSystem || !formFields.shift_date || !formFields.shift_start}
+              title={(!formFields.shift_date || !formFields.shift_start) ? 'Set the shift date and start time to use this' : 'Pull non-compliance entries created during your shift on Fleet & driver compliance'}
+              className="inline-flex items-center gap-1.5 text-sm text-amber-700 hover:text-amber-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+              {exportingFromSystem ? 'Exporting…' : 'Export from system'}
+            </button>
+          </div>
+          {exportFromSystemMessage && (
+            <p className="text-xs text-emerald-700 mb-3">{exportFromSystemMessage}</p>
+          )}
+          {exportFromSystemError && (
+            <p className="text-xs text-amber-700 mb-3">{exportFromSystemError}</p>
+          )}
 
           <p className="text-xs font-semibold text-surface-600 mb-2 mt-6">Investigations (findings & action taken)</p>
           {investigations.map((row, i) => (
@@ -6245,7 +7044,19 @@ function ShiftReportForm({
               <button type="button" onClick={() => removeRow(setCommsLog, i)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
             </div>
           ))}
-          <button type="button" onClick={() => addRow(setCommsLog, { time: '', recipient: '', subject: '', method: '', action_required: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add communication</button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => addRow(setCommsLog, { time: '', recipient: '', subject: '', method: '', action_required: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add communication</button>
+            <button
+              type="button"
+              onClick={() => exportFromSystem('communication_log')}
+              disabled={exportingFromSystem || !formFields.shift_date || !formFields.shift_start}
+              title={(!formFields.shift_date || !formFields.shift_start) ? 'Set the shift date and start time to use this' : 'Pull communication logs you recorded during your shift on Fleet & driver compliance'}
+              className="inline-flex items-center gap-1.5 text-sm text-blue-700 hover:text-blue-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+              {exportingFromSystem ? 'Exporting…' : 'Export from system'}
+            </button>
+          </div>
         </SectionBlock>
 
         {/* 6. Handover */}
@@ -6939,9 +7750,18 @@ function lastInspectedForDriver(inspections, driverId) {
 function TabCompliance({ user, inspections = [], setInspections }) {
   const [trucks, setTrucks] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [contractorsList, setContractorsList] = useState([]);
+  const [routesList, setRoutesList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [truckSearch, setTruckSearch] = useState('');
   const [selectedTruck, setSelectedTruck] = useState(null);
+  const [selectedContractorId, setSelectedContractorId] = useState('');
+  const [selectedRouteId, setSelectedRouteId] = useState('');
+  const [shiftStartedAt, setShiftStartedAt] = useState(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString().slice(0, 16);
+  });
   const [inspectionStarted, setInspectionStarted] = useState(false);
   const [truckSectionComplete, setTruckSectionComplete] = useState(false);
   const [driverSearch, setDriverSearch] = useState('');
@@ -6958,6 +7778,20 @@ function TabCompliance({ user, inspections = [], setInspections }) {
 
   const [driverItems, setDriverItems] = useState(() => DRIVER_ROAD_SAFETY_ITEMS.map((item) => ({ id: item.id, status: '', comment: '' })));
 
+  // Post-save inspection panel state
+  const [savedInspection, setSavedInspection] = useState(null); // inspection record after save
+  const [postCommLogs, setPostCommLogs] = useState([]);
+  const [postNonCompliance, setPostNonCompliance] = useState([]);
+  const [postLoadingExtras, setPostLoadingExtras] = useState(false);
+  const [commForm, setCommForm] = useState({ time: '', recipient: '', subject: '', method: '', action_required: '' });
+  const [savingComm, setSavingComm] = useState(false);
+  const [nonCompForm, setNonCompForm] = useState({ driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' });
+  const [savingNonComp, setSavingNonComp] = useState(false);
+  const [graceDays, setGraceDays] = useState(7);
+  const [graceReason, setGraceReason] = useState('');
+  const [grantingGrace, setGrantingGrace] = useState(false);
+  const [resolvingGrace, setResolvingGrace] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -6971,14 +7805,34 @@ function TabCompliance({ user, inspections = [], setInspections }) {
         if (!cancelled) setDriversError(err?.message || 'Failed to load drivers');
         return [];
       });
-    Promise.all([trucksPromise, driversPromise]).then(([truckList, driverList]) => {
+    const contractorsPromise = contractorApi.contractors.list().then((r) => r.contractors || []).catch(() => []);
+    const routesPromise = contractorApi.routes.list().then((r) => r.routes || []).catch(() => []);
+    Promise.all([trucksPromise, driversPromise, contractorsPromise, routesPromise]).then(([truckList, driverList, contrList, routeListR]) => {
       if (!cancelled) {
         setTrucks(truckList);
         setDrivers(driverList);
+        setContractorsList(contrList);
+        setRoutesList(routeListR);
       }
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [driversRetry]);
+
+  // Auto-pick contractor when truck is selected
+  useEffect(() => {
+    if (!selectedTruck) return;
+    const tc = selectedTruck.contractor_id || selectedTruck.contractorId;
+    if (tc) {
+      setSelectedContractorId(String(tc));
+      return;
+    }
+    // try to match by name on existing contractors list
+    const tName = (selectedTruck.contractor_name || selectedTruck.main_contractor || '').toLowerCase().trim();
+    if (tName) {
+      const found = contractorsList.find((c) => (c.name || '').toLowerCase().trim() === tName);
+      if (found) setSelectedContractorId(String(found.id));
+    }
+  }, [selectedTruck, contractorsList]);
 
   const filteredTrucks = trucks.filter((t) => !truckSearch.trim() || (t.registration || '').toLowerCase().includes(truckSearch.toLowerCase().trim()));
   const filteredDrivers = drivers.filter((d) => !driverSearch.trim() || [d.full_name, d.id_number, d.license_number].some((v) => (v || '').toLowerCase().includes(driverSearch.toLowerCase().trim())));
@@ -7053,6 +7907,11 @@ function TabCompliance({ user, inspections = [], setInspections }) {
       recommendSuspendDriver,
       inspectedAt,
     };
+    const shiftIso = (() => {
+      if (!shiftStartedAt) return null;
+      const d = new Date(shiftStartedAt);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    })();
     ccApi.complianceInspections.create({
       truckId: selectedTruck.id,
       driverId: selectedDriver.id,
@@ -7070,12 +7929,26 @@ function TabCompliance({ user, inspections = [], setInspections }) {
       driverItems: record.driverItems,
       recommendSuspendTruck,
       recommendSuspendDriver,
+      contractor_id: selectedContractorId || null,
+      route_id: selectedRouteId || null,
+      shift_started_at: shiftIso,
     })
       .then((res) => {
-        setInspections((prev) => [...prev, { ...record, responseDueAt: res.inspection?.responseDueAt }]);
-        setSubmitSuccess('Inspection saved. The contractor must respond within 8 hours or the truck/driver will be automatically suspended; they can then submit an appeal under Suspensions and appeals on the Contractor page.');
-        resetInspection();
-        setTimeout(() => setSubmitSuccess(''), 8000);
+        const insp = res.inspection;
+        setInspections((prev) => [...prev, { ...record, ...insp, responseDueAt: insp?.responseDueAt }]);
+        setSubmitSuccess('Inspection saved. You can now log communications, add non-compliance entries, and award a grace period below. The contractor must respond within 8 hours or the truck/driver will be automatically suspended.');
+        setSavedInspection(insp || null);
+        setPostCommLogs([]);
+        setPostNonCompliance([]);
+        setNonCompForm({
+          driver_name: record.driverName || '',
+          truck_reg: record.truckRegistration || '',
+          rule_violated: '',
+          time_of_call: '',
+          summary: '',
+          driver_response: '',
+        });
+        setTimeout(() => setSubmitSuccess(''), 12000);
       })
       .catch((err) => {
         setSubmitError(err?.message || 'Failed to save inspection. Added to local list only.');
@@ -7086,6 +7959,8 @@ function TabCompliance({ user, inspections = [], setInspections }) {
 
   const resetInspection = () => {
     setSelectedTruck(null);
+    setSelectedContractorId('');
+    setSelectedRouteId('');
     setInspectionStarted(false);
     setTruckSectionComplete(false);
     setSelectedDriver(null);
@@ -7096,6 +7971,168 @@ function TabCompliance({ user, inspections = [], setInspections }) {
     setCameraVisibility('');
     setCameraVisibilityComment('');
     setDriverItems(DRIVER_ROAD_SAFETY_ITEMS.map((item) => ({ id: item.id, status: '', comment: '' })));
+    setSavedInspection(null);
+    setPostCommLogs([]);
+    setPostNonCompliance([]);
+    setCommForm({ time: '', recipient: '', subject: '', method: '', action_required: '' });
+    setNonCompForm({ driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' });
+    setGraceDays(7);
+    setGraceReason('');
+  };
+
+  const startInspection = async () => {
+    if (!selectedTruck) return;
+    setSubmitError('');
+    if (!selectedContractorId) {
+      setSubmitError('Please select the contractor before starting the inspection.');
+      return;
+    }
+    setInspectionStarted(true);
+  };
+
+  const reloadPostExtras = async () => {
+    if (!savedInspection?.id) return;
+    setPostLoadingExtras(true);
+    try {
+      const [commsRes, ncRes] = await Promise.all([
+        ccApi.complianceInspections.listCommLogs(savedInspection.id).catch(() => ({ logs: [] })),
+        ccApi.complianceInspections.listNonCompliance(savedInspection.id).catch(() => ({ items: [] })),
+      ]);
+      setPostCommLogs(commsRes.logs || []);
+      setPostNonCompliance(ncRes.items || []);
+    } finally {
+      setPostLoadingExtras(false);
+    }
+  };
+
+  useEffect(() => {
+    if (savedInspection?.id) reloadPostExtras();
+  }, [savedInspection?.id]);
+
+  const addCommLog = async () => {
+    if (!savedInspection?.id) return;
+    const trimmed = {
+      time: commForm.time || null,
+      recipient: (commForm.recipient || '').trim() || null,
+      subject: (commForm.subject || '').trim() || null,
+      method: (commForm.method || '').trim() || null,
+      action_required: (commForm.action_required || '').trim() || null,
+    };
+    if (!trimmed.recipient && !trimmed.subject && !trimmed.action_required) {
+      setSubmitError('Add at least a recipient, subject, or action required.');
+      return;
+    }
+    setSavingComm(true);
+    setSubmitError('');
+    try {
+      const res = await ccApi.complianceInspections.addCommLog(savedInspection.id, trimmed);
+      setPostCommLogs((prev) => [...prev, res.log]);
+      setCommForm({ time: '', recipient: '', subject: '', method: '', action_required: '' });
+    } catch (e) {
+      setSubmitError(e?.message || 'Failed to save communication log');
+    } finally {
+      setSavingComm(false);
+    }
+  };
+
+  const removeCommLog = async (logId) => {
+    if (!savedInspection?.id || !logId) return;
+    try {
+      await ccApi.complianceInspections.deleteCommLog(savedInspection.id, logId);
+      setPostCommLogs((prev) => prev.filter((p) => String(p.id) !== String(logId)));
+    } catch (e) {
+      setSubmitError(e?.message || 'Failed to delete log');
+    }
+  };
+
+  const addNonComp = async () => {
+    if (!savedInspection?.id) return;
+    const trimmed = {
+      driver_name: (nonCompForm.driver_name || '').trim() || null,
+      truck_reg: (nonCompForm.truck_reg || '').trim() || null,
+      rule_violated: (nonCompForm.rule_violated || '').trim() || null,
+      time_of_call: (nonCompForm.time_of_call || '').trim() || null,
+      summary: (nonCompForm.summary || '').trim() || null,
+      driver_response: (nonCompForm.driver_response || '').trim() || null,
+    };
+    if (!trimmed.rule_violated && !trimmed.summary) {
+      setSubmitError('Provide at least a rule violated or a summary.');
+      return;
+    }
+    setSavingNonComp(true);
+    setSubmitError('');
+    try {
+      const res = await ccApi.complianceInspections.addNonCompliance(savedInspection.id, trimmed);
+      setPostNonCompliance((prev) => [...prev, res.item]);
+      setNonCompForm({
+        driver_name: trimmed.driver_name || '',
+        truck_reg: trimmed.truck_reg || '',
+        rule_violated: '',
+        time_of_call: '',
+        summary: '',
+        driver_response: '',
+      });
+    } catch (e) {
+      setSubmitError(e?.message || 'Failed to save non-compliance');
+    } finally {
+      setSavingNonComp(false);
+    }
+  };
+
+  const removeNonComp = async (itemId) => {
+    if (!savedInspection?.id || !itemId) return;
+    try {
+      await ccApi.complianceInspections.deleteNonCompliance(savedInspection.id, itemId);
+      setPostNonCompliance((prev) => prev.filter((p) => String(p.id) !== String(itemId)));
+    } catch (e) {
+      setSubmitError(e?.message || 'Failed to delete non-compliance');
+    }
+  };
+
+  const grantGrace = async () => {
+    if (!savedInspection?.id) return;
+    const days = Number(graceDays);
+    if (!Number.isFinite(days) || days <= 0) {
+      setSubmitError('Pick a grace period duration first.');
+      return;
+    }
+    setGrantingGrace(true);
+    setSubmitError('');
+    try {
+      const res = await ccApi.complianceInspections.grantGracePeriod(savedInspection.id, { days, reason: graceReason });
+      setSavedInspection(res.inspection);
+      setInspections((prev) => prev.map((p) => (String(p.id) === String(res.inspection.id) ? { ...p, ...res.inspection } : p)));
+      setSubmitSuccess(`Grace period of ${days} day${days === 1 ? '' : 's'} granted. The truck will be marked Pending suspension when it expires.`);
+      setTimeout(() => setSubmitSuccess(''), 8000);
+    } catch (e) {
+      setSubmitError(e?.message || 'Failed to grant grace period');
+    } finally {
+      setGrantingGrace(false);
+    }
+  };
+
+  const resolveGrace = async () => {
+    if (!savedInspection?.id) return;
+    setResolvingGrace(true);
+    setSubmitError('');
+    try {
+      const res = await ccApi.complianceInspections.resolveGracePeriod(savedInspection.id);
+      setSavedInspection(res.inspection);
+      setInspections((prev) => prev.map((p) => (String(p.id) === String(res.inspection.id) ? { ...p, ...res.inspection } : p)));
+      setSubmitSuccess('Grace period marked as resolved (compliance corrected).');
+      setTimeout(() => setSubmitSuccess(''), 6000);
+    } catch (e) {
+      setSubmitError(e?.message || 'Failed to resolve grace period');
+    } finally {
+      setResolvingGrace(false);
+    }
+  };
+
+  const formatGraceExpiry = (iso) => {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    } catch { return iso; }
   };
 
   const formatInspectedDate = (iso) => {
@@ -7152,12 +8189,38 @@ function TabCompliance({ user, inspections = [], setInspections }) {
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="font-semibold text-surface-900">{selectedTruck.registration || '—'}</span>
                     <span className="text-sm text-surface-600">{selectedTruck.make_model || ''}</span>
-                    <button type="button" onClick={() => setInspectionStarted(true)} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700">Start inspection</button>
-                    <button type="button" onClick={() => { setSelectedTruck(null); }} className="text-sm text-surface-500 hover:text-surface-700">Change truck</button>
+                    <button type="button" onClick={startInspection} disabled={!selectedContractorId} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" title={!selectedContractorId ? 'Select the contractor first' : 'Start inspection'}>Start inspection</button>
+                    <button type="button" onClick={() => { setSelectedTruck(null); setSelectedContractorId(''); setSelectedRouteId(''); }} className="text-sm text-surface-500 hover:text-surface-700">Change truck</button>
                   </div>
                   {lastInspectedForTruck(inspections, selectedTruck.id) && (
                     <p className="text-xs text-surface-600">Last inspected: <InspectionCountdown lastInspectedAt={lastInspectedForTruck(inspections, selectedTruck.id)} /></p>
                   )}
+                  <div className="border-t border-brand-200 pt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Contractor (required)</label>
+                      <select value={selectedContractorId} onChange={(e) => setSelectedContractorId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                        <option value="">Select contractor…</option>
+                        {contractorsList.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                      {!selectedContractorId && <p className="text-[11px] text-amber-700 mt-1">Pick the contractor that owns this truck so suspensions and exports are scoped correctly.</p>}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Applicable route (for export)</label>
+                      <select value={selectedRouteId} onChange={(e) => setSelectedRouteId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                        <option value="">Select route…</option>
+                        {routesList.map((r) => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Your shift started at</label>
+                      <input type="datetime-local" value={shiftStartedAt} onChange={(e) => setShiftStartedAt(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                      <p className="text-[11px] text-surface-500 mt-1">Used by the shift report &quot;Export from system&quot; to scope to your shift only.</p>
+                    </div>
+                  </div>
                   <div className="border-t border-brand-200 pt-3 mt-2">
                     <p className="text-xs font-medium text-surface-700 mb-1.5">Suspend truck immediately</p>
                     <p className="text-xs text-surface-500 mb-2">Suspended trucks show status on Inspected trucks &amp; drivers; inspection does not expire until reinstatement.</p>
@@ -7359,15 +8422,247 @@ function TabCompliance({ user, inspections = [], setInspections }) {
               </section>
 
               <div className="flex flex-wrap gap-3">
-                <button type="button" onClick={completeInspection} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700">Complete inspection</button>
-                <button type="button" onClick={resetInspection} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel / New inspection</button>
+                <button type="button" onClick={completeInspection} disabled={!!savedInspection} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">{savedInspection ? 'Inspection saved' : 'Complete inspection'}</button>
+                <button type="button" onClick={resetInspection} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">{savedInspection ? 'New inspection' : 'Cancel / New inspection'}</button>
               </div>
             </>
           )}
         </>
       )}
+
+      {/* Post-save: communication log, non-compliance, grace period */}
+      {savedInspection && (
+        <ComplianceFollowUpPanel
+          savedInspection={savedInspection}
+          postCommLogs={postCommLogs}
+          postNonCompliance={postNonCompliance}
+          postLoadingExtras={postLoadingExtras}
+          commForm={commForm}
+          setCommForm={setCommForm}
+          savingComm={savingComm}
+          addCommLog={addCommLog}
+          removeCommLog={removeCommLog}
+          nonCompForm={nonCompForm}
+          setNonCompForm={setNonCompForm}
+          savingNonComp={savingNonComp}
+          addNonComp={addNonComp}
+          removeNonComp={removeNonComp}
+          graceDays={graceDays}
+          setGraceDays={setGraceDays}
+          graceReason={graceReason}
+          setGraceReason={setGraceReason}
+          grantingGrace={grantingGrace}
+          grantGrace={grantGrace}
+          resolvingGrace={resolvingGrace}
+          resolveGrace={resolveGrace}
+          formatGraceExpiry={formatGraceExpiry}
+        />
+      )}
     </div>
   );
+}
+
+function ComplianceFollowUpPanel({
+  savedInspection,
+  postCommLogs,
+  postNonCompliance,
+  postLoadingExtras,
+  commForm,
+  setCommForm,
+  savingComm,
+  addCommLog,
+  removeCommLog,
+  nonCompForm,
+  setNonCompForm,
+  savingNonComp,
+  addNonComp,
+  removeNonComp,
+  graceDays,
+  setGraceDays,
+  graceReason,
+  setGraceReason,
+  grantingGrace,
+  grantGrace,
+  resolvingGrace,
+  resolveGrace,
+  formatGraceExpiry,
+}) {
+  const grace = savedInspection?.gracePeriodStatus;
+  const expiry = savedInspection?.gracePeriodExpiresAt;
+  return (
+    <div className="space-y-6">
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
+        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
+          <h3 className="font-semibold text-surface-900">5. Communication log</h3>
+          <p className="text-sm text-surface-500 mt-0.5">Record calls/messages with the contractor about this inspection. These will appear in the shift report &quot;Export from system&quot; for your shift.</p>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100">
+            <input type="time" value={commForm.time} onChange={(e) => setCommForm((p) => ({ ...p, time: e.target.value }))} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <input type="text" value={commForm.recipient} onChange={(e) => setCommForm((p) => ({ ...p, recipient: e.target.value }))} placeholder="Recipient" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <input type="text" value={commForm.subject} onChange={(e) => setCommForm((p) => ({ ...p, subject: e.target.value }))} placeholder="Subject" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <input type="text" value={commForm.method} onChange={(e) => setCommForm((p) => ({ ...p, method: e.target.value }))} placeholder="Method (Call/WhatsApp/Email)" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <input type="text" value={commForm.action_required} onChange={(e) => setCommForm((p) => ({ ...p, action_required: e.target.value }))} placeholder="Action required" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+          </div>
+          <button type="button" onClick={addCommLog} disabled={savingComm} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+            {savingComm ? 'Saving…' : '+ Add to communication log'}
+          </button>
+          {postLoadingExtras ? (
+            <p className="text-sm text-surface-500">Loading…</p>
+          ) : postCommLogs.length === 0 ? (
+            <p className="text-sm text-surface-500">No communications logged yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {postCommLogs.map((log) => (
+                <li key={log.id} className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-surface-200 bg-white px-3 py-2">
+                  <div className="text-sm text-surface-800">
+                    <span className="font-medium">{log.time || ''}</span>
+                    {log.recipient ? <> · {log.recipient}</> : null}
+                    {log.subject ? <> · <span className="font-medium">{log.subject}</span></> : null}
+                    {log.method ? <> · <span className="text-surface-500">({log.method})</span></> : null}
+                    {log.action_required ? <div className="text-xs text-surface-600 mt-0.5">Action: {log.action_required}</div> : null}
+                  </div>
+                  <button type="button" onClick={() => removeCommLog(log.id)} className="text-xs text-red-600 hover:text-red-700">Remove</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
+        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
+          <h3 className="font-semibold text-surface-900">6. Non-compliance</h3>
+          <p className="text-sm text-surface-500 mt-0.5">Add specific non-compliance items raised during this inspection. These items appear in the shift report export for your shift.</p>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 p-3 rounded-lg bg-amber-50/50 border border-amber-100">
+            <input type="text" value={nonCompForm.driver_name} onChange={(e) => setNonCompForm((p) => ({ ...p, driver_name: e.target.value }))} placeholder="Driver name" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <input type="text" value={nonCompForm.truck_reg} onChange={(e) => setNonCompForm((p) => ({ ...p, truck_reg: e.target.value }))} placeholder="Truck registration" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <select
+              value={NON_COMPLIANCE_RULE_OPTIONS.includes(nonCompForm.rule_violated) || !nonCompForm.rule_violated ? nonCompForm.rule_violated : '__other__'}
+              onChange={(e) => setNonCompForm((p) => ({ ...p, rule_violated: e.target.value === '__other__' ? '' : e.target.value }))}
+              className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">Select rule violated</option>
+              {NON_COMPLIANCE_RULE_OPTIONS.map((rule) => (
+                <option key={rule} value={rule}>{rule}</option>
+              ))}
+              <option value="__other__">Other</option>
+            </select>
+            {!NON_COMPLIANCE_RULE_OPTIONS.includes(nonCompForm.rule_violated) && (
+              <input type="text" value={nonCompForm.rule_violated} onChange={(e) => setNonCompForm((p) => ({ ...p, rule_violated: e.target.value }))} placeholder="Other rule violated" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            )}
+            <input type="text" value={nonCompForm.time_of_call} onChange={(e) => setNonCompForm((p) => ({ ...p, time_of_call: e.target.value }))} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+            <input type="text" value={nonCompForm.summary} onChange={(e) => setNonCompForm((p) => ({ ...p, summary: e.target.value }))} placeholder="Summary" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
+            <input type="text" value={nonCompForm.driver_response} onChange={(e) => setNonCompForm((p) => ({ ...p, driver_response: e.target.value }))} placeholder="Driver response" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
+          </div>
+          <button type="button" onClick={addNonComp} disabled={savingNonComp} className="px-4 py-2 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
+            {savingNonComp ? 'Saving…' : '+ Add non-compliance entry'}
+          </button>
+          {postLoadingExtras ? (
+            <p className="text-sm text-surface-500">Loading…</p>
+          ) : postNonCompliance.length === 0 ? (
+            <p className="text-sm text-surface-500">No non-compliance entries added yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {postNonCompliance.map((item) => (
+                <li key={item.id} className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2">
+                  <div className="text-sm text-surface-800">
+                    <span className="font-medium">{item.ruleViolated || 'Non-compliance'}</span>
+                    {item.timeOfCall ? <> · {item.timeOfCall}</> : null}
+                    {item.driverName ? <> · {item.driverName}</> : null}
+                    {item.truckReg ? <> · {item.truckReg}</> : null}
+                    {item.summary ? <div className="text-xs text-surface-600 mt-0.5">{item.summary}</div> : null}
+                    {item.driverResponse ? <div className="text-xs text-surface-500 italic mt-0.5">Driver: {item.driverResponse}</div> : null}
+                  </div>
+                  <button type="button" onClick={() => removeNonComp(item.id)} className="text-xs text-red-600 hover:text-red-700">Remove</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
+        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
+          <h3 className="font-semibold text-surface-900">7. Grace period</h3>
+          <p className="text-sm text-surface-500 mt-0.5">
+            {grace === 'active' && expiry && <>Active grace period — expires {formatGraceExpiry(expiry)}.</>}
+            {grace === 'expired' && <>Grace period expired{expiry ? ` on ${formatGraceExpiry(expiry)}` : ''}. Truck is <span className="font-medium text-red-700">Pending suspension</span>.</>}
+            {grace === 'resolved' && <>Grace period resolved (compliance corrected).</>}
+            {!grace && <>Award a grace period if you want to give the contractor time to correct non-compliance before suspending.</>}
+          </p>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Duration</label>
+              <select value={graceDays} onChange={(e) => setGraceDays(Number(e.target.value))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+                <option value={1}>1 day</option>
+                <option value={2}>2 days</option>
+                <option value={3}>3 days</option>
+                <option value={5}>5 days</option>
+                <option value={7}>7 days</option>
+                <option value={14}>14 days</option>
+                <option value={21}>21 days</option>
+                <option value={30}>30 days</option>
+                <option value={60}>60 days</option>
+                <option value={90}>90 days</option>
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Reason (optional)</label>
+              <input type="text" value={graceReason} onChange={(e) => setGraceReason(e.target.value)} placeholder="e.g. Contractor undertaking to fix camera within 7 days" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button type="button" onClick={grantGrace} disabled={grantingGrace} className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+              {grantingGrace ? 'Granting…' : grace === 'active' ? 'Update grace period' : 'Award grace period'}
+            </button>
+            {grace === 'active' || grace === 'expired' ? (
+              <button type="button" onClick={resolveGrace} disabled={resolvingGrace} className="px-4 py-2 text-sm font-medium rounded-lg border border-green-200 bg-green-50 text-green-800 hover:bg-green-100 disabled:opacity-50">
+                {resolvingGrace ? 'Saving…' : 'Mark grace period resolved'}
+              </button>
+            ) : null}
+          </div>
+          {grace === 'active' && expiry && (
+            <p className="text-xs text-blue-700">When this grace period expires, the truck will appear under <span className="font-medium">Pending suspension</span> on Inspected trucks &amp; drivers.</p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function renderGracePeriodCell(i) {
+  if (!i?.gracePeriodStatus) return <span className="text-surface-400">—</span>;
+  const fmt = (iso) => {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' }); } catch { return iso; }
+  };
+  if (i.gracePeriodStatus === 'active') {
+    return (
+      <span title={i.gracePeriodReason || ''}>
+        <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Granted ({i.gracePeriodDays}d)</span>
+        <span className="block text-[11px] text-surface-600 mt-0.5">Expires {fmt(i.gracePeriodExpiresAt)}</span>
+      </span>
+    );
+  }
+  if (i.gracePeriodStatus === 'expired') {
+    return (
+      <span title={i.gracePeriodReason || ''}>
+        <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">Expired</span>
+        <span className="block text-[11px] text-surface-600 mt-0.5">{fmt(i.gracePeriodExpiresAt)}</span>
+      </span>
+    );
+  }
+  if (i.gracePeriodStatus === 'resolved') {
+    return (
+      <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Resolved</span>
+    );
+  }
+  return <span className="text-surface-400">—</span>;
 }
 
 function TabInspected({ inspections = [], setInspections }) {
@@ -7550,30 +8845,36 @@ function TabInspected({ inspections = [], setInspections }) {
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Registration</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Make / model</th>
+                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Route</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Status</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Last inspected</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Next due (24h)</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Recommendation</th>
+                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Grace period</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor response</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {inspectedTrucks.length === 0 ? (
-                    <tr><td colSpan={9} className="px-4 py-6 text-surface-500 text-center">No trucks match the filters.</td></tr>
+                    <tr><td colSpan={11} className="px-4 py-6 text-surface-500 text-center">No trucks match the filters.</td></tr>
                   ) : (
                     inspectedTrucks.map((i) => {
                       const countdown = i.truckSuspended ? null : getInspectionCountdown(i.inspectedAt);
+                      const graceLabel = renderGracePeriodCell(i);
                       return (
                         <tr key={i.truckId} onClick={() => openTruckRecord(i)} className="border-b border-surface-100 last:border-0 hover:bg-brand-50 cursor-pointer">
-                          <td className="px-4 py-2 text-surface-700">{i.contractorName || '—'}</td>
+                          <td className="px-4 py-2 text-surface-700">{i.contractorNameSnapshot || i.contractorName || '—'}</td>
                           <td className="px-4 py-2 font-medium text-surface-900">{i.truckRegistration || '—'}</td>
                           <td className="px-4 py-2 text-surface-600">{i.truckMakeModel || '—'}</td>
+                          <td className="px-4 py-2 text-surface-600">{i.routeName || '—'}</td>
                           <td className="px-4 py-2">
                             {i.truckSuspended ? (
                               <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800" title={i.truckSuspensionPermanent ? 'Permanent' : i.truckSuspensionEndsAt ? `Until ${formatDate(i.truckSuspensionEndsAt)}` : ''}>
                                 {i.truckSuspensionPermanent ? 'Suspended (permanent)' : i.truckSuspensionEndsAt ? `Until ${formatDate(i.truckSuspensionEndsAt)}` : 'Suspended'}
                               </span>
+                            ) : i.pendingSuspension ? (
+                              <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800" title={`Grace period expired${i.gracePeriodExpiresAt ? ` on ${formatDate(i.gracePeriodExpiresAt)}` : ''}`}>Pending suspension</span>
                             ) : <span className="text-surface-500 text-xs">Active</span>}
                           </td>
                           <td className="px-4 py-2 text-surface-600">{formatDate(i.inspectedAt)}</td>
@@ -7587,6 +8888,7 @@ function TabInspected({ inspections = [], setInspections }) {
                               <span className="text-green-700">OK</span>
                             )}
                           </td>
+                          <td className="px-4 py-2">{graceLabel}</td>
                           <td className="px-4 py-2">
                             {(i.contractorRespondedAt || i.status === 'responded' || ((i.responseAttachments || []).length > 0)) ? <span className="text-emerald-700 font-medium">Responded</span> : <span className="text-surface-500">Pending</span>}
                           </td>
@@ -7735,13 +9037,35 @@ function TabInspected({ inspections = [], setInspections }) {
             </div>
             <div>
               <p className="font-medium text-surface-900">Contractor</p>
-              <p className="text-surface-600">{viewingRecord.contractorName || '—'}</p>
+              <p className="text-surface-600">{viewingRecord.contractorNameSnapshot || viewingRecord.contractorName || '—'}</p>
             </div>
+            {viewingRecord.routeName && (
+              <div>
+                <p className="font-medium text-surface-900">Applicable route</p>
+                <p className="text-surface-600">{viewingRecord.routeName}</p>
+              </div>
+            )}
             <div>
               <p className="font-medium text-surface-900">Truck</p>
               <p className="text-surface-600">{viewingRecord.truckRegistration || '—'} {viewingRecord.truckMakeModel ? ` · ${viewingRecord.truckMakeModel}` : ''}</p>
               {viewingRecord.truckSuspended && <span className="inline-block mt-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">{viewingRecord.truckSuspensionPermanent ? 'Suspended (permanent)' : viewingRecord.truckSuspensionEndsAt ? `Suspended until ${formatDate(viewingRecord.truckSuspensionEndsAt)}` : 'Suspended'}</span>}
+              {!viewingRecord.truckSuspended && viewingRecord.pendingSuspension && <span className="inline-block mt-1 ml-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">Pending suspension</span>}
             </div>
+            {viewingRecord.gracePeriodStatus && (
+              <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+                <p className="font-medium text-surface-900">Grace period</p>
+                {viewingRecord.gracePeriodStatus === 'active' && (
+                  <p className="text-blue-800 text-xs mt-0.5">Granted ({viewingRecord.gracePeriodDays}d) · Expires {formatDate(viewingRecord.gracePeriodExpiresAt)}</p>
+                )}
+                {viewingRecord.gracePeriodStatus === 'expired' && (
+                  <p className="text-orange-800 text-xs mt-0.5">Expired on {formatDate(viewingRecord.gracePeriodExpiresAt)} — truck pending suspension</p>
+                )}
+                {viewingRecord.gracePeriodStatus === 'resolved' && (
+                  <p className="text-green-800 text-xs mt-0.5">Resolved — compliance corrected</p>
+                )}
+                {viewingRecord.gracePeriodReason && <p className="text-surface-600 text-xs mt-1">{viewingRecord.gracePeriodReason}</p>}
+              </div>
+            )}
             <div>
               <p className="font-medium text-surface-900">Driver</p>
               <p className="text-surface-600">{viewingRecord.driverName || '—'}</p>

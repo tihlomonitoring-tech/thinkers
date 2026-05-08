@@ -4,16 +4,16 @@
  */
 
 export const PDF_THEME = {
-  accent: '#7F1D1D', // dark red (brand)
+  accent: '#991B1B', // brand red (normal red, leaning toward dark red)
   accentBar: '#991B1B',
   ink: '#111827',
   inkSoft: '#374151',
   muted: '#6b7280',
   line: '#e5e7eb',
-  tableHead: '#7F1D1D',
+  tableHead: '#991B1B',
   tableZebra: '#f8fafc',
   panelBg: '#fafafa',
-  totalBar: '#7F1D1D',
+  totalBar: '#991B1B',
 };
 
 const PAGE = { w: 595.28, h: 841.89, margin: 48 };

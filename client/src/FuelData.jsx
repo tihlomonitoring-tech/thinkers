@@ -13,6 +13,7 @@ import { formatDt, inputClass } from './lib/fuelSupplyUi.js';
 import InfoHint from './components/InfoHint.jsx';
 import FuelSlipAiCameraModal from './components/FuelSlipAiCameraModal.jsx';
 import FuelAdvancedDashboard from './components/FuelAdvancedDashboard.jsx';
+import FuelDataAutoShareTab from './components/FuelDataAutoShareTab.jsx';
 
 const FUEL_EXPORT_COLS_STORAGE_KEY = 'fuel-data-export-columns';
 
@@ -184,6 +185,12 @@ function TabIcon({ name, className }) {
         <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           {path('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z')}
           {path('M15 12a3 3 0 11-6 0 3 3 0 016 0z')}
+        </svg>
+      );
+    case 'mail':
+      return (
+        <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          {path('M3 8l9 6 9-6M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z')}
         </svg>
       );
     default:
@@ -627,6 +634,66 @@ export default function FuelData() {
       authorizer_name: c.authorizer_name || f.authorizer_name || '',
       vehicle_registration: c.vehicle_registration || f.vehicle_registration || '',
     }));
+  };
+
+  /** Update Vehicle / tank for a given form setter. Mirrors the value into
+   *  vehicle_registration ("Customer vehicle / fleet") only while that field is
+   *  empty or still equal to the previous Vehicle / tank value (i.e. has not
+   *  been manually edited by the user). */
+  const updateVehicleTank = (setter) => (val) => {
+    setter((f) => {
+      const prevTank = f.vehicle_tank || '';
+      const prevReg = f.vehicle_registration || '';
+      const stillMirrored = !prevReg || prevReg === prevTank;
+      return {
+        ...f,
+        vehicle_tank: val,
+        vehicle_registration: stillMirrored ? val : prevReg,
+      };
+    });
+  };
+
+  const onEditSupplierPick = (id) => {
+    const s = suppliers.find((x) => x.id === id);
+    if (!id || !s) {
+      setEditForm((f) => (f ? { ...f, supplier_id: '', supplier_name: '' } : f));
+      return;
+    }
+    setEditForm((f) =>
+      f
+        ? {
+            ...f,
+            supplier_id: id,
+            supplier_name: s.name || '',
+            supplier_vehicle_registration: s.vehicle_registration || f.supplier_vehicle_registration || '',
+            price_per_litre:
+              s.price_per_litre != null && (!f.price_per_litre || f.price_per_litre === '')
+                ? String(s.price_per_litre)
+                : f.price_per_litre,
+            fuel_attendant_name: s.fuel_attendant_name || f.fuel_attendant_name || '',
+          }
+        : f
+    );
+  };
+
+  const onEditCustomerPick = (id) => {
+    const c = customers.find((x) => x.id === id);
+    if (!id || !c) {
+      setEditForm((f) => (f ? { ...f, customer_id: '', customer_name: '' } : f));
+      return;
+    }
+    setEditForm((f) =>
+      f
+        ? {
+            ...f,
+            customer_id: id,
+            customer_name: c.name || '',
+            responsible_user_name: c.responsible_user_name || f.responsible_user_name || '',
+            authorizer_name: c.authorizer_name || f.authorizer_name || '',
+            vehicle_registration: c.vehicle_registration || f.vehicle_registration || '',
+          }
+        : f
+    );
   };
 
   const submitManualTransaction = (e) => {
@@ -1462,7 +1529,12 @@ export default function FuelData() {
                 </label>
                 <label className="block text-xs text-surface-500">
                   Vehicle / tank
-                  <input className={inputClass('mt-1')} value={txForm.vehicle_tank} onChange={(e) => setTxForm((f) => ({ ...f, vehicle_tank: e.target.value }))} />
+                  <input
+                    className={inputClass('mt-1')}
+                    value={txForm.vehicle_tank}
+                    onChange={(e) => updateVehicleTank(setTxForm)(e.target.value)}
+                    placeholder="Mirrored to Customer vehicle below until you edit it"
+                  />
                 </label>
                 <label className="block text-xs text-surface-500">
                   Order number
@@ -1621,16 +1693,63 @@ export default function FuelData() {
                   </div>
                   <div className="grid sm:grid-cols-2 gap-3">
                     <label className="text-xs text-surface-500">
+                      Supplier
+                      <select
+                        className={inputClass('mt-1')}
+                        value={editForm.supplier_id || ''}
+                        onChange={(e) => onEditSupplierPick(e.target.value)}
+                      >
+                        <option value="">— Select supplier —</option>
+                        {suppliers.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                            {s.price_per_litre != null ? ` (R${s.price_per_litre}/L)` : ''}
+                            {s.is_default ? ' · default' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-surface-500">
+                      Customer
+                      <select
+                        className={inputClass('mt-1')}
+                        value={editForm.customer_id || ''}
+                        onChange={(e) => onEditCustomerPick(e.target.value)}
+                      >
+                        <option value="">— Select customer —</option>
+                        {customers.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-surface-500">
                       Supplier name
-                      <input className={inputClass('mt-1')} value={editForm.supplier_name} onChange={(e) => setEditForm((f) => ({ ...f, supplier_name: e.target.value }))} />
+                      <input
+                        className={inputClass('mt-1')}
+                        value={editForm.supplier_name}
+                        onChange={(e) => setEditForm((f) => ({ ...f, supplier_name: e.target.value }))}
+                        placeholder="Filled when you pick a supplier; can be overridden"
+                      />
                     </label>
                     <label className="text-xs text-surface-500">
                       Customer name
-                      <input className={inputClass('mt-1')} value={editForm.customer_name} onChange={(e) => setEditForm((f) => ({ ...f, customer_name: e.target.value }))} />
+                      <input
+                        className={inputClass('mt-1')}
+                        value={editForm.customer_name}
+                        onChange={(e) => setEditForm((f) => ({ ...f, customer_name: e.target.value }))}
+                        placeholder="Filled when you pick a customer; can be overridden"
+                      />
                     </label>
                     <label className="text-xs text-surface-500">
                       Vehicle / tank
-                      <input className={inputClass('mt-1')} value={editForm.vehicle_tank} onChange={(e) => setEditForm((f) => ({ ...f, vehicle_tank: e.target.value }))} />
+                      <input
+                        className={inputClass('mt-1')}
+                        value={editForm.vehicle_tank}
+                        onChange={(e) => updateVehicleTank(setEditForm)(e.target.value)}
+                        placeholder="Mirrored to Customer vehicle below until you edit it"
+                      />
                     </label>
                     <label className="text-xs text-surface-500">
                       Order number
@@ -2279,6 +2398,10 @@ export default function FuelData() {
           </div>
         ) : null}
 
+        {activeTab === 'auto_share' && allowedTabs.includes('auto_share') ? (
+          <FuelDataAutoShareTab suppliers={suppliers} customers={customers} />
+        ) : null}
+
         {activeTab === 'attendant_portal' && allowedTabs.includes('attendant_portal') ? (
           <div className="space-y-6 w-full">
             <h3 className="text-md font-semibold">Fuel attendant — slip capture (AI)</h3>
@@ -2351,7 +2474,12 @@ export default function FuelData() {
                   </label>
                   <label className="block text-xs text-surface-500">
                     Vehicle / tank (optional)
-                    <input className={inputClass('mt-1')} value={attForm.vehicle_tank} onChange={(e) => setAttForm((f) => ({ ...f, vehicle_tank: e.target.value }))} />
+                    <input
+                      className={inputClass('mt-1')}
+                      value={attForm.vehicle_tank}
+                      onChange={(e) => updateVehicleTank(setAttForm)(e.target.value)}
+                      placeholder="Mirrored to Customer vehicle below until you edit it"
+                    />
                   </label>
                   <label className="block text-xs text-surface-500 sm:col-span-2">
                     Customer vehicle (fleet / registration — from slip &quot;Fleet&quot;)

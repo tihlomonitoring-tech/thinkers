@@ -7,6 +7,7 @@ export const FD_TABS = [
   { id: 'supplier_details', label: 'Supplier details', icon: 'doc', section: 'Records' },
   { id: 'analytics', label: 'Analytics', icon: 'trend', section: 'Insights' },
   { id: 'attendant_portal', label: 'Fuel Attendant portal', icon: 'truck', section: 'Field' },
+  { id: 'auto_share', label: 'Auto share', icon: 'mail', section: 'Operations' },
 ];
 
 export const GRANT_TAB_IDS = FD_TABS.map((t) => t.id);

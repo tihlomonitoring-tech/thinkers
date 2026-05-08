@@ -2500,6 +2500,94 @@ router.get('/rector-my-routes', async (req, res, next) => {
   }
 });
 
+async function ensureRouteTargetRegulationsTable() {
+  await query(`
+    IF OBJECT_ID(N'dbo.access_route_target_regulations', N'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.access_route_target_regulations (
+        id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWID(),
+        tenant_id UNIQUEIDENTIFIER NOT NULL,
+        route_id UNIQUEIDENTIFIER NOT NULL,
+        deliveries_per_truck_target DECIMAL(10,2) NOT NULL,
+        notes NVARCHAR(500) NULL,
+        created_by_user_id UNIQUEIDENTIFIER NULL,
+        updated_by_user_id UNIQUEIDENTIFIER NULL,
+        created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT UQ_access_route_target_reg_tenant_route UNIQUE (tenant_id, route_id)
+      );
+      CREATE INDEX IX_access_route_target_reg_tenant ON dbo.access_route_target_regulations(tenant_id);
+      CREATE INDEX IX_access_route_target_reg_route ON dbo.access_route_target_regulations(route_id);
+    END
+  `);
+}
+
+/** GET route target regulations (Rector + Data presentation helper) */
+router.get('/route-target-regulations', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    await ensureRouteTargetRegulationsTable();
+    const result = await query(
+      `SELECT t.*, r.name AS route_name, u.full_name AS updated_by_name
+       FROM access_route_target_regulations t
+       LEFT JOIN contractor_routes r ON r.id = t.route_id AND r.tenant_id = t.tenant_id
+       LEFT JOIN users u ON u.id = t.updated_by_user_id
+       WHERE t.tenant_id = @tenantId
+       ORDER BY r.name ASC, t.created_at DESC`,
+      { tenantId }
+    );
+    res.json({ regulations: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PUT upsert route target regulation */
+router.put('/route-target-regulations/:routeId', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = req.params.routeId;
+    const targetRaw = req.body?.deliveries_per_truck_target;
+    const notes = req.body?.notes != null ? String(req.body.notes).trim() : null;
+    const target = Number(targetRaw);
+    if (!routeId) return res.status(400).json({ error: 'routeId required' });
+    if (!Number.isFinite(target) || target <= 0) {
+      return res.status(400).json({ error: 'deliveries_per_truck_target must be a positive number' });
+    }
+
+    await ensureRouteTargetRegulationsTable();
+    const routeCheck = await query(
+      `SELECT id FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
+      { routeId, tenantId }
+    );
+    if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
+
+    await query(
+      `MERGE access_route_target_regulations AS tgt
+       USING (SELECT @tenantId AS tenant_id, @routeId AS route_id) AS src
+       ON tgt.tenant_id = src.tenant_id AND tgt.route_id = src.route_id
+       WHEN MATCHED THEN
+         UPDATE SET deliveries_per_truck_target = @target, notes = @notes, updated_by_user_id = @userId, updated_at = SYSUTCDATETIME()
+       WHEN NOT MATCHED THEN
+         INSERT (tenant_id, route_id, deliveries_per_truck_target, notes, created_by_user_id, updated_by_user_id)
+         VALUES (@tenantId, @routeId, @target, @notes, @userId, @userId);`,
+      { tenantId, routeId, target, notes: notes || null, userId: req.user?.id || null }
+    );
+
+    const saved = await query(
+      `SELECT t.*, r.name AS route_name, u.full_name AS updated_by_name
+       FROM access_route_target_regulations t
+       LEFT JOIN contractor_routes r ON r.id = t.route_id AND r.tenant_id = t.tenant_id
+       LEFT JOIN users u ON u.id = t.updated_by_user_id
+       WHERE t.tenant_id = @tenantId AND t.route_id = @routeId`,
+      { tenantId, routeId }
+    );
+    res.json({ regulation: saved.recordset?.[0] || null });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --- Route factors (Access management: contacts/stakeholders; user_id = link to user as rector) ---
 /** GET route factors for tenant (optional ?routeId=); includes user full_name, email when user_id set */
 router.get('/route-factors', async (req, res, next) => {

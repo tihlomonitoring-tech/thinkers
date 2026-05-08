@@ -328,6 +328,14 @@ export const contractor = {
     update: (id, body) => request(`/contractor/route-factors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/contractor/route-factors/${id}`, { method: 'DELETE' }),
   },
+  routeTargetRegulations: {
+    list: () => request('/contractor/route-target-regulations'),
+    upsert: (routeId, body) =>
+      request(`/contractor/route-target-regulations/${encodeURIComponent(routeId)}`, {
+        method: 'PUT',
+        body: JSON.stringify(body || {}),
+      }),
+  },
   distributionHistory: {
     list: (params = {}) => {
       const q = new URLSearchParams(params).toString();
@@ -458,6 +466,16 @@ export const commandCentre = {
     if (params.route) q.set('route', params.route);
     return request(`/command-centre/trends${q.toString() ? `?${q.toString()}` : ''}`);
   },
+  dataPresentation: {
+    shiftAnalysis: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.dateFrom) q.set('dateFrom', params.dateFrom);
+      if (params.dateTo) q.set('dateTo', params.dateTo);
+      if (params.contractorId) q.set('contractorId', params.contractorId);
+      if (params.shiftType) q.set('shiftType', params.shiftType);
+      return request(`/command-centre/data-presentation/shift-analysis${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+  },
   deliveryTimeline: (days = 30) => request(`/command-centre/delivery-timeline?days=${encodeURIComponent(days)}`),
   shiftReports: {
     list: (requestsOnly) => request(`/command-centre/shift-reports${requestsOnly ? '?requests=1' : ''}`),
@@ -547,8 +565,24 @@ export const commandCentre = {
   complianceInspections: {
     list: () => request('/command-centre/compliance-inspections'),
     create: (body) => request('/command-centre/compliance-inspections', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => request(`/command-centre/compliance-inspections/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     reply: (id, replyText) => request(`/command-centre/compliance-inspections/${id}/reply`, { method: 'PATCH', body: JSON.stringify({ replyText }) }),
     attachmentUrl: (inspectionId, attachmentId) => `${API}/command-centre/compliance-inspections/${inspectionId}/attachments/${attachmentId}`,
+    grantGracePeriod: (id, body) => request(`/command-centre/compliance-inspections/${id}/grace-period`, { method: 'POST', body: JSON.stringify(body) }),
+    resolveGracePeriod: (id) => request(`/command-centre/compliance-inspections/${id}/grace-period/resolve`, { method: 'POST', body: '{}' }),
+    listCommLogs: (id) => request(`/command-centre/compliance-inspections/${id}/comm-logs`),
+    addCommLog: (id, body) => request(`/command-centre/compliance-inspections/${id}/comm-logs`, { method: 'POST', body: JSON.stringify(body) }),
+    deleteCommLog: (id, logId) => request(`/command-centre/compliance-inspections/${id}/comm-logs/${logId}`, { method: 'DELETE' }),
+    listNonCompliance: (id) => request(`/command-centre/compliance-inspections/${id}/non-compliance`),
+    addNonCompliance: (id, body) => request(`/command-centre/compliance-inspections/${id}/non-compliance`, { method: 'POST', body: JSON.stringify(body) }),
+    deleteNonCompliance: (id, itemId) => request(`/command-centre/compliance-inspections/${id}/non-compliance/${itemId}`, { method: 'DELETE' }),
+    shiftExport: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.shift_started_at) q.set('shift_started_at', params.shift_started_at);
+      if (params.shift_ended_at) q.set('shift_ended_at', params.shift_ended_at);
+      if (params.controller_user_id) q.set('controller_user_id', params.controller_user_id);
+      return request(`/command-centre/compliance-shift-export${q.toString() ? `?${q.toString()}` : ''}`);
+    },
   },
   suspendTruck: (truckId, reason, options = {}) => request('/command-centre/suspend-truck', {
     method: 'POST',
@@ -876,6 +910,24 @@ export const fuelData = {
         throw wrapNetworkError(err);
       }),
   transactionSlipUrl: (id) => `${API}/fuel-data/transactions/${encodeURIComponent(id)}/slip-image`,
+  autoShare: {
+    recipients: () => request('/fuel-data/auto-share/recipients'),
+    list: () => request('/fuel-data/auto-share/schedules'),
+    create: (body) =>
+      request('/fuel-data/auto-share/schedules', { method: 'POST', body: JSON.stringify(body || {}) }),
+    update: (id, body) =>
+      request(`/fuel-data/auto-share/schedules/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body || {}),
+      }),
+    remove: (id) =>
+      request(`/fuel-data/auto-share/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    runNow: (id) =>
+      request(`/fuel-data/auto-share/schedules/${encodeURIComponent(id)}/run`, {
+        method: 'POST',
+        body: '{}',
+      }),
+  },
 };
 
 export const fuelCustomerPortal = {

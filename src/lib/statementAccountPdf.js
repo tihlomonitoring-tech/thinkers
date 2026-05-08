@@ -13,7 +13,7 @@
 import { PDF_THEME, formatDate, pdfPageWidth } from './accountingPdfLayout.js';
 import { computeStatementLineBalances } from './statementLineBalance.js';
 
-const PAGE = { w: 595.28, h: 841.89, margin: 48, footerTop: 62 };
+const PAGE = { w: 595.28, h: 841.89, margin: 48, footerTop: 38 };
 
 function formatMoneyDisplay(raw) {
   if (raw == null || raw === '' || raw === '—') return raw === '—' ? '—' : '';
@@ -117,25 +117,23 @@ export function extractPreambleAndTableRows(mainText) {
   return { preamble, rows };
 }
 
-function drawStatementFooter(doc, company, pageLabel) {
+/** Stamp page numbers + a discreet doc reference on every buffered page. */
+export function stampStatementPdfFooters(doc, company, { documentRef } = {}) {
+  if (!doc.options?.bufferPages) return;
+  const { start, count } = doc.bufferedPageRange();
+  if (count < 1) return;
   const w = pdfPageWidth();
-  const y0 = PAGE.h - PAGE.footerTop;
-  doc.font('Helvetica', 'normal').fontSize(7).fillColor('#64748b');
-  let y = y0;
-  if (company.website) {
-    doc.fillColor(PDF_THEME.accentBar).text(String(company.website), PAGE.margin, y, { width: w, align: 'center' });
-    y = doc.y + 3;
+  const yRef = PAGE.h - PAGE.margin - 22;
+  const yPage = PAGE.h - PAGE.margin - 10;
+  for (let i = 0; i < count; i++) {
+    doc.switchToPage(start + i);
+    doc.font('Helvetica', 'normal').fontSize(8).fillColor('#94a3b8');
+    if (documentRef) {
+      doc.text(String(documentRef), PAGE.margin, yRef, { width: w, align: 'center' });
+    }
+    doc.text(`Page ${i + 1} of ${count}`, PAGE.margin, yPage, { width: w, align: 'center' });
   }
-  doc.fillColor('#64748b');
-  if (company.vat_number) {
-    doc.text(`Tax ID: ${company.vat_number}`, PAGE.margin, y, { width: w, align: 'center' });
-    y = doc.y + 2;
-  }
-  if (company.company_registration) {
-    doc.text(`Reg: ${company.company_registration}`, PAGE.margin, y, { width: w, align: 'center' });
-    y = doc.y + 2;
-  }
-  doc.fillColor('#94a3b8').text(pageLabel, PAGE.margin, y, { width: w, align: 'center' });
+  doc.switchToPage(start + count - 1);
 }
 
 function drawColumnBlock(doc, label, lines, x, y, colW) {
@@ -161,7 +159,6 @@ export function renderStatementPdf(doc, statement, company, logoBuffer) {
   const gap = 24;
   const colW = (w - gap) / 2;
   let y = PAGE.margin;
-  let pageIndex = 1;
 
   doc.save();
   doc.rect(0, 0, PAGE.w, 4).fill(PDF_THEME.accentBar);
@@ -176,7 +173,9 @@ export function renderStatementPdf(doc, statement, company, logoBuffer) {
   }
 
   const exBal = extractBalanceDue(statement.content || '');
-  const { main, banking } = splitBankingSection(exBal.body);
+  const { main, banking: inlineBanking } = splitBankingSection(exBal.body);
+  const fallbackBanking = company && company.banking_details ? String(company.banking_details).trim() : '';
+  const banking = (inlineBanking && inlineBanking.trim()) || fallbackBanking;
   const structured = Array.isArray(statement.lines) && statement.lines.length > 0;
   let preamble;
   let rows;
@@ -231,7 +230,7 @@ export function renderStatementPdf(doc, statement, company, logoBuffer) {
   const rightEnd = drawColumnBlock(doc, 'Company:', coLines.length ? coLines : ['—'], PAGE.margin + colW + gap, y, colW);
   y = Math.max(leftEnd, rightEnd) + 20;
 
-  doc.moveTo(PAGE.margin, y).lineTo(PAGE.margin + w, y).strokeColor(PDF_THEME.line).lineWidth(0.5).stroke();
+  doc.moveTo(PAGE.margin, y).lineTo(PAGE.margin + w, y).strokeColor(PDF_THEME.line).lineWidth(0.3).stroke();
   y += 14;
 
   const docTitle = (statement.title && String(statement.title).trim()) || 'Customer statement';
@@ -306,10 +305,8 @@ export function renderStatementPdf(doc, statement, company, logoBuffer) {
       const descH = Math.max(14, doc.heightOfString(r.description || '—', { width: cw[1] - 6 }) + 6);
       const rowH = Math.min(descH + 6, 72);
       if (y + rowH > bottomLimit) {
-        drawStatementFooter(doc, company, `Page ${pageIndex}`);
-        pageIndex += 1;
         doc.addPage();
-        y = PAGE.margin;
+        y = PAGE.margin + 8;
         doc.font('Helvetica', 'bold').fontSize(9).fillColor(PDF_THEME.muted).text('Statement (continued)', PAGE.margin, y);
         y = doc.y + 10;
         y = drawTableHeader(y);
@@ -341,31 +338,29 @@ export function renderStatementPdf(doc, statement, company, logoBuffer) {
   }
 
   if (y > bottomLimit - 40 && banking) {
-    drawStatementFooter(doc, company, `Page ${pageIndex}`);
-    pageIndex += 1;
     doc.addPage();
-    y = PAGE.margin;
+    y = PAGE.margin + 8;
   } else {
     y += 8;
   }
 
   if (banking) {
     if (y > PAGE.h - PAGE.footerTop - 120) {
-      drawStatementFooter(doc, company, `Page ${pageIndex}`);
-      pageIndex += 1;
       doc.addPage();
-      y = PAGE.margin;
+      y = PAGE.margin + 8;
     }
     doc.font('Helvetica', 'bold').fontSize(11).fillColor(PDF_THEME.ink).text('Banking details', PAGE.margin, y);
-    y = doc.y + 10;
+    y = doc.y + 4;
+    doc.font('Helvetica', 'normal').fontSize(8.5).fillColor(PDF_THEME.muted)
+      .text('Please use the customer name or statement reference when making payment.', PAGE.margin, y, { width: w });
+    y = doc.y + 8;
+
     doc.font('Helvetica', 'normal').fontSize(9);
-    const bankingH = Math.min(240, doc.heightOfString(banking, { width: w - 24 }) + 28);
+    const bankingH = Math.min(260, doc.heightOfString(banking, { width: w - 24 }) + 28);
     doc.roundedRect(PAGE.margin, y, w, bankingH, 4);
     doc.fillColor('#f8fafc').strokeColor(PDF_THEME.line).lineWidth(0.5).fillAndStroke();
     doc.fillColor(PDF_THEME.ink);
     doc.text(banking, PAGE.margin + 12, y + 12, { width: w - 24, lineGap: 3 });
-    y = doc.y + 16;
+    y = y + bankingH + 16;
   }
-
-  drawStatementFooter(doc, company, `Page ${pageIndex}`);
 }

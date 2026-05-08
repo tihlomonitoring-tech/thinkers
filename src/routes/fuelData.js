@@ -20,6 +20,7 @@ export const FD_TAB_IDS = [
   'supplier_details',
   'analytics',
   'attendant_portal',
+  'auto_share',
 ];
 
 function get(row, key) {
@@ -1817,20 +1818,28 @@ router.post('/export/email', requireFuelDataAnyTab(['fuel_admin', 'file_export']
     const xlsxBuf = await buildFuelExportExcelBuffer(rows, parties, exportCols, periodLabel);
 
     let logoCid = null;
+    const xb = Buffer.isBuffer(xlsxBuf) ? xlsxBuf : Buffer.from(xlsxBuf);
     const attachments = [
       {
         filename: 'fuel-data-transactions.xlsx',
-        content: Buffer.from(xlsxBuf),
+        content: xb.toString('base64'),
+        encoding: 'base64',
         contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       },
     ];
     if (supplierLogoAbsPath) {
       logoCid = 'supplierlogo';
-      attachments.push({
-        filename: 'logo',
-        path: supplierLogoAbsPath,
-        cid: logoCid,
-      });
+      try {
+        const logoFileBuf = fs.readFileSync(supplierLogoAbsPath);
+        attachments.push({
+          filename: 'logo',
+          content: logoFileBuf.toString('base64'),
+          encoding: 'base64',
+          cid: logoCid,
+        });
+      } catch (_) {
+        logoCid = null;
+      }
     }
 
     if (body.attach_pdf) {
@@ -1842,9 +1851,11 @@ router.post('/export/email', requireFuelDataAnyTab(['fuel_admin', 'file_export']
         columns: exportCols,
         periodLabel,
       });
+      const pb = Buffer.isBuffer(pdfBuf) ? pdfBuf : Buffer.from(pdfBuf);
       attachments.push({
         filename: 'fuel-data-statement.pdf',
-        content: pdfBuf,
+        content: pb.toString('base64'),
+        encoding: 'base64',
         contentType: 'application/pdf',
       });
     }
@@ -2134,6 +2145,490 @@ router.post('/attendant/parse-slip', requireFuelDataTab('attendant_portal'), (re
       next(e);
     }
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto Share — schedule MTD transaction sheet emails (PDF + Excel) on a cadence
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function ensureAutoShareTable() {
+  await query(`
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'fuel_data_auto_share_schedules')
+    BEGIN
+      CREATE TABLE fuel_data_auto_share_schedules (
+        id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWID(),
+        tenant_id UNIQUEIDENTIFIER NOT NULL,
+        created_by_user_id UNIQUEIDENTIFIER NULL,
+        name NVARCHAR(200) NOT NULL,
+        recipient_emails NVARCHAR(MAX) NOT NULL,
+        cc_emails NVARCHAR(MAX) NULL,
+        supplier_id UNIQUEIDENTIFIER NULL,
+        customer_id UNIQUEIDENTIFIER NULL,
+        status_filter NVARCHAR(40) NOT NULL CONSTRAINT DF_fdas_status DEFAULT N'verified',
+        columns_json NVARCHAR(MAX) NULL,
+        attach_pdf BIT NOT NULL CONSTRAINT DF_fdas_attach_pdf DEFAULT 1,
+        attach_excel BIT NOT NULL CONSTRAINT DF_fdas_attach_excel DEFAULT 1,
+        every_n_days INT NOT NULL CONSTRAINT DF_fdas_every_n DEFAULT 2,
+        time_hhmm CHAR(5) NOT NULL CONSTRAINT DF_fdas_time DEFAULT '08:00',
+        start_date DATE NULL,
+        is_active BIT NOT NULL CONSTRAINT DF_fdas_active DEFAULT 1,
+        subject NVARCHAR(300) NULL,
+        intro_message NVARCHAR(MAX) NULL,
+        last_run_at DATETIME2 NULL,
+        last_run_status NVARCHAR(80) NULL,
+        last_run_detail NVARCHAR(MAX) NULL,
+        next_run_at DATETIME2 NULL,
+        created_at DATETIME2 NOT NULL CONSTRAINT DF_fdas_created DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2 NOT NULL CONSTRAINT DF_fdas_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT CK_fdas_every_n CHECK (every_n_days BETWEEN 1 AND 30),
+        CONSTRAINT CK_fdas_status CHECK (status_filter IN (N'verified', N'pending', N'all')),
+        CONSTRAINT FK_fdas_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IX_fdas_tenant ON fuel_data_auto_share_schedules(tenant_id, is_active);
+    END
+  `);
+}
+
+function splitEmailList(s) {
+  if (!s || !String(s).trim()) return [];
+  return [
+    ...new Set(
+      String(s)
+        .split(/[\s,;]+/)
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e && e.includes('@'))
+    ),
+  ];
+}
+
+function mapAutoShareRow(row) {
+  if (!row) return null;
+  let columns = [];
+  try {
+    columns = row.columns_json ? JSON.parse(row.columns_json) : [];
+    if (!Array.isArray(columns)) columns = [];
+  } catch (_) {
+    columns = [];
+  }
+  return {
+    id: row.id,
+    tenant_id: row.tenant_id,
+    name: row.name,
+    recipient_emails: splitEmailList(row.recipient_emails),
+    cc_emails: splitEmailList(row.cc_emails),
+    supplier_id: row.supplier_id || null,
+    customer_id: row.customer_id || null,
+    status_filter: row.status_filter || 'verified',
+    columns,
+    attach_pdf: !!row.attach_pdf,
+    attach_excel: !!row.attach_excel,
+    every_n_days: Number(row.every_n_days) || 2,
+    time_hhmm: row.time_hhmm || '08:00',
+    start_date: row.start_date || null,
+    is_active: !!row.is_active,
+    subject: row.subject || null,
+    intro_message: row.intro_message || null,
+    last_run_at: row.last_run_at || null,
+    last_run_status: row.last_run_status || null,
+    last_run_detail: row.last_run_detail || null,
+    next_run_at: row.next_run_at || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function monthToDateRange(now = new Date()) {
+  // Use APP_TIMEZONE-friendly local Y/M; for Africa/Johannesburg this matches server in most deployments.
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const pad = (n) => String(n).padStart(2, '0');
+  const first = `${y}-${pad(m + 1)}-01`;
+  const today = `${y}-${pad(m + 1)}-${pad(now.getDate())}`;
+  return { date_from: first, date_to: today };
+}
+
+function fmtNumber(n, dp = 0) {
+  const v = Number(n) || 0;
+  return v.toLocaleString('en-ZA', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+}
+
+function buildAutoShareEmailHtml({
+  schedule,
+  rows,
+  periodLabel,
+  supplierRow,
+  customerRow,
+}) {
+  const intro = (schedule.intro_message || '').trim();
+  const introBlock = intro
+    ? `<div style="margin:18px 0 6px;padding:14px 18px;border-left:4px solid #1e3a5f;background:#f8fafc;border-radius:8px;color:#0f172a;font-size:14px;line-height:1.55;">${escapeHtml(
+        intro
+      ).replace(/\n/g, '<br/>')}</div>`
+    : '';
+
+  const supplierBlock = supplierRow
+    ? `<tr><td style="padding:6px 10px;color:#64748b;width:160px;font-size:12px;">Supplier</td><td style="padding:6px 10px;color:#0f172a;font-weight:600;">${escapeHtml(
+        supplierRow.name || ''
+      )}</td></tr>`
+    : '';
+  const customerBlock = customerRow
+    ? `<tr><td style="padding:6px 10px;color:#64748b;width:160px;font-size:12px;">Customer</td><td style="padding:6px 10px;color:#0f172a;font-weight:600;">${escapeHtml(
+        customerRow.name || ''
+      )}</td></tr>`
+    : '';
+
+  const today = new Date().toLocaleDateString('en-ZA', { day: '2-digit', month: 'long', year: 'numeric' });
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>${escapeHtml(schedule.name || 'Fuel data — auto share')}</title></head>
+<body style="margin:0;padding:0;background:#eef2f6;font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+  <div style="max-width:760px;margin:0 auto;padding:24px;">
+    <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);border-radius:16px 16px 0 0;padding:28px 30px;color:#e2e8f0;">
+      <div style="font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#94a3b8;">Thinkers · Fuel data</div>
+      <h1 style="margin:8px 0 6px;font-size:24px;line-height:1.25;color:#ffffff;">${escapeHtml(
+        schedule.name || 'Auto-share transaction sheet'
+      )}</h1>
+      <div style="font-size:14px;color:#cbd5e1;">${escapeHtml(periodLabel || 'Month-to-date')}</div>
+      <div style="margin-top:6px;font-size:12px;color:#94a3b8;">Sent ${escapeHtml(today)}</div>
+    </div>
+
+    <div style="background:#ffffff;padding:26px 30px;border-radius:0 0 16px 16px;box-shadow:0 6px 24px rgba(15,23,42,.08);">
+      ${
+        supplierBlock || customerBlock
+          ? `<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:10px;overflow:hidden;">${supplierBlock}${customerBlock}</table>`
+          : ''
+      }
+      ${introBlock}
+
+      <p style="margin:24px 0 0;color:#475569;font-size:13px;line-height:1.6;">
+        Attached you will find the <b>Excel</b> and <b>PDF</b> transaction sheet covering the full ${escapeHtml(
+          periodLabel || 'month-to-date'
+        )} period using your saved column layout. Reply to this email if you need adjustments to recipients, cadence or columns.
+      </p>
+
+      <p style="margin:18px 0 0;color:#94a3b8;font-size:11px;">This is an automated send from Thinkers · Fuel Data Auto Share. ${fmtNumber(
+        rows?.length || 0
+      )} transaction${(rows?.length || 0) === 1 ? '' : 's'} included.</p>
+    </div>
+  </div>
+</body></html>`;
+}
+
+/** Internal: build attachments + body and call sendEmail. Used by routes and the cron runner. */
+export async function runFuelDataAutoShareSendInternal(scheduleRow) {
+  const tid = scheduleRow.tenant_id ? String(scheduleRow.tenant_id) : null;
+  if (!tid) return { ok: false, error: 'missing tenant' };
+
+  const recipients = splitEmailList(scheduleRow.recipient_emails);
+  const cc = splitEmailList(scheduleRow.cc_emails);
+  if (!recipients.length) {
+    return { ok: false, error: 'No recipient emails configured.' };
+  }
+
+  let columns = [];
+  try {
+    columns = scheduleRow.columns_json ? JSON.parse(scheduleRow.columns_json) : [];
+    if (!Array.isArray(columns)) columns = [];
+  } catch (_) {
+    columns = [];
+  }
+  const exportCols = parseExportColumns(columns.length ? columns : undefined);
+
+  const { date_from, date_to } = monthToDateRange();
+  const queryFilters = {
+    date_from,
+    date_to,
+    status: scheduleRow.status_filter || 'verified',
+    supplier_id: scheduleRow.supplier_id || undefined,
+    customer_id: scheduleRow.customer_id || undefined,
+  };
+  Object.keys(queryFilters).forEach((k) => {
+    if (queryFilters[k] === undefined || queryFilters[k] === null || queryFilters[k] === '') delete queryFilters[k];
+  });
+
+  const rows = await rowsForExport(tid, queryFilters, scheduleRow.status_filter || 'verified');
+  const parties = await loadFuelStatementParties(tid, queryFilters, rows);
+  const periodLabel = `Month-to-date (${date_from} → ${date_to})`;
+
+  const xlsxBuf = await buildFuelExportExcelBuffer(rows, parties, exportCols, periodLabel);
+  let pdfBuf = null;
+  if (scheduleRow.attach_pdf) {
+    pdfBuf = await buildFuelDataPdfBuffer(rows, {
+      supplierRow: parties.supplierRow,
+      customerRow: parties.customerRow,
+      logoBuffer: parties.logoBuffer,
+      title: 'Diesel transaction statement (MTD)',
+      columns: exportCols,
+      periodLabel,
+    });
+  }
+
+  const attachments = [];
+  if (scheduleRow.attach_excel !== false && scheduleRow.attach_excel !== 0) {
+    const xb = Buffer.isBuffer(xlsxBuf) ? xlsxBuf : Buffer.from(xlsxBuf);
+    attachments.push({
+      filename: `fuel-data-mtd-${date_to}.xlsx`,
+      content: xb.toString('base64'),
+      encoding: 'base64',
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  }
+  if (pdfBuf) {
+    const pb = Buffer.isBuffer(pdfBuf) ? pdfBuf : Buffer.from(pdfBuf);
+    attachments.push({
+      filename: `fuel-data-mtd-${date_to}.pdf`,
+      content: pb.toString('base64'),
+      encoding: 'base64',
+      contentType: 'application/pdf',
+    });
+  }
+
+  const subject =
+    (scheduleRow.subject && String(scheduleRow.subject).trim()) ||
+    `Fuel Data — month-to-date transactions (${date_from} → ${date_to})`;
+  const html = buildAutoShareEmailHtml({
+    schedule: scheduleRow,
+    rows,
+    periodLabel,
+    supplierRow: parties.supplierRow,
+    customerRow: parties.customerRow,
+  });
+
+  let sent = 0;
+  let failed = 0;
+  const errors = [];
+  for (const to of recipients) {
+    try {
+      await sendEmail({
+        to,
+        cc: cc.length ? cc.join(', ') : undefined,
+        subject,
+        body: html,
+        html: true,
+        attachments,
+      });
+      sent += 1;
+    } catch (e) {
+      failed += 1;
+      errors.push(`${to}: ${e?.message || e}`);
+    }
+  }
+  return {
+    ok: failed === 0 || sent > 0,
+    sent,
+    failed,
+    row_count: rows.length,
+    error: errors.length ? errors.join('; ') : null,
+    period: { date_from, date_to },
+  };
+}
+
+const requireAutoShareAccess = requireFuelDataAnyTab(['auto_share', 'fuel_admin', 'file_export']);
+
+/** List active recipients (tenant users + super admins). */
+router.get('/auto-share/recipients', requireAutoShareAccess, async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    if (!tid) return res.json({ recipients: [] });
+    const r = await query(
+      `SELECT id, email, full_name, role
+       FROM users
+       WHERE email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''
+         AND (tenant_id = @tid OR role = N'super_admin')
+       ORDER BY CASE WHEN role = N'super_admin' THEN 0 ELSE 1 END, full_name, email`,
+      { tid }
+    );
+    const recipients = (r.recordset || []).map((row) => ({
+      id: row.id,
+      email: row.email,
+      full_name: row.full_name,
+      role: row.role || null,
+      is_super_admin: row.role === 'super_admin',
+    }));
+    res.json({ recipients });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** List schedules. */
+router.get('/auto-share/schedules', requireAutoShareAccess, async (req, res, next) => {
+  try {
+    await ensureAutoShareTable();
+    const tid = tenantId(req);
+    const r = await query(
+      `SELECT * FROM fuel_data_auto_share_schedules WHERE tenant_id = @tid ORDER BY created_at DESC`,
+      { tid }
+    );
+    res.json({ schedules: (r.recordset || []).map(mapAutoShareRow) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** Helper: validate + serialize body fields. */
+function normalizeAutoShareBody(body = {}) {
+  const recipients = Array.isArray(body.recipient_emails)
+    ? body.recipient_emails.join(',')
+    : String(body.recipient_emails || '');
+  const cc = Array.isArray(body.cc_emails) ? body.cc_emails.join(',') : String(body.cc_emails || '');
+  const cols = Array.isArray(body.columns) ? body.columns.filter((k) => FUEL_EXPORT_COLUMN_MAP[k]) : null;
+  const everyN = Math.max(1, Math.min(30, Number(body.every_n_days) || 2));
+  const time = String(body.time_hhmm || '08:00').match(/^(\d{1,2}):(\d{2})$/)
+    ? body.time_hhmm
+    : '08:00';
+  const status = ['verified', 'pending', 'all'].includes(String(body.status_filter || ''))
+    ? body.status_filter
+    : 'verified';
+  return {
+    name: String(body.name || 'Auto share').slice(0, 200),
+    recipient_emails: recipients,
+    cc_emails: cc,
+    supplier_id: body.supplier_id || null,
+    customer_id: body.customer_id || null,
+    status_filter: status,
+    columns_json: cols && cols.length ? JSON.stringify(cols) : null,
+    attach_pdf: body.attach_pdf === false ? 0 : 1,
+    attach_excel: body.attach_excel === false ? 0 : 1,
+    every_n_days: everyN,
+    time_hhmm: time,
+    start_date: body.start_date || null,
+    is_active: body.is_active === false ? 0 : 1,
+    subject: body.subject ? String(body.subject).slice(0, 300) : null,
+    intro_message: body.intro_message ? String(body.intro_message).slice(0, 4000) : null,
+  };
+}
+
+router.post('/auto-share/schedules', requireAutoShareAccess, async (req, res, next) => {
+  try {
+    await ensureAutoShareTable();
+    const tid = tenantId(req);
+    if (!tid) return res.status(400).json({ error: 'No tenant' });
+    const data = normalizeAutoShareBody(req.body || {});
+    if (!splitEmailList(data.recipient_emails).length) {
+      return res.status(400).json({ error: 'At least one recipient email is required.' });
+    }
+    const ins = await query(
+      `INSERT INTO fuel_data_auto_share_schedules
+       (tenant_id, created_by_user_id, name, recipient_emails, cc_emails, supplier_id, customer_id,
+        status_filter, columns_json, attach_pdf, attach_excel, every_n_days, time_hhmm, start_date,
+        is_active, subject, intro_message)
+       OUTPUT INSERTED.*
+       VALUES (@tid, @uid, @name, @rec, @cc, @sup, @cust, @status, @cols, @apdf, @axls, @everyN, @time,
+               @startDate, @active, @subject, @intro)`,
+      {
+        tid,
+        uid: req.user?.id || null,
+        name: data.name,
+        rec: data.recipient_emails,
+        cc: data.cc_emails,
+        sup: data.supplier_id,
+        cust: data.customer_id,
+        status: data.status_filter,
+        cols: data.columns_json,
+        apdf: data.attach_pdf,
+        axls: data.attach_excel,
+        everyN: data.every_n_days,
+        time: data.time_hhmm,
+        startDate: data.start_date,
+        active: data.is_active,
+        subject: data.subject,
+        intro: data.intro_message,
+      }
+    );
+    res.json({ schedule: mapAutoShareRow(ins.recordset?.[0]) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.patch('/auto-share/schedules/:id', requireAutoShareAccess, async (req, res, next) => {
+  try {
+    await ensureAutoShareTable();
+    const tid = tenantId(req);
+    const id = req.params.id;
+    const data = normalizeAutoShareBody(req.body || {});
+    const upd = await query(
+      `UPDATE fuel_data_auto_share_schedules
+       SET name = @name, recipient_emails = @rec, cc_emails = @cc, supplier_id = @sup, customer_id = @cust,
+           status_filter = @status, columns_json = @cols, attach_pdf = @apdf, attach_excel = @axls,
+           every_n_days = @everyN, time_hhmm = @time, start_date = @startDate, is_active = @active,
+           subject = @subject, intro_message = @intro, updated_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.*
+       WHERE id = @id AND tenant_id = @tid`,
+      {
+        id,
+        tid,
+        name: data.name,
+        rec: data.recipient_emails,
+        cc: data.cc_emails,
+        sup: data.supplier_id,
+        cust: data.customer_id,
+        status: data.status_filter,
+        cols: data.columns_json,
+        apdf: data.attach_pdf,
+        axls: data.attach_excel,
+        everyN: data.every_n_days,
+        time: data.time_hhmm,
+        startDate: data.start_date,
+        active: data.is_active,
+        subject: data.subject,
+        intro: data.intro_message,
+      }
+    );
+    if (!upd.recordset?.length) return res.status(404).json({ error: 'Schedule not found' });
+    res.json({ schedule: mapAutoShareRow(upd.recordset[0]) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.delete('/auto-share/schedules/:id', requireAutoShareAccess, async (req, res, next) => {
+  try {
+    await ensureAutoShareTable();
+    const tid = tenantId(req);
+    await query(
+      `DELETE FROM fuel_data_auto_share_schedules WHERE id = @id AND tenant_id = @tid`,
+      { id: req.params.id, tid }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** Manual "send now" — uses the same path as the scheduled runner. */
+router.post('/auto-share/schedules/:id/run', requireAutoShareAccess, async (req, res, next) => {
+  try {
+    await ensureAutoShareTable();
+    const tid = tenantId(req);
+    const r = await query(
+      `SELECT * FROM fuel_data_auto_share_schedules WHERE id = @id AND tenant_id = @tid`,
+      { id: req.params.id, tid }
+    );
+    const row = r.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Schedule not found' });
+    const result = await runFuelDataAutoShareSendInternal(row);
+    try {
+      await query(
+        `UPDATE fuel_data_auto_share_schedules
+         SET last_run_at = SYSUTCDATETIME(), last_run_status = @status, last_run_detail = @detail, updated_at = SYSUTCDATETIME()
+         WHERE id = @id`,
+        {
+          id: row.id,
+          status: result.ok ? 'ok' : 'error',
+          detail: result.ok
+            ? `Manual: sent ${result.sent}, ${result.row_count} tx`
+            : String(result.error || 'send failed').slice(0, 4000),
+        }
+      );
+    } catch (_) {
+      /* ignore */
+    }
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
 });
 
 export default router;
