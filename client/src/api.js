@@ -458,6 +458,21 @@ export const commandCentre = {
   permissions: () => request('/command-centre/permissions'),
   grantPermission: (userId, tabId) => request('/command-centre/permissions', { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
   revokePermission: (userId, tabId) => request(`/command-centre/permissions?user_id=${encodeURIComponent(userId)}&tab_id=${encodeURIComponent(tabId)}`, { method: 'DELETE' }),
+  settings: {
+    get: () => request('/command-centre/settings'),
+    logoUrl: () => `${API}/command-centre/logo`,
+    uploadLogo: (file) => {
+      const formData = new FormData();
+      formData.append('logo', file);
+      return fetch(`${API}/command-centre/logo`, { method: 'POST', body: formData, credentials: 'include' })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        });
+    },
+    deleteLogo: () => request('/command-centre/logo', { method: 'DELETE' }),
+  },
   approvers: () => request('/command-centre/approvers'),
   trends: (params = {}) => {
     const q = new URLSearchParams();

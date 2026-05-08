@@ -4,6 +4,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
+import { loadShiftReportLogoDataUrl } from './lib/shiftReportLogo.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
@@ -405,50 +406,34 @@ export default function Rector() {
       .catch(() => setMonthlyPerfDetail(null));
   }, [selectedMonthlyPerfId]);
 
-  const downloadMonthlyPerfPdf = (report) => {
+  const downloadMonthlyPerfPdf = async (report) => {
     if (!report) return;
     setMonthlyPerfPdfDownloading(true);
-    const run = (logoDataUrl) => {
-      try {
-        const doc = generateMonthlyPerformanceReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
-        const name = (report.title || 'monthly-performance-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
-        doc.save(`${name}-${report.submitted_date || 'report'}.pdf`);
-      } catch (e) { setError(e?.message || 'PDF failed'); }
+    try {
+      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
+      const doc = generateMonthlyPerformanceReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+      const name = (report.title || 'monthly-performance-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+      doc.save(`${name}-${report.submitted_date || 'report'}.pdf`);
+    } catch (e) {
+      setError(e?.message || 'PDF failed');
+    } finally {
       setMonthlyPerfPdfDownloading(false);
-    };
-    fetch('/logos/tihlo-logo.png', { credentials: 'include' })
-      .then((r) => (r.ok ? r.blob() : null))
-      .then((blob) => {
-        if (!blob) { run(null); return; }
-        const reader = new FileReader();
-        reader.onload = () => run(reader.result);
-        reader.onerror = () => run(null);
-        reader.readAsDataURL(blob);
-      })
-      .catch(() => run(null));
+    }
   };
 
-  const downloadActionPlanPdf = (plan) => {
+  const downloadActionPlanPdf = async (plan) => {
     if (!plan) return;
     setActionPlanPdfDownloading(true);
-    const run = (logoDataUrl) => {
-      try {
-        const doc = generateActionPlanPdf(plan, logoDataUrl ? { logoDataUrl } : {});
-        const name = (plan.title || 'action-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
-        doc.save(`${name}-${plan.document_date || 'plan'}.pdf`);
-      } catch (e) { setError(e?.message || 'PDF failed'); }
+    try {
+      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
+      const doc = generateActionPlanPdf(plan, logoDataUrl ? { logoDataUrl } : {});
+      const name = (plan.title || 'action-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+      doc.save(`${name}-${plan.document_date || 'plan'}.pdf`);
+    } catch (e) {
+      setError(e?.message || 'PDF failed');
+    } finally {
       setActionPlanPdfDownloading(false);
-    };
-    fetch('/logos/tihlo-logo.png', { credentials: 'include' })
-      .then((r) => (r.ok ? r.blob() : null))
-      .then((blob) => {
-        if (!blob) { run(null); return; }
-        const reader = new FileReader();
-        reader.onload = () => run(reader.result);
-        reader.onerror = () => run(null);
-        reader.readAsDataURL(blob);
-      })
-      .catch(() => run(null));
+    }
   };
 
   const suspendedTruckIds = new Set((suspensions || []).filter((s) => String(s.entity_type).toLowerCase() === 'truck').map((s) => String(s.entity_id)));
@@ -652,27 +637,17 @@ export default function Rector() {
     setPdfDownloading(null);
   };
 
-  const downloadShiftReportPdf = (report) => {
+  const downloadShiftReportPdf = async (report) => {
     setPdfDownloading(report.id);
-    const run = (logoDataUrl) => {
-      try {
-        const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
-        doc.save(buildShiftReportDownloadFilename(report, { tenantName: user?.tenant_name }));
-      } catch (e) { setError(e?.message || 'PDF failed'); }
+    try {
+      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
+      const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+      doc.save(buildShiftReportDownloadFilename(report, { tenantName: user?.tenant_name }));
+    } catch (e) {
+      setError(e?.message || 'PDF failed');
+    } finally {
       setPdfDownloading(null);
-    };
-    if (user?.tenant_id) {
-      fetch(tenantsApi.logoUrl(user.tenant_id), { credentials: 'include' })
-        .then((r) => (r.ok ? r.blob() : null))
-        .then((blob) => {
-          if (!blob) { run(null); return; }
-          const reader = new FileReader();
-          reader.onload = () => run(reader.result);
-          reader.onerror = () => run(null);
-          reader.readAsDataURL(blob);
-        })
-        .catch(() => run(null));
-    } else run(null);
+    }
   };
 
   const downloadInvestigationReportPdf = (report) => {
@@ -684,27 +659,19 @@ export default function Rector() {
     setPdfDownloading(null);
   };
 
-  const downloadProgressReportPdf = (report) => {
+  const downloadProgressReportPdf = async (report) => {
     if (!report) return;
     setProgressReportPdfDownloading(true);
-    const run = (logoDataUrl) => {
-      try {
-        const doc = generateProgressReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
-        const name = (report.title || 'progress-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
-        doc.save(`${name}-${report.report_date || 'download'}.pdf`);
-      } catch (e) { setError(e?.message || 'PDF failed'); }
+    try {
+      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
+      const doc = generateProgressReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+      const name = (report.title || 'progress-report').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 50);
+      doc.save(`${name}-${report.report_date || 'download'}.pdf`);
+    } catch (e) {
+      setError(e?.message || 'PDF failed');
+    } finally {
       setProgressReportPdfDownloading(false);
-    };
-    fetch('/logos/tihlo-logo.png', { credentials: 'include' })
-      .then((r) => (r.ok ? r.blob() : null))
-      .then((blob) => {
-        if (!blob) { run(null); return; }
-        const reader = new FileReader();
-        reader.onload = () => run(reader.result);
-        reader.onerror = () => run(null);
-        reader.readAsDataURL(blob);
-      })
-      .catch(() => run(null));
+    }
   };
 
   const filteredShiftReports = shiftReports.filter((r) => {

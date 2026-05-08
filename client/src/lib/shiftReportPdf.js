@@ -13,6 +13,12 @@ const BLACK = [0, 0, 0];
 const TABLE_BORDER = [60, 60, 60];
 const TEXT_DARK = [33, 33, 33];
 const TEXT_MUTED = [80, 80, 80];
+const TEXT_SUBTLE = [110, 116, 130];
+const BORDER_SOFT = [218, 223, 232];
+const STATUS_APPROVED = [22, 163, 74];
+const STATUS_DRAFT = [217, 119, 6];
+const STATUS_REJECTED = [220, 38, 38];
+const STATUS_OTHER = [71, 85, 105];
 
 const BAR_HEIGHT = 6;
 const ROW_HEIGHT = 5.5;
@@ -65,6 +71,115 @@ function sectionBar(doc, yRef, title) {
   doc.setTextColor(255, 255, 255);
   doc.text(title.toUpperCase(), MARGIN + 2, y + 4.2);
   yRef.current = y + BAR_HEIGHT + 3;
+}
+
+/** Map a report status string to a display label and pill color. */
+function statusBadgeMeta(status) {
+  const raw = String(status || '').trim();
+  const norm = raw.toLowerCase();
+  if (!raw) return { label: '—', color: STATUS_OTHER };
+  if (norm === 'approved' || norm === 'accepted') return { label: 'Approved', color: STATUS_APPROVED };
+  if (norm === 'draft' || norm === 'pending' || norm === 'submitted' || norm === 'in_review' || norm === 'in review') {
+    return { label: raw.charAt(0).toUpperCase() + raw.slice(1), color: STATUS_DRAFT };
+  }
+  if (norm === 'rejected' || norm === 'declined') return { label: raw.charAt(0).toUpperCase() + raw.slice(1), color: STATUS_REJECTED };
+  return { label: raw.charAt(0).toUpperCase() + raw.slice(1), color: STATUS_OTHER };
+}
+
+/**
+ * Minimal "Report information" panel — 4 columns of label/value cells.
+ * Each cell stacks a tiny grey label above its value; thin dividers between rows.
+ */
+function drawReportInformationPanel(doc, yRef, report, isSingleOps) {
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
+  const fmtDateTime = (d) => (d ? new Date(d).toLocaleString(undefined, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+
+  const routeText = isSingleOps
+    ? (report.routes && report.routes.length ? report.routes.join(', ') : '—')
+    : (report.route || '—');
+  const shiftTimeText = [report.shift_start, report.shift_end].filter(Boolean).join(' – ') || '—';
+
+  const entries = [];
+  entries.push({ label: isSingleOps ? 'Routes' : 'Route', value: routeText });
+  if (report.report_date) entries.push({ label: 'Report date', value: fmtDate(report.report_date) });
+  if (report.shift_date) entries.push({ label: 'Shift date', value: fmtDate(report.shift_date) });
+  if (shiftTimeText !== '—') entries.push({ label: 'Shift time', value: shiftTimeText });
+  if (report.status) entries.push({ label: 'Status', value: statusBadgeMeta(report.status).label });
+  if (report.controller1_name) entries.push({ label: 'Controller 1', value: report.controller1_name });
+  if (report.controller2_name) entries.push({ label: 'Controller 2', value: report.controller2_name });
+  if (report.controller1_email) entries.push({ label: 'Controller 1 email', value: report.controller1_email });
+  if (report.controller2_email) entries.push({ label: 'Controller 2 email', value: report.controller2_email });
+  if (report.created_by_name) entries.push({ label: 'Created by', value: report.created_by_name });
+  if (report.created_at) entries.push({ label: 'Created at', value: fmtDateTime(report.created_at) });
+
+  // 4 columns: [Label] [Value] [Label] [Value] — two key/value pairs side by side per row.
+  const labelW = 32;
+  const valueW = (CONTENT_WIDTH - labelW * 2) / 2;
+  const colWidths = [labelW, valueW, labelW, valueW];
+  const colXs = [MARGIN, MARGIN + labelW, MARGIN + labelW + valueW, MARGIN + labelW * 2 + valueW];
+  const cellPadX = 1.8;
+  const cellPadY = 1.6;
+  const lineH = 4.2;
+
+  const measure = (text, w) => {
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(FONT_SIZE_TABLE);
+    return wrap(doc, text || '—', w - cellPadX * 2).length;
+  };
+
+  doc.setDrawColor(...TABLE_BORDER);
+  doc.setLineWidth(0.3);
+
+  for (let r = 0; r < entries.length; r += 2) {
+    const left = entries[r];
+    const right = entries[r + 1] || null;
+
+    const linesLeftLabel = 1;
+    const linesLeftValue = measure(left?.value, valueW);
+    const linesRightLabel = right ? 1 : 0;
+    const linesRightValue = right ? measure(right?.value, valueW) : 0;
+    const maxLines = Math.max(linesLeftLabel, linesLeftValue, linesRightLabel, linesRightValue, 1);
+    const rowH = cellPadY * 2 + maxLines * lineH;
+
+    checkNewPage(doc, yRef, rowH + 4);
+    const y = yRef.current;
+
+    // Outer + vertical separators
+    doc.rect(MARGIN, y, CONTENT_WIDTH, rowH, 'S');
+    for (let i = 1; i < 4; i += 1) {
+      const x = colXs[i];
+      doc.line(x, y, x, y + rowH);
+    }
+
+    const drawLabelCell = (x, w, text) => {
+      doc.setFont(FONT, 'bold');
+      doc.setFontSize(FONT_SIZE_TABLE);
+      doc.setTextColor(...TEXT_DARK);
+      doc.text(`${text}:`, x + cellPadX, y + cellPadY + lineH - 0.4);
+    };
+    const drawValueCell = (x, w, text) => {
+      doc.setFont(FONT, 'normal');
+      doc.setFontSize(FONT_SIZE_TABLE);
+      doc.setTextColor(...TEXT_MUTED);
+      const lines = wrap(doc, text || '—', w - cellPadX * 2);
+      lines.forEach((line, i) => {
+        doc.text(line, x + cellPadX, y + cellPadY + (i + 1) * lineH - 0.4);
+      });
+    };
+
+    if (left) {
+      drawLabelCell(colXs[0], colWidths[0], left.label);
+      drawValueCell(colXs[1], colWidths[1], left.value);
+    }
+    if (right) {
+      drawLabelCell(colXs[2], colWidths[2], right.label);
+      drawValueCell(colXs[3], colWidths[3], right.value);
+    }
+
+    yRef.current = y + rowH;
+  }
+
+  yRef.current += SECTION_GAP;
 }
 
 /** Two-column key-value table; full width CONTENT_WIDTH, compact rows */
@@ -209,7 +324,29 @@ function formatShiftReportFileDate(report) {
 }
 
 /**
- * Download filename for shift report PDFs, e.g. "Tihlo Day Shift Report 27 Mar 2026 - Anthra Siding.pdf"
+ * Format a numeric ref into a 3-digit reference string, prefixed with "S" for
+ * single-operations reports (e.g. 7 → "007", or "S007" when isSingleOps).
+ * Accepts either (refNumber, { isSingleOps }) or a report-like object.
+ */
+export function formatShiftReportRef(refNumberOrReport, options = {}) {
+  let refNumber = refNumberOrReport;
+  let isSingleOps = !!options.isSingleOps;
+  if (refNumberOrReport && typeof refNumberOrReport === 'object') {
+    refNumber = refNumberOrReport.ref_number;
+    isSingleOps = refNumberOrReport.report_kind === 'single_ops'
+      || (Array.isArray(refNumberOrReport.routes) && refNumberOrReport.routes.length > 0)
+      || isSingleOps;
+  }
+  if (refNumber == null || refNumber === '') return '';
+  const n = Number(refNumber);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const padded = String(Math.trunc(n)).padStart(3, '0');
+  return isSingleOps ? `S${padded}` : padded;
+}
+
+/**
+ * Download filename for shift report PDFs, e.g.
+ * "001 Tihlo Day Shift Report 27 Mar 2026 - Anthra Siding.pdf"
  * @param {Object} report
  * @param {Object} [options]
  * @param {string} [options.tenantName] - Company name (defaults to report.tenant_name or "Tihlo")
@@ -223,7 +360,9 @@ export function buildShiftReportDownloadFilename(report, options = {}) {
     ? sanitizeFilenamePart((report.routes || []).join(' + ') || 'Multi-route', 'Routes')
     : sanitizeFilenamePart(report.route, 'Route');
   const kindLabel = isSo ? 'Single operation shift report' : 'Shift Report';
-  const base = `${tenant} ${dayNight} ${kindLabel} ${dateStr} - ${routeLabel}`;
+  const ref = formatShiftReportRef(report.ref_number, { isSingleOps: isSo });
+  const refPrefix = ref ? `${ref} ` : '';
+  const base = `${refPrefix}${tenant} ${dayNight} ${kindLabel} ${dateStr} - ${routeLabel}`;
   return `${base}.pdf`;
 }
 
@@ -254,9 +393,19 @@ export function generateShiftReportPdf(report, options = {}) {
   doc.setTextColor(...BLACK);
   const titleText = isSingleOps ? 'SINGLE OPERATION SHIFT REPORT' : 'SHIFT REPORT';
   doc.text(titleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(titleText) / 2, headerY);
+  const refStr = formatShiftReportRef(report.ref_number, { isSingleOps });
+  if (refStr) {
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(...TEXT_MUTED);
+    const refLabel = `REF #${refStr}`;
+    doc.text(refLabel, MARGIN + CONTENT_WIDTH - doc.getTextWidth(refLabel), headerY);
+  }
   doc.setFont(FONT, 'normal');
   doc.setFontSize(FONT_SIZE_BODY);
   doc.setTextColor(...TEXT_MUTED);
+  const routeLineMaxW = CONTENT_WIDTH - 4;
+  const routeLineH = 4.5;
   const routeText = isSingleOps
     ? report.routes && report.routes.length
       ? `Routes: ${report.routes.join(', ')}`
@@ -264,10 +413,15 @@ export function generateShiftReportPdf(report, options = {}) {
     : report.route
       ? `Route: ${report.route}`
       : 'Route: —';
-  doc.text(routeText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(routeText) / 2, headerY + 5);
+  const routeLines = doc.splitTextToSize(routeText, routeLineMaxW);
+  let routeY = headerY + 5;
+  routeLines.forEach((line) => {
+    doc.text(line, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(line) / 2, routeY);
+    routeY += routeLineH;
+  });
   const subtitleText = "Thinkers Afrika's Official Controller Shift Documentation";
-  doc.text(subtitleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(subtitleText) / 2, headerY + 10);
-  yRef.current = headerY + 15;
+  doc.text(subtitleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(subtitleText) / 2, routeY + 1);
+  yRef.current = routeY + 6;
   doc.setDrawColor(...BLACK);
   doc.setLineWidth(0.4);
   doc.line(MARGIN, yRef.current, MARGIN + CONTENT_WIDTH, yRef.current);
@@ -275,19 +429,7 @@ export function generateShiftReportPdf(report, options = {}) {
 
   // —— REPORT INFORMATION ——
   sectionBar(doc, yRef, 'Report information');
-  keyValueTable(doc, yRef, [
-    [isSingleOps ? 'Routes' : 'Route', isSingleOps ? (report.routes && report.routes.length ? report.routes.join(', ') : '—') : report.route],
-    ['Report Date', report.report_date ? new Date(report.report_date).toLocaleDateString() : null],
-    ['Shift Date', report.shift_date ? new Date(report.shift_date).toLocaleDateString() : null],
-    ['Shift Time', [report.shift_start, report.shift_end].filter(Boolean).join(' - ') || null],
-    ['Controller 1', report.controller1_name],
-    ['Controller 1 Email', report.controller1_email],
-    ['Controller 2', report.controller2_name],
-    ['Controller 2 Email', report.controller2_email],
-    ['Report Status', report.status],
-    ['Created By', report.created_by_name],
-    ['Created At', report.created_at ? new Date(report.created_at).toLocaleString() : null],
-  ].filter(([, v]) => v != null && v !== ''));
+  drawReportInformationPanel(doc, yRef, report, isSingleOps);
 
   // —— SHIFT SUMMARY & OVERVIEW: single table including metrics, Overall Performance, Key highlights ——
   sectionBar(doc, yRef, 'Shift summary & overview');

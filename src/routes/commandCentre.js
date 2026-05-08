@@ -51,6 +51,26 @@ const fleetVerificationUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 }).single('file');
 
+const commandCentreLogoDir = path.join(process.cwd(), 'uploads', 'command-centre', 'logos');
+const commandCentreLogoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      if (!fs.existsSync(commandCentreLogoDir)) fs.mkdirSync(commandCentreLogoDir, { recursive: true });
+      cb(null, commandCentreLogoDir);
+    },
+    filename: (req, file, cb) => {
+      const tenantId = req.user?.tenant_id || 'unknown';
+      const ext = (path.extname(file.originalname) || '.png').toLowerCase().replace(/[^a-z0-9.]/g, '') || '.png';
+      cb(null, `${tenantId}${ext}`);
+    },
+  }),
+  limits: { fileSize: 4 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\/(jpeg|png|gif|webp|svg\+xml)$/i.test(file.mimetype);
+    cb(null, !!ok);
+  },
+}).single('logo');
+
 const router = Router();
 
 /** Tab IDs that exist in Command Centre (must match client CC_TABS) */
@@ -79,6 +99,7 @@ export const CC_TAB_IDS = [
   'delete_fleet_drivers',
   'handed_over_analysis',
   'fleet_verification',
+  'command_centre_settings',
 ];
 
 const FLEET_VERIFICATION_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -97,6 +118,131 @@ router.use(loadUser);
 router.use(requirePageAccess('command_centre'));
 registerCommandCentreSingleOpsShiftReports(router);
 
+/** Authorize Command Centre settings management: super_admin or tenant_admin in tenant. */
+function canManageCcSettings(user) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  if (user.role === 'tenant_admin') return true;
+  return false;
+}
+
+const CC_LOGO_MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+};
+
+/** GET command centre settings for the current tenant (logo presence + URL). */
+router.get('/settings', async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+    const r = await query(
+      `SELECT cc_logo_url, cc_logo_updated_at FROM tenants WHERE id = @tid`,
+      { tid }
+    );
+    const row = r.recordset?.[0] || {};
+    res.json({
+      cc_logo_url: row.cc_logo_url || null,
+      cc_logo_updated_at: row.cc_logo_updated_at || null,
+      can_manage: canManageCcSettings(req.user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET the Command Centre logo bytes for the current tenant. */
+router.get('/logo', async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(404).json({ error: 'No tenant context.' });
+    const r = await query(`SELECT cc_logo_url FROM tenants WHERE id = @tid`, { tid });
+    const rel = r.recordset?.[0]?.cc_logo_url;
+    if (!rel) return res.status(404).json({ error: 'No Command Centre logo set.' });
+    const filePath = path.join(process.cwd(), 'uploads', String(rel).replace(/\//g, path.sep));
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Logo file missing.' });
+    const ext = path.extname(filePath).toLowerCase();
+    res.setHeader('Content-Type', CC_LOGO_MIME_BY_EXT[ext] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.sendFile(filePath);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST a new Command Centre logo (replaces the existing one). */
+router.post('/logo', (req, res, next) => {
+  if (!canManageCcSettings(req.user)) return res.status(403).json({ error: 'Tenant admin or super admin required.' });
+  commandCentreLogoUpload(req, res, async (err) => {
+    if (err) {
+      const msg = /File too large/i.test(err.message || '') ? 'Logo file is too large (max 4MB).' : (err.message || 'Upload failed');
+      return res.status(400).json({ error: msg });
+    }
+    try {
+      if (!req.file) return res.status(400).json({ error: 'No logo file. Use field name "logo" (PNG, JPEG, WebP, GIF, SVG; max 4MB).' });
+      const tid = req.user.tenant_id;
+      if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+
+      const cur = await query(`SELECT cc_logo_url FROM tenants WHERE id = @tid`, { tid });
+      const prev = cur.recordset?.[0]?.cc_logo_url || null;
+      if (prev) {
+        try {
+          const prevAbs = path.join(process.cwd(), 'uploads', String(prev).replace(/\//g, path.sep));
+          const newAbs = req.file.path;
+          if (prevAbs && fs.existsSync(prevAbs) && path.resolve(prevAbs) !== path.resolve(newAbs)) {
+            fs.unlinkSync(prevAbs);
+          }
+        } catch (_) {}
+      }
+
+      const relativePath = `command-centre/logos/${req.file.filename}`;
+      await query(
+        `UPDATE tenants SET cc_logo_url = @rel, cc_logo_updated_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME() WHERE id = @tid`,
+        { tid, rel: relativePath }
+      );
+      const after = await query(
+        `SELECT cc_logo_url, cc_logo_updated_at FROM tenants WHERE id = @tid`,
+        { tid }
+      );
+      const row = after.recordset?.[0] || {};
+      res.json({
+        cc_logo_url: row.cc_logo_url || null,
+        cc_logo_updated_at: row.cc_logo_updated_at || null,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+});
+
+/** DELETE the Command Centre logo (revert to default). */
+router.delete('/logo', async (req, res, next) => {
+  try {
+    if (!canManageCcSettings(req.user)) return res.status(403).json({ error: 'Tenant admin or super admin required.' });
+    const tid = req.user.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+    const r = await query(`SELECT cc_logo_url FROM tenants WHERE id = @tid`, { tid });
+    const rel = r.recordset?.[0]?.cc_logo_url;
+    if (rel) {
+      try {
+        const abs = path.join(process.cwd(), 'uploads', String(rel).replace(/\//g, path.sep));
+        if (abs && fs.existsSync(abs)) fs.unlinkSync(abs);
+      } catch (_) {}
+    }
+    await query(
+      `UPDATE tenants SET cc_logo_url = NULL, cc_logo_updated_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME() WHERE id = @tid`,
+      { tid }
+    );
+    res.json({ cc_logo_url: null, cc_logo_updated_at: null });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** GET my allowed tabs. Super_admin gets all; others get from grants. */
 router.get('/my-tabs', async (req, res, next) => {
   try {
@@ -111,6 +257,9 @@ router.get('/my-tabs', async (req, res, next) => {
     if (tabs.length > 0) {
       if (!tabs.includes('breakdowns') && CC_TAB_IDS.includes('breakdowns')) {
         tabs = [...tabs, 'breakdowns'];
+      }
+      if (!tabs.includes('command_centre_settings') && CC_TAB_IDS.includes('command_centre_settings')) {
+        tabs = [...tabs, 'command_centre_settings'];
       }
     }
     res.json({ tabs });
@@ -2563,7 +2712,7 @@ router.patch('/fleet-applications/:id/decline', async (req, res, next) => {
 const SHIFT_REPORT_STATUSES = ['draft', 'pending_approval', 'provisional', 'approved', 'rejected'];
 
 const SHIFT_REPORT_SCALAR_KEYS = [
-  'id', 'created_by_user_id', 'route', 'report_date', 'shift_date', 'shift_start', 'shift_end',
+  'id', 'created_by_user_id', 'ref_number', 'route', 'report_date', 'shift_date', 'shift_start', 'shift_end',
   'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email',
   'total_trucks_scheduled', 'balance_brought_down', 'total_loads_dispatched', 'total_pending_deliveries', 'total_loads_delivered',
   'overall_performance', 'key_highlights', 'outstanding_issues', 'handover_key_info', 'declaration', 'shift_conclusion_time',
@@ -3902,11 +4051,33 @@ router.post('/shift-reports/:id/request-override', async (req, res, next) => {
 });
 
 /** PATCH approve */
+/**
+ * Compute the next per-tenant reference number for a given shift report kind.
+ * Returns 1 if no rows exist yet for this tenant.
+ */
+async function nextShiftReportRefNumber(tenantId, kind) {
+  if (!tenantId) return 1;
+  const table = kind === 'single_ops'
+    ? 'command_centre_single_ops_shift_reports'
+    : 'command_centre_shift_reports';
+  const r = await query(
+    `SELECT ISNULL(MAX(r.ref_number), 0) + 1 AS next_ref
+     FROM ${table} r
+     JOIN users u ON u.id = r.created_by_user_id
+     WHERE u.tenant_id = @tenantId`,
+    { tenantId }
+  );
+  const next = Number(r.recordset?.[0]?.next_ref || 1);
+  return Number.isFinite(next) && next > 0 ? next : 1;
+}
+
 router.post('/shift-reports', async (req, res, next) => {
   try {
     const b = req.body || {};
+    const refNumber = await nextShiftReportRefNumber(req.user?.tenant_id, 'shift');
     const payload = {
       created_by_user_id: req.user.id,
+      ref_number: refNumber,
       route: b.route ?? null,
       report_date: b.report_date || null,
       shift_date: b.shift_date || null,
@@ -3936,14 +4107,14 @@ router.post('/shift-reports', async (req, res, next) => {
     };
     const result = await query(
       `INSERT INTO command_centre_shift_reports (
-        created_by_user_id, route, report_date, shift_date, shift_start, shift_end,
+        created_by_user_id, ref_number, route, report_date, shift_date, shift_start, shift_end,
         controller1_name, controller1_email, controller2_name, controller2_email,
         total_trucks_scheduled, balance_brought_down, total_loads_dispatched, total_pending_deliveries, total_loads_delivered,
         overall_performance, key_highlights, truck_updates, incidents, non_compliance_calls, investigations, communication_log,
         outstanding_issues, handover_key_info, declaration, shift_conclusion_time, status
       ) OUTPUT INSERTED.*
       VALUES (
-        @created_by_user_id, @route, @report_date, @shift_date, @shift_start, @shift_end,
+        @created_by_user_id, @ref_number, @route, @report_date, @shift_date, @shift_start, @shift_end,
         @controller1_name, @controller1_email, @controller2_name, @controller2_email,
         @total_trucks_scheduled, @balance_brought_down, @total_loads_dispatched, @total_pending_deliveries, @total_loads_delivered,
         @overall_performance, @key_highlights, @truck_updates, @incidents, @non_compliance_calls, @investigations, @communication_log,

@@ -492,6 +492,53 @@ router.post('/suppliers', requireFuelDataTab('supplier_details'), async (req, re
   }
 });
 
+/**
+ * Propagate supplier detail changes to all VERIFIED transactions for that supplier in this tenant.
+ * Recomputes amount_rand when the price changes (and liters_filled is set).
+ * `changes` is a plain object containing only fields the user actually edited on the supplier.
+ */
+async function propagateSupplierUpdateToVerifiedTransactions(tid, supplierId, changes) {
+  if (!supplierId) return { affected: 0, priceChanged: false };
+  const sets = [];
+  const params = { tid, sid: supplierId };
+  if (Object.prototype.hasOwnProperty.call(changes, 'name')) {
+    sets.push('supplier_name = @sname');
+    params.sname = changes.name != null ? String(changes.name).trim() : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'fuel_attendant_name')) {
+    sets.push('fuel_attendant_name = @fan');
+    params.fan = changes.fuel_attendant_name != null && String(changes.fuel_attendant_name).trim() !== ''
+      ? String(changes.fuel_attendant_name)
+      : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'vehicle_registration')) {
+    sets.push('supplier_vehicle_registration = @sreg');
+    params.sreg = changes.vehicle_registration != null && String(changes.vehicle_registration).trim() !== ''
+      ? String(changes.vehicle_registration)
+      : null;
+  }
+  let priceChanged = false;
+  if (Object.prototype.hasOwnProperty.call(changes, 'price_per_litre')
+      && changes.price_per_litre != null && changes.price_per_litre !== ''
+      && !Number.isNaN(Number(changes.price_per_litre))) {
+    sets.push('price_per_litre = @price');
+    sets.push('amount_rand = CASE WHEN liters_filled IS NULL THEN amount_rand ELSE ROUND(liters_filled * @price, 2) END');
+    params.price = Number(changes.price_per_litre);
+    priceChanged = true;
+  }
+  if (!sets.length) return { affected: 0, priceChanged: false };
+  sets.push('updated_at = SYSUTCDATETIME()');
+  const r = await query(
+    `UPDATE fuel_data_transactions
+       SET ${sets.join(', ')}
+     WHERE tenant_id = @tid
+       AND supplier_id = @sid
+       AND verification_status = N'verified'`,
+    params
+  );
+  return { affected: r.rowsAffected?.[0] || 0, priceChanged };
+}
+
 router.patch('/suppliers/:id', requireFuelDataTab('supplier_details'), async (req, res, next) => {
   try {
     const tid = tenantId(req);
@@ -501,9 +548,11 @@ router.patch('/suppliers/:id', requireFuelDataTab('supplier_details'), async (re
     const { name, address, vat_number, price_per_litre, vehicle_registration, fuel_attendant_name, is_default } = req.body || {};
     const sets = [];
     const params = { id, tid };
+    const propagation = {};
     if (name != null) {
       sets.push('name = @name');
       params.name = String(name).trim();
+      propagation.name = params.name;
     }
     if (address !== undefined) {
       sets.push('address = @address');
@@ -516,14 +565,17 @@ router.patch('/suppliers/:id', requireFuelDataTab('supplier_details'), async (re
     if (vehicle_registration !== undefined) {
       sets.push('vehicle_registration = @vreg');
       params.vreg = vehicle_registration;
+      propagation.vehicle_registration = vehicle_registration;
     }
     if (fuel_attendant_name !== undefined) {
       sets.push('fuel_attendant_name = @fan');
       params.fan = fuel_attendant_name;
+      propagation.fuel_attendant_name = fuel_attendant_name;
     }
     if (price_per_litre != null && price_per_litre !== '') {
       sets.push('price_per_litre = @price');
       params.price = Number(price_per_litre);
+      propagation.price_per_litre = params.price;
     }
     if (is_default !== undefined) {
       if (is_default === true || is_default === 1 || is_default === '1') {
@@ -537,7 +589,19 @@ router.patch('/suppliers/:id', requireFuelDataTab('supplier_details'), async (re
     sets.push('updated_at = SYSUTCDATETIME()');
     await query(`UPDATE fuel_data_suppliers SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @tid`, params);
     const again = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id = @tid`, { id, tid });
-    res.json({ supplier: mapSupplier(again.recordset[0]) });
+    let propagationResult = { affected: 0, priceChanged: false };
+    if (Object.keys(propagation).length) {
+      try {
+        propagationResult = await propagateSupplierUpdateToVerifiedTransactions(tid, id, propagation);
+      } catch (propErr) {
+        console.warn('[fuel-data] supplier propagation failed:', propErr?.message || propErr);
+      }
+    }
+    res.json({
+      supplier: mapSupplier(again.recordset[0]),
+      verified_transactions_updated: propagationResult.affected,
+      price_recomputed: propagationResult.priceChanged,
+    });
   } catch (e) {
     next(e);
   }
@@ -632,6 +696,49 @@ router.post('/customers', requireFuelDataTab('customer_details'), async (req, re
   }
 });
 
+/**
+ * Propagate customer detail changes to all VERIFIED transactions for that customer in this tenant.
+ * `changes` is a plain object containing only fields the user actually edited on the customer.
+ */
+async function propagateCustomerUpdateToVerifiedTransactions(tid, customerId, changes) {
+  if (!customerId) return { affected: 0 };
+  const sets = [];
+  const params = { tid, cid: customerId };
+  if (Object.prototype.hasOwnProperty.call(changes, 'name')) {
+    sets.push('customer_name = @cname');
+    params.cname = changes.name != null ? String(changes.name).trim() : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'vehicle_registration')) {
+    sets.push('vehicle_registration = @vreg');
+    params.vreg = changes.vehicle_registration != null && String(changes.vehicle_registration).trim() !== ''
+      ? String(changes.vehicle_registration)
+      : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'responsible_user_name')) {
+    sets.push('responsible_user_name = @run');
+    params.run = changes.responsible_user_name != null && String(changes.responsible_user_name).trim() !== ''
+      ? String(changes.responsible_user_name)
+      : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'authorizer_name')) {
+    sets.push('authorizer_name = @authn');
+    params.authn = changes.authorizer_name != null && String(changes.authorizer_name).trim() !== ''
+      ? String(changes.authorizer_name)
+      : null;
+  }
+  if (!sets.length) return { affected: 0 };
+  sets.push('updated_at = SYSUTCDATETIME()');
+  const r = await query(
+    `UPDATE fuel_data_transactions
+       SET ${sets.join(', ')}
+     WHERE tenant_id = @tid
+       AND customer_id = @cid
+       AND verification_status = N'verified'`,
+    params
+  );
+  return { affected: r.rowsAffected?.[0] || 0 };
+}
+
 router.patch('/customers/:id', requireFuelDataTab('customer_details'), async (req, res, next) => {
   try {
     const tid = tenantId(req);
@@ -641,26 +748,42 @@ router.patch('/customers/:id', requireFuelDataTab('customer_details'), async (re
     const { name, vehicle_registration, responsible_user_name, authorizer_name } = req.body || {};
     const sets = [];
     const params = { id, tid };
+    const propagation = {};
     if (name != null) {
       sets.push('name = @name');
       params.name = String(name).trim();
+      propagation.name = params.name;
     }
     if (vehicle_registration !== undefined) {
       sets.push('vehicle_registration = @vreg');
       params.vreg = vehicle_registration;
+      propagation.vehicle_registration = vehicle_registration;
     }
     if (responsible_user_name !== undefined) {
       sets.push('responsible_user_name = @run');
       params.run = responsible_user_name;
+      propagation.responsible_user_name = responsible_user_name;
     }
     if (authorizer_name !== undefined) {
       sets.push('authorizer_name = @authn');
       params.authn = authorizer_name;
+      propagation.authorizer_name = authorizer_name;
     }
     if (!sets.length) return res.json({ customer: mapCustomer(cur.recordset[0]) });
     await query(`UPDATE fuel_data_customers SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @tid`, params);
     const again = await query(`SELECT * FROM fuel_data_customers WHERE id = @id AND tenant_id = @tid`, { id, tid });
-    res.json({ customer: mapCustomer(again.recordset[0]) });
+    let propagationResult = { affected: 0 };
+    if (Object.keys(propagation).length) {
+      try {
+        propagationResult = await propagateCustomerUpdateToVerifiedTransactions(tid, id, propagation);
+      } catch (propErr) {
+        console.warn('[fuel-data] customer propagation failed:', propErr?.message || propErr);
+      }
+    }
+    res.json({
+      customer: mapCustomer(again.recordset[0]),
+      verified_transactions_updated: propagationResult.affected,
+    });
   } catch (e) {
     next(e);
   }
@@ -1548,27 +1671,81 @@ function formatFuelExportPeriodLabel(queryFilters, rows) {
   return '';
 }
 
-function pdfColumnLayout(columnKeys, innerW, M, contentRight) {
+/** Compute auto-fit column widths from header + actual cell content using current pdfkit font metrics. */
+function pdfAutoFitColumns(doc, columnKeys, rows, opts = {}) {
+  const {
+    innerW,
+    M,
+    contentRight,
+    headerFont = 'Helvetica-Bold',
+    bodyFont = 'Helvetica',
+    headerSize = 7.5,
+    bodySize = 7,
+    cellPad = 3,
+    minW = 26,
+    maxW = 200,
+    sampleLimit = 400,
+  } = opts;
   const defs = columnKeys.map((k) => FUEL_EXPORT_COLUMN_MAP[k]).filter(Boolean);
   if (!defs.length) return [];
-  const totalW = defs.reduce((s, d) => s + (d.pdfWeight || 1), 0);
+
+  const sample = (rows || []).slice(0, sampleLimit);
+  const desired = defs.map((d) => {
+    doc.font(headerFont).fontSize(headerSize);
+    let widest = doc.widthOfString(String(d.header || ''));
+    doc.font(bodyFont).fontSize(bodySize);
+    for (const r of sample) {
+      const txt = transactionExportCellPdf(r, d.key);
+      const s = String(txt == null ? '' : txt);
+      if (!s) continue;
+      // Measure the longest single line; wrapping is allowed at draw time.
+      const lines = s.split(/\n/);
+      for (const ln of lines) {
+        const w = doc.widthOfString(ln);
+        if (w > widest) widest = w;
+      }
+    }
+    return Math.min(maxW, Math.max(minW, Math.ceil(widest + cellPad * 2)));
+  });
+
+  const totalDesired = desired.reduce((s, w) => s + w, 0);
+  let widths;
+  if (totalDesired <= innerW) {
+    const slack = innerW - totalDesired;
+    widths = desired.map((w) => w + (totalDesired > 0 ? (w / totalDesired) * slack : 0));
+  } else {
+    const scale = innerW / totalDesired;
+    widths = desired.map((w) => Math.max(minW, w * scale));
+    const scaledTotal = widths.reduce((s, w) => s + w, 0);
+    widths[widths.length - 1] += innerW - scaledTotal;
+  }
+
   let x = M;
-  const cols = defs.map((d) => {
-    const w = Math.max(26, ((d.pdfWeight || 1) / totalW) * innerW);
-    const col = { key: d.key, header: d.header, x, w: Math.floor(w * 100) / 100, numeric: !!d.numeric };
+  const cols = defs.map((d, i) => {
+    const w = Math.max(minW, Math.round(widths[i] * 100) / 100);
+    const col = { key: d.key, header: d.header, x, w, numeric: !!d.numeric };
     x += col.w;
     return col;
   });
   const last = cols[cols.length - 1];
-  last.w = Math.max(28, contentRight - last.x);
+  last.w = Math.max(minW, contentRight - last.x);
   return cols;
 }
 
 async function buildFuelDataPdfBuffer(rows, { supplierRow, customerRow, logoBuffer, title, columns, periodLabel }) {
   const activeKeys =
     Array.isArray(columns) && columns.length ? columns.filter((k) => FUEL_EXPORT_COLUMN_MAP[k]) : [...FUEL_EXPORT_KEYS];
+  // Use landscape when there are many columns so each cell has room to breathe.
+  const orientation = activeKeys.length > 8 ? 'landscape' : 'portrait';
+  const docMargin = orientation === 'landscape' ? 28 : 36;
+
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 48, info: { Title: title || 'Fuel statement' } });
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: orientation,
+      margin: docMargin,
+      info: { Title: title || 'Fuel statement' },
+    });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -1582,7 +1759,19 @@ async function buildFuelDataPdfBuffer(rows, { supplierRow, customerRow, logoBuff
     const contentRight = pageW - R;
     const innerW = contentRight - M;
 
-    const layoutCols = pdfColumnLayout(activeKeys, innerW, M, contentRight);
+    // Smaller fonts so dense column sets fit; auto-fit recomputes widths from real content.
+    const HEADER_FONT_SIZE = 7.5;
+    const BODY_FONT_SIZE = orientation === 'landscape' ? 6.8 : 7;
+    const CELL_PAD = 3;
+
+    const layoutCols = pdfAutoFitColumns(doc, activeKeys, rows, {
+      innerW,
+      M,
+      contentRight,
+      headerSize: HEADER_FONT_SIZE,
+      bodySize: BODY_FONT_SIZE,
+      cellPad: CELL_PAD,
+    });
 
     const LOGO_MAX_W = 120;
     const LOGO_MAX_H = 64;
@@ -1671,49 +1860,75 @@ async function buildFuelDataPdfBuffer(rows, { supplierRow, customerRow, logoBuff
     }
     doc.fillColor('#000000');
 
-    const pageBottom = pageH - R - 36;
-    const rowH = 15;
-    const cellPad = 2;
+    const pageBottom = pageH - R - 28;
+    const cellPad = CELL_PAD;
+    const rowVPad = 2;
+    const rowMinH = 11;
+    const lineGap = 0.5;
+
+    /** Measure max wrapped-text height across all cells in a row. */
+    const measureRowHeight = (m) => {
+      doc.font('Helvetica').fontSize(BODY_FONT_SIZE);
+      let h = rowMinH;
+      for (const c of layoutCols) {
+        const s = String(transactionExportCellPdf(m, c.key) || '');
+        if (!s) continue;
+        const w = Math.max(10, c.w - cellPad * 2);
+        const ch = doc.heightOfString(s, { width: w, lineGap });
+        if (ch > h) h = ch;
+      }
+      return Math.ceil(h + rowVPad * 2);
+    };
 
     const drawTableHeader = (yy) => {
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#111111');
+      doc.font('Helvetica-Bold').fontSize(HEADER_FONT_SIZE).fillColor('#111111');
+      let headerH = rowMinH;
+      for (const c of layoutCols) {
+        const w = Math.max(10, c.w - cellPad * 2);
+        const ch = doc.heightOfString(String(c.header || ''), { width: w, lineGap });
+        if (ch > headerH) headerH = ch;
+      }
+      headerH = Math.ceil(headerH);
       layoutCols.forEach((c) => {
         doc.text(c.header, c.x + cellPad, yy, {
           width: Math.max(10, c.w - cellPad * 2),
           align: c.numeric ? 'right' : 'left',
+          lineGap,
         });
       });
-      const lineY = yy + 11;
+      const lineY = yy + headerH + 3;
       doc.moveTo(M, lineY).lineTo(contentRight, lineY).lineWidth(0.55).strokeColor('#64748b').stroke();
       doc.fillColor('#000000');
-      return lineY + 7;
+      return lineY + 5;
     };
 
     doc.fontSize(10).font('Helvetica-Bold').fillColor('#0f172a').text('Transactions', M, y);
     y = doc.y + 6;
     y = drawTableHeader(y);
-    doc.font('Helvetica').fontSize(7.5).fillColor('#0f172a');
+    doc.font('Helvetica').fontSize(BODY_FONT_SIZE).fillColor('#0f172a');
 
     let totL = 0;
     let totZ = 0;
 
     for (const m of rows) {
+      const rowH = measureRowHeight(m);
       if (y + rowH > pageBottom) {
         doc.addPage();
-        y = T + 12;
+        y = T + 8;
         y = drawTableHeader(y);
-        doc.font('Helvetica').fontSize(7.5).fillColor('#0f172a');
+        doc.font('Helvetica').fontSize(BODY_FONT_SIZE).fillColor('#0f172a');
       }
       layoutCols.forEach((c) => {
         const txt = transactionExportCellPdf(m, c.key);
-        doc.text(String(txt || ''), c.x + cellPad, y + 1, {
+        doc.text(String(txt || ''), c.x + cellPad, y + rowVPad, {
           width: Math.max(10, c.w - cellPad * 2),
-          height: rowH - 2,
-          ellipsis: true,
           align: c.numeric ? 'right' : 'left',
-          lineGap: 0.5,
+          lineGap,
         });
       });
+      // Subtle row separator
+      const sepY = y + rowH - 0.5;
+      doc.moveTo(M, sepY).lineTo(contentRight, sepY).lineWidth(0.25).strokeColor('#e2e8f0').stroke();
       y += rowH;
       if (m.liters_filled != null) totL += m.liters_filled;
       if (m.amount_rand != null) totZ += m.amount_rand;
@@ -1722,16 +1937,16 @@ async function buildFuelDataPdfBuffer(rows, { supplierRow, customerRow, logoBuff
     y += 8;
     if (y + 22 > pageBottom) {
       doc.addPage();
-      y = T + 12;
+      y = T + 8;
     }
     doc.moveTo(M, y).lineTo(contentRight, y).lineWidth(0.5).strokeColor('#cbd5e1').stroke();
     y += 10;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor('#0f172a');
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a');
     const firstCol = layoutCols[0];
-    if (firstCol) doc.text('Totals', firstCol.x, y, { width: firstCol.w });
+    if (firstCol) doc.text('Totals', firstCol.x + cellPad, y, { width: Math.max(10, firstCol.w - cellPad * 2) });
     layoutCols.forEach((c) => {
-      if (c.key === 'liters_filled') doc.text(totL.toFixed(2), c.x + 2, y, { width: c.w - 4, align: 'right' });
-      if (c.key === 'amount_rand') doc.text(totZ.toFixed(2), c.x + 2, y, { width: c.w - 4, align: 'right' });
+      if (c.key === 'liters_filled') doc.text(totL.toFixed(2), c.x + cellPad, y, { width: Math.max(10, c.w - cellPad * 2), align: 'right' });
+      if (c.key === 'amount_rand') doc.text(totZ.toFixed(2), c.x + cellPad, y, { width: Math.max(10, c.w - cellPad * 2), align: 'right' });
     });
 
     doc.end();

@@ -9,7 +9,8 @@ import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth, shiftClock, shiftScore } from './api';
-import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
+import { generateShiftReportPdf, buildShiftReportDownloadFilename, formatShiftReportRef } from './lib/shiftReportPdf.js';
+import { loadShiftReportLogoDataUrl } from './lib/shiftReportLogo.js';
 import { buildMockSingleOpsShiftReport } from './lib/mockSingleOpsShiftReport.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
@@ -105,6 +106,7 @@ const CC_TABS = [
   { id: 'breakdowns', label: 'Reported breakdowns', icon: 'alert', section: 'Operations' },
   { id: 'fleet_verification', label: 'Fleet verification (AI)', icon: 'sparkles', section: 'Operations' },
   { id: 'delete_fleet_drivers', label: 'Delete contractors fleets/drivers', icon: 'trash', section: 'Operations' },
+  { id: 'command_centre_settings', label: 'Command centre settings', icon: 'settings', section: 'Settings' },
 ];
 
 /** Rows in manual shift report template PDF for table sections (truck updates → communication log). */
@@ -190,6 +192,7 @@ function loadStoredInspections() {
     return [];
   }
 }
+
 
 export default function CommandCentre() {
   const { user } = useAuth();
@@ -280,50 +283,15 @@ export default function CommandCentre() {
       const tenantId = e.detail?.tenantId ?? user?.tenant_id;
       const tenantName = e.detail?.tenantName ?? user?.tenant_name;
       if (!report) return;
-      const runPdf = (logoDataUrl) => {
+      (async () => {
         try {
+          const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId });
           const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
           doc.save(buildShiftReportDownloadFilename(report, { tenantName }));
         } catch (err) {
           setError(err?.message || 'Failed to generate PDF');
         }
-      };
-      const tryDefaultLogo = () => {
-        const logoPaths = ['/logos/tihlo-logo.png', '/logos/tihlo-logo.jpg', '/logos/logo.png'];
-        let tried = 0;
-        const attempt = () => {
-          if (tried >= logoPaths.length) { runPdf(null); return; }
-          fetch(logoPaths[tried], { credentials: 'include' })
-            .then((r) => (r.ok ? r.blob() : null))
-            .then((blob) => {
-              if (blob) {
-                const reader = new FileReader();
-                reader.onload = () => runPdf(reader.result);
-                reader.onerror = () => { tried++; attempt(); };
-                reader.readAsDataURL(blob);
-              } else { tried++; attempt(); }
-            })
-            .catch(() => { tried++; attempt(); });
-        };
-        attempt();
-      };
-      if (tenantId) {
-        fetch(tenantsApi.logoUrl(tenantId), { credentials: 'include' })
-          .then((r) => (r.ok ? r.blob() : null))
-          .then((blob) => {
-            if (blob) {
-              const reader = new FileReader();
-              reader.onload = () => runPdf(reader.result);
-              reader.onerror = () => tryDefaultLogo();
-              reader.readAsDataURL(blob);
-            } else {
-              tryDefaultLogo();
-            }
-          })
-          .catch(() => tryDefaultLogo());
-      } else {
-        tryDefaultLogo();
-      }
+      })();
     };
     window.addEventListener('shift-report-download', handler);
     return () => window.removeEventListener('shift-report-download', handler);
@@ -572,6 +540,7 @@ export default function CommandCentre() {
           {activeTab === 'breakdowns' && canSeeTab('breakdowns') && <TabBreakdowns />}
           {activeTab === 'fleet_verification' && canSeeTab('fleet_verification') && <TabFleetVerification />}
           {activeTab === 'delete_fleet_drivers' && canSeeTab('delete_fleet_drivers') && <TabDeleteFleetDrivers />}
+          {activeTab === 'command_centre_settings' && canSeeTab('command_centre_settings') && <TabCommandCentreSettings user={user} />}
 
           {/* Fallback when no tab content matched (e.g. permission race) */}
           {activeTab !== 'manage_access' && !allowedTabs.includes(activeTab) && (
@@ -2390,17 +2359,7 @@ function TabBreakdowns() {
       const attachmentLabels = INCIDENT_ATTACHMENT_LABELS.filter((a) => detail[a.pathKey]).map((a) => a.label);
       if (detail.offloading_slip_path) attachmentLabels.push('Offloading slip');
       const tenantId = detail.tenant_id;
-      let logoDataUrl = null;
-      try {
-        if (tenantId) {
-          const blob = await fetch(tenantsApi.logoUrl(tenantId), { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
-          if (blob) logoDataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onloadend = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
-        }
-        if (!logoDataUrl) {
-          const blob = await fetch('/logos/tihlo-logo.png', { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
-          if (blob) logoDataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onloadend = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
-        }
-      } catch (_) {}
+      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId });
       const attachmentImages = [];
       for (const { type, pathKey } of INCIDENT_ATTACHMENT_LABELS) {
         if (!detail[pathKey]) continue;
@@ -3285,39 +3244,7 @@ function ShiftReportTemplateTab({ user }) {
   };
 
   const loadTemplateLogoDataUrl = async () => {
-    let logoDataUrl = null;
-    const tenantId = user?.tenant_id;
-    if (tenantId) {
-      try {
-        const blob = await fetch(tenantsApi.logoUrl(tenantId), { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
-        if (blob) {
-          logoDataUrl = await new Promise((res, rej) => {
-            const r = new FileReader();
-            r.onloadend = () => res(r.result);
-            r.onerror = rej;
-            r.readAsDataURL(blob);
-          });
-        }
-      } catch (_) {}
-    }
-    if (!logoDataUrl) {
-      const logoPaths = ['/logos/tihlo-logo.png', '/logos/tihlo-logo.jpg', '/logos/logo.png'];
-      for (const path of logoPaths) {
-        try {
-          const blob = await fetch(path, { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
-          if (blob) {
-            logoDataUrl = await new Promise((res, rej) => {
-              const r = new FileReader();
-              r.onloadend = () => res(r.result);
-              r.onerror = rej;
-              r.readAsDataURL(blob);
-            });
-            break;
-          }
-        } catch (_) {}
-      }
-    }
-    return logoDataUrl;
+    return loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
   };
 
   const downloadTemplatePdf = async () => {
@@ -3530,6 +3457,7 @@ function TabSavedReports() {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     const routesBlob = Array.isArray(r.routes) && r.routes.length ? r.routes.join(' ').toLowerCase() : '';
+    const refStr = formatShiftReportRef(r.ref_number, { isSingleOps: listKind === 'single_ops' });
     return (
       String(r.route || '').toLowerCase().includes(q) ||
       routesBlob.includes(q) ||
@@ -3537,7 +3465,9 @@ function TabSavedReports() {
       String(r.controller2_name || '').toLowerCase().includes(q) ||
       String(r.created_by_name || '').toLowerCase().includes(q) ||
       String(r.status || '').toLowerCase().includes(q) ||
-      String(r.report_date || '').toLowerCase().includes(q)
+      String(r.report_date || '').toLowerCase().includes(q) ||
+      refStr.toLowerCase().includes(q) ||
+      String(r.ref_number || '').includes(q)
     );
   });
 
@@ -3662,7 +3592,7 @@ function TabSavedReports() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search route, controllers, creator, status, date..."
+            placeholder="Search ref, route, controllers, creator, status, date..."
             className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
           />
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
@@ -3688,6 +3618,7 @@ function TabSavedReports() {
           <table className="w-full text-sm">
             <thead>
               <tr className="app-glass-thead-row">
+                <th className="text-left font-semibold text-surface-700 px-4 py-3 w-20">Ref</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Saved date</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Time</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Controller(s)</th>
@@ -3701,8 +3632,18 @@ function TabSavedReports() {
                 const dateStr = savedAt ? savedAt.toLocaleDateString() : '—';
                 const timeStr = savedAt ? savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
                 const controllers = [r.controller1_name, r.controller2_name].filter(Boolean).join(', ') || '—';
+                const refStr = formatShiftReportRef(r.ref_number, { isSingleOps: listKind === 'single_ops' });
                 return (
                   <tr key={`${listKind}-${r.id}`} className="app-glass-data-row last:border-b-0">
+                    <td className="px-4 py-3">
+                      {refStr ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-surface-100 text-surface-800 dark:bg-surface-800 dark:text-surface-100 text-xs font-mono font-semibold tracking-wider">
+                          {refStr}
+                        </span>
+                      ) : (
+                        <span className="text-surface-400 text-xs">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-surface-700">{dateStr}</td>
                     <td className="px-4 py-3 text-surface-700">{timeStr}</td>
                     <td className="px-4 py-3 text-surface-700">{controllers}</td>
@@ -9350,6 +9291,241 @@ function TabInspectionRecords({ inspections = [], setInspections }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function TabCommandCentreSettings({ user }) {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [imageBust, setImageBust] = useState(0);
+  const fileInputRef = useRef(null);
+
+  const canManage = !!settings?.can_manage || user?.role === 'super_admin' || user?.role === 'tenant_admin';
+  const hasLogo = !!settings?.cc_logo_url;
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const r = await ccApi.settings.get();
+      setSettings(r || null);
+      setImageBust(Date.now());
+    } catch (e) {
+      setError(e?.message || 'Failed to load Command Centre settings.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    reload();
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, []);
+
+  const onPickFile = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (!/^image\//.test(f.type)) {
+      setError('Please choose an image file (PNG, JPEG, WebP, GIF or SVG).');
+      e.target.value = '';
+      return;
+    }
+    if (f.size > 4 * 1024 * 1024) {
+      setError('Logo file is too large. Max 4MB.');
+      e.target.value = '';
+      return;
+    }
+    setError('');
+    setInfo('');
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(URL.createObjectURL(f));
+    upload(f);
+  };
+
+  const upload = async (file) => {
+    setUploading(true);
+    try {
+      await ccApi.settings.uploadLogo(file);
+      setInfo('Logo updated. Shift report PDFs will now use the new logo.');
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Failed to upload logo.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const onRemove = async () => {
+    if (!hasLogo) return;
+    if (!window.confirm('Remove the Command Centre logo? Shift report PDFs will fall back to the tenant default logo.')) return;
+    setRemoving(true);
+    setError('');
+    setInfo('');
+    try {
+      await ccApi.settings.deleteLogo();
+      setInfo('Logo removed. Shift report PDFs will use the tenant default logo.');
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+        setPreviewUrl(null);
+      }
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Failed to remove logo.');
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  const liveLogoUrl = hasLogo ? `${ccApi.settings.logoUrl()}?t=${imageBust}` : null;
+  const displayLogoUrl = previewUrl || liveLogoUrl;
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-surface-200 bg-white dark:bg-surface-900/60 dark:border-surface-700 p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-50">Command Centre settings</h2>
+              <InfoHint
+                title="Command Centre settings"
+                text="Configure tenant-wide preferences that apply across Command Centre. The logo you upload here replaces the default logo on every shift report PDF (manual download, saved report, template, breakdown report, monthly performance, action plan and progress report)."
+              />
+            </div>
+            <p className="text-sm text-surface-500 mt-1 max-w-2xl">
+              Upload a logo to replace the default logo used on shift report PDFs and other Command Centre exports. The logo applies to your tenant only.
+            </p>
+          </div>
+          {settings?.cc_logo_updated_at ? (
+            <div className="text-xs text-surface-500 shrink-0">
+              Last updated: {new Date(settings.cc_logo_updated_at).toLocaleString()}
+            </div>
+          ) : null}
+        </div>
+
+        {error ? (
+          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-800 dark:text-red-200 flex justify-between gap-2">
+            <span>{error}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setError('')}>Dismiss</button>
+          </div>
+        ) : null}
+        {info ? (
+          <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200 flex justify-between gap-2">
+            <span>{info}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setInfo('')}>Dismiss</button>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="rounded-2xl border border-surface-200 bg-white dark:bg-surface-900/60 dark:border-surface-700 p-6 shadow-sm">
+        <div className="flex items-center gap-2">
+          <h3 className="text-base font-semibold text-surface-900 dark:text-surface-50">Shift report logo</h3>
+          <InfoHint
+            title="Shift report logo"
+            text="Replaces the default Tihlo logo on shift report PDFs. Recommended: a square or wide PNG/JPEG with transparent background, at least 256×256 pixels and no larger than 4MB. SVG is supported but rendered to bitmap when embedded in PDFs."
+          />
+        </div>
+        <p className="text-sm text-surface-500 mt-1">
+          Recommended dimensions: square (e.g. 512×512) or wide banner (e.g. 1024×384). Max 4MB. PNG with transparent background works best.
+        </p>
+
+        <div className="mt-5 grid grid-cols-1 lg:grid-cols-[minmax(0,360px)_1fr] gap-6 items-start">
+          <div className="rounded-xl border border-surface-200 bg-surface-50 dark:bg-surface-950/40 dark:border-surface-700 p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">Live preview</p>
+            <div className="mt-3 aspect-square w-full rounded-lg border border-dashed border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-900/40 flex items-center justify-center overflow-hidden">
+              {loading ? (
+                <span className="text-sm text-surface-400">Loading…</span>
+              ) : displayLogoUrl ? (
+                <img
+                  src={displayLogoUrl}
+                  alt="Command Centre logo preview"
+                  className="max-h-full max-w-full object-contain p-4"
+                  onError={() => setError('Could not display the saved logo. Try uploading it again.')}
+                />
+              ) : (
+                <div className="text-center px-4">
+                  <p className="text-sm text-surface-500">No custom logo set.</p>
+                  <p className="text-xs text-surface-400 mt-1">PDFs will use the tenant default logo.</p>
+                </div>
+              )}
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="rounded-lg border border-surface-200 dark:border-surface-700 p-2 bg-white dark:bg-surface-900/40 flex items-center justify-center min-h-12">
+                {displayLogoUrl ? <img src={displayLogoUrl} alt="" className="max-h-10 max-w-full object-contain" /> : <span className="text-[10px] text-surface-400">PDF header</span>}
+              </div>
+              <div className="rounded-lg border border-surface-200 dark:border-surface-700 p-2 bg-slate-900 flex items-center justify-center min-h-12">
+                {displayLogoUrl ? <img src={displayLogoUrl} alt="" className="max-h-10 max-w-full object-contain" /> : <span className="text-[10px] text-slate-400">Dark</span>}
+              </div>
+              <div className="rounded-lg border border-surface-200 dark:border-surface-700 p-2 bg-amber-50 flex items-center justify-center min-h-12">
+                {displayLogoUrl ? <img src={displayLogoUrl} alt="" className="max-h-10 max-w-full object-contain" /> : <span className="text-[10px] text-amber-700">Cover</span>}
+              </div>
+            </div>
+            <p className="mt-2 text-[11px] text-surface-400 leading-snug">
+              Previews on light, dark and cover backgrounds — make sure your logo reads on all of these.
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 p-4 bg-surface-50/50 dark:bg-surface-950/30">
+              <p className="text-sm font-medium text-surface-800 dark:text-surface-100">Upload a new logo</p>
+              <p className="text-xs text-surface-500 mt-1">PNG, JPEG, WebP, GIF or SVG. Max 4MB.</p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                  onChange={onPickFile}
+                  disabled={!canManage || uploading}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!canManage || uploading}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {uploading ? 'Uploading…' : hasLogo ? 'Replace logo' : 'Upload logo'}
+                </button>
+                {hasLogo ? (
+                  <button
+                    type="button"
+                    onClick={onRemove}
+                    disabled={!canManage || removing}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-red-200 text-red-700 dark:text-red-300 dark:border-red-700/60 text-sm font-medium hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
+                  >
+                    {removing ? 'Removing…' : 'Remove logo'}
+                  </button>
+                ) : null}
+              </div>
+              {!canManage ? (
+                <p className="mt-3 text-xs text-amber-700 dark:text-amber-400">
+                  Only tenant admins or super admins can change the Command Centre logo. Contact your administrator.
+                </p>
+              ) : null}
+            </div>
+
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 p-4 bg-white dark:bg-surface-900/40">
+              <p className="text-sm font-medium text-surface-800 dark:text-surface-100">Where this logo appears</p>
+              <ul className="mt-2 text-sm text-surface-600 dark:text-surface-300 list-disc pl-5 space-y-1">
+                <li>Shift report PDFs (download from Command Centre or Rector page)</li>
+                <li>Shift report Word templates exported from Command Centre</li>
+                <li>Breakdown / incident PDF reports</li>
+                <li>Monthly performance reports, action plans and progress reports</li>
+              </ul>
+              <p className="mt-3 text-xs text-surface-500">
+                If no Command Centre logo is set, the system falls back to the tenant logo, then to the packaged default.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

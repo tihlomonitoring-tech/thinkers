@@ -30,6 +30,8 @@
     "db:command-centre-library-documents": "node scripts/run-command-centre-library-documents.js",
     "db:command-centre-compliance-inspections": "node scripts/run-command-centre-compliance-inspections.js",
     "db:cc-compliance-expand": "node scripts/run-cc-compliance-expand.js",
+    "db:cc-logo-settings": "node scripts/run-cc-logo-settings.js",
+    "db:cc-shift-report-ref-numbers": "node scripts/run-cc-shift-report-ref-numbers.js",
     "db:compliance-response-attachments": "node scripts/run-compliance-response-attachments.js",
     "db:compliance-inspector-reply": "node scripts/run-compliance-inspector-reply.js",
     "db:suspension-duration": "node scripts/run-suspension-duration.js",

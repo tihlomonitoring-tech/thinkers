@@ -346,6 +346,7 @@ export default function FuelData() {
   const [allowedTabs, setAllowedTabs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [activeTab, setActiveTab] = useState('fuel_admin');
   const [permissions, setPermissions] = useState(null);
   const [grantUsers, setGrantUsers] = useState([]);
@@ -784,6 +785,8 @@ export default function FuelData() {
     if (!selCustomer) return;
     const c = customers.find((x) => x.id === selCustomer);
     if (!c) return;
+    setError('');
+    setInfo('');
     fuelData
       .patchCustomer(selCustomer, {
         name: c.name,
@@ -791,8 +794,16 @@ export default function FuelData() {
         responsible_user_name: c.responsible_user_name,
         authorizer_name: c.authorizer_name,
       })
-      .then(() => fuelData.customers())
-      .then((r) => setCustomers(r.customers || []))
+      .then((res) => {
+        const updated = Number(res?.verified_transactions_updated || 0);
+        if (updated > 0) {
+          setInfo(`Customer details saved. Refreshed ${updated} verified transaction${updated === 1 ? '' : 's'} with the new information.`);
+        } else {
+          setInfo('Customer details saved.');
+        }
+        return Promise.all([fuelData.customers(), loadLists()]);
+      })
+      .then(([r]) => setCustomers(r.customers || []))
       .catch((err) => setError(err.message));
   };
 
@@ -839,6 +850,8 @@ export default function FuelData() {
     if (!selSupplierEdit) return;
     const s = suppliers.find((x) => x.id === selSupplierEdit);
     if (!s) return;
+    setError('');
+    setInfo('');
     fuelData
       .patchSupplier(selSupplierEdit, {
         name: s.name,
@@ -849,8 +862,21 @@ export default function FuelData() {
         fuel_attendant_name: s.fuel_attendant_name,
         is_default: !!s.is_default,
       })
-      .then(() => fuelData.suppliers())
-      .then((r) => setSuppliers(r.suppliers || []))
+      .then((res) => {
+        const updated = Number(res?.verified_transactions_updated || 0);
+        const priceTouched = !!res?.price_recomputed;
+        if (updated > 0) {
+          setInfo(
+            priceTouched
+              ? `Supplier saved. Refreshed ${updated} verified transaction${updated === 1 ? '' : 's'} (prices and amounts recalculated).`
+              : `Supplier saved. Refreshed ${updated} verified transaction${updated === 1 ? '' : 's'} with the new information.`
+          );
+        } else {
+          setInfo('Supplier saved.');
+        }
+        return Promise.all([fuelData.suppliers(), loadLists()]);
+      })
+      .then(([r]) => setSuppliers(r.suppliers || []))
       .catch((err) => setError(err.message));
   };
 
@@ -1443,6 +1469,15 @@ export default function FuelData() {
           <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-800 dark:text-red-200 flex justify-between gap-2">
             <span>{error}</span>
             <button type="button" className="shrink-0 underline" onClick={() => setError('')}>
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+
+        {info ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200 flex justify-between gap-2">
+            <span>{info}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setInfo('')}>
               Dismiss
             </button>
           </div>
