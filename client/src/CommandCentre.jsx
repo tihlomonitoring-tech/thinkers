@@ -9303,18 +9303,46 @@ function TabCommandCentreSettings({ user }) {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [imageBust, setImageBust] = useState(0);
+  const [liveLogoBlobUrl, setLiveLogoBlobUrl] = useState(null);
   const fileInputRef = useRef(null);
+  const liveLogoBlobUrlRef = useRef(null);
 
   const canManage = !!settings?.can_manage || user?.role === 'super_admin' || user?.role === 'tenant_admin';
   const hasLogo = !!settings?.cc_logo_url;
+
+  const fetchLiveLogo = async () => {
+    try {
+      const res = await fetch(`${ccApi.settings.logoUrl()}?t=${Date.now()}`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const replaceLiveLogoBlobUrl = (next) => {
+    if (liveLogoBlobUrlRef.current && liveLogoBlobUrlRef.current !== next) {
+      URL.revokeObjectURL(liveLogoBlobUrlRef.current);
+    }
+    liveLogoBlobUrlRef.current = next;
+    setLiveLogoBlobUrl(next);
+  };
 
   const reload = async () => {
     setLoading(true);
     try {
       const r = await ccApi.settings.get();
       setSettings(r || null);
-      setImageBust(Date.now());
+      if (r?.cc_logo_url) {
+        const next = await fetchLiveLogo();
+        replaceLiveLogoBlobUrl(next);
+      } else {
+        replaceLiveLogoBlobUrl(null);
+      }
     } catch (e) {
       setError(e?.message || 'Failed to load Command Centre settings.');
     } finally {
@@ -9326,7 +9354,12 @@ function TabCommandCentreSettings({ user }) {
     reload();
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
+      if (liveLogoBlobUrlRef.current) {
+        URL.revokeObjectURL(liveLogoBlobUrlRef.current);
+        liveLogoBlobUrlRef.current = null;
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot setup
   }, []);
 
   const onPickFile = (e) => {
@@ -9384,8 +9417,7 @@ function TabCommandCentreSettings({ user }) {
     }
   };
 
-  const liveLogoUrl = hasLogo ? `${ccApi.settings.logoUrl()}?t=${imageBust}` : null;
-  const displayLogoUrl = previewUrl || liveLogoUrl;
+  const displayLogoUrl = previewUrl || liveLogoBlobUrl;
 
   return (
     <div className="space-y-6">
@@ -9447,8 +9479,9 @@ function TabCommandCentreSettings({ user }) {
                   src={displayLogoUrl}
                   alt="Command Centre logo preview"
                   className="max-h-full max-w-full object-contain p-4"
-                  onError={() => setError('Could not display the saved logo. Try uploading it again.')}
                 />
+              ) : hasLogo ? (
+                <span className="text-sm text-surface-400">Loading preview…</span>
               ) : (
                 <div className="text-center px-4">
                   <p className="text-sm text-surface-500">No custom logo set.</p>

@@ -25,6 +25,8 @@ const TABS = [
 const SECTIONS = [...new Set(TABS.map((t) => t.section))];
 
 const FLEET_COLUMNS = [
+  { key: 'contractor', label: 'Contractor' },
+  { key: 'sub_contractor', label: 'Sub-contractor' },
   { key: 'registration', label: 'Registration' },
   { key: 'make_model', label: 'Make/Model' },
   { key: 'fleet_no', label: 'Fleet No' },
@@ -35,12 +37,19 @@ const FLEET_COLUMNS = [
   { key: 'route_name', label: 'Route' },
 ];
 const DRIVER_COLUMNS = [
+  { key: 'contractor', label: 'Contractor' },
+  { key: 'sub_contractor', label: 'Sub-contractor' },
   { key: 'full_name', label: 'Name' },
   { key: 'license_number', label: 'License' },
   { key: 'phone', label: 'Phone' },
   { key: 'email', label: 'Email' },
   { key: 'route_name', label: 'Route' },
 ];
+// Optional columns are off by default; users tick them on List/Pilot distribution to include in the
+// exported sheet. Keeps existing behaviour for users that don't care about contractor/sub-contractor.
+const OPTIONAL_LIST_COLUMN_KEYS = ['contractor', 'sub_contractor'];
+const FLEET_DEFAULT_KEYS = FLEET_COLUMNS.filter((c) => !OPTIONAL_LIST_COLUMN_KEYS.includes(c.key)).map((c) => c.key);
+const DRIVER_DEFAULT_KEYS = DRIVER_COLUMNS.filter((c) => !OPTIONAL_LIST_COLUMN_KEYS.includes(c.key)).map((c) => c.key);
 
 // Automated alert types for route rectors (stored comma-separated)
 const RECTOR_ALERT_OPTIONS = [
@@ -208,8 +217,9 @@ export default function AccessManagement() {
   const [distCustomEmail, setDistCustomEmail] = useState('');
   const [distSending, setDistSending] = useState(false);
   const [distSendResult, setDistSendResult] = useState(null);
-  const [distFleetColumns, setDistFleetColumns] = useState(FLEET_COLUMNS.map((c) => c.key));
-  const [distDriverColumns, setDistDriverColumns] = useState(DRIVER_COLUMNS.map((c) => c.key));
+  const [distFleetColumns, setDistFleetColumns] = useState(FLEET_DEFAULT_KEYS);
+  const [distDriverColumns, setDistDriverColumns] = useState(DRIVER_DEFAULT_KEYS);
+  const [distGroupBySubContractor, setDistGroupBySubContractor] = useState(false);
   const [distEmailFormat, setDistEmailFormat] = useState('excel');
   const [distSendPerContractor, setDistSendPerContractor] = useState(false);
   const [distContractors, setDistContractors] = useState([]);
@@ -240,8 +250,9 @@ export default function AccessManagement() {
     time_hhmm: '09:00',
     weekday: 1,
   });
-  const [pilotFleetCols, setPilotFleetCols] = useState(() => FLEET_COLUMNS.map((c) => c.key));
-  const [pilotDriverCols, setPilotDriverCols] = useState(() => DRIVER_COLUMNS.map((c) => c.key));
+  const [pilotFleetCols, setPilotFleetCols] = useState(() => FLEET_DEFAULT_KEYS);
+  const [pilotDriverCols, setPilotDriverCols] = useState(() => DRIVER_DEFAULT_KEYS);
+  const [pilotGroupBySubContractor, setPilotGroupBySubContractor] = useState(false);
   const [pilotContractorSearch, setPilotContractorSearch] = useState('');
   const [pilotInnerTab, setPilotInnerTab] = useState('schedules');
   const [pilotRecipients, setPilotRecipients] = useState([]);
@@ -941,6 +952,9 @@ export default function AccessManagement() {
     if (ids.length === 1) params.set('routeId', ids[0]);
     else if (ids.length > 1) params.set('routeIds', ids.join(','));
     if (format === 'excel') params.set('format', 'excel');
+    const cols = isFleet ? distFleetColumns : distDriverColumns;
+    if (Array.isArray(cols) && cols.length > 0) params.set('columns', cols.join(','));
+    if (distGroupBySubContractor) params.set('groupBy', 'sub_contractor');
     const q = params.toString() ? `?${params.toString()}` : '';
     const path = isFleet ? `/contractor/enrollment/fleet-list${q}` : `/contractor/enrollment/driver-list${q}`;
     const ext = format === 'excel' ? 'xlsx' : 'csv';
@@ -1042,6 +1056,7 @@ export default function AccessManagement() {
         format: distEmailFormat,
         send_per_contractor: distSendPerContractor || undefined,
         contractor_ids: distSendPerContractor && distSelectedContractorIds.length > 0 ? distSelectedContractorIds : undefined,
+        group_by: distGroupBySubContractor ? 'sub_contractor' : undefined,
       })
       .then((data) => {
         setDistSendResult(data);
@@ -1794,6 +1809,34 @@ export default function AccessManagement() {
               </div>
             )}
 
+            <div className="pt-2 rounded-lg border border-[#C4BD97] bg-[#EEECE1]/60 p-3">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={distGroupBySubContractor}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setDistGroupBySubContractor(on);
+                    if (on) {
+                      const ensure = (prev) => {
+                        const next = ['contractor', 'sub_contractor', ...prev.filter((k) => k !== 'contractor' && k !== 'sub_contractor')];
+                        return next;
+                      };
+                      setDistFleetColumns(ensure);
+                      setDistDriverColumns(ensure);
+                    }
+                  }}
+                  className="mt-0.5 rounded border-[#948A54]"
+                />
+                <span className="text-sm text-surface-800">
+                  <span className="font-medium">Group rows by contractor and sub-contractor</span>
+                  <span className="block text-xs text-surface-600 mt-0.5">
+                    Optional. Adds a centred banner for each contractor (darker tan) with their sub-contractors nested underneath (lighter tan), then the trucks/drivers below. Both <em>Contractor</em> and <em>Sub-contractor</em> columns are added automatically. Rows that have no sub-contractor fall directly under their main contractor.
+                  </span>
+                </span>
+              </label>
+            </div>
+
             <div className="flex flex-wrap gap-2 pt-2">
               {distIncludeFleet && (
                 <>
@@ -2300,6 +2343,31 @@ export default function AccessManagement() {
                   </div>
                 </div>
               )}
+
+              <div className="rounded-lg border border-[#C4BD97] bg-[#EEECE1]/60 p-3">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pilotGroupBySubContractor}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setPilotGroupBySubContractor(on);
+                      if (on) {
+                        const ensure = (prev) => ['contractor', 'sub_contractor', ...prev.filter((k) => k !== 'contractor' && k !== 'sub_contractor')];
+                        setPilotFleetCols(ensure);
+                        setPilotDriverCols(ensure);
+                      }
+                    }}
+                    className="mt-0.5 rounded border-[#948A54]"
+                  />
+                  <span className="text-sm text-surface-800">
+                    <span className="font-medium">Group rows by contractor and sub-contractor</span>
+                    <span className="block text-xs text-surface-600 mt-0.5">
+                      Optional. Adds a centred banner for each contractor (darker tan) with sub-contractors nested underneath (lighter tan). Same behaviour as <strong>List distribution</strong>.
+                    </span>
+                  </span>
+                </label>
+              </div>
             </div>
 
             <div>
@@ -2456,6 +2524,7 @@ export default function AccessManagement() {
                       attach_format: pilotForm.attach_format,
                       fleet_columns: pilotFleetCols,
                       driver_columns: pilotDriverCols,
+                      group_by: pilotGroupBySubContractor ? 'sub_contractor' : undefined,
                       frequency: pilotForm.frequency,
                       time_hhmm: pilotForm.time_hhmm,
                       weekday: pilotForm.frequency === 'weekly' ? pilotForm.weekday : undefined,

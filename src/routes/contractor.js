@@ -555,7 +555,7 @@ router.post('/trucks', async (req, res, next) => {
     const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
     const regTrim = registration != null ? String(registration).trim() : '';
     if (regTrim && (await truckRegistrationExists(req.user.tenant_id, regTrim, null, contractorId))) {
-      return res.status(409).json({ error: 'A truck with this registration already exists.' });
+      return res.status(409).json({ error: 'A truck with this registration already exists under this contractor.' });
     }
     const result = await query(
       `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
@@ -600,8 +600,15 @@ router.patch('/trucks/:id', async (req, res, next) => {
       commodity_type, capacity_tonnes, status,
     } = body;
     const regTrim = registration != null ? String(registration).trim() : null;
-    if (regTrim !== null && regTrim !== '' && (await truckRegistrationExists(req.user.tenant_id, regTrim, id))) {
-      return res.status(409).json({ error: 'Another truck with this registration already exists.' });
+    if (regTrim !== null && regTrim !== '') {
+      const existingRow = await query(
+        'SELECT contractor_id FROM contractor_trucks WHERE id = @id AND tenant_id = @tenantId',
+        { id, tenantId: req.user.tenant_id }
+      );
+      const existingContractorId = existingRow.recordset?.[0]?.contractor_id ?? null;
+      if (await truckRegistrationExists(req.user.tenant_id, regTrim, id, existingContractorId)) {
+        return res.status(409).json({ error: 'Another truck with this registration already exists under this contractor.' });
+      }
     }
     const result = await query(
       `UPDATE contractor_trucks SET
@@ -2325,65 +2332,36 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
     const routeIds = routeIdsRaw && typeof routeIdsRaw === 'string' ? routeIdsRaw.split(',').map((id) => id.trim()).filter(Boolean) : null;
     const useRoutes = routeId || (routeIds && routeIds.length > 0);
     const ids = routeId ? [routeId] : (routeIds || []);
+    const columnsRaw = req.query.columns;
+    const requestedCols = columnsRaw && typeof columnsRaw === 'string'
+      ? columnsRaw.split(',').map((c) => c.trim()).filter(Boolean)
+      : null;
+    const groupByRaw = String(req.query.groupBy || req.query.group_by || '').trim().toLowerCase();
+    const groupBy = groupByRaw === 'sub_contractor' ? 'sub_contractor' : null;
+    let effectiveCols = requestedCols && requestedCols.length > 0 ? [...requestedCols] : null;
+    if (groupBy === 'sub_contractor' && effectiveCols) {
+      const rest = effectiveCols.filter((k) => k !== 'contractor' && k !== 'sub_contractor');
+      effectiveCols = ['contractor', 'sub_contractor', ...rest];
+    }
     if (wantExcel) {
       const routeIdsForExcel = useRoutes && ids.length > 0 ? ids : null;
-      const opts = allowed && allowed.length > 0 ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed }) : {};
-      const buf = await buildFleetListExcel(query, tenantId, routeIdsForExcel, null, opts);
+      const opts = {
+        ...(allowed && allowed.length > 0 ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed }) : {}),
+        groupBy,
+      };
+      const buf = await buildFleetListExcel(query, tenantId, routeIdsForExcel, effectiveCols, opts);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', 'attachment; filename="fleet-list.xlsx"');
       return res.send(Buffer.from(buf));
     }
-    const params = { tenantId };
-    let contractorClause = '';
-    if (allowed && allowed.length > 0) {
-      contractorClause = ' AND t.contractor_id IN (' + allowed.map((_, i) => `@fc${i}`).join(',') + ')';
-      allowed.forEach((id, i) => { params[`fc${i}`] = id; });
-    }
-    let sql;
-    if (useRoutes && ids.length > 0) {
-      const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
-      for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
-      sql = `SELECT t.registration, t.make_model, t.fleet_no, t.commodity_type, t.capacity_tonnes, r.name AS route_name
-             FROM contractor_route_trucks rt
-             JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId AND t.facility_access = 1
-             JOIN contractor_routes r ON r.id = rt.route_id AND r.tenant_id = @tenantId
-             WHERE rt.route_id IN (${placeholders})${contractorClause}
-             ORDER BY r.[order], r.name, t.registration`;
-    } else if (useRoutes && ids.length === 0) {
-      sql = `SELECT t.registration, t.make_model, t.fleet_no, t.commodity_type, t.capacity_tonnes
-             FROM contractor_trucks t
-             WHERE t.tenant_id = @tenantId AND t.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
-             ORDER BY t.registration`;
-    } else {
-      sql = `SELECT t.registration, t.make_model, t.fleet_no, t.commodity_type, t.capacity_tonnes
-             FROM contractor_trucks t
-             WHERE t.tenant_id = @tenantId AND t.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
-             ORDER BY t.registration`;
-    }
-    const result = await query(sql, params);
-    const rows = result.recordset || [];
-    const withRoute = useRoutes && ids.length > 0;
-    const headers = withRoute ? ['Registration', 'Make/Model', 'Fleet No', 'Commodity', 'Capacity (t)', 'Route'] : ['Registration', 'Make/Model', 'Fleet No', 'Commodity', 'Capacity (t)'];
-    const csv = [headers.join(',')].concat(
-      rows.map((r) =>
-        [
-          r.registration,
-          r.make_model,
-          r.fleet_no,
-          r.commodity_type,
-          r.capacity_tonnes,
-          r.route_name,
-        ]
-          .filter((_, i) => (withRoute ? true : i < 5))
-          .map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : ''))
-          .join(',')
-      )
-    ).join('\n');
+    const routeIdsForCsv = useRoutes && ids.length > 0 ? ids : null;
+    const csvOpts = allowed && allowed.length > 0
+      ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed })
+      : {};
+    const csv = await buildFleetListCsv(query, tenantId, routeIdsForCsv, effectiveCols, csvOpts);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="fleet-list.csv"');
-    res.send('\uFEFF' + csv);
+    res.send(csv);
   } catch (err) {
     next(err);
   }
@@ -2417,64 +2395,36 @@ router.get('/enrollment/driver-list', async (req, res, next) => {
     const routeIds = routeIdsRaw && typeof routeIdsRaw === 'string' ? routeIdsRaw.split(',').map((id) => id.trim()).filter(Boolean) : null;
     const useRoutes = routeId || (routeIds && routeIds.length > 0);
     const ids = routeId ? [routeId] : (routeIds || []);
+    const columnsRaw = req.query.columns;
+    const requestedCols = columnsRaw && typeof columnsRaw === 'string'
+      ? columnsRaw.split(',').map((c) => c.trim()).filter(Boolean)
+      : null;
+    const groupByRaw = String(req.query.groupBy || req.query.group_by || '').trim().toLowerCase();
+    const groupBy = groupByRaw === 'sub_contractor' ? 'sub_contractor' : null;
+    let effectiveCols = requestedCols && requestedCols.length > 0 ? [...requestedCols] : null;
+    if (groupBy === 'sub_contractor' && effectiveCols) {
+      const rest = effectiveCols.filter((k) => k !== 'contractor' && k !== 'sub_contractor');
+      effectiveCols = ['contractor', 'sub_contractor', ...rest];
+    }
     if (wantExcel) {
       const routeIdsForExcel = useRoutes && ids.length > 0 ? ids : null;
-      const opts = allowed && allowed.length > 0 ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed }) : {};
-      const buf = await buildDriverListExcel(query, tenantId, routeIdsForExcel, null, opts);
+      const opts = {
+        ...(allowed && allowed.length > 0 ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed }) : {}),
+        groupBy,
+      };
+      const buf = await buildDriverListExcel(query, tenantId, routeIdsForExcel, effectiveCols, opts);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', 'attachment; filename="driver-list.xlsx"');
       return res.send(Buffer.from(buf));
     }
-    const params = { tenantId };
-    let contractorClause = '';
-    if (allowed && allowed.length > 0) {
-      contractorClause = ' AND d.contractor_id IN (' + allowed.map((_, i) => `@dc${i}`).join(',') + ')';
-      allowed.forEach((id, i) => { params[`dc${i}`] = id; });
-    }
-    let sql;
-    if (useRoutes && ids.length > 0) {
-      const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
-      for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
-      sql = `SELECT d.full_name, d.license_number, d.phone, d.email, r.name AS route_name
-             FROM contractor_route_drivers rd
-             JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId AND d.facility_access = 1
-             JOIN contractor_routes r ON r.id = rd.route_id AND r.tenant_id = @tenantId
-             WHERE rd.route_id IN (${placeholders})${contractorClause}
-             ORDER BY r.[order], r.name, d.full_name`;
-    } else if (useRoutes && ids.length === 0) {
-      sql = `SELECT d.full_name, d.license_number, d.phone, d.email
-             FROM contractor_drivers d
-             WHERE d.tenant_id = @tenantId AND d.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
-             ORDER BY d.full_name`;
-    } else {
-      sql = `SELECT d.full_name, d.license_number, d.phone, d.email
-             FROM contractor_drivers d
-             WHERE d.tenant_id = @tenantId AND d.facility_access = 1
-               AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))${contractorClause}
-             ORDER BY d.full_name`;
-    }
-    const result = await query(sql, params);
-    const rows = result.recordset || [];
-    const withRoute = useRoutes && ids.length > 0;
-    const headers = withRoute ? ['Name', 'License', 'Phone', 'Email', 'Route'] : ['Name', 'License', 'Phone', 'Email'];
-    const csv = [headers.join(',')].concat(
-      rows.map((r) =>
-        [
-          r.full_name,
-          r.license_number,
-          r.phone,
-          r.email,
-          r.route_name,
-        ]
-          .filter((_, i) => (withRoute ? true : i < 4))
-          .map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : ''))
-          .join(',')
-      )
-    ).join('\n');
+    const routeIdsForCsv = useRoutes && ids.length > 0 ? ids : null;
+    const csvOpts = allowed && allowed.length > 0
+      ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed })
+      : {};
+    const csv = await buildDriverListCsv(query, tenantId, routeIdsForCsv, effectiveCols, csvOpts);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="driver-list.csv"');
-    res.send('\uFEFF' + csv);
+    res.send(csv);
   } catch (err) {
     next(err);
   }
@@ -2876,6 +2826,8 @@ router.get('/distribution/contractors', async (req, res, next) => {
 });
 
 const FLEET_COLUMNS = [
+  { key: 'contractor', label: 'Contractor' },
+  { key: 'sub_contractor', label: 'Sub-contractor' },
   { key: 'registration', label: 'Registration' },
   { key: 'make_model', label: 'Make/Model' },
   { key: 'fleet_no', label: 'Fleet No' },
@@ -2886,12 +2838,17 @@ const FLEET_COLUMNS = [
   { key: 'route_name', label: 'Route' },
 ];
 const DRIVER_COLUMNS = [
+  { key: 'contractor', label: 'Contractor' },
+  { key: 'sub_contractor', label: 'Sub-contractor' },
   { key: 'full_name', label: 'Name' },
   { key: 'license_number', label: 'License' },
   { key: 'phone', label: 'Phone' },
   { key: 'email', label: 'Email' },
   { key: 'route_name', label: 'Route' },
 ];
+// Keys that are opt-in (only included when explicitly listed in `columns`).
+// Keeps existing /enrollment downloads backwards-compatible.
+const OPTIONAL_LIST_COLUMN_KEYS = new Set(['contractor', 'sub_contractor']);
 
 /** Get fleet list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = single company; contractorIds = array of company ids.
  *  queryOpts.includeRouteEnrollmentWithoutAccessFilter: when true and routeIds set, include all trucks enrolled on the route (not only facility_access=1). Used for email/pilot distribution so lists match route roster. */
@@ -2914,15 +2871,21 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
   if (useRoutes && ids.length > 0) {
     const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
-    sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes, r.name AS route_name
+    sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes, r.name AS route_name,
+                  ISNULL(NULLIF(LTRIM(RTRIM(c.name)), N''), NULLIF(LTRIM(RTRIM(t.main_contractor)), N'')) AS contractor,
+                  NULLIF(LTRIM(RTRIM(t.sub_contractor)), N'') AS sub_contractor
            FROM contractor_route_trucks rt
            JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId${accessClause}${contractorClause}
            JOIN contractor_routes r ON r.id = rt.route_id AND r.tenant_id = @tenantId
+           LEFT JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = @tenantId
            WHERE rt.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, t.registration`;
   } else {
-    sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes
+    sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes,
+                  ISNULL(NULLIF(LTRIM(RTRIM(c.name)), N''), NULLIF(LTRIM(RTRIM(t.main_contractor)), N'')) AS contractor,
+                  NULLIF(LTRIM(RTRIM(t.sub_contractor)), N'') AS sub_contractor
            FROM contractor_trucks t
+           LEFT JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = @tenantId
            WHERE t.tenant_id = @tenantId AND t.facility_access = 1${contractorClause}
              AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
            ORDER BY t.registration`;
@@ -2938,12 +2901,19 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
     return out;
   });
   const withRoute = useRoutes && ids.length > 0;
-  const allCols = withRoute ? FLEET_COLUMNS : FLEET_COLUMNS.filter((c) => c.key !== 'route_name');
+  // Default column set: legacy columns only (no contractor / sub_contractor unless the caller asks for them).
+  const baseCols = FLEET_COLUMNS.filter((c) => !OPTIONAL_LIST_COLUMN_KEYS.has(c.key));
+  const allCols = withRoute ? baseCols : baseCols.filter((c) => c.key !== 'route_name');
   const colKeysLower = Array.isArray(columns) && columns.length > 0 ? columns.map((c) => String(c).toLowerCase()) : null;
-  const selected = colKeysLower && colKeysLower.length > 0
-    ? allCols.filter((c) => colKeysLower.includes(c.key.toLowerCase()))
-    : allCols;
-  const useCols = selected.length > 0 ? selected : allCols;
+  let useCols;
+  if (colKeysLower && colKeysLower.length > 0) {
+    const wanted = FLEET_COLUMNS.filter((c) => colKeysLower.includes(c.key.toLowerCase()));
+    // Drop route_name when no route filter is in effect (matches legacy behaviour).
+    const filtered = withRoute ? wanted : wanted.filter((c) => c.key !== 'route_name');
+    useCols = filtered.length > 0 ? filtered : allCols;
+  } else {
+    useCols = allCols;
+  }
   return { headers: useCols.map((c) => c.label), keys: useCols.map((c) => c.key), rows };
 }
 
@@ -2967,15 +2937,23 @@ async function getDriverListData(query, tenantId, routeIds, columns = null, cont
   if (useRoutes && ids.length > 0) {
     const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
-    sql = `SELECT d.full_name, d.license_number, d.phone, d.email, r.name AS route_name
+    sql = `SELECT d.full_name, d.license_number, d.phone, d.email, r.name AS route_name,
+                  ISNULL(NULLIF(LTRIM(RTRIM(c.name)), N''), NULLIF(LTRIM(RTRIM(lt.main_contractor)), N'')) AS contractor,
+                  NULLIF(LTRIM(RTRIM(lt.sub_contractor)), N'') AS sub_contractor
            FROM contractor_route_drivers rd
            JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId${accessClause}${contractorClause}
            JOIN contractor_routes r ON r.id = rd.route_id AND r.tenant_id = @tenantId
+           LEFT JOIN contractors c ON c.id = d.contractor_id AND c.tenant_id = @tenantId
+           LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = @tenantId
            WHERE rd.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, d.full_name`;
   } else {
-    sql = `SELECT d.full_name, d.license_number, d.phone, d.email
+    sql = `SELECT d.full_name, d.license_number, d.phone, d.email,
+                  ISNULL(NULLIF(LTRIM(RTRIM(c.name)), N''), NULLIF(LTRIM(RTRIM(lt.main_contractor)), N'')) AS contractor,
+                  NULLIF(LTRIM(RTRIM(lt.sub_contractor)), N'') AS sub_contractor
            FROM contractor_drivers d
+           LEFT JOIN contractors c ON c.id = d.contractor_id AND c.tenant_id = @tenantId
+           LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = @tenantId
            WHERE d.tenant_id = @tenantId AND d.facility_access = 1${contractorClause}
              AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
            ORDER BY d.full_name`;
@@ -2991,12 +2969,17 @@ async function getDriverListData(query, tenantId, routeIds, columns = null, cont
     return out;
   });
   const withRoute = useRoutes && ids.length > 0;
-  const allCols = withRoute ? DRIVER_COLUMNS : DRIVER_COLUMNS.filter((c) => c.key !== 'route_name');
+  const baseCols = DRIVER_COLUMNS.filter((c) => !OPTIONAL_LIST_COLUMN_KEYS.has(c.key));
+  const allCols = withRoute ? baseCols : baseCols.filter((c) => c.key !== 'route_name');
   const colKeysLower = Array.isArray(columns) && columns.length > 0 ? columns.map((c) => String(c).toLowerCase()) : null;
-  const selected = colKeysLower && colKeysLower.length > 0
-    ? allCols.filter((c) => colKeysLower.includes(c.key.toLowerCase()))
-    : allCols;
-  const useCols = selected.length > 0 ? selected : allCols;
+  let useCols;
+  if (colKeysLower && colKeysLower.length > 0) {
+    const wanted = DRIVER_COLUMNS.filter((c) => colKeysLower.includes(c.key.toLowerCase()));
+    const filtered = withRoute ? wanted : wanted.filter((c) => c.key !== 'route_name');
+    useCols = filtered.length > 0 ? filtered : allCols;
+  } else {
+    useCols = allCols;
+  }
   return { headers: useCols.map((c) => c.label), keys: useCols.map((c) => c.key), rows };
 }
 
@@ -3056,7 +3039,70 @@ const EXCEL_TEMPLATE = {
   headerFont: { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 },
   borderThin: { style: 'thin', color: { argb: 'FFe2e8f0' } },
   footerFont: { size: 9, color: { argb: 'FF64748b' }, italic: true },
+  // Office theme "Tan, Background 2, Darker 25%" – the colour the user asked for.
+  groupBannerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC4BD97' } },
+  groupBannerFont: { bold: true, color: { argb: 'FF1F2937' }, size: 11 },
+  groupBannerBorder: { style: 'thin', color: { argb: 'FF8A8261' } },
+  // Slightly darker variant ("Tan, Background 2, Darker 50%") so the contractor row sits visually
+  // above its sub-contractor children while staying in the same family.
+  contractorBannerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF948A54' } },
+  contractorBannerFont: { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 },
+  contractorBannerBorder: { style: 'medium', color: { argb: 'FF5C5638' } },
 };
+
+/** Group rows by a key (preserving the existing relative order). Empty / null keys go to the "Unassigned" bucket. */
+function groupRowsByKey(rows, key, unassignedLabel = 'Unassigned') {
+  const groups = new Map();
+  for (const r of rows) {
+    const raw = r ? r[key] : null;
+    const label = raw != null ? String(raw).trim() : '';
+    const bucket = label || unassignedLabel;
+    if (!groups.has(bucket)) groups.set(bucket, []);
+    groups.get(bucket).push(r);
+  }
+  // Sort group names alphabetically (case-insensitive), keep "Unassigned" last.
+  const names = [...groups.keys()].sort((a, b) => {
+    if (a === unassignedLabel && b !== unassignedLabel) return 1;
+    if (b === unassignedLabel && a !== unassignedLabel) return -1;
+    return a.localeCompare(b, undefined, { sensitivity: 'base' });
+  });
+  return names.map((name) => ({ name, rows: groups.get(name) }));
+}
+
+/** Build a 2-level grouping: contractor -> sub-contractor -> rows. Either level falls back to "Unassigned". */
+function groupRowsByContractorAndSubContractor(rows) {
+  const contractorGroups = groupRowsByKey(rows, 'contractor');
+  return contractorGroups.map((cg) => ({
+    name: cg.name,
+    subGroups: groupRowsByKey(cg.rows, 'sub_contractor'),
+  }));
+}
+
+/** Write a centred banner row spanning all columns. `kind` switches between contractor vs sub-contractor styling. */
+function writeBannerRow(sheet, rowIndex, numCols, label, kind = 'sub_contractor') {
+  if (numCols < 1) return rowIndex + 1;
+  const lastColLetter = sheet.getColumn(numCols).letter;
+  sheet.mergeCells(`A${rowIndex}:${lastColLetter}${rowIndex}`);
+  const row = sheet.getRow(rowIndex);
+  const isContractor = kind === 'contractor';
+  row.height = isContractor ? 26 : 22;
+  const cell = row.getCell(1);
+  cell.value = (label || '').toString().toUpperCase();
+  cell.font = isContractor ? EXCEL_TEMPLATE.contractorBannerFont : EXCEL_TEMPLATE.groupBannerFont;
+  cell.fill = isContractor ? EXCEL_TEMPLATE.contractorBannerFill : EXCEL_TEMPLATE.groupBannerFill;
+  cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  const b = isContractor ? EXCEL_TEMPLATE.contractorBannerBorder : EXCEL_TEMPLATE.groupBannerBorder;
+  cell.border = { top: b, left: b, bottom: b, right: b };
+  return rowIndex + 1;
+}
+
+/** True when groupBy is requested AND the resulting columns contain the grouping key. */
+function shouldGroupByKey(groupBy, keys) {
+  if (!groupBy) return false;
+  const norm = String(groupBy).toLowerCase();
+  if (norm !== 'sub_contractor') return false;
+  return Array.isArray(keys) && keys.some((k) => String(k).toLowerCase() === 'sub_contractor');
+}
 
 /** Apply professional template: only style header cells that have content (1..numCols), auto column width, data borders. */
 function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
@@ -3092,11 +3138,13 @@ function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
       cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
       cell.border = { top: EXCEL_TEMPLATE.borderThin, left: EXCEL_TEMPLATE.borderThin, bottom: EXCEL_TEMPLATE.borderThin, right: EXCEL_TEMPLATE.borderThin };
     }
+    const bannerRowSetForWidth = new Set(Array.isArray(opts.bannerRowIndexes) ? opts.bannerRowIndexes : []);
     for (let c = 1; c <= numCols; c++) {
       const label = (headerLabels && headerLabels[c - 1]) ? String(headerLabels[c - 1]) : '';
       let maxLen = label.length;
       if (dataRowCount > 0) {
         for (let r = headerRowIndex + 1; r <= headerRowIndex + dataRowCount; r++) {
+          if (bannerRowSetForWidth.has(r)) continue;
           try {
             const cell = worksheet.getRow(r).getCell(c);
             const val = cell && cell.value != null ? String(cell.value) : '';
@@ -3111,8 +3159,9 @@ function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
   worksheet.views = [{ state: 'frozen', ySplit: headerRowIndex, activeCell: `A${headerRowIndex + 1}` }];
 
   const borderStyle = EXCEL_TEMPLATE.borderThin;
+  const bannerRowSet = new Set(Array.isArray(opts.bannerRowIndexes) ? opts.bannerRowIndexes : []);
   worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber > headerRowIndex && rowNumber !== footerRowIndex) {
+    if (rowNumber > headerRowIndex && rowNumber !== footerRowIndex && !bannerRowSet.has(rowNumber)) {
       row.alignment = { vertical: 'middle', wrapText: true };
       for (let c = 1; c <= numCols; c++) {
         const cell = row.getCell(c);
@@ -3157,7 +3206,57 @@ function writeDistributionInfoBlock(sheet, opts) {
   return 5;
 }
 
-/** Build fleet list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated }. */
+/** Write data rows below the header. When groupBy is on, inserts a contractor banner and a sub-contractor
+ *  banner before each block of rows. Rows without a sub-contractor sit directly under their contractor
+ *  banner (no "Unassigned" sub-band). Returns { dataRowCount, bannerRowIndexes } – `dataRowCount` counts
+ *  every row (banners + data) added below the header. */
+function writeListRows(sheet, headerRowIndex, keys, rows, groupBy) {
+  const banners = [];
+  const useGrouping = shouldGroupByKey(groupBy, keys);
+  if (!useGrouping) {
+    rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
+    return { dataRowCount: rows.length, bannerRowIndexes: banners };
+  }
+  const groups = groupRowsByContractorAndSubContractor(rows);
+  let written = 0;
+  for (const contractorGroup of groups) {
+    const totalRowsForContractor = contractorGroup.subGroups.reduce((n, sg) => n + sg.rows.length, 0);
+    if (totalRowsForContractor === 0) continue;
+    // Contractor banner (top-level).
+    const contractorBannerIndex = headerRowIndex + 1 + written;
+    sheet.addRow([]);
+    writeBannerRow(sheet, contractorBannerIndex, keys.length, contractorGroup.name, 'contractor');
+    banners.push(contractorBannerIndex);
+    written += 1;
+    // Split sub-groups: rows missing a sub-contractor are written directly under the contractor banner,
+    // so they don't appear as "UNASSIGNED" – they belong to the main contractor itself.
+    const namedSubGroups = [];
+    const unassignedRows = [];
+    for (const sg of contractorGroup.subGroups) {
+      if (sg.rows.length === 0) continue;
+      if (sg.name === 'Unassigned') unassignedRows.push(...sg.rows);
+      else namedSubGroups.push(sg);
+    }
+    for (const r of unassignedRows) {
+      sheet.addRow(keys.map((k) => r[k] ?? ''));
+      written += 1;
+    }
+    for (const sg of namedSubGroups) {
+      const subBannerIndex = headerRowIndex + 1 + written;
+      sheet.addRow([]);
+      writeBannerRow(sheet, subBannerIndex, keys.length, sg.name, 'sub_contractor');
+      banners.push(subBannerIndex);
+      written += 1;
+      for (const r of sg.rows) {
+        sheet.addRow(keys.map((k) => r[k] ?? ''));
+        written += 1;
+      }
+    }
+  }
+  return { dataRowCount: written, bannerRowIndexes: banners };
+}
+
+/** Build fleet list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated, groupBy }. */
 async function buildFleetListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
@@ -3188,19 +3287,20 @@ async function buildFleetListExcel(query, tenantId, routeIds, columns = null, op
   }
   const headerRow = sheet.getRow(HEADER_ROW);
   headers.forEach((h, i) => headerRow.getCell(i + 1).value = h);
-  rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
+  const { dataRowCount, bannerRowIndexes } = writeListRows(sheet, HEADER_ROW, keys, rows, opts.groupBy);
   styleDistributionSheet(sheet, numCols, headers, {
     headerRowIndex: HEADER_ROW,
     hasTitle: !hasInfoBlock,
     subtitleRowIndex: hasInfoBlock ? undefined : 2,
     hasInfoBlock,
-    dataRowCount: rows.length,
+    dataRowCount,
+    bannerRowIndexes,
   });
   const buf = await workbook.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
 
-/** Build driver list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated }. */
+/** Build driver list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated, groupBy }. */
 async function buildDriverListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
@@ -3231,19 +3331,20 @@ async function buildDriverListExcel(query, tenantId, routeIds, columns = null, o
   }
   const headerRow = sheet.getRow(HEADER_ROW);
   headers.forEach((h, i) => headerRow.getCell(i + 1).value = h);
-  rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
+  const { dataRowCount, bannerRowIndexes } = writeListRows(sheet, HEADER_ROW, keys, rows, opts.groupBy);
   styleDistributionSheet(sheet, numCols, headers, {
     headerRowIndex: HEADER_ROW,
     hasTitle: !hasInfoBlock,
     subtitleRowIndex: hasInfoBlock ? undefined : 2,
     hasInfoBlock,
-    dataRowCount: rows.length,
+    dataRowCount,
+    bannerRowIndexes,
   });
   const buf = await workbook.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
 
-/** Build one Excel workbook with Fleet list on sheet 1 and Driver list on sheet 2. opts: { companyName, routeName, generated, subtitle, contractorId }. */
+/** Build one Excel workbook with Fleet list on sheet 1 and Driver list on sheet 2. opts: { companyName, routeName, generated, subtitle, contractorId, groupBy }. */
 async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols, driverCols, opts = {}) {
   const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
   const [fleetData, driverData] = await Promise.all([
@@ -3265,12 +3366,13 @@ async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols
     sheet.addRow([]);
     const headerRow = sheet.getRow(HEADER_ROW);
     headers.forEach((h, i) => headerRow.getCell(i + 1).value = h);
-    rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
+    const { dataRowCount, bannerRowIndexes } = writeListRows(sheet, HEADER_ROW, keys, rows, opts.groupBy);
     styleDistributionSheet(sheet, numCols, headers, {
       headerRowIndex: HEADER_ROW,
       hasTitle: false,
       hasInfoBlock: true,
-      dataRowCount: rows.length,
+      dataRowCount,
+      bannerRowIndexes,
     });
   }
 
@@ -3473,7 +3575,10 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
       send_per_contractor,
       contractor_ids: rawContractorIds,
       pilot_distribution: pilotDistributionBody,
+      group_by: rawGroupBy,
     } = body || {};
+    const groupByNorm = String(rawGroupBy || '').trim().toLowerCase();
+    const groupBy = groupByNorm === 'sub_contractor' ? 'sub_contractor' : null;
     const pilotDist = pilotDistributionBody && typeof pilotDistributionBody === 'object' ? pilotDistributionBody : null;
     const uuidOk = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || '').trim());
     const pilotScheduleId = pilotDist?.schedule_id && uuidOk(pilotDist.schedule_id) ? String(pilotDist.schedule_id).trim().toLowerCase() : null;
@@ -3487,12 +3592,22 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
     const ccList = Array.isArray(rawCc) ? rawCc : (typeof rawCc === 'string' && rawCc.trim() ? rawCc.split(/[\s,;]+/).map((e) => e.trim()).filter((e) => e && e.includes('@')) : []);
     const ccEmails = ccList.length > 0 ? [...new Set(ccList.map((e) => String(e).trim().toLowerCase()).filter((e) => e && e.includes('@')))] : null;
 
-    const fleetCols = Array.isArray(fleet_columns) && fleet_columns.length > 0
+    let fleetCols = Array.isArray(fleet_columns) && fleet_columns.length > 0
       ? FLEET_COLUMNS.filter((c) => fleet_columns.some((k) => String(k).toLowerCase() === c.key.toLowerCase())).map((c) => c.key)
       : null;
-    const driverCols = Array.isArray(driver_columns) && driver_columns.length > 0
+    let driverCols = Array.isArray(driver_columns) && driver_columns.length > 0
       ? DRIVER_COLUMNS.filter((c) => driver_columns.some((k) => String(k).toLowerCase() === c.key.toLowerCase())).map((c) => c.key)
       : null;
+    // Grouping nests contractor -> sub_contractor banners, so both columns must be present in the dataset.
+    // Auto-add them at the front of the chosen column list when the caller asked to group.
+    if (groupBy === 'sub_contractor') {
+      const ensureLeading = (list) => {
+        const out = Array.isArray(list) ? list.filter((k) => k !== 'contractor' && k !== 'sub_contractor') : [];
+        return ['contractor', 'sub_contractor', ...out];
+      };
+      if (Array.isArray(fleetCols)) fleetCols = ensureLeading(fleetCols);
+      if (Array.isArray(driverCols)) driverCols = ensureLeading(driverCols);
+    }
     const useExcel = attachFormat === 'excel';
     const usePdf = attachFormat === 'pdf';
     const ext = usePdf ? 'pdf' : useExcel ? 'xlsx' : 'csv';
@@ -3564,6 +3679,7 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
           companyName: contractorName,
           routeName: routeNameForTitle,
           generated,
+          groupBy,
           ...distListOpts,
         };
         if (listType === 'both' && useExcel) {
@@ -3624,7 +3740,7 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
           { tid }
         );
         const routes = routesResult.recordset || [];
-        const baseOpts = { subtitle, contractorId: cid, companyName: contractorName, generated };
+        const baseOpts = { subtitle, contractorId: cid, companyName: contractorName, generated, groupBy };
         if (routes.length === 0) {
           const routeLabel = 'All approved';
           const listOpts = { ...baseOpts, title: `${contractorName} – ${routeLabel}`, routeName: routeLabel };
@@ -3720,6 +3836,7 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
         companyName: 'All companies',
         routeName: routeIdsForList ? (routeIds.length === 1 ? 'Selected route' : 'Selected routes') : 'All routes',
         generated: new Date(),
+        groupBy,
       };
       if (listType === 'both' && useExcel) {
         const combinedBuffer = await buildFleetAndDriverListExcel(query, tenantId, routeIdsForList, fleetCols, driverCols, listOptsAll);
@@ -3844,7 +3961,7 @@ router.get('/pilot-distribution', requireAccessManagementPilot, async (req, res,
     if (!tenantId) return res.status(403).json({ error: 'Tenant required.' });
     const result = await query(
       `SELECT p.id, p.name, p.route_id, p.contractor_ids, p.recipient_emails, p.cc_emails,
-              p.list_type, p.attach_format, p.fleet_columns_json, p.driver_columns_json,
+              p.list_type, p.attach_format, p.fleet_columns_json, p.driver_columns_json, p.group_by,
               p.frequency, p.time_hhmm, p.weekday, p.is_active, p.last_run_at, p.last_run_status, p.last_run_detail,
               p.created_at, p.updated_at, r.name AS route_name
        FROM pilot_list_distribution p
@@ -3903,10 +4020,13 @@ router.post('/pilot-distribution', requireAccessManagementPilot, async (req, res
       attach_format: attachFormat,
       fleet_columns,
       driver_columns,
+      group_by: rawGroupBy,
       frequency,
       time_hhmm: timeHhmm,
       weekday,
     } = req.body || {};
+    const groupByNorm = String(rawGroupBy || '').trim().toLowerCase();
+    const groupBy = groupByNorm === 'sub_contractor' ? 'sub_contractor' : null;
     if (!routeId || !String(routeId).trim()) return res.status(400).json({ error: 'route_id is required' });
     const contractorIds = Array.isArray(contractorIdsIn)
       ? contractorIdsIn.map((x) => String(x).trim()).filter(Boolean)
@@ -3939,8 +4059,8 @@ router.post('/pilot-distribution', requireAccessManagementPilot, async (req, res
     const id = randomUUID();
     await query(
       `INSERT INTO pilot_list_distribution (id, tenant_id, created_by_user_id, name, route_id, contractor_ids, recipient_emails, cc_emails,
-        list_type, attach_format, fleet_columns_json, driver_columns_json, frequency, time_hhmm, weekday, is_active)
-       VALUES (@id, @tenantId, @userId, @name, @routeId, @contractorIds, @recipients, @cc, @lt, @fmt, @fleetJson, @driverJson, @freq, @tm, @wd, 1)`,
+        list_type, attach_format, fleet_columns_json, driver_columns_json, group_by, frequency, time_hhmm, weekday, is_active)
+       VALUES (@id, @tenantId, @userId, @name, @routeId, @contractorIds, @recipients, @cc, @lt, @fmt, @fleetJson, @driverJson, @groupBy, @freq, @tm, @wd, 1)`,
       {
         id,
         tenantId,
@@ -3954,6 +4074,7 @@ router.post('/pilot-distribution', requireAccessManagementPilot, async (req, res
         fmt,
         fleetJson,
         driverJson,
+        groupBy,
         freq,
         tm,
         wd,
@@ -4019,6 +4140,11 @@ router.patch('/pilot-distribution/:id', requireAccessManagementPilot, async (req
     if (b.driver_columns !== undefined) {
       sets.push('driver_columns_json = @dj');
       params.dj = JSON.stringify(Array.isArray(b.driver_columns) ? b.driver_columns : []);
+    }
+    if (b.group_by !== undefined) {
+      const g = String(b.group_by || '').trim().toLowerCase();
+      sets.push('group_by = @gb');
+      params.gb = g === 'sub_contractor' ? 'sub_contractor' : null;
     }
     if (b.frequency !== undefined) {
       const f = String(b.frequency).toLowerCase();

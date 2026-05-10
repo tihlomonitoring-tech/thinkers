@@ -145,6 +145,10 @@ export async function runPilotListDistributions() {
     const cc = splitEmails(row.cc_emails);
 
     const scheduleIdStr = sqlGuidToUuidString(row.id);
+    const groupByVal = (() => {
+      const v = String(row.group_by || '').trim().toLowerCase();
+      return v === 'sub_contractor' ? 'sub_contractor' : null;
+    })();
     const body = {
       recipients,
       cc,
@@ -155,6 +159,7 @@ export async function runPilotListDistributions() {
       format: row.attach_format || 'excel',
       send_per_contractor: true,
       contractor_ids: contractorIds,
+      group_by: groupByVal || undefined,
       pilot_distribution:
         scheduleIdStr && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(scheduleIdStr)
           ? { schedule_id: scheduleIdStr, schedule_name: row.name || null }
