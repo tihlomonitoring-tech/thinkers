@@ -11,6 +11,18 @@ import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRout
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
+import {
+  EXCEL_TEMPLATE,
+  EXCEL_INFO_FONT,
+  EXCEL_INFO_LABEL_FONT,
+  groupRowsByKey,
+  groupRowsByContractorAndSubContractor,
+  writeBannerRow,
+  shouldGroupByKey,
+  styleDistributionSheet,
+  writeDistributionInfoBlock,
+  writeListRows,
+} from '../lib/distributionExcel.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -3028,232 +3040,6 @@ async function buildDriverListCsv(query, tenantId, routeIds, columns = null, opt
     rows.map((r) => keys.map((k) => r[k]).map((c) => (c != null ? `"${String(c).replace(/"/g, '""')}"` : '')).join(','))
   ).join('\n');
   return '\uFEFF' + csv;
-}
-
-/** Template constants for distribution Excel sheets */
-const EXCEL_TEMPLATE = {
-  titleFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1e40af' } },
-  titleFont: { bold: true, color: { argb: 'FFFFFFFF' }, size: 16 },
-  subtitleFont: { size: 10, color: { argb: 'FF64748b' } },
-  headerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1e40af' } },
-  headerFont: { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 },
-  borderThin: { style: 'thin', color: { argb: 'FFe2e8f0' } },
-  footerFont: { size: 9, color: { argb: 'FF64748b' }, italic: true },
-  // Office theme "Tan, Background 2, Darker 25%" – the colour the user asked for.
-  groupBannerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC4BD97' } },
-  groupBannerFont: { bold: true, color: { argb: 'FF1F2937' }, size: 11 },
-  groupBannerBorder: { style: 'thin', color: { argb: 'FF8A8261' } },
-  // Slightly darker variant ("Tan, Background 2, Darker 50%") so the contractor row sits visually
-  // above its sub-contractor children while staying in the same family.
-  contractorBannerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF948A54' } },
-  contractorBannerFont: { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 },
-  contractorBannerBorder: { style: 'medium', color: { argb: 'FF5C5638' } },
-};
-
-/** Group rows by a key (preserving the existing relative order). Empty / null keys go to the "Unassigned" bucket. */
-function groupRowsByKey(rows, key, unassignedLabel = 'Unassigned') {
-  const groups = new Map();
-  for (const r of rows) {
-    const raw = r ? r[key] : null;
-    const label = raw != null ? String(raw).trim() : '';
-    const bucket = label || unassignedLabel;
-    if (!groups.has(bucket)) groups.set(bucket, []);
-    groups.get(bucket).push(r);
-  }
-  // Sort group names alphabetically (case-insensitive), keep "Unassigned" last.
-  const names = [...groups.keys()].sort((a, b) => {
-    if (a === unassignedLabel && b !== unassignedLabel) return 1;
-    if (b === unassignedLabel && a !== unassignedLabel) return -1;
-    return a.localeCompare(b, undefined, { sensitivity: 'base' });
-  });
-  return names.map((name) => ({ name, rows: groups.get(name) }));
-}
-
-/** Build a 2-level grouping: contractor -> sub-contractor -> rows. Either level falls back to "Unassigned". */
-function groupRowsByContractorAndSubContractor(rows) {
-  const contractorGroups = groupRowsByKey(rows, 'contractor');
-  return contractorGroups.map((cg) => ({
-    name: cg.name,
-    subGroups: groupRowsByKey(cg.rows, 'sub_contractor'),
-  }));
-}
-
-/** Write a centred banner row spanning all columns. `kind` switches between contractor vs sub-contractor styling. */
-function writeBannerRow(sheet, rowIndex, numCols, label, kind = 'sub_contractor') {
-  if (numCols < 1) return rowIndex + 1;
-  const lastColLetter = sheet.getColumn(numCols).letter;
-  sheet.mergeCells(`A${rowIndex}:${lastColLetter}${rowIndex}`);
-  const row = sheet.getRow(rowIndex);
-  const isContractor = kind === 'contractor';
-  row.height = isContractor ? 26 : 22;
-  const cell = row.getCell(1);
-  cell.value = (label || '').toString().toUpperCase();
-  cell.font = isContractor ? EXCEL_TEMPLATE.contractorBannerFont : EXCEL_TEMPLATE.groupBannerFont;
-  cell.fill = isContractor ? EXCEL_TEMPLATE.contractorBannerFill : EXCEL_TEMPLATE.groupBannerFill;
-  cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-  const b = isContractor ? EXCEL_TEMPLATE.contractorBannerBorder : EXCEL_TEMPLATE.groupBannerBorder;
-  cell.border = { top: b, left: b, bottom: b, right: b };
-  return rowIndex + 1;
-}
-
-/** True when groupBy is requested AND the resulting columns contain the grouping key. */
-function shouldGroupByKey(groupBy, keys) {
-  if (!groupBy) return false;
-  const norm = String(groupBy).toLowerCase();
-  if (norm !== 'sub_contractor') return false;
-  return Array.isArray(keys) && keys.some((k) => String(k).toLowerCase() === 'sub_contractor');
-}
-
-/** Apply professional template: only style header cells that have content (1..numCols), auto column width, data borders. */
-function styleDistributionSheet(worksheet, numCols, headerLabels, opts = {}) {
-  const headerRowIndex = opts.headerRowIndex ?? 1;
-  const hasTitle = opts.hasTitle === true;
-  const hasInfoBlock = opts.hasInfoBlock === true;
-  const footerRowIndex = opts.footerRowIndex;
-  const dataRowCount = opts.dataRowCount ?? 0;
-
-  if (numCols >= 1) {
-    const lastColLetter = worksheet.getColumn(numCols).letter;
-    if (hasTitle && !hasInfoBlock) {
-      worksheet.mergeCells(`A1:${lastColLetter}1`);
-      const titleRow = worksheet.getRow(1);
-      titleRow.height = 28;
-      titleRow.getCell(1).font = EXCEL_TEMPLATE.titleFont;
-      titleRow.getCell(1).fill = EXCEL_TEMPLATE.titleFill;
-      titleRow.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
-      if (opts.subtitleRowIndex) {
-        worksheet.mergeCells(`A${opts.subtitleRowIndex}:${lastColLetter}${opts.subtitleRowIndex}`);
-        const subRow = worksheet.getRow(opts.subtitleRowIndex);
-        subRow.getCell(1).font = EXCEL_TEMPLATE.subtitleFont;
-        subRow.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
-      }
-    }
-
-    const headerRow = worksheet.getRow(headerRowIndex);
-    headerRow.height = 22;
-    for (let c = 1; c <= numCols; c++) {
-      const cell = headerRow.getCell(c);
-      cell.font = EXCEL_TEMPLATE.headerFont;
-      cell.fill = EXCEL_TEMPLATE.headerFill;
-      cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
-      cell.border = { top: EXCEL_TEMPLATE.borderThin, left: EXCEL_TEMPLATE.borderThin, bottom: EXCEL_TEMPLATE.borderThin, right: EXCEL_TEMPLATE.borderThin };
-    }
-    const bannerRowSetForWidth = new Set(Array.isArray(opts.bannerRowIndexes) ? opts.bannerRowIndexes : []);
-    for (let c = 1; c <= numCols; c++) {
-      const label = (headerLabels && headerLabels[c - 1]) ? String(headerLabels[c - 1]) : '';
-      let maxLen = label.length;
-      if (dataRowCount > 0) {
-        for (let r = headerRowIndex + 1; r <= headerRowIndex + dataRowCount; r++) {
-          if (bannerRowSetForWidth.has(r)) continue;
-          try {
-            const cell = worksheet.getRow(r).getCell(c);
-            const val = cell && cell.value != null ? String(cell.value) : '';
-            if (val.length > maxLen) maxLen = val.length;
-          } catch (_) { /* ignore */ }
-        }
-      }
-      worksheet.getColumn(c).width = Math.min(40, Math.max(10, maxLen + 2));
-    }
-  }
-
-  worksheet.views = [{ state: 'frozen', ySplit: headerRowIndex, activeCell: `A${headerRowIndex + 1}` }];
-
-  const borderStyle = EXCEL_TEMPLATE.borderThin;
-  const bannerRowSet = new Set(Array.isArray(opts.bannerRowIndexes) ? opts.bannerRowIndexes : []);
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber > headerRowIndex && rowNumber !== footerRowIndex && !bannerRowSet.has(rowNumber)) {
-      row.alignment = { vertical: 'middle', wrapText: true };
-      for (let c = 1; c <= numCols; c++) {
-        const cell = row.getCell(c);
-        if (cell) cell.border = { top: borderStyle, left: borderStyle, bottom: borderStyle, right: borderStyle };
-      }
-    }
-  });
-
-  if (footerRowIndex) {
-    const lastColLetter = worksheet.getColumn(numCols).letter;
-    worksheet.mergeCells(`A${footerRowIndex}:${lastColLetter}${footerRowIndex}`);
-    const footerRow = worksheet.getRow(footerRowIndex);
-    footerRow.getCell(1).font = EXCEL_TEMPLATE.footerFont;
-    footerRow.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
-  }
-}
-
-const EXCEL_INFO_FONT = { size: 11, color: { argb: 'FF334155' } };
-const EXCEL_INFO_LABEL_FONT = { size: 11, color: { argb: 'FF64748b' }, bold: true };
-
-/** Write Company, Route, Date & time block at top of sheet (rows 1–3). Returns header row index (5). */
-function writeDistributionInfoBlock(sheet, opts) {
-  const companyName = opts.companyName != null ? String(opts.companyName).trim() : '';
-  const routeName = opts.routeName != null ? String(opts.routeName).trim() : '';
-  const generated = opts.generated instanceof Date ? opts.generated : (opts.generated != null ? new Date(opts.generated) : new Date());
-  const dateTimeStr = formatDateForAppTz(generated);
-  sheet.getRow(1).getCell(1).value = 'Company:';
-  sheet.getRow(1).getCell(1).font = EXCEL_INFO_LABEL_FONT;
-  sheet.getRow(1).getCell(2).value = companyName || '—';
-  sheet.getRow(1).getCell(2).font = EXCEL_INFO_FONT;
-  sheet.getRow(2).getCell(1).value = 'Route:';
-  sheet.getRow(2).getCell(1).font = EXCEL_INFO_LABEL_FONT;
-  sheet.getRow(2).getCell(2).value = routeName || '—';
-  sheet.getRow(2).getCell(2).font = EXCEL_INFO_FONT;
-  sheet.getRow(3).getCell(1).value = 'Date & time:';
-  sheet.getRow(3).getCell(1).font = EXCEL_INFO_LABEL_FONT;
-  sheet.getRow(3).getCell(2).value = dateTimeStr;
-  sheet.getRow(3).getCell(2).font = EXCEL_INFO_FONT;
-  sheet.getRow(1).height = 20;
-  sheet.getRow(2).height = 20;
-  sheet.getRow(3).height = 20;
-  return 5;
-}
-
-/** Write data rows below the header. When groupBy is on, inserts a contractor banner and a sub-contractor
- *  banner before each block of rows. Rows without a sub-contractor sit directly under their contractor
- *  banner (no "Unassigned" sub-band). Returns { dataRowCount, bannerRowIndexes } – `dataRowCount` counts
- *  every row (banners + data) added below the header. */
-function writeListRows(sheet, headerRowIndex, keys, rows, groupBy) {
-  const banners = [];
-  const useGrouping = shouldGroupByKey(groupBy, keys);
-  if (!useGrouping) {
-    rows.forEach((r) => sheet.addRow(keys.map((k) => r[k] ?? '')));
-    return { dataRowCount: rows.length, bannerRowIndexes: banners };
-  }
-  const groups = groupRowsByContractorAndSubContractor(rows);
-  let written = 0;
-  for (const contractorGroup of groups) {
-    const totalRowsForContractor = contractorGroup.subGroups.reduce((n, sg) => n + sg.rows.length, 0);
-    if (totalRowsForContractor === 0) continue;
-    // Contractor banner (top-level).
-    const contractorBannerIndex = headerRowIndex + 1 + written;
-    sheet.addRow([]);
-    writeBannerRow(sheet, contractorBannerIndex, keys.length, contractorGroup.name, 'contractor');
-    banners.push(contractorBannerIndex);
-    written += 1;
-    // Split sub-groups: rows missing a sub-contractor are written directly under the contractor banner,
-    // so they don't appear as "UNASSIGNED" – they belong to the main contractor itself.
-    const namedSubGroups = [];
-    const unassignedRows = [];
-    for (const sg of contractorGroup.subGroups) {
-      if (sg.rows.length === 0) continue;
-      if (sg.name === 'Unassigned') unassignedRows.push(...sg.rows);
-      else namedSubGroups.push(sg);
-    }
-    for (const r of unassignedRows) {
-      sheet.addRow(keys.map((k) => r[k] ?? ''));
-      written += 1;
-    }
-    for (const sg of namedSubGroups) {
-      const subBannerIndex = headerRowIndex + 1 + written;
-      sheet.addRow([]);
-      writeBannerRow(sheet, subBannerIndex, keys.length, sg.name, 'sub_contractor');
-      banners.push(subBannerIndex);
-      written += 1;
-      for (const r of sg.rows) {
-        sheet.addRow(keys.map((k) => r[k] ?? ''));
-        written += 1;
-      }
-    }
-  }
-  return { dataRowCount: written, bannerRowIndexes: banners };
 }
 
 /** Build fleet list as Excel buffer. opts: { title, subtitle, contractorId, contractorIds, companyName, routeName, generated, groupBy }. */

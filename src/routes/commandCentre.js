@@ -25,10 +25,11 @@ import {
   shiftReportOverrideCodeToRequesterHtml,
   commandCentreReminderHtml,
 } from '../lib/emailTemplates.js';
-import { sendEmail, isEmailConfigured, formatDateForEmail } from '../lib/emailService.js';
+import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz } from '../lib/emailService.js';
 import { todayYmd, addCalendarDays, toYmdFromDbOrString } from '../lib/appTime.js';
 import { getAiModel, getOpenAiClient, isAiConfigured } from '../lib/ai.js';
 import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
+import { buildStyledListSheet } from '../lib/distributionExcel.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
 const libraryUpload = multer({
@@ -452,6 +453,142 @@ function pickFirstHeaderIndex(headersNorm, candidates) {
   return null;
 }
 
+/** Read header cells on one row (trim trailing empties, cap width). */
+function readSheetHeaderRowRaw(sheet, rowIndex, maxCols = 80) {
+  const out = [];
+  for (let c = 1; c <= maxCols; c++) {
+    out.push(rowText(sheet.getRow(rowIndex).getCell(c).value));
+  }
+  let end = out.length;
+  while (end > 0 && !out[end - 1]) end -= 1;
+  return out.slice(0, Math.max(end, 0));
+}
+
+function scoreTruckImportHeaderNorms(headersNorm) {
+  if (!headersNorm || !headersNorm.length) return 0;
+  const list = headersNorm.filter(Boolean);
+  let s = 0;
+  if (list.includes('contractor')) s += 8;
+  if (list.some((h) => h.includes('subcontract') || h === 'subcontractor')) s += 8;
+  if (list.some((h) => h.includes('truckreg') || h === 'truckregno' || (h.includes('truck') && h.includes('reg')))) s += 10;
+  if (list.some((h) => h.includes('fleetno') || h === 'fleetnumber' || h === 'fleetcode')) s += 5;
+  if (list.some((h) => h.includes('trailer'))) s += 4;
+  if (list.some((h) => h.includes('track'))) s += 3;
+  if (list.some((h) => h.includes('make') || h.includes('model') || h.includes('year'))) s += 2;
+  return s;
+}
+
+function scoreDriverImportHeaderNorms(headersNorm) {
+  if (!headersNorm || !headersNorm.length) return 0;
+  const list = headersNorm.filter(Boolean);
+  let s = 0;
+  if (list.includes('contractor')) s += 6;
+  if (list.some((h) => h.includes('subcontract') || h === 'subcontractor')) s += 6;
+  if (list.includes('surname') || list.some((h) => h.includes('lastname'))) s += 5;
+  if (list.some((h) => h === 'name' || h === 'firstname' || h.includes('fullname') || h.includes('drivername'))) s += 4;
+  if (list.some((h) => h.includes('idnumber') || h === 'id' || h.includes('rsa'))) s += 7;
+  if (list.some((h) => h.includes('licen'))) s += 4;
+  return s;
+}
+
+function bestHeaderRowForFleetSheet(sheet, scoreFn, maxProbeRows = 12) {
+  const last = Math.min(sheet.rowCount || maxProbeRows, maxProbeRows);
+  let bestRow = 1;
+  let bestScore = -1;
+  for (let r = 1; r <= last; r++) {
+    const raw = readSheetHeaderRowRaw(sheet, r);
+    if (!raw.some(Boolean)) continue;
+    const norms = raw.map((h) => normalizeFleetKey(h));
+    const score = scoreFn(norms);
+    if (score > bestScore) {
+      bestScore = score;
+      bestRow = r;
+    }
+  }
+  return { headerRow: bestRow, score: bestScore };
+}
+
+function pickBestTrucksWorksheet(workbook) {
+  let best = { sheet: workbook.worksheets[0] || null, headerRow: 1, score: -1 };
+  for (const ws of workbook.worksheets) {
+    const { headerRow, score } = bestHeaderRowForFleetSheet(ws, scoreTruckImportHeaderNorms);
+    const nameBonus = /truck|fleet|vehicle|haul|transport/i.test(String(ws.name || '')) ? 6 : 0;
+    const total = score + nameBonus;
+    if (total > best.score) best = { sheet: ws, headerRow, score: total };
+  }
+  return best;
+}
+
+/** Pick a drivers sheet by name and header shape; avoid re-using the trucks sheet. */
+function pickBestDriversWorksheet(workbook, trucksSheet) {
+  let best = null;
+  for (const ws of workbook.worksheets) {
+    if (trucksSheet && ws === trucksSheet) continue;
+    const { headerRow, score } = bestHeaderRowForFleetSheet(ws, scoreDriverImportHeaderNorms);
+    const nameBonus = /driver|personnel|employee|staff/i.test(String(ws.name || '')) ? 6 : 0;
+    const total = score + nameBonus;
+    if (!best || total > best.score) best = { sheet: ws, headerRow, score: total };
+  }
+  if (!best || best.score < 4) return null;
+  return best;
+}
+
+/** Prefer exact header tokens; never treat "Fleet_no" as contractor (avoid loose "fleet" on contractor). */
+function pickContractorColumnIndex(headersNorm) {
+  const exactPriority = [
+    'contractor',
+    'maincontractor',
+    'haulier',
+    'companyname',
+    'transportcompany',
+    'operator',
+    'transporter',
+    'ownername',
+    'owner',
+    'customer',
+    'company',
+    'carrier',
+  ];
+  for (const p of exactPriority) {
+    const i = headersNorm.findIndex((h) => h === p);
+    if (i >= 0) return i + 1;
+  }
+  for (let i = 0; i < headersNorm.length; i++) {
+    const h = headersNorm[i];
+    if (!h) continue;
+    if (h.includes('subcontract') || h === 'subcontractor') continue;
+    if (h.includes('contractor') && !h.includes('sub')) return i + 1;
+  }
+  return null;
+}
+
+function pickSubContractorColumnIndex(headersNorm) {
+  const exact = ['subcontractor', 'sub_contractor', 'subcontractorname', 'subcontract', 'secondarycontractor', 'subcompany', 'subhaulier', 'subcarrier'];
+  for (const p of exact) {
+    const i = headersNorm.findIndex((h) => h === p);
+    if (i >= 0) return i + 1;
+  }
+  for (let i = 0; i < headersNorm.length; i++) {
+    const h = headersNorm[i];
+    if (h && h.includes('sub') && h.includes('contract')) return i + 1;
+  }
+  return null;
+}
+
+function sortFleetVerificationRows(rows, regKey = 'registration') {
+  return rows.slice().sort((a, b) => {
+    const c1 = String(a.contractor || '').toLowerCase();
+    const c2 = String(b.contractor || '').toLowerCase();
+    if (c1 !== c2) return c1.localeCompare(c2);
+    const s1 = String(a.sub_contractor || '').toLowerCase();
+    const s2 = String(b.sub_contractor || '').toLowerCase();
+    if (s1 !== s2) return s1.localeCompare(s2);
+    const k1 = String(a[regKey] || a.full_name || a.id_number || '');
+    const k2 = String(b[regKey] || b.full_name || b.id_number || '');
+    return k1.localeCompare(k2, undefined, { sensitivity: 'base' });
+  });
+}
+
 async function inferVerificationColumnsWithAi(sheetHeaders) {
   if (!isAiConfigured()) return null;
   try {
@@ -459,8 +596,13 @@ async function inferVerificationColumnsWithAi(sheetHeaders) {
     const model = getAiModel();
     const prompt = [
       'You map Excel headers for contractor import verification.',
-      'Return strict JSON only: {"trucks":{"registration":"exact header or empty"},"drivers":{"idNumber":"exact header or empty","licenseNumber":"exact header or empty"}}',
-      'Use exact header names from input arrays.',
+      'Return strict JSON only with this exact shape: ',
+      '{"trucks":{"registration":"","contractor":"","subContractor":"","fleetNo":"","trailer1Reg":"","trailer2Reg":"","trackingNo":"","trackingUsername":"","trackingPassword":""},',
+      ' "drivers":{"idNumber":"","licenseNumber":"","fullName":"","surname":"","contractor":"","subContractor":""}}',
+      'For each field, pick the EXACT header name from the supplied arrays (preserve original spelling/case),',
+      'or return an empty string when none of the headers refers to that concept.',
+      'A "sub contractor" / "sub-contractor" header maps to subContractor.',
+      'A "main contractor" / "haulier" / "carrier" / "company" header maps to contractor.',
       `Trucks headers: ${JSON.stringify(sheetHeaders.trucks || [])}`,
       `Drivers headers: ${JSON.stringify(sheetHeaders.drivers || [])}`,
     ].join('\n');
@@ -468,9 +610,9 @@ async function inferVerificationColumnsWithAi(sheetHeaders) {
       client.responses.create({
         model,
         input: [{ role: 'user', content: prompt }],
-        max_output_tokens: 180,
+        max_output_tokens: 480,
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('AI timeout')), 2500)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('AI timeout')), 3500)),
     ]);
     const out = String(response?.output_text || '').trim();
     if (!out) return null;
@@ -1578,60 +1720,205 @@ router.get('/fleet-integration', async (req, res, next) => {
   }
 });
 
+/** List contractors for fleet-verification haulier selector. Returns [{ id, name, truck_count }]. */
+router.get('/fleet-verification/contractors', async (req, res, next) => {
+  try {
+    const tenantId = String(req.query?.tenant_id || '').trim() || null;
+    if (!tenantId) return res.json({ contractors: [] });
+    const result = await query(
+      `SELECT c.id, c.name,
+              (SELECT COUNT(1) FROM contractor_trucks t WHERE t.tenant_id = @tenantId AND t.contractor_id = c.id) AS truck_count
+       FROM contractors c
+       WHERE c.tenant_id = @tenantId
+       ORDER BY c.name`,
+      { tenantId }
+    );
+    const contractors = (result.recordset || []).map((r) => ({
+      id: r.id,
+      name: r.name || '',
+      truck_count: Number(r.truck_count || 0),
+    }));
+    res.json({ contractors });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/fleet-verification/verify', fleetVerificationUpload, async (req, res, next) => {
   try {
     pruneFleetVerificationCache();
     if (!req.file?.buffer) return res.status(400).json({ error: 'Upload an Excel file (.xlsx)' });
     const tenantId = String(req.body?.tenant_id || '').trim() || null;
+    const rawContractorScope = String(req.body?.contractor_id || '').trim();
+    const checkAllContractors = !rawContractorScope || rawContractorScope.toLowerCase() === 'all';
+    const contractorId = checkAllContractors ? null : rawContractorScope;
     const startedAt = Date.now();
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(req.file.buffer);
 
-    const trucksSheet = workbook.getWorksheet('Trucks') || workbook.getWorksheet('trucks') || workbook.worksheets[0] || null;
-    const driversSheet = workbook.getWorksheet('Drivers') || workbook.getWorksheet('drivers') || workbook.worksheets[1] || null;
+    const truckPick = pickBestTrucksWorksheet(workbook);
+    const trucksSheet = truckPick.sheet;
+    const truckHeaderRow = truckPick.headerRow || 1;
+    const driverPick = pickBestDriversWorksheet(workbook, trucksSheet);
+    const driversSheet = driverPick ? driverPick.sheet : null;
+    const driverHeaderRow = driverPick ? driverPick.headerRow : 1;
     if (!trucksSheet && !driversSheet) {
       return res.status(400).json({ error: 'Workbook must contain Trucks and/or Drivers sheets' });
     }
+    const detectedSheets = {
+      trucks: trucksSheet ? trucksSheet.name : null,
+      trucks_header_row: truckHeaderRow,
+      drivers: driversSheet ? driversSheet.name : null,
+      drivers_header_row: driversSheet ? driverHeaderRow : null,
+      all_sheets: workbook.worksheets.map((ws) => ws.name),
+    };
 
-    const truckHeadersRaw = trucksSheet
-      ? Array.from({ length: trucksSheet.columnCount }, (_, i) => rowText(trucksSheet.getRow(1).getCell(i + 1).value))
-      : [];
-    const driverHeadersRaw = driversSheet
-      ? Array.from({ length: driversSheet.columnCount }, (_, i) => rowText(driversSheet.getRow(1).getCell(i + 1).value))
-      : [];
+    const truckHeadersRaw = trucksSheet ? readSheetHeaderRowRaw(trucksSheet, truckHeaderRow) : [];
+    const driverHeadersRaw = driversSheet ? readSheetHeaderRowRaw(driversSheet, driverHeaderRow) : [];
     const truckHeadersNorm = truckHeadersRaw.map((h) => normalizeFleetKey(h));
     const driverHeadersNorm = driverHeadersRaw.map((h) => normalizeFleetKey(h));
 
     const aiColumns = await inferVerificationColumnsWithAi({ trucks: truckHeadersRaw, drivers: driverHeadersRaw });
-    const aiTruckHeader = rowText(aiColumns?.trucks?.registration);
-    const aiDriverIdHeader = rowText(aiColumns?.drivers?.idNumber);
-    const aiDriverLicenseHeader = rowText(aiColumns?.drivers?.licenseNumber);
-    const aiTruckIdx = aiTruckHeader ? truckHeadersRaw.findIndex((h) => normalizeFleetKey(h) === normalizeFleetKey(aiTruckHeader)) + 1 : 0;
-    const aiDriverIdIdx = aiDriverIdHeader ? driverHeadersRaw.findIndex((h) => normalizeFleetKey(h) === normalizeFleetKey(aiDriverIdHeader)) + 1 : 0;
-    const aiDriverLicenseIdx = aiDriverLicenseHeader
-      ? driverHeadersRaw.findIndex((h) => normalizeFleetKey(h) === normalizeFleetKey(aiDriverLicenseHeader)) + 1
-      : 0;
-    const truckRegCol = (aiTruckIdx > 0 ? aiTruckIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, ['truckregno', 'registration', 'truckregistrationnumber']);
-    const driverIdCol = (aiDriverIdIdx > 0 ? aiDriverIdIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, ['idnumber', 'id']);
-    const driverLicenseCol =
-      (aiDriverLicenseIdx > 0 ? aiDriverLicenseIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, ['driverslicensenumber', 'licensenumber', 'licence']);
+    const findHeaderIdx = (headersRaw, headerName) => {
+      const target = normalizeFleetKey(headerName);
+      if (!target) return 0;
+      const idx = headersRaw.findIndex((h) => normalizeFleetKey(h) === target);
+      return idx >= 0 ? idx + 1 : 0;
+    };
+    const aiTruckRegIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.registration);
+    const aiTruckContractorIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.contractor);
+    const aiTruckSubContractorIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.subContractor);
+    const aiTruckFleetNoIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.fleetNo);
+    const aiDriverIdIdx = findHeaderIdx(driverHeadersRaw, aiColumns?.drivers?.idNumber);
+    const aiDriverLicenseIdx = findHeaderIdx(driverHeadersRaw, aiColumns?.drivers?.licenseNumber);
+    const aiDriverFullNameIdx = findHeaderIdx(driverHeadersRaw, aiColumns?.drivers?.fullName);
+    const aiDriverContractorIdx = findHeaderIdx(driverHeadersRaw, aiColumns?.drivers?.contractor);
+    const aiDriverSubContractorIdx = findHeaderIdx(driverHeadersRaw, aiColumns?.drivers?.subContractor);
 
-    const tenantFilter = tenantId ? 'WHERE tr.tenant_id = @tenantId' : '';
+    const aiTruckTrailer1Idx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.trailer1Reg);
+    const aiTruckTrailer2Idx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.trailer2Reg);
+    const aiTruckTrackingNoIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.trackingNo);
+    const aiTruckTrackingUserIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.trackingUsername);
+    const aiTruckTrackingPassIdx = findHeaderIdx(truckHeadersRaw, aiColumns?.trucks?.trackingPassword);
+    const aiDriverSurnameIdx = findHeaderIdx(driverHeadersRaw, aiColumns?.drivers?.surname);
+
+    const truckRegCol = (aiTruckRegIdx > 0 ? aiTruckRegIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'truckregno', 'truckreg', 'registration', 'truckregistrationnumber', 'horseregistration', 'horsereg', 'vehicleregistration', 'vehiclereg', 'reg', 'plate', 'numberplate',
+    ]);
+    const driverIdCol = (aiDriverIdIdx > 0 ? aiDriverIdIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, [
+      'idnumber', 'id', 'identitynumber', 'driveridnumber', 'driverid', 'rsaid', 'nationalid', 'identitydocument',
+    ]);
+    const driverLicenseCol = (aiDriverLicenseIdx > 0 ? aiDriverLicenseIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, [
+      'driverslicensenumber', 'licensenumber', 'licence', 'licencenumber', 'driverslicence', 'driverlicense', 'driverslicenseno', 'driverslicense',
+    ]);
+    const driverGivenNameCol = (aiDriverFullNameIdx > 0 ? aiDriverFullNameIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, [
+      'name', 'firstname', 'forename', 'givenname', 'fullname', 'drivername', 'driverfullname', 'first_name',
+    ]);
+    const driverSurnameCol = (aiDriverSurnameIdx > 0 ? aiDriverSurnameIdx : null) || pickFirstHeaderIndex(driverHeadersNorm, [
+      'surname', 'lastname', 'familyname', 'last_name',
+    ]);
+
+    const truckContractorCol = (aiTruckContractorIdx > 0 ? aiTruckContractorIdx : null) || pickContractorColumnIndex(truckHeadersNorm);
+    const truckSubContractorCol = (aiTruckSubContractorIdx > 0 ? aiTruckSubContractorIdx : null) || pickSubContractorColumnIndex(truckHeadersNorm);
+    const driverContractorCol = (aiDriverContractorIdx > 0 ? aiDriverContractorIdx : null) || pickContractorColumnIndex(driverHeadersNorm);
+    const driverSubContractorCol = (aiDriverSubContractorIdx > 0 ? aiDriverSubContractorIdx : null) || pickSubContractorColumnIndex(driverHeadersNorm);
+    const truckFleetNoCol = (aiTruckFleetNoIdx > 0 ? aiTruckFleetNoIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'fleetno', 'fleetnumber', 'fleetcode', 'truckno', 'trucknumber', 'vehicleno', 'vehiclenumber',
+    ]);
+
+    const truckTrailer1Col = (aiTruckTrailer1Idx > 0 ? aiTruckTrailer1Idx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'trailer1regno', 'trailer1reg', 'trailer_1_reg_no', 'trailer1', 'trailer1registration', 'trailerreg1', 'trail1regno', 'traileronereg', 'trailer_1',
+    ]);
+    const truckTrailer2Col = (aiTruckTrailer2Idx > 0 ? aiTruckTrailer2Idx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'trailer2regno', 'trailer2reg', 'trailer_2_reg_no', 'trailer2', 'trailer2registration', 'trailerreg2', 'trail2regno', 'trailer_2',
+    ]);
+    const truckTrackingNoCol = (aiTruckTrackingNoIdx > 0 ? aiTruckTrackingNoIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'trackingno', 'trackingnumber', 'tracking_id', 'trackingid', 'gpsno', 'gpsnumber', 'deviceno', 'trackerno', 'fleettracking',
+    ]);
+    const truckTrackingUserCol = (aiTruckTrackingUserIdx > 0 ? aiTruckTrackingUserIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'trackingusername', 'trackusername', 'username', 'login', 'userid', 'user', 'portalusername', 'webusername',
+    ]);
+    const truckTrackingPassCol = (aiTruckTrackingPassIdx > 0 ? aiTruckTrackingPassIdx : null) || pickFirstHeaderIndex(truckHeadersNorm, [
+      'trackingpassword', 'trackpassword', 'password', 'pwd', 'pass', 'portalpassword', 'webpassword',
+    ]);
+
+    // Capture detected column information so the API response (and UI) can surface it clearly.
+    const detectedColumns = {
+      trucks: {
+        header_row: truckHeaderRow,
+        registration: truckRegCol ? truckHeadersRaw[truckRegCol - 1] : null,
+        contractor: truckContractorCol ? truckHeadersRaw[truckContractorCol - 1] : null,
+        sub_contractor: truckSubContractorCol ? truckHeadersRaw[truckSubContractorCol - 1] : null,
+        fleet_no: truckFleetNoCol ? truckHeadersRaw[truckFleetNoCol - 1] : null,
+        trailer_1_reg: truckTrailer1Col ? truckHeadersRaw[truckTrailer1Col - 1] : null,
+        trailer_2_reg: truckTrailer2Col ? truckHeadersRaw[truckTrailer2Col - 1] : null,
+        tracking_no: truckTrackingNoCol ? truckHeadersRaw[truckTrackingNoCol - 1] : null,
+        tracking_username: truckTrackingUserCol ? truckHeadersRaw[truckTrackingUserCol - 1] : null,
+        tracking_password: truckTrackingPassCol ? truckHeadersRaw[truckTrackingPassCol - 1] : null,
+      },
+      drivers: {
+        header_row: driversSheet ? driverHeaderRow : null,
+        id_number: driverIdCol ? driverHeadersRaw[driverIdCol - 1] : null,
+        license_number: driverLicenseCol ? driverHeadersRaw[driverLicenseCol - 1] : null,
+        given_name: driverGivenNameCol ? driverHeadersRaw[driverGivenNameCol - 1] : null,
+        surname: driverSurnameCol ? driverHeadersRaw[driverSurnameCol - 1] : null,
+        contractor: driverContractorCol ? driverHeadersRaw[driverContractorCol - 1] : null,
+        sub_contractor: driverSubContractorCol ? driverHeadersRaw[driverSubContractorCol - 1] : null,
+      },
+    };
+
+    // Resolve haulier label.
+    let hauliierLabel = checkAllContractors ? 'All contractors' : '';
+    if (contractorId) {
+      try {
+        const params = { contractorId };
+        let whereSql = '';
+        if (tenantId) {
+          whereSql = 'AND tenant_id = @tenantId';
+          params.tenantId = tenantId;
+        }
+        const cnameRes = await query(
+          `SELECT name FROM contractors WHERE id = @contractorId ${whereSql}`,
+          params
+        );
+        hauliierLabel = rowText(cnameRes.recordset?.[0]?.name) || 'Selected contractor';
+      } catch (_) { hauliierLabel = 'Selected contractor'; }
+    }
+    let tenantLabel = '';
+    if (tenantId) {
+      try {
+        const tnameRes = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
+        tenantLabel = rowText(tnameRes.recordset?.[0]?.name) || '';
+      } catch (_) { /* ignore */ }
+    }
+
+    // Pull enrolled trucks/drivers scoped to tenant + (optionally) contractor.
+    const truckParams = {};
+    const truckWhere = [];
+    if (tenantId) { truckWhere.push('tr.tenant_id = @tenantId'); truckParams.tenantId = tenantId; }
+    if (contractorId) { truckWhere.push('tr.contractor_id = @contractorId'); truckParams.contractorId = contractorId; }
+    const truckWhereSql = truckWhere.length ? `WHERE ${truckWhere.join(' AND ')}` : '';
     const truckRows = await query(
-      `SELECT tr.registration, tr.fleet_no, tr.main_contractor, tr.sub_contractor, c.name AS contractor_name
+      `SELECT tr.registration, tr.fleet_no, tr.main_contractor, tr.sub_contractor,
+              c.name AS contractor_name, c.id AS contractor_id
        FROM contractor_trucks tr
        LEFT JOIN contractors c ON c.id = tr.contractor_id
-       ${tenantFilter}`,
-      tenantId ? { tenantId } : {}
+       ${truckWhereSql}`,
+      truckParams
     );
-    const driverTenantFilter = tenantId ? 'WHERE d.tenant_id = @tenantId' : '';
+    const driverParams = {};
+    const driverWhere = [];
+    if (tenantId) { driverWhere.push('d.tenant_id = @tenantId'); driverParams.tenantId = tenantId; }
+    if (contractorId) { driverWhere.push('d.contractor_id = @contractorId'); driverParams.contractorId = contractorId; }
+    const driverWhereSql = driverWhere.length ? `WHERE ${driverWhere.join(' AND ')}` : '';
     const driverRows = await query(
-      `SELECT d.id_number, d.license_number, d.full_name, d.surname, c.name AS contractor_name
+      `SELECT d.id_number, d.license_number, d.full_name, d.surname,
+              c.name AS contractor_name, c.id AS contractor_id
        FROM contractor_drivers d
        LEFT JOIN contractors c ON c.id = d.contractor_id
-       ${driverTenantFilter}`,
-      tenantId ? { tenantId } : {}
+       ${driverWhereSql}`,
+      driverParams
     );
     const truckByReg = new Map();
     for (const r of truckRows.recordset || []) {
@@ -1647,95 +1934,202 @@ router.post('/fleet-verification/verify', fleetVerificationUpload, async (req, r
       if (licKey && !driverByLicense.has(licKey)) driverByLicense.set(licKey, r);
     }
 
-    const EXTRA_HEADERS = [
-      'Enrollment status',
-      'Enrolled in module',
-      'Enrolled under contractor',
-      'Enrollment match key',
-      'Matched row marker',
-    ];
-    const styleExtraHeaders = (sheet, fromCol) => {
-      for (let i = 0; i < EXTRA_HEADERS.length; i++) {
-        const cell = sheet.getRow(1).getCell(fromCol + i);
-        cell.value = EXTRA_HEADERS[i];
-        cell.font = { bold: true, color: { argb: 'FF1F2937' } };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF3F8' } };
-        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-        sheet.getColumn(fromCol + i).width = [20, 22, 28, 26, 20][i];
-      }
-    };
-    const preview = { trucks: [], drivers: [] };
+    // Walk every uploaded row and build a clean result list.
+    const truckResults = [];
+    const driverResults = [];
     let matchedTrucks = 0;
     let matchedDrivers = 0;
 
     if (trucksSheet) {
-      const baseCol = trucksSheet.columnCount + 1;
-      styleExtraHeaders(trucksSheet, baseCol);
-      for (let r = 2; r <= trucksSheet.rowCount; r++) {
+      const maxColScan = Math.max(truckHeadersRaw.length, 60, trucksSheet.columnCount || 0);
+      const dataStart = truckHeaderRow + 1;
+      for (let r = dataStart; r <= trucksSheet.rowCount; r++) {
         const row = trucksSheet.getRow(r);
         const regRaw = truckRegCol ? rowText(row.getCell(truckRegCol).value) : '';
+        let hasAnyVal = false;
+        for (let c = 1; c <= maxColScan; c++) {
+          if (rowText(row.getCell(c).value)) { hasAnyVal = true; break; }
+        }
+        if (!hasAnyVal) continue;
+
+        const sourceContractor = truckContractorCol ? rowText(row.getCell(truckContractorCol).value) : '';
+        const sourceSubContractor = truckSubContractorCol ? rowText(row.getCell(truckSubContractorCol).value) : '';
+        const sourceFleetNo = truckFleetNoCol ? rowText(row.getCell(truckFleetNoCol).value) : '';
+        const trailer1 = truckTrailer1Col ? rowText(row.getCell(truckTrailer1Col).value) : '';
+        const trailer2 = truckTrailer2Col ? rowText(row.getCell(truckTrailer2Col).value) : '';
+        const trackingNo = truckTrackingNoCol ? rowText(row.getCell(truckTrackingNoCol).value) : '';
+        const trackingUser = truckTrackingUserCol ? rowText(row.getCell(truckTrackingUserCol).value) : '';
+        const trackingPass = truckTrackingPassCol ? rowText(row.getCell(truckTrackingPassCol).value) : '';
+
         const regNorm = normalizeFleetKey(regRaw);
         const hit = regNorm ? truckByReg.get(regNorm) : null;
-        const matched = !!hit;
-        if (matched) matchedTrucks++;
-        row.getCell(baseCol).value = matched ? 'Already enrolled' : 'Not enrolled';
-        row.getCell(baseCol + 1).value = 'Contractor fleet';
-        row.getCell(baseCol + 2).value = matched ? rowText(getRow(hit, 'contractor_name') || getRow(hit, 'main_contractor') || getRow(hit, 'sub_contractor')) : '';
-        row.getCell(baseCol + 3).value = matched ? `Truck registration: ${regRaw}` : '';
-        row.getCell(baseCol + 4).value = matched ? 'Yes' : 'No';
-        if (preview.trucks.length < 30 && matched) {
-          preview.trucks.push({
-            row: r,
-            registration: regRaw,
-            contractor: rowText(getRow(hit, 'contractor_name') || getRow(hit, 'main_contractor') || getRow(hit, 'sub_contractor')),
-            reason: 'Already enrolled',
-          });
-        }
+        const integrated = !!hit;
+        if (integrated) matchedTrucks++;
+        const matchedContractor = rowText(getRow(hit, 'contractor_name') || getRow(hit, 'main_contractor') || getRow(hit, 'sub_contractor'));
+        const matchedSubContractor = rowText(getRow(hit, 'sub_contractor'));
+        const contractorOut = sourceContractor || (integrated ? matchedContractor : '');
+        const subContractorOut = sourceSubContractor || (integrated ? matchedSubContractor : '');
+        const fleetNoOut = sourceFleetNo || (integrated ? rowText(getRow(hit, 'fleet_no')) : '');
+        truckResults.push({
+          source_row: r,
+          registration: regRaw,
+          integration_status: integrated ? 'Integrated' : 'Not integrated',
+          contractor: contractorOut,
+          sub_contractor: subContractorOut,
+          fleet_no: fleetNoOut,
+          trailer_1_reg: trailer1,
+          trailer_2_reg: trailer2,
+          tracking_no: trackingNo,
+          tracking_username: trackingUser,
+          tracking_password: trackingPass,
+          notes: integrated
+            ? `Matched on truck registration${regRaw ? `: ${regRaw}` : ''}`
+            : regRaw ? 'Not enrolled on the system' : 'Missing registration value',
+        });
       }
     }
 
     if (driversSheet) {
-      const baseCol = driversSheet.columnCount + 1;
-      styleExtraHeaders(driversSheet, baseCol);
-      for (let r = 2; r <= driversSheet.rowCount; r++) {
+      const maxColScan = Math.max(driverHeadersRaw.length, 60, driversSheet.columnCount || 0);
+      const dataStart = driverHeaderRow + 1;
+      for (let r = dataStart; r <= driversSheet.rowCount; r++) {
         const row = driversSheet.getRow(r);
         const idRaw = driverIdCol ? rowText(row.getCell(driverIdCol).value) : '';
         const licRaw = driverLicenseCol ? rowText(row.getCell(driverLicenseCol).value) : '';
+        const given = driverGivenNameCol ? rowText(row.getCell(driverGivenNameCol).value) : '';
+        const surname = driverSurnameCol ? rowText(row.getCell(driverSurnameCol).value) : '';
+        const stitchedName = [given, surname].filter(Boolean).join(' ').trim();
+
+        let hasAnyVal = false;
+        for (let c = 1; c <= maxColScan; c++) {
+          if (rowText(row.getCell(c).value)) { hasAnyVal = true; break; }
+        }
+        if (!hasAnyVal) continue;
+
+        const sourceContractor = driverContractorCol ? rowText(row.getCell(driverContractorCol).value) : '';
+        const sourceSubContractor = driverSubContractorCol ? rowText(row.getCell(driverSubContractorCol).value) : '';
+
         const idNorm = normalizeFleetKey(idRaw);
         const licNorm = normalizeFleetKey(licRaw);
         const hitById = idNorm ? driverById.get(idNorm) : null;
         const hitByLic = licNorm ? driverByLicense.get(licNorm) : null;
         const hit = hitById || hitByLic || null;
-        const matched = !!hit;
-        if (matched) matchedDrivers++;
-        row.getCell(baseCol).value = matched ? 'Already enrolled' : 'Not enrolled';
-        row.getCell(baseCol + 1).value = 'Contractor drivers';
-        row.getCell(baseCol + 2).value = matched ? rowText(getRow(hit, 'contractor_name')) : '';
-        row.getCell(baseCol + 3).value = matched
-          ? hitById
-            ? `Driver ID number: ${idRaw}`
-            : `Driver license number: ${licRaw}`
+        const integrated = !!hit;
+        if (integrated) matchedDrivers++;
+        const matchedFullName = hit
+          ? [rowText(getRow(hit, 'full_name')), rowText(getRow(hit, 'surname'))].filter(Boolean).join(' ')
           : '';
-        row.getCell(baseCol + 4).value = matched ? 'Yes' : 'No';
-        if (preview.drivers.length < 30 && matched) {
-          preview.drivers.push({
-            row: r,
-            id_number: idRaw || null,
-            license_number: licRaw || null,
-            contractor: rowText(getRow(hit, 'contractor_name')),
-            reason: 'Driver already enrolled',
-          });
-        }
+        const matchedContractor = rowText(getRow(hit, 'contractor_name'));
+        const contractorOut = sourceContractor || (integrated ? matchedContractor : '');
+        const fullNameOut = stitchedName || matchedFullName;
+        driverResults.push({
+          source_row: r,
+          id_number: idRaw,
+          license_number: licRaw,
+          full_name: fullNameOut,
+          integration_status: integrated ? 'Integrated' : 'Not integrated',
+          contractor: contractorOut,
+          sub_contractor: sourceSubContractor || '',
+          notes: integrated
+            ? hitById ? `Matched on driver ID number${idRaw ? `: ${idRaw}` : ''}`
+              : `Matched on driver licence number${licRaw ? `: ${licRaw}` : ''}`
+            : (idRaw || licRaw || stitchedName) ? 'Not enrolled on the system' : 'Missing ID, licence or name',
+        });
       }
     }
 
-    const outBuffer = await workbook.xlsx.writeBuffer();
+    // Build the verified workbook in the list-distribution style.
+    const outWorkbook = new ExcelJS.Workbook();
+    outWorkbook.creator = 'Thinkers';
+    const generatedAt = new Date();
+
+    // Office theme "Olive Green, Accent 3, Lighter 60%" – used to highlight integrated rows.
+    const INTEGRATED_FILL = 'FFD8E4BC';
+    const integrationValueStyles = {
+      integration_status: {
+        Integrated: { fill: INTEGRATED_FILL, font: { color: { argb: 'FF1F3D0A' }, bold: true } },
+      },
+    };
+
+    const truckHeaders = [
+      'Contractor', 'Sub-contractor', 'Truck registration', 'Fleet no',
+      'Trailer 1 reg', 'Trailer 2 reg', 'Tracking no', 'Tracking username', 'Tracking password',
+      'Integration status', 'Notes',
+    ];
+    const truckKeys = [
+      'contractor', 'sub_contractor', 'registration', 'fleet_no',
+      'trailer_1_reg', 'trailer_2_reg', 'tracking_no', 'tracking_username', 'tracking_password',
+      'integration_status', 'notes',
+    ];
+    const truckGroupBy = 'sub_contractor';
+    buildStyledListSheet(outWorkbook, {
+      sheetName: 'Trucks (verified)',
+      headers: truckHeaders,
+      keys: truckKeys,
+      rows: sortFleetVerificationRows(truckResults, 'registration'),
+      info: [
+        ['Tenant:', tenantLabel || '—'],
+        ['Haulier checked:', hauliierLabel],
+        ['Source sheet:', 'Trucks'],
+        ['Date & time:', formatDateForAppTz(generatedAt)],
+        ['Total rows:', String(truckResults.length)],
+        ['Integrated:', String(matchedTrucks)],
+        ['Not integrated:', String(truckResults.length - matchedTrucks)],
+      ],
+      groupBy: truckGroupBy,
+      minColumnWidth: 12,
+      maxColumnWidth: 44,
+      columnWidths: {
+        notes: 36,
+        registration: 16,
+        fleet_no: 12,
+        trailer_1_reg: 14,
+        trailer_2_reg: 14,
+        tracking_no: 14,
+        tracking_username: 18,
+        tracking_password: 18,
+        integration_status: 16,
+      },
+      autoFilter: true,
+      valueStyles: integrationValueStyles,
+    });
+
+    const driverHeaders = [
+      'Contractor', 'Sub-contractor', 'Full name', 'ID number', 'Licence number', 'Integration status', 'Notes',
+    ];
+    const driverKeys = ['contractor', 'sub_contractor', 'full_name', 'id_number', 'license_number', 'integration_status', 'notes'];
+    const driverGroupBy = 'sub_contractor';
+    buildStyledListSheet(outWorkbook, {
+      sheetName: 'Drivers (verified)',
+      headers: driverHeaders,
+      keys: driverKeys,
+      rows: sortFleetVerificationRows(driverResults, 'full_name'),
+      info: [
+        ['Tenant:', tenantLabel || '—'],
+        ['Haulier checked:', hauliierLabel],
+        ['Source sheet:', 'Drivers'],
+        ['Date & time:', formatDateForAppTz(generatedAt)],
+        ['Total rows:', String(driverResults.length)],
+        ['Integrated:', String(matchedDrivers)],
+        ['Not integrated:', String(driverResults.length - matchedDrivers)],
+      ],
+      groupBy: driverGroupBy,
+      minColumnWidth: 14,
+      maxColumnWidth: 44,
+      columnWidths: { notes: 38, integration_status: 18 },
+      autoFilter: true,
+      valueStyles: integrationValueStyles,
+    });
+
+    const outBuffer = await outWorkbook.xlsx.writeBuffer();
     const token = randomUUID();
     const inName = rowText(req.file.originalname) || 'fleet-import.xlsx';
-    const safeName = inName.toLowerCase().endsWith('.xlsx') ? inName : `${inName}.xlsx`;
+    const baseName = inName.toLowerCase().endsWith('.xlsx') ? inName.replace(/\.xlsx$/i, '') : inName;
+    const safeHaulier = (checkAllContractors ? 'All contractors' : hauliierLabel || 'Contractor').replace(/[^A-Za-z0-9 _-]+/g, '').trim();
+    const filename = `${baseName} - Fleet verification (${safeHaulier}).xlsx`;
     fleetVerificationCache.set(token, {
       createdAt: Date.now(),
-      filename: safeName.replace(/\.xlsx$/i, '-verified.xlsx'),
+      filename,
       buffer: Buffer.from(outBuffer),
     });
 
@@ -1743,23 +2137,35 @@ router.post('/fleet-verification/verify', fleetVerificationUpload, async (req, r
       ok: true,
       token,
       download_url: `/api/command-centre/fleet-verification/download/${token}`,
-      file_name: safeName.replace(/\.xlsx$/i, '-verified.xlsx'),
+      file_name: filename,
+      haulier: { id: contractorId, label: hauliierLabel, check_all: checkAllContractors },
+      tenant: { id: tenantId, label: tenantLabel },
       summary: {
-        total_truck_rows: trucksSheet ? Math.max(0, trucksSheet.rowCount - 1) : 0,
-        total_driver_rows: driversSheet ? Math.max(0, driversSheet.rowCount - 1) : 0,
+        total_truck_rows: truckResults.length,
+        total_driver_rows: driverResults.length,
         matched_trucks: matchedTrucks,
         matched_drivers: matchedDrivers,
+        not_integrated_trucks: truckResults.length - matchedTrucks,
+        not_integrated_drivers: driverResults.length - matchedDrivers,
       },
-      preview,
+      results: {
+        trucks: truckResults,
+        drivers: driverResults,
+      },
       ai: {
         used: !!aiColumns,
         model: aiColumns ? getAiModel() : null,
-        mapped_headers: {
-          truck_registration: aiTruckHeader || null,
-          driver_id_number: aiDriverIdHeader || null,
-          driver_license_number: aiDriverLicenseHeader || null,
-        },
+        mapped_headers: detectedColumns,
       },
+      detected: {
+        sheets: detectedSheets,
+        columns: detectedColumns,
+      },
+      warnings: [
+        ...(driversSheet ? [] : [`No drivers sheet was auto-detected. We look for a tab whose name suggests drivers (e.g. "Drivers") and whose first rows look like a driver list (Name, Surname, ID number). Sheets in this file: ${detectedSheets.all_sheets.join(', ') || 'none'}.`]),
+        ...(!detectedColumns.trucks.contractor && trucksSheet ? ['No contractor column detected in the Trucks sheet. Headers expected include "Contractor", "Main contractor", "Haulier", "Company".'] : []),
+        ...(!detectedColumns.trucks.sub_contractor && trucksSheet ? ['No sub-contractor column detected in the Trucks sheet. Expected headers include "Sub-contractor", "Sub contractor".'] : []),
+      ],
       elapsed_ms: Date.now() - startedAt,
     });
   } catch (err) {

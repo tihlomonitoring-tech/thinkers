@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { addCalendarDays, todayYmd } from './lib/appTime.js';
 import { buildDeskForecast } from './lib/ccForecasting.js';
@@ -11227,11 +11227,17 @@ function TabFleetVerification() {
   const { user } = useAuth();
   const [tenantOptions, setTenantOptions] = useState([]);
   const [tenantId, setTenantId] = useState(user?.tenant_id || '');
+  const [contractorOptions, setContractorOptions] = useState([]);
+  const [contractorId, setContractorId] = useState('all');
+  const [contractorsLoading, setContractorsLoading] = useState(false);
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const [viewSheet, setViewSheet] = useState('trucks');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [searchText, setSearchText] = useState('');
 
   useEffect(() => {
     const allowed = new Set([...(user?.tenant_ids || []), user?.tenant_id].filter(Boolean));
@@ -11244,6 +11250,16 @@ function TabFleetVerification() {
       })
       .catch(() => setTenantOptions([]));
   }, [user?.tenant_id, user?.tenant_ids, tenantId]);
+
+  useEffect(() => {
+    if (!tenantId) { setContractorOptions([]); return; }
+    setContractorsLoading(true);
+    ccApi.fleetVerification
+      .contractors(tenantId)
+      .then((d) => setContractorOptions(Array.isArray(d?.contractors) ? d.contractors : []))
+      .catch(() => setContractorOptions([]))
+      .finally(() => setContractorsLoading(false));
+  }, [tenantId]);
 
   useEffect(() => {
     if (!loading) return undefined;
@@ -11271,9 +11287,16 @@ function TabFleetVerification() {
     setError('');
     setResult(null);
     try {
-      const data = await ccApi.fleetVerification.verify(file, tenantId || undefined);
+      const data = await ccApi.fleetVerification.verify(
+        file,
+        tenantId || undefined,
+        contractorId && contractorId !== 'all' ? contractorId : 'all'
+      );
       setResult(data);
       setStatusText(`Done in ${data.elapsed_ms || 0} ms`);
+      setViewSheet('trucks');
+      setStatusFilter('all');
+      setSearchText('');
     } catch (err) {
       setError(err?.message || 'Verification failed');
     } finally {
@@ -11281,21 +11304,89 @@ function TabFleetVerification() {
     }
   };
 
+  const selectedRows = useMemo(
+    () => (result ? (viewSheet === 'trucks' ? (result.results?.trucks || []) : (result.results?.drivers || [])) : []),
+    [result, viewSheet]
+  );
+  const filteredRows = useMemo(() => selectedRows.filter((r) => {
+    if (statusFilter === 'integrated' && r.integration_status !== 'Integrated') return false;
+    if (statusFilter === 'not_integrated' && r.integration_status !== 'Not integrated') return false;
+    if (!searchText.trim()) return true;
+    const needle = searchText.trim().toLowerCase();
+    const truckHay = [
+      r.registration, r.fleet_no, r.contractor, r.sub_contractor, r.trailer_1_reg, r.trailer_2_reg,
+      r.tracking_no, r.tracking_username, r.tracking_password, r.notes,
+    ];
+    const driverHay = [r.full_name, r.id_number, r.license_number, r.contractor, r.sub_contractor, r.notes];
+    const hay = (viewSheet === 'trucks' ? truckHay : driverHay)
+      .filter(Boolean)
+      .map((v) => String(v).toLowerCase())
+      .join(' ');
+    return hay.includes(needle);
+  }), [selectedRows, statusFilter, searchText, viewSheet]);
+
+  const sortedFilteredRows = useMemo(() => {
+    const rows = [...filteredRows];
+    const regKey = viewSheet === 'trucks' ? 'registration' : 'full_name';
+    rows.sort((a, b) => {
+      const c1 = String(a.contractor || '').toLowerCase();
+      const c2 = String(b.contractor || '').toLowerCase();
+      if (c1 !== c2) return c1.localeCompare(c2);
+      const s1 = String(a.sub_contractor || '').toLowerCase();
+      const s2 = String(b.sub_contractor || '').toLowerCase();
+      if (s1 !== s2) return s1.localeCompare(s2);
+      const k1 = String(a[regKey] || a.id_number || '');
+      const k2 = String(b[regKey] || b.id_number || '');
+      return k1.localeCompare(k2, undefined, { sensitivity: 'base' });
+    });
+    return rows;
+  }, [filteredRows, viewSheet]);
+
+  const groupedByContractor = useMemo(() => {
+    const map = new Map();
+    for (const r of sortedFilteredRows) {
+      const key = (r.contractor || '').trim() || 'Not integrated / unassigned';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
+    }
+    for (const rows of map.values()) {
+      rows.sort((a, b) => {
+        const s1 = String(a.sub_contractor || '').toLowerCase();
+        const s2 = String(b.sub_contractor || '').toLowerCase();
+        if (s1 !== s2) return s1.localeCompare(s2);
+        const k1 = String(a.registration || a.full_name || a.id_number || '');
+        const k2 = String(b.registration || b.full_name || b.id_number || '');
+        return k1.localeCompare(k2, undefined, { sensitivity: 'base' });
+      });
+    }
+    const groupNames = [...map.keys()].sort((a, b) => {
+      const aPlain = a === 'Not integrated / unassigned';
+      const bPlain = b === 'Not integrated / unassigned';
+      if (aPlain !== bPlain) return aPlain ? 1 : -1;
+      return a.localeCompare(b, undefined, { sensitivity: 'base' });
+    });
+    return groupNames.map((name) => ({ name, rows: map.get(name) }));
+  }, [sortedFilteredRows]);
+
+  const summary = result?.summary || {};
+  const isAllContractors = result?.haulier?.check_all;
+  const haulierLabel = result?.haulier?.label || 'Selected contractor';
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-xl font-semibold text-surface-900">Fleet verification (AI)</h2>
         <InfoHint
           title="Fleet verification"
-          text="Upload the same workbook used in Contractor Import All. The system keeps your workbook intact, adds professional enrollment audit columns, and generates a verified export showing status, module, contractor, and match key."
+          text="Upload a contractor import workbook. We auto-detect the Trucks and Drivers tabs (even if they are not the first sheet), scan the first rows for the real header line, and read headings such as Contractor, Subcontractor, Truck_Reg_No, Name, Surname, and ID number. The verified Excel lists trailers and tracking login columns from your file, groups rows by contractor and sub-contractor, and flags rows that are not enrolled as not integrated."
         />
       </div>
 
       <form onSubmit={onVerify} className="app-glass-card p-4 space-y-4">
-        <div className="grid md:grid-cols-2 gap-4">
+        <div className="grid md:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs font-medium text-surface-600 mb-1">Tenant scope</label>
-            <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+            <select value={tenantId} onChange={(e) => { setTenantId(e.target.value); setContractorId('all'); }} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
               <option value="">My default tenant</option>
               {tenantOptions.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
@@ -11303,7 +11394,24 @@ function TabFleetVerification() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-surface-600 mb-1">Excel file</label>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Haulier to check against</label>
+            <select
+              value={contractorId}
+              onChange={(e) => setContractorId(e.target.value)}
+              disabled={contractorsLoading}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm disabled:opacity-60"
+            >
+              <option value="all">All contractors</option>
+              {contractorOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}{Number.isFinite(c.truck_count) ? ` · ${c.truck_count} trucks` : ''}
+                </option>
+              ))}
+            </select>
+            {contractorsLoading ? <p className="text-[11px] text-surface-500 mt-1">Loading contractors…</p> : null}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">Excel file (.xlsx)</label>
             <input
               type="file"
               accept=".xlsx"
@@ -11316,6 +11424,9 @@ function TabFleetVerification() {
           <button type="submit" disabled={!file || loading} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
             {loading ? 'Verifying…' : 'Verify fleet workbook'}
           </button>
+          <p className="text-xs text-surface-600">
+            Checking against: <span className="font-semibold text-surface-800">{contractorId === 'all' ? 'All contractors' : (contractorOptions.find((c) => c.id === contractorId)?.name || 'Selected contractor')}</span>
+          </p>
           {loading ? (
             <div className="flex-1 min-w-[240px]">
               <div className="h-2 rounded-full bg-surface-100 overflow-hidden">
@@ -11330,64 +11441,291 @@ function TabFleetVerification() {
 
       {result ? (
         <div className="space-y-4">
+          {Array.isArray(result.warnings) && result.warnings.length > 0 ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-1">
+              <p className="font-semibold">Heads up</p>
+              <ul className="list-disc pl-5 space-y-0.5">
+                {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          ) : null}
+
           <div className="app-glass-card p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-[260px]">
                 <p className="text-sm font-semibold text-surface-900">Verification complete</p>
                 <p className="text-xs text-surface-600 mt-1">
-                  Trucks matched: {result.summary?.matched_trucks ?? 0} / {result.summary?.total_truck_rows ?? 0} · Drivers matched: {result.summary?.matched_drivers ?? 0} / {result.summary?.total_driver_rows ?? 0}
+                  Checked against <span className="font-semibold text-surface-800">{haulierLabel}</span>
+                  {result.tenant?.label ? <> for tenant <span className="font-semibold text-surface-800">{result.tenant.label}</span></> : null}
                 </p>
-                <div className="mt-1">
-                  <InfoHint
-                    title="Verification details"
-                    text={
-                      <>
-                        AI mapping: {result.ai?.used ? `enabled (${result.ai?.model || 'model'})` : 'fallback header mapping'}. Output includes &quot;Matched row marker&quot; so previously highlighted matches stay visible.
-                      </>
-                    }
-                  />
+                {result.detected ? (
+                  <details className="mt-2 text-xs text-surface-600">
+                    <summary className="cursor-pointer select-none text-surface-700 hover:text-surface-900">Detected columns &amp; sheets</summary>
+                    <div className="mt-2 grid sm:grid-cols-2 gap-3">
+                      <div className="rounded-md border border-surface-200 bg-white px-3 py-2">
+                        <p className="font-semibold text-surface-800 mb-1">Sheets</p>
+                        <p>Trucks: <span className="font-medium text-surface-900">{result.detected.sheets?.trucks || '— not found —'}</span>{result.detected.sheets?.trucks_header_row != null ? <span className="text-surface-500"> (header row {result.detected.sheets.trucks_header_row})</span> : null}</p>
+                        <p>Drivers: <span className="font-medium text-surface-900">{result.detected.sheets?.drivers || '— not found —'}</span>{result.detected.sheets?.drivers_header_row != null ? <span className="text-surface-500"> (header row {result.detected.sheets.drivers_header_row})</span> : null}</p>
+                        <p className="text-surface-500 mt-1">All sheets: {(result.detected.sheets?.all_sheets || []).join(', ') || '—'}</p>
+                      </div>
+                      <div className="rounded-md border border-surface-200 bg-white px-3 py-2">
+                        <p className="font-semibold text-surface-800 mb-1">Mapped headers</p>
+                        <p>Truck registration: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.registration || '— missing —'}</span></p>
+                        <p>Truck contractor: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.contractor || '— missing —'}</span></p>
+                        <p>Truck sub-contractor: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.sub_contractor || '— missing —'}</span></p>
+                        <p>Truck fleet no.: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.fleet_no || '— missing —'}</span></p>
+                        <p>Truck trailer 1: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.trailer_1_reg || '— missing —'}</span></p>
+                        <p>Truck trailer 2: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.trailer_2_reg || '— missing —'}</span></p>
+                        <p>Tracking no.: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.tracking_no || '— missing —'}</span></p>
+                        <p>Tracking username: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.tracking_username || '— missing —'}</span></p>
+                        <p>Tracking password: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.tracking_password || '— missing —'}</span></p>
+                        <p>Driver ID number: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.id_number || '— missing —'}</span></p>
+                        <p>Driver licence: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.license_number || '— missing —'}</span></p>
+                        <p>Driver first name: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.given_name || '— missing —'}</span></p>
+                        <p>Driver surname: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.surname || '— missing —'}</span></p>
+                        <p>Driver contractor: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.contractor || '— missing —'}</span></p>
+                        <p>Driver sub-contractor: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.sub_contractor || '— missing —'}</span></p>
+                      </div>
+                    </div>
+                  </details>
+                ) : null}
+                <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
+                  <div className="rounded-md border border-surface-200 bg-white px-3 py-2">
+                    <div className="text-surface-500">Trucks total</div>
+                    <div className="text-surface-900 font-semibold text-base">{summary.total_truck_rows ?? 0}</div>
+                  </div>
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <div className="text-emerald-700">Integrated trucks</div>
+                    <div className="text-emerald-900 font-semibold text-base">{summary.matched_trucks ?? 0}</div>
+                  </div>
+                  <div className="rounded-md border border-surface-200 bg-white px-3 py-2">
+                    <div className="text-surface-500">Drivers total</div>
+                    <div className="text-surface-900 font-semibold text-base">{summary.total_driver_rows ?? 0}</div>
+                  </div>
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <div className="text-emerald-700">Integrated drivers</div>
+                    <div className="text-emerald-900 font-semibold text-base">{summary.matched_drivers ?? 0}</div>
+                  </div>
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                    <div className="text-amber-700">Trucks not integrated</div>
+                    <div className="text-amber-900 font-semibold text-base">{summary.not_integrated_trucks ?? Math.max(0, (summary.total_truck_rows || 0) - (summary.matched_trucks || 0))}</div>
+                  </div>
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                    <div className="text-amber-700">Drivers not integrated</div>
+                    <div className="text-amber-900 font-semibold text-base">{summary.not_integrated_drivers ?? Math.max(0, (summary.total_driver_rows || 0) - (summary.matched_drivers || 0))}</div>
+                  </div>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => downloadAttachmentWithAuth(ccApi.fleetVerification.downloadUrl(result.token), result.file_name || 'fleet-verified.xlsx')}
-                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700"
-              >
-                Download verified workbook
-              </button>
+              <div className="flex flex-col items-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => downloadAttachmentWithAuth(ccApi.fleetVerification.downloadUrl(result.token), result.file_name || 'fleet-verified.xlsx')}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700"
+                >
+                  Download verified workbook
+                </button>
+                <InfoHint
+                  title="Verification details"
+                  text={
+                    <>
+                      AI mapping: {result.ai?.used ? `enabled (${result.ai?.model || 'model'})` : 'fallback header mapping'}.
+                      The workbook uses the access-management list distribution layout. Trucks and drivers are sorted and grouped under tan contractor and sub-contractor banners so each sub-contractor’s rows stay together.
+                    </>
+                  }
+                />
+              </div>
             </div>
           </div>
 
-          <div className="grid lg:grid-cols-2 gap-4">
-            <div className="app-glass-card p-4">
-              <p className="font-medium text-surface-900 mb-2">Preview: matched trucks</p>
-              {(result.preview?.trucks || []).length === 0 ? (
-                <p className="text-sm text-surface-500">No already-enrolled trucks detected.</p>
+          <div className="app-glass-card p-0 overflow-hidden">
+            <div className="px-4 pt-4 flex flex-wrap items-center gap-2 border-b border-surface-100 pb-3">
+              <div className="inline-flex rounded-lg border border-surface-200 overflow-hidden text-sm">
+                <button
+                  type="button"
+                  onClick={() => { setViewSheet('trucks'); setStatusFilter('all'); setSearchText(''); }}
+                  className={`px-3 py-1.5 ${viewSheet === 'trucks' ? 'bg-brand-600 text-white' : 'bg-white text-surface-700 hover:bg-surface-50'}`}
+                >
+                  Trucks ({summary.total_truck_rows ?? 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setViewSheet('drivers'); setStatusFilter('all'); setSearchText(''); }}
+                  className={`px-3 py-1.5 border-l border-surface-200 ${viewSheet === 'drivers' ? 'bg-brand-600 text-white' : 'bg-white text-surface-700 hover:bg-surface-50'}`}
+                >
+                  Drivers ({summary.total_driver_rows ?? 0})
+                </button>
+              </div>
+              <div className="inline-flex rounded-lg border border-surface-200 overflow-hidden text-xs">
+                {[
+                  { id: 'all', label: 'All' },
+                  { id: 'integrated', label: 'Integrated' },
+                  { id: 'not_integrated', label: 'Not integrated' },
+                ].map((opt, i) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setStatusFilter(opt.id)}
+                    className={`px-3 py-1.5 ${i > 0 ? 'border-l border-surface-200' : ''} ${statusFilter === opt.id ? 'bg-surface-900 text-white' : 'bg-white text-surface-700 hover:bg-surface-50'}`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder={viewSheet === 'trucks' ? 'Search by registration, contractor…' : 'Search by name, ID, licence…'}
+                className="ml-auto rounded-lg border border-surface-300 px-3 py-1.5 text-sm w-full max-w-xs"
+              />
+            </div>
+
+            <div className="overflow-auto max-h-[60vh]">
+              {viewSheet === 'trucks' ? (
+                <table className="min-w-full text-sm">
+                  <thead className="bg-[#1e40af] text-white sticky top-0 z-10">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold">Contractor</th>
+                      <th className="text-left px-3 py-2 font-semibold">Sub-contractor</th>
+                      <th className="text-left px-3 py-2 font-semibold">Truck registration</th>
+                      <th className="text-left px-3 py-2 font-semibold">Fleet no</th>
+                      <th className="text-left px-3 py-2 font-semibold">Trailer 1</th>
+                      <th className="text-left px-3 py-2 font-semibold">Trailer 2</th>
+                      <th className="text-left px-3 py-2 font-semibold">Tracking no.</th>
+                      <th className="text-left px-3 py-2 font-semibold">Tracking user</th>
+                      <th className="text-left px-3 py-2 font-semibold">Tracking password</th>
+                      <th className="text-left px-3 py-2 font-semibold">Integration</th>
+                      <th className="text-left px-3 py-2 font-semibold">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {isAllContractors ? (
+                      groupedByContractor.length === 0 ? (
+                        <tr><td colSpan={11} className="px-3 py-6 text-center text-surface-500">No rows match the current filters.</td></tr>
+                      ) : (
+                        groupedByContractor.map((g) => (
+                          <Fragment key={g.name}>
+                            <tr>
+                              <td colSpan={11} className="px-3 py-2 text-center font-semibold uppercase tracking-wide" style={{ background: '#948A54', color: 'white' }}>
+                                {g.name}
+                              </td>
+                            </tr>
+                            {g.rows.map((r, idx) => (
+                              <tr key={`${g.name}-${idx}`} className="border-b border-surface-100 hover:bg-surface-50">
+                                <td className="px-3 py-2 text-surface-700">{r.contractor || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.sub_contractor || '—'}</td>
+                                <td className="px-3 py-2 font-medium text-surface-900">{r.registration || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.fleet_no || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.trailer_1_reg || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.trailer_2_reg || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.tracking_no || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.tracking_username || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700 font-mono text-xs">{r.tracking_password || '—'}</td>
+                                <td className="px-3 py-2">
+                                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${r.integration_status === 'Integrated' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                    {r.integration_status}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-surface-600">{r.notes}</td>
+                              </tr>
+                            ))}
+                          </Fragment>
+                        ))
+                      )
+                    ) : (
+                      sortedFilteredRows.length === 0 ? (
+                        <tr><td colSpan={11} className="px-3 py-6 text-center text-surface-500">No rows match the current filters.</td></tr>
+                      ) : sortedFilteredRows.map((r, idx) => (
+                        <tr key={idx} className="border-b border-surface-100 hover:bg-surface-50">
+                          <td className="px-3 py-2 text-surface-700">{r.contractor || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.sub_contractor || '—'}</td>
+                          <td className="px-3 py-2 font-medium text-surface-900">{r.registration || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.fleet_no || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.trailer_1_reg || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.trailer_2_reg || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.tracking_no || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.tracking_username || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700 font-mono text-xs">{r.tracking_password || '—'}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${r.integration_status === 'Integrated' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                              {r.integration_status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-surface-600">{r.notes}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               ) : (
-                <ul className="max-h-72 overflow-auto divide-y divide-surface-100">
-                  {result.preview.trucks.map((r, idx) => (
-                    <li key={`${r.row}-${idx}`} className="py-2 text-sm">
-                      Row {r.row}: <span className="font-medium">{r.registration}</span>
-                      {r.contractor ? <span className="text-surface-500"> · {r.contractor}</span> : null}
-                    </li>
-                  ))}
-                </ul>
+                <table className="min-w-full text-sm">
+                  <thead className="bg-[#1e40af] text-white sticky top-0 z-10">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold">Contractor</th>
+                      <th className="text-left px-3 py-2 font-semibold">Sub-contractor</th>
+                      <th className="text-left px-3 py-2 font-semibold">Full name</th>
+                      <th className="text-left px-3 py-2 font-semibold">ID number</th>
+                      <th className="text-left px-3 py-2 font-semibold">Licence number</th>
+                      <th className="text-left px-3 py-2 font-semibold">Integration status</th>
+                      <th className="text-left px-3 py-2 font-semibold">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {isAllContractors ? (
+                      groupedByContractor.length === 0 ? (
+                        <tr><td colSpan={7} className="px-3 py-6 text-center text-surface-500">No rows match the current filters.</td></tr>
+                      ) : (
+                        groupedByContractor.map((g) => (
+                          <Fragment key={g.name}>
+                            <tr>
+                              <td colSpan={7} className="px-3 py-2 text-center font-semibold uppercase tracking-wide" style={{ background: '#948A54', color: 'white' }}>
+                                {g.name}
+                              </td>
+                            </tr>
+                            {g.rows.map((r, idx) => (
+                              <tr key={`${g.name}-${idx}`} className="border-b border-surface-100 hover:bg-surface-50">
+                                <td className="px-3 py-2 text-surface-700">{r.contractor || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.sub_contractor || '—'}</td>
+                                <td className="px-3 py-2 font-medium text-surface-900">{r.full_name || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.id_number || '—'}</td>
+                                <td className="px-3 py-2 text-surface-700">{r.license_number || '—'}</td>
+                                <td className="px-3 py-2">
+                                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${r.integration_status === 'Integrated' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                    {r.integration_status}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-surface-600">{r.notes}</td>
+                              </tr>
+                            ))}
+                          </Fragment>
+                        ))
+                      )
+                    ) : (
+                      sortedFilteredRows.length === 0 ? (
+                        <tr><td colSpan={7} className="px-3 py-6 text-center text-surface-500">No rows match the current filters.</td></tr>
+                      ) : sortedFilteredRows.map((r, idx) => (
+                        <tr key={idx} className="border-b border-surface-100 hover:bg-surface-50">
+                          <td className="px-3 py-2 text-surface-700">{r.contractor || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.sub_contractor || '—'}</td>
+                          <td className="px-3 py-2 font-medium text-surface-900">{r.full_name || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.id_number || '—'}</td>
+                          <td className="px-3 py-2 text-surface-700">{r.license_number || '—'}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${r.integration_status === 'Integrated' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                              {r.integration_status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-surface-600">{r.notes}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               )}
             </div>
-            <div className="app-glass-card p-4">
-              <p className="font-medium text-surface-900 mb-2">Preview: matched drivers</p>
-              {(result.preview?.drivers || []).length === 0 ? (
-                <p className="text-sm text-surface-500">No already-enrolled drivers detected.</p>
-              ) : (
-                <ul className="max-h-72 overflow-auto divide-y divide-surface-100">
-                  {result.preview.drivers.map((r, idx) => (
-                    <li key={`${r.row}-${idx}`} className="py-2 text-sm">
-                      Row {r.row}: <span className="font-medium">{r.id_number || r.license_number || 'Matched driver'}</span>
-                      {r.contractor ? <span className="text-surface-500"> · {r.contractor}</span> : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
+
+            <div className="px-4 py-2 border-t border-surface-100 text-xs text-surface-500 flex items-center justify-between">
+              <span>Showing {filteredRows.length} of {selectedRows.length} {viewSheet}</span>
+              <span>Source file: {result.file_name || '—'}</span>
             </div>
           </div>
         </div>

@@ -631,10 +631,16 @@ export const commandCentre = {
     },
   },
   fleetVerification: {
-    verify: (file, tenantId) => {
+    contractors: (tenantId) => {
+      const q = new URLSearchParams();
+      if (tenantId) q.set('tenant_id', tenantId);
+      return request(`/command-centre/fleet-verification/contractors${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    verify: (file, tenantId, contractorId) => {
       const formData = new FormData();
       formData.append('file', file);
       if (tenantId) formData.append('tenant_id', tenantId);
+      if (contractorId) formData.append('contractor_id', contractorId);
       return fetch(`${API}/command-centre/fleet-verification/verify`, {
         method: 'POST',
         body: formData,
