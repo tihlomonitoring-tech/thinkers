@@ -8,9 +8,11 @@ import { getApiBase } from './lib/apiBase.js';
 import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboard, tsvToKeyMetrics, tsvToBreakdowns, tsvToFleetPerformance } from './lib/monthlyPerfReportHelpers.js';
+import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', section: 'Overview' },
+  { id: 'fleet-access-summary', label: 'Fleet facility summary', icon: 'chart', section: 'Overview' },
   { id: 'contractor-page-restriction', label: 'Contractor page restriction', icon: 'ban', section: 'Overview' },
   { id: 'routes', label: 'Route management', icon: 'route', section: 'Routes' },
   { id: 'rectors', label: 'Route rectors', icon: 'users', section: 'Routes' },
@@ -1205,6 +1207,10 @@ export default function AccessManagement() {
             </div>
           </div>
         </div>
+      )}
+
+      {activeTab === 'fleet-access-summary' && hasTenant && (
+        <FleetTruckApprovalSummaryPanel fetchSummary={() => contractorApi.fleetTruckApprovalSummary({})} />
       )}
 
       {activeTab === 'contractor-page-restriction' && (

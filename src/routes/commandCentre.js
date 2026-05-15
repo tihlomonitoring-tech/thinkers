@@ -1881,6 +1881,67 @@ router.get('/fleet-integration', async (req, res, next) => {
   }
 });
 
+/**
+ * Truck counts per main contractor and sub-contractor: facility_access (integrated) vs not.
+ * Optional ?tenantId= to limit to one tenant (same filter as fleet-integration).
+ */
+router.get('/fleet-truck-approval-summary', async (req, res, next) => {
+  try {
+    const tenantId = String(req.query.tenantId || '').trim();
+    const tenantFilter = tenantId ? 'AND t.tenant_id = @tenantId' : '';
+    const params = tenantId ? { tenantId } : {};
+    const result = await query(
+      `SELECT
+         t.tenant_id AS tenant_id,
+         MAX(ten.name) AS tenant_name,
+         c.id AS contractor_id,
+         MAX(c.name) AS contractor_name,
+         MAX(COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)')) AS subcontractor_display,
+         MAX(t.subcontractor_id) AS subcontractor_id,
+         COUNT(*) AS total_trucks,
+         SUM(CASE WHEN t.facility_access = 1 THEN 1 ELSE 0 END) AS integrated_trucks
+       FROM contractor_trucks t
+       INNER JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = t.tenant_id
+       INNER JOIN tenants ten ON ten.id = t.tenant_id
+       LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id AND sc.tenant_id = t.tenant_id
+       WHERE 1=1 ${tenantFilter}
+       GROUP BY t.tenant_id, c.id,
+         CASE WHEN t.subcontractor_id IS NOT NULL THEN CAST(t.subcontractor_id AS NVARCHAR(36))
+              ELSE N'txt:' + LOWER(LTRIM(RTRIM(ISNULL(t.sub_contractor, N''))))
+         END
+       ORDER BY MAX(c.name),
+         MAX(COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)'))`,
+      params
+    );
+    const rows = (result.recordset || []).map((r) => {
+      const total = Number(getRow(r, 'total_trucks') ?? 0);
+      const integrated = Number(getRow(r, 'integrated_trucks') ?? 0);
+      return {
+        tenantId: getRow(r, 'tenant_id'),
+        tenantName: getRow(r, 'tenant_name') || '',
+        contractorId: getRow(r, 'contractor_id'),
+        contractorName: getRow(r, 'contractor_name') || '',
+        subcontractorId: getRow(r, 'subcontractor_id') || null,
+        subcontractorDisplay: getRow(r, 'subcontractor_display') || '',
+        totalTrucks: total,
+        integratedTrucks: integrated,
+        notIntegratedTrucks: Math.max(0, total - integrated),
+      };
+    });
+    const totals = rows.reduce(
+      (acc, row) => ({
+        totalTrucks: acc.totalTrucks + row.totalTrucks,
+        integratedTrucks: acc.integratedTrucks + row.integratedTrucks,
+        notIntegratedTrucks: acc.notIntegratedTrucks + row.notIntegratedTrucks,
+      }),
+      { totalTrucks: 0, integratedTrucks: 0, notIntegratedTrucks: 0 }
+    );
+    res.json({ rows, totals });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** List contractors for fleet-verification haulier selector. Returns [{ id, name, truck_count }]. */
 router.get('/fleet-verification/contractors', async (req, res, next) => {
   try {

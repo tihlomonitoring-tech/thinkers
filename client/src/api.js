@@ -189,6 +189,11 @@ export const contractor = {
     list: () => request('/contractor/contractors'),
     create: (body) => request('/contractor/contractors', { method: 'POST', body: JSON.stringify(body) }),
   },
+  fleetTruckApprovalSummary: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.contractor_id) q.set('contractor_id', params.contractor_id);
+    return request(`/contractor/fleet-truck-approval-summary${q.toString() ? `?${q.toString()}` : ''}`);
+  },
   trucks: {
     list: () => request('/contractor/trucks'),
     create: (body) => request('/contractor/trucks', { method: 'POST', body: JSON.stringify(body) }),
@@ -668,6 +673,11 @@ export const commandCentre = {
       if (params.tenantId) q.set('tenantId', params.tenantId);
       return request(`/command-centre/fleet-integration${q.toString() ? `?${q.toString()}` : ''}`);
     },
+  },
+  fleetTruckApprovalSummary: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.tenantId) q.set('tenantId', params.tenantId);
+    return request(`/command-centre/fleet-truck-approval-summary${q.toString() ? `?${q.toString()}` : ''}`);
   },
   fleetVerification: {
     contractors: (tenantId) => {

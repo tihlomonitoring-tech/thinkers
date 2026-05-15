@@ -574,6 +574,93 @@ function notifyFleetDriverEmails(tenantName, contractorName, type, list, senderE
   })();
 }
 
+/**
+ * Per main contractor / sub-contractor: truck totals and facility_access (integrated) counts.
+ * Respects contractor allow-list and sub-contractor portal scope (?contractor_id= narrows when permitted).
+ */
+router.get('/fleet-truck-approval-summary', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
+
+    const narrow = await allowedContractorIdsWithOptionalNarrow(req);
+    if (narrow.error) return res.status(narrow.error.status).json({ error: narrow.error.message });
+    const allowed = narrow.allowed;
+    if (allowed && allowed.length === 0) {
+      return res.json({
+        rows: [],
+        totals: { totalTrucks: 0, integratedTrucks: 0, notIntegratedTrucks: 0 },
+      });
+    }
+
+    const subScopeCtx = await getRequestSubcontractorScope(req);
+    const subcontractorIds = subScopeCtx.ids;
+    const subScope = buildTruckScopeClause(subScopeCtx, {
+      fleetTabForMainContractor: !isSubcontractorPortalUser(subcontractorIds),
+      alias: 't',
+    });
+
+    let sql = `SELECT
+         t.tenant_id AS tenant_id,
+         MAX(ten.name) AS tenant_name,
+         c.id AS contractor_id,
+         MAX(c.name) AS contractor_name,
+         MAX(COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)')) AS subcontractor_display,
+         MAX(t.subcontractor_id) AS subcontractor_id,
+         COUNT(*) AS total_trucks,
+         SUM(CASE WHEN t.facility_access = 1 THEN 1 ELSE 0 END) AS integrated_trucks
+       FROM contractor_trucks t
+       INNER JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = t.tenant_id
+       INNER JOIN tenants ten ON ten.id = t.tenant_id
+       LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id AND sc.tenant_id = t.tenant_id
+       WHERE t.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND t.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => {
+        params[`c${i}`] = id;
+      });
+    }
+    sql += subScope.clause;
+    Object.assign(params, subScope.params);
+    sql += ` GROUP BY t.tenant_id, c.id,
+         CASE WHEN t.subcontractor_id IS NOT NULL THEN CAST(t.subcontractor_id AS NVARCHAR(36))
+              ELSE N'txt:' + LOWER(LTRIM(RTRIM(ISNULL(t.sub_contractor, N''))))
+         END
+       ORDER BY MAX(c.name),
+         MAX(COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)'))`;
+
+    const result = await query(sql, params);
+    const rows = (result.recordset || []).map((r) => {
+      const total = Number(r.total_trucks ?? r.Total_Trucks ?? 0);
+      const integrated = Number(r.integrated_trucks ?? r.Integrated_Trucks ?? 0);
+      return {
+        tenantId: r.tenant_id ?? r.Tenant_Id,
+        tenantName: r.tenant_name ?? r.Tenant_Name ?? '',
+        contractorId: r.contractor_id ?? r.Contractor_Id,
+        contractorName: r.contractor_name ?? r.Contractor_Name ?? '',
+        subcontractorId: r.subcontractor_id ?? r.Subcontractor_Id ?? null,
+        subcontractorDisplay: r.subcontractor_display ?? r.Subcontractor_Display ?? '',
+        totalTrucks: total,
+        integratedTrucks: integrated,
+        notIntegratedTrucks: Math.max(0, total - integrated),
+      };
+    });
+    const totals = rows.reduce(
+      (acc, row) => ({
+        totalTrucks: acc.totalTrucks + row.totalTrucks,
+        integratedTrucks: acc.integratedTrucks + row.integratedTrucks,
+        notIntegratedTrucks: acc.notIntegratedTrucks + row.notIntegratedTrucks,
+      }),
+      { totalTrucks: 0, integratedTrucks: 0, notIntegratedTrucks: 0 }
+    );
+    res.json({ rows, totals });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Trucks (expanded: main/sub contractor, year, ownership, fleet, trailers, tracking)
 router.get('/trucks', async (req, res, next) => {
   try {

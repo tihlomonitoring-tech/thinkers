@@ -21,6 +21,7 @@ import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
 import TabAtomicFleetVerification from './commandCentre/TabAtomicFleetVerification.jsx';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
+import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
@@ -10137,7 +10138,7 @@ function TabContractorBlock() {
 }
 
 function TabApplications() {
-  const [applicationsSubTab, setApplicationsSubTab] = useState('contract-additions'); // 'contract-additions' | 'integration'
+  const [applicationsSubTab, setApplicationsSubTab] = useState('contract-additions'); // 'contract-additions' | 'integration' | 'facility-summary'
   const [applications, setApplications] = useState([]);
   const [filter, setFilter] = useState('pending'); // 'pending' | 'all'
   const [loading, setLoading] = useState(true);
@@ -10588,7 +10589,18 @@ function TabApplications() {
           >
             Integration
           </button>
+          <button
+            type="button"
+            onClick={() => setApplicationsSubTab('facility-summary')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${applicationsSubTab === 'facility-summary' ? 'border-brand-600 text-brand-600' : 'border-transparent text-surface-600 hover:text-surface-900'}`}
+          >
+            Facility access summary
+          </button>
         </div>
+
+        {applicationsSubTab === 'facility-summary' && (
+          <FleetTruckApprovalSummaryPanel commandCentre />
+        )}
 
         {applicationsSubTab === 'integration' && (
           <TabApplicationsIntegration />

@@ -11,9 +11,11 @@ import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { generateMonthlyPerformanceReportPdf } from './lib/monthlyPerformanceReportPdf.js';
 import { jsPDF } from 'jspdf';
 import InfoHint from './components/InfoHint.jsx';
+import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 
 const TABS = [
   { id: 'fleet', label: 'Approved fleet & drivers', icon: 'truck', section: 'Data' },
+  { id: 'fleet-access-summary', label: 'Fleet facility summary', icon: 'chart', section: 'Data' },
   { id: 'targets-regulations', label: 'Targets regulations per route', icon: 'chart', section: 'Data' },
   { id: 'contractors-details', label: 'Contractors details and features', icon: 'building', section: 'Data' },
   { id: 'incidents', label: 'Breakdowns & incidents', icon: 'alert', section: 'Data' },
@@ -893,6 +895,10 @@ export default function Rector() {
                 )}
               </div>
             </div>
+          )}
+
+          {activeTab === 'fleet-access-summary' && hasTenant && (
+            <FleetTruckApprovalSummaryPanel fetchSummary={() => contractorApi.fleetTruckApprovalSummary({})} />
           )}
 
           {activeTab === 'targets-regulations' && (
