@@ -25,6 +25,7 @@ import InfoHint from './components/InfoHint.jsx';
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
   { id: 'contractor', label: 'Contractor', getValue: (app) => app.contractorName || '' },
+  { id: 'subcontractor', label: 'Sub-contractor', getValue: (app) => app.subcontractorDisplay || '' },
   { id: 'type', label: 'Type', getValue: (app) => (app.entityType === 'truck' ? 'Truck' : 'Driver') },
   { id: 'name_registration', label: 'Name / Registration', getValue: (app) => (app.entityType === 'truck' ? (app.truckRegistration || '') : (app.driverName || '')) },
   { id: 'source', label: 'Source', getValue: (app) => ((app.source || 'manual') === 'import' ? 'Import' : 'Manual') },
@@ -10153,6 +10154,7 @@ function TabApplications() {
   const [searchAdvanced, setSearchAdvanced] = useState('');
   const [filterTruckOnly, setFilterTruckOnly] = useState('');
   const [filterDriverOnly, setFilterDriverOnly] = useState('');
+  const [filterSubcontractor, setFilterSubcontractor] = useState(''); // '' or exact company name from dropdown
   const [filterType, setFilterType] = useState(''); // '' | 'truck' | 'driver'
   const [filterSource, setFilterSource] = useState(''); // '' | 'manual' | 'import'
   const [showExportExcelModal, setShowExportExcelModal] = useState(false);
@@ -10317,8 +10319,22 @@ function TabApplications() {
   const displayType = (app) => app.entityType === 'truck' ? 'Truck' : 'Driver';
   const displaySource = (app) => (app.source || 'manual') === 'import' ? 'Import' : 'Manual';
 
+  const subcontractorOptions = useMemo(() => {
+    const set = new Set();
+    (applications || []).forEach((app) => {
+      const n = (app.subcontractorDisplay || '').trim();
+      if (n) set.add(n);
+    });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [applications]);
+
   const filteredApplications = applications.filter((app) => {
     if (searchContractor.trim() && !(app.contractorName || '').toLowerCase().includes(searchContractor.trim().toLowerCase())) return false;
+    if (filterSubcontractor.trim()) {
+      const want = filterSubcontractor.trim();
+      const got = (app.subcontractorDisplay || '').trim();
+      if (got !== want) return false;
+    }
     const q = searchAdvanced.trim().toLowerCase();
     if (q) {
       const haystack = [
@@ -10331,6 +10347,7 @@ function TabApplications() {
         app.truckFleetNo,
         app.truckMainContractor,
         app.truckSubContractor,
+        app.subcontractorDisplay,
         app.driverName,
         app.driverSurname,
         app.driverIdNumber,
@@ -10344,13 +10361,13 @@ function TabApplications() {
     if (filterSource && (app.source || 'manual') !== filterSource) return false;
     if (app.entityType === 'truck' && filterTruckOnly.trim()) {
       const tq = filterTruckOnly.trim().toLowerCase();
-      const truckMatch = [app.truckRegistration, app.truckMakeModel, app.truckFleetNo, app.truckMainContractor, app.truckSubContractor]
+      const truckMatch = [app.truckRegistration, app.truckMakeModel, app.truckFleetNo, app.truckMainContractor, app.truckSubContractor, app.subcontractorDisplay]
         .some((v) => String(v || '').toLowerCase().includes(tq));
       if (!truckMatch) return false;
     }
     if (app.entityType === 'driver' && filterDriverOnly.trim()) {
       const dq = filterDriverOnly.trim().toLowerCase();
-      const driverMatch = [app.driverName, app.driverSurname, app.driverIdNumber, app.driverLicenseNumber, app.driverPhone, app.driverEmail]
+      const driverMatch = [app.driverName, app.driverSurname, app.driverIdNumber, app.driverLicenseNumber, app.driverPhone, app.driverEmail, app.subcontractorDisplay]
         .some((v) => String(v || '').toLowerCase().includes(dq));
       if (!driverMatch) return false;
     }
@@ -10399,9 +10416,10 @@ function TabApplications() {
     }
   };
   const exportCsv = () => {
-    const headers = ['Contractor', 'Type', 'Name / Registration', 'Source', 'Submitted', 'Status'];
+    const headers = ['Contractor', 'Sub-contractor', 'Type', 'Name / Registration', 'Source', 'Submitted', 'Status'];
     const rows = applicationsToExport.map((app) => [
       app.contractorName || '',
+      app.subcontractorDisplay || '',
       displayType(app),
       displayName(app),
       displaySource(app),
@@ -10607,11 +10625,22 @@ function TabApplications() {
             placeholder="Search contractor…"
             className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
           />
+          <select
+            value={filterSubcontractor}
+            onChange={(e) => setFilterSubcontractor(e.target.value)}
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[200px]"
+            aria-label="Filter by sub-contractor"
+          >
+            <option value="">All sub-contractors</option>
+            {subcontractorOptions.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
           <input
             type="search"
             value={searchAdvanced}
             onChange={(e) => setSearchAdvanced(e.target.value)}
-            placeholder="Advanced search (truck reg/model/fleet, driver, status, source)..."
+            placeholder="Advanced search (contractor, sub-contractor, truck reg/model/fleet, driver, status, source)..."
             className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[320px]"
           />
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
@@ -10640,7 +10669,7 @@ function TabApplications() {
           />
           <button
             type="button"
-            onClick={() => { setSearchContractor(''); setSearchAdvanced(''); setFilterType(''); setFilterSource(''); setFilterTruckOnly(''); setFilterDriverOnly(''); }}
+            onClick={() => { setSearchContractor(''); setSearchAdvanced(''); setFilterType(''); setFilterSource(''); setFilterTruckOnly(''); setFilterDriverOnly(''); setFilterSubcontractor(''); }}
             className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
           >
             Clear filters
@@ -10685,6 +10714,7 @@ function TabApplications() {
                       />
                     </th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor</th>
+                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Sub-contractor</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Type</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Name / Registration</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Source</th>
@@ -10694,7 +10724,7 @@ function TabApplications() {
                 </thead>
                 <tbody>
                   {filteredApplications.length === 0 ? (
-                    <tr><td colSpan={7} className="px-4 py-8 text-surface-500 text-center">No applications match the filter.</td></tr>
+                    <tr><td colSpan={8} className="px-4 py-8 text-surface-500 text-center">No applications match the filter.</td></tr>
                   ) : (
                     filteredApplications.map((app) => (
                       <tr
@@ -10712,6 +10742,7 @@ function TabApplications() {
                           />
                         </td>
                         <td className="px-4 py-2 text-surface-700">{app.contractorName || '—'}</td>
+                        <td className="px-4 py-2 text-surface-600 max-w-[200px] truncate" title={app.subcontractorDisplay || ''}>{app.subcontractorDisplay || '—'}</td>
                         <td className="px-4 py-2">{displayType(app)}</td>
                         <td className="px-4 py-2 font-medium text-surface-900">{displayName(app)}</td>
                         <td className="px-4 py-2 text-surface-600">{displaySource(app)}</td>
@@ -10749,6 +10780,10 @@ function TabApplications() {
                   <div>
                     <p className="font-medium text-surface-900">Contractor</p>
                     <p className="text-surface-600">{detail.contractorName || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium text-surface-900">Sub-contractor</p>
+                    <p className="text-surface-600">{detail.subcontractorDisplay || '—'}</p>
                   </div>
                   <div>
                     <p className="font-medium text-surface-900">Type</p>

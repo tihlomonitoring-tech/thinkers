@@ -1748,6 +1748,12 @@ router.get('/fleet-applications', async (req, res, next) => {
     const result = await query(
       `SELECT a.id, a.tenant_id, a.entity_type, a.entity_id, a.source, a.[status], a.reviewed_by_user_id, a.reviewed_at, a.decline_reason, a.created_at,
         COALESCE(c.name, t.name) AS contractor_name,
+        CASE
+          WHEN a.entity_type = N'truck' THEN
+            COALESCE(sc_tr.company_name, NULLIF(LTRIM(RTRIM(tr.sub_contractor)), N''))
+          ELSE
+            COALESCE(sc_d.company_name, sc_lt.company_name, NULLIF(LTRIM(RTRIM(lt.sub_contractor)), N''))
+        END AS subcontractor_display,
         tr.registration AS truck_registration, tr.make_model AS truck_make_model, tr.main_contractor AS truck_main_contractor, tr.sub_contractor AS truck_sub_contractor,
         tr.year_model AS truck_year_model, tr.ownership_desc AS truck_ownership_desc, tr.fleet_no AS truck_fleet_no,
         tr.trailer_1_reg_no AS truck_trailer_1_reg_no, tr.trailer_2_reg_no AS truck_trailer_2_reg_no,
@@ -1760,6 +1766,10 @@ router.get('/fleet-applications', async (req, res, next) => {
        LEFT JOIN contractor_trucks tr ON tr.id = a.entity_id AND a.entity_type = N'truck'
        LEFT JOIN contractor_drivers d ON d.id = a.entity_id AND a.entity_type = N'driver'
        LEFT JOIN contractors c ON c.id = COALESCE(tr.contractor_id, d.contractor_id)
+       LEFT JOIN contractor_subcontractors sc_tr ON sc_tr.id = tr.subcontractor_id AND sc_tr.tenant_id = a.tenant_id
+       LEFT JOIN contractor_subcontractors sc_d ON sc_d.id = d.subcontractor_id AND sc_d.tenant_id = a.tenant_id
+       LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = d.tenant_id AND a.entity_type = N'driver'
+       LEFT JOIN contractor_subcontractors sc_lt ON sc_lt.id = lt.subcontractor_id AND sc_lt.tenant_id = a.tenant_id
        WHERE 1=1 ${statusFilter}
        ORDER BY a.created_at DESC`
     );
@@ -1768,6 +1778,7 @@ router.get('/fleet-applications', async (req, res, next) => {
       id: getRow(r, 'id'),
       tenantId: getRow(r, 'tenant_id'),
       contractorName: getRow(r, 'contractor_name'),
+      subcontractorDisplay: getRow(r, 'subcontractor_display'),
       entityType: getRow(r, 'entity_type'),
       entityId: getRow(r, 'entity_id'),
       source: getRow(r, 'source'),
@@ -3384,12 +3395,22 @@ router.get('/fleet-applications/:id', async (req, res, next) => {
     const { id } = req.params;
     const appResult = await query(
       `SELECT a.*, t.name AS tenant_name,
-        COALESCE(c.name, t.name) AS contractor_name
+        COALESCE(c.name, t.name) AS contractor_name,
+        CASE
+          WHEN a.entity_type = N'truck' THEN
+            COALESCE(sc_tr.company_name, NULLIF(LTRIM(RTRIM(tr.sub_contractor)), N''))
+          ELSE
+            COALESCE(sc_d.company_name, sc_lt.company_name, NULLIF(LTRIM(RTRIM(lt.sub_contractor)), N''))
+        END AS subcontractor_display
        FROM cc_fleet_applications a
        JOIN tenants t ON t.id = a.tenant_id
        LEFT JOIN contractor_trucks tr ON tr.id = a.entity_id AND a.entity_type = N'truck'
        LEFT JOIN contractor_drivers d ON d.id = a.entity_id AND a.entity_type = N'driver'
        LEFT JOIN contractors c ON c.id = COALESCE(tr.contractor_id, d.contractor_id)
+       LEFT JOIN contractor_subcontractors sc_tr ON sc_tr.id = tr.subcontractor_id AND sc_tr.tenant_id = a.tenant_id
+       LEFT JOIN contractor_subcontractors sc_d ON sc_d.id = d.subcontractor_id AND sc_d.tenant_id = a.tenant_id
+       LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = d.tenant_id AND a.entity_type = N'driver'
+       LEFT JOIN contractor_subcontractors sc_lt ON sc_lt.id = lt.subcontractor_id AND sc_lt.tenant_id = a.tenant_id
        WHERE a.id = @id`,
       { id }
     );
@@ -3409,6 +3430,7 @@ router.get('/fleet-applications/:id', async (req, res, next) => {
       id: getRow(app, 'id'),
       tenantId: getRow(app, 'tenant_id'),
       contractorName: getRow(app, 'contractor_name'),
+      subcontractorDisplay: getRow(app, 'subcontractor_display'),
       entityType,
       entityId,
       source: getRow(app, 'source'),
