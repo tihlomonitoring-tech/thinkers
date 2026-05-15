@@ -305,6 +305,11 @@ router.get('/me', async (req, res, next) => {
       });
       return res.status(200).json({ user: null });
     }
+    let subcontractor_ids = [];
+    try {
+      const subR = await query(`SELECT subcontractor_id FROM user_subcontractors WHERE user_id = @id`, { id: req.session.userId });
+      subcontractor_ids = (subR.recordset || []).map((r) => r.subcontractor_id ?? r.subcontractor_Id).filter(Boolean);
+    } catch (_) {}
     res.json({
       user: {
         id: get(row, 'id'),
@@ -321,6 +326,8 @@ router.get('/me', async (req, res, next) => {
         login_count: get(row, 'login_count'),
         created_at: get(row, 'created_at'),
         page_roles,
+        subcontractor_ids,
+        is_subcontractor_user: subcontractor_ids.length > 0,
       },
     });
   } catch (err) {

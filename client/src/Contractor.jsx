@@ -9,6 +9,9 @@ import { contractor as contractorApi, tenants as tenantsApi, openAttachmentWithA
 import { parseExcelFile, downloadTruckTemplate, downloadDriverTemplate, downloadConsolidatedTemplate, parseConsolidatedFile } from './lib/excelImport.js';
 import JSZip from 'jszip';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
+import SubcontractorFleetsTab from './contractor/SubcontractorFleetsTab.jsx';
+import FleetAdvancedView from './contractor/FleetAdvancedView.jsx';
+import DriverAdvancedView from './contractor/DriverAdvancedView.jsx';
 
 const CONTRACTOR_NAV = [
   {
@@ -20,6 +23,7 @@ const CONTRACTOR_NAV = [
     items: [
       { id: 'trucks', label: 'Add truck', icon: 'truck' },
       { id: 'fleet', label: 'Fleet', icon: 'list' },
+      { id: 'subcontractor-fleets', label: 'Subcontractor submissions', icon: 'users', mainContractorOnly: true },
     ],
   },
   {
@@ -35,13 +39,13 @@ const CONTRACTOR_NAV = [
   },
   {
     section: 'Enrollment',
-    items: [{ id: 'enrollment', label: 'Fleet and driver enrollment', icon: 'route' }],
+    items: [{ id: 'enrollment', label: 'Fleet and driver enrollment', icon: 'route', mainContractorOnly: true }],
   },
   {
     section: 'Contractor Information',
     items: [
-      { id: 'contractor-details', label: 'Details of the contractor', icon: 'building' },
-      { id: 'subcontract-details', label: 'Subcontract details', icon: 'users' },
+      { id: 'contractor-details', label: 'Details of the contractor', icon: 'building', mainContractorOnly: true },
+      { id: 'subcontract-details', label: 'Subcontract details', icon: 'users', mainContractorOnly: true },
       { id: 'library', label: 'Library', icon: 'folder' },
     ],
   },
@@ -222,6 +226,8 @@ export default function Contractor() {
   const [contextError, setContextError] = useState(null);
   const [contractorsList, setContractorsList] = useState([]);
   const [selectedContractorId, setSelectedContractorId] = useState(null);
+  const [isSubcontractorUser, setIsSubcontractorUser] = useState(Boolean(user?.is_subcontractor_user));
+  const [portalSubcontractors, setPortalSubcontractors] = useState([]);
   const loadingSlipRef = useRef(null);
   const seal1Ref = useRef(null);
   const seal2Ref = useRef(null);
@@ -274,7 +280,6 @@ export default function Contractor() {
   const [enrollmentSelectedDriverIds, setEnrollmentSelectedDriverIds] = useState([]);
   const [enrollmentEnrollingDrivers, setEnrollmentEnrollingDrivers] = useState(false);
   const [fleetListSearch, setFleetListSearch] = useState('');
-  const [driverRegisterSearch, setDriverRegisterSearch] = useState('');
   const [incidentsListSearch, setIncidentsListSearch] = useState('');
   const [enrollmentRouteTruckSearch, setEnrollmentRouteTruckSearch] = useState('');
   const [enrollmentRouteDriverSearch, setEnrollmentRouteDriverSearch] = useState('');
@@ -312,13 +317,33 @@ export default function Contractor() {
   const hasTenant = user?.tenant_id;
 
   useEffect(() => {
+    setIsSubcontractorUser(Boolean(user?.is_subcontractor_user));
+  }, [user?.is_subcontractor_user]);
+
+  const visibleContractorNav = useMemo(() => CONTRACTOR_NAV.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !(item.mainContractorOnly && isSubcontractorUser)),
+  })).filter((g) => g.items.length > 0), [isSubcontractorUser]);
+
+  const visibleContractorTabIds = useMemo(
+    () => new Set(visibleContractorNav.flatMap((g) => g.items.map((i) => i.id))),
+    [visibleContractorNav],
+  );
+
+  useEffect(() => {
+    if (!isSubcontractorUser) return;
+    const restricted = CONTRACTOR_NAV.flatMap((g) => g.items).filter((i) => i.mainContractorOnly).map((i) => i.id);
+    if (restricted.includes(activeTab)) setActiveTab('dashboard');
+  }, [isSubcontractorUser, activeTab]);
+
+  useEffect(() => {
     const requested = (() => {
       try { return sessionStorage.getItem('contractor-global-target-tab'); } catch (_) { return null; }
     })();
     if (!requested) return;
-    if (contractorTabIds.includes(requested)) setActiveTab(requested);
+    if (visibleContractorTabIds.has(requested)) setActiveTab(requested);
     try { sessionStorage.removeItem('contractor-global-target-tab'); } catch (_) {}
-  }, []);
+  }, [visibleContractorTabIds]);
 
   /** Query params for contractor-app enrollment only (strict privacy; never tenant-wide for hauliers). */
   const enrollmentContractorQuery = () => ({
@@ -426,7 +451,7 @@ export default function Contractor() {
     if (activeTab !== 'subcontract-details') return;
     let cancelled = false;
     setSubcontractorsLoading(true);
-    contractorApi.subcontractors.list()
+    contractorApi.subcontractors.list(selectedContractorId ? { contractor_id: selectedContractorId } : {})
       .then((r) => { if (!cancelled) setSubcontractorsList(r?.subcontractors ?? []); })
       .catch(() => { if (!cancelled) setSubcontractorsList([]); })
       .finally(() => { if (!cancelled) setSubcontractorsLoading(false); });
@@ -786,20 +811,6 @@ export default function Contractor() {
     );
   });
 
-  const filteredDriverRegisterList = driversList.filter((d) => {
-    const q = driverRegisterSearch.trim().toLowerCase();
-    if (!q) return true;
-    const full = (d.full_name || [d.name, d.surname].filter(Boolean).join(' ')).toLowerCase();
-    return (
-      full.includes(q) ||
-      (d.surname || '').toLowerCase().includes(q) ||
-      (d.id_number || '').toLowerCase().includes(q) ||
-      (d.license_number || '').toLowerCase().includes(q) ||
-      (d.phone || '').toLowerCase().includes(q) ||
-      (d.email || '').toLowerCase().includes(q)
-    );
-  });
-
   const filteredIncidentsList = incidentsList.filter((i) => {
     const q = incidentsListSearch.trim().toLowerCase();
     if (!q) return true;
@@ -906,6 +917,8 @@ export default function Contractor() {
       }
       const contractors = Array.isArray(contextRes.contractors) ? contextRes.contractors : [];
       setContractorsList(contractors);
+      setIsSubcontractorUser(Boolean(contextRes.isSubcontractorUser ?? user?.is_subcontractor_user));
+      setPortalSubcontractors(Array.isArray(contextRes.subcontractors) ? contextRes.subcontractors : []);
       if (contractors.length === 1 && !selectedContractorId) setSelectedContractorId(contractors[0].id);
 
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out. Check your connection and retry.')), 20000));
@@ -1029,10 +1042,10 @@ export default function Contractor() {
     setSaving(true);
     setError('');
     try {
-      await contractorApi.trucks.create({
+      const res = await contractorApi.trucks.create({
         contractor_id: selectedContractorId || undefined,
         main_contractor: form.main_contractor?.value?.trim() || null,
-        sub_contractor: form.sub_contractor?.value?.trim() || null,
+        sub_contractor: isSubcontractorUser ? undefined : (form.sub_contractor?.value?.trim() || null),
         make_model: form.make_model?.value?.trim() || null,
         year_model: form.year_model?.value?.trim() || null,
         ownership_desc: form.ownership_desc?.value?.trim() || null,
@@ -1051,6 +1064,10 @@ export default function Contractor() {
       });
       form.reset();
       setTrackingProviderIsOther(false);
+      if (res?.pendingContractorApproval) {
+        setError('');
+        alert('Truck submitted for contractor review. You will see it on Fleet once approved.');
+      }
       load();
     } catch (err) {
       setError(err.message);
@@ -1069,7 +1086,7 @@ export default function Contractor() {
     setSaving(true);
     setError('');
     try {
-      await contractorApi.drivers.create({
+      const res = await contractorApi.drivers.create({
         contractor_id: selectedContractorId || undefined,
         name: form.name?.value?.trim() || '',
         surname: form.surname?.value?.trim() || null,
@@ -1080,6 +1097,10 @@ export default function Contractor() {
         email: form.email?.value?.trim() || null,
       });
       form.reset();
+      if (res?.pendingContractorApproval) {
+        setError('');
+        alert('Driver submitted for contractor review. You will see them on Driver register once approved.');
+      }
       load();
     } catch (err) {
       setError(err.message);
@@ -1430,7 +1451,10 @@ export default function Contractor() {
       if (subcontractorEdit?.id) {
         await contractorApi.subcontractors.update(subcontractorEdit.id, subcontractorForm);
       } else {
-        await contractorApi.subcontractors.create(subcontractorForm);
+        await contractorApi.subcontractors.create({
+          ...subcontractorForm,
+          contractor_id: selectedContractorId || subcontractorForm.contractor_id || undefined,
+        });
       }
       const r = await contractorApi.subcontractors.list();
       setSubcontractorsList(r?.subcontractors ?? []);
@@ -1633,7 +1657,7 @@ export default function Contractor() {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto py-2 w-72">
-          {CONTRACTOR_NAV.map((group) => (
+          {visibleContractorNav.map((group) => (
             <div key={group.section} className="mb-4">
               <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">
                 {group.section}
@@ -1768,16 +1792,34 @@ export default function Contractor() {
               </div>
             )}
 
+            {activeTab === 'subcontractor-fleets' && !isSubcontractorUser && (
+              <SubcontractorFleetsTab onChanged={load} setError={setError} />
+            )}
+
             {activeTab === 'trucks' && (
               <div className="w-full space-y-6">
                 <div className="app-glass-card p-6">
-                  <h2 className="font-medium text-surface-900 mb-4">Add truck (contract portal)</h2>
+                  <h2 className="font-medium text-surface-900 mb-4">{isSubcontractorUser ? 'Add truck (sub-contractor)' : 'Add truck (contract portal)'}</h2>
+                  {isSubcontractorUser && (
+                    <p className="mb-3 text-sm text-violet-800 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                      Trucks you add are sent to your main contractor for approval before they appear on the shared Fleet list.
+                      {portalSubcontractors.length > 0 && (
+                        <span className="block mt-1 font-medium">
+                          Company: {portalSubcontractors.map((s) => s.companyName || s.company_name).filter(Boolean).join(', ')}
+                        </span>
+                      )}
+                    </p>
+                  )}
                   {!pageRestrictions.allow_truck_manual && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Manual truck add is restricted by Access Management.</p>
                   )}
                   <form onSubmit={addTruck} className="space-y-3">
-                    <input name="main_contractor" placeholder="Main contractor (e.g. ABC Logistics)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    <input name="sub_contractor" placeholder="If sub contractor (e.g. XYZ Logistics)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm border-l-2 border-l-red-300" />
+                    {!isSubcontractorUser && (
+                      <>
+                        <input name="main_contractor" placeholder="Main contractor (e.g. ABC Logistics)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                        <input name="sub_contractor" placeholder="If sub contractor (e.g. XYZ Logistics)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm border-l-2 border-l-red-300" />
+                      </>
+                    )}
                     <input name="make_model" placeholder="Make / model" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="year_model" placeholder="Year model" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="ownership_desc" placeholder="Ownership description" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -1838,34 +1880,13 @@ export default function Contractor() {
                       <span className="text-surface-500"> — link trucks to telematics providers and monitor trips (uses this fleet list).</span>
                     </p>
                   )}
-                  <p className="text-xs text-surface-500 mb-3">Click a truck to view full details.</p>
-                  <input
-                    type="search"
-                    value={fleetListSearch}
-                    onChange={(e) => setFleetListSearch(e.target.value)}
-                    placeholder="Search fleet by registration, contractor, make/model, fleet no…"
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                  <p className="text-xs text-surface-500 mb-3">Click a row to view and edit full truck details.</p>
+                  <FleetAdvancedView
+                    trucks={trucksList}
+                    onSelectTruck={setSelectedFleetTruck}
+                    selectedTruckId={selectedFleetTruck?.id}
+                    isSubcontractorUser={isSubcontractorUser}
                   />
-                  <ul className="space-y-1 text-sm">
-                    {filteredFleetList.length === 0 ? <li className="text-surface-500">{trucksList.length === 0 ? 'No trucks yet.' : 'No fleet matches your search.'}</li> : filteredFleetList.map((t) => (
-                      <li
-                        key={t.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setSelectedFleetTruck(t)}
-                        onKeyDown={(e) => e.key === 'Enter' && setSelectedFleetTruck(t)}
-                        className={`flex justify-between items-center py-2.5 px-3 rounded-lg border cursor-pointer transition-colors ${
-                          selectedFleetTruck?.id === t.id ? 'border-brand-300 bg-brand-50' : 'border-transparent hover:bg-surface-50'
-                        }`}
-                      >
-                        <span className="font-mono font-medium">{t.registration}</span>
-                        <span className="text-surface-500 text-xs">{t.main_contractor || t.make_model || '—'} {t.trailer_1_reg_no ? `· T1: ${t.trailer_1_reg_no}` : ''}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${t.facility_access ? 'bg-green-100 text-green-800' : t.last_decline_reason ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`} title={t.last_decline_reason || ''}>
-                          {t.facility_access ? 'Facility access' : t.last_decline_reason ? 'Declined' : 'Pending'}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
               </div>
             )}
@@ -1997,7 +2018,12 @@ export default function Contractor() {
             {activeTab === 'drivers' && (
               <div className="w-full space-y-6">
                 <div className="app-glass-card p-6">
-                  <h2 className="font-medium text-surface-900 mb-4">Add driver</h2>
+                  <h2 className="font-medium text-surface-900 mb-4">{isSubcontractorUser ? 'Add driver (sub-contractor)' : 'Add driver'}</h2>
+                  {isSubcontractorUser && (
+                    <p className="mb-3 text-sm text-violet-800 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                      Drivers you add are sent to your main contractor for approval before they appear on the shared Driver register.
+                    </p>
+                  )}
                   {!pageRestrictions.allow_driver_manual && (
                     <p className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Manual driver add is restricted by Access Management.</p>
                   )}
@@ -2012,6 +2038,7 @@ export default function Contractor() {
                     <button type="submit" disabled={saving || !pageRestrictions.allow_driver_manual} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add driver</button>
                   </form>
                 </div>
+                {!isSubcontractorUser && (
                 <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import from Excel</h2>
                   {!pageRestrictions.allow_driver_import && (
@@ -2034,6 +2061,7 @@ export default function Contractor() {
                     </p>
                   )}
                 </div>
+                )}
               </div>
             )}
 
@@ -2041,39 +2069,13 @@ export default function Contractor() {
               <div className="w-full">
                 <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-4">Driver register</h2>
-                  <p className="text-xs text-surface-500 mb-3">Click a driver to view full details.</p>
-                  <input
-                    type="search"
-                    value={driverRegisterSearch}
-                    onChange={(e) => setDriverRegisterSearch(e.target.value)}
-                    placeholder="Search drivers by name, ID, license, phone, email…"
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                  <p className="text-xs text-surface-500 mb-4">Click a row to view and edit driver details.</p>
+                  <DriverAdvancedView
+                    drivers={driversList}
+                    onSelectDriver={setSelectedRegisterDriver}
+                    selectedDriverId={selectedRegisterDriver?.id}
+                    isSubcontractorUser={isSubcontractorUser}
                   />
-                  <ul className="space-y-1 text-sm">
-                    {filteredDriverRegisterList.length === 0 ? <li className="text-surface-500">{driversList.length === 0 ? 'No drivers yet.' : 'No drivers match your search.'}</li> : filteredDriverRegisterList.map((d) => (
-                      <li
-                        key={d.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setSelectedRegisterDriver(d)}
-                        onKeyDown={(e) => e.key === 'Enter' && setSelectedRegisterDriver(d)}
-                        className={`flex justify-between items-center py-2.5 px-3 rounded-lg border cursor-pointer transition-colors ${
-                          selectedRegisterDriver?.id === d.id ? 'border-brand-300 bg-brand-50' : 'border-transparent hover:bg-surface-50'
-                        }`}
-                      >
-                        <span className="font-medium">{d.full_name || [d.name, d.surname].filter(Boolean).join(' ') || '—'}</span>
-                        <span className="text-surface-500 text-xs">
-                          {d.id_number ? `ID ${d.id_number}` : ''} {d.license_number ? `· ${d.license_number}` : ''} {d.license_expiry ? `· exp ${formatDate(d.license_expiry)}` : ''}
-                          {(d.linkedTruckRegistration || d.linked_truck_registration) && (
-                            <span className="ml-1 text-brand-600">· Truck: {d.linkedTruckRegistration || d.linked_truck_registration}</span>
-                          )}
-                        </span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${d.facility_access ? 'bg-green-100 text-green-800' : d.last_decline_reason ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`} title={d.last_decline_reason || ''}>
-                          {d.facility_access ? 'Facility access' : d.last_decline_reason ? 'Declined' : 'Pending'}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
               </div>
             )}
@@ -2206,7 +2208,7 @@ export default function Contractor() {
               </div>
             )}
 
-            {activeTab === 'import-all' && (
+            {activeTab === 'import-all' && !isSubcontractorUser && (
               <div className="w-full">
                 <div className="app-glass-card p-6">
                   <h2 className="font-medium text-surface-900 mb-3">Import trucks and drivers at once</h2>
@@ -3093,7 +3095,7 @@ export default function Contractor() {
               </div>
             )}
 
-            {activeTab === 'enrollment' && (
+            {activeTab === 'enrollment' && !isSubcontractorUser && (
               <div className="w-full space-y-6">
                 <div>
                   <h2 className="font-medium text-surface-900">Fleet and driver enrollment</h2>
@@ -3460,7 +3462,7 @@ export default function Contractor() {
               </div>
             )}
 
-            {activeTab === 'contractor-details' && (
+            {activeTab === 'contractor-details' && !isSubcontractorUser && (
               <div className="max-w-4xl">
                 <div className="app-glass-card shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-surface-200 bg-surface-50">
@@ -3573,7 +3575,7 @@ export default function Contractor() {
               </div>
             )}
 
-            {activeTab === 'subcontract-details' && (
+            {activeTab === 'subcontract-details' && !isSubcontractorUser && (
               <div className="space-y-6">
                 <div className="app-glass-card shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-surface-200 bg-surface-50 flex flex-wrap items-center justify-between gap-3">

@@ -131,6 +131,12 @@ export const users = {
   },
   /** Create a contractor company under a tenant (from User Management). */
   createContractor: (body) => request('/users/contractors', { method: 'POST', body: JSON.stringify(body) }),
+  /** Sub-contractor companies under selected main contractors (for subcontractor user assignment). */
+  subcontractorsForContractors: (contractorIds) => {
+    const ids = (Array.isArray(contractorIds) ? contractorIds : []).filter(Boolean);
+    if (ids.length === 0) return Promise.resolve({ subcontractors: [] });
+    return request(`/users/subcontractors-for-contractors?contractor_ids=${encodeURIComponent(ids.join(','))}`);
+  },
   activity: (id) => request(`/users/${id}/activity`),
   loginActivity: (id, params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -415,10 +421,43 @@ export const contractor = {
     update: (body) => request('/contractor/info', { method: 'PATCH', body: JSON.stringify(body) }),
   },
   subcontractors: {
-    list: () => request('/contractor/subcontractors'),
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.contractor_id) q.set('contractor_id', params.contractor_id);
+      const s = q.toString();
+      return request(`/contractor/subcontractors${s ? `?${s}` : ''}`);
+    },
     create: (body) => request('/contractor/subcontractors', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => request(`/contractor/subcontractors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/contractor/subcontractors/${id}`, { method: 'DELETE' }),
+  },
+  subcontractorFleets: {
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', params.status);
+      if (params.subcontractor_id) q.set('subcontractor_id', params.subcontractor_id);
+      if (params.search) q.set('search', params.search);
+      if (params.sort) q.set('sort', params.sort);
+      if (params.order) q.set('order', params.order);
+      const s = q.toString();
+      return request(`/contractor/subcontractor-fleets${s ? `?${s}` : ''}`);
+    },
+    approve: (id) => request(`/contractor/subcontractor-fleets/${id}/approve`, { method: 'PATCH', body: '{}' }),
+    decline: (id, body) => request(`/contractor/subcontractor-fleets/${id}/decline`, { method: 'PATCH', body: JSON.stringify(body) }),
+  },
+  subcontractorDrivers: {
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', params.status);
+      if (params.subcontractor_id) q.set('subcontractor_id', params.subcontractor_id);
+      if (params.search) q.set('search', params.search);
+      if (params.sort) q.set('sort', params.sort);
+      if (params.order) q.set('order', params.order);
+      const s = q.toString();
+      return request(`/contractor/subcontractor-drivers${s ? `?${s}` : ''}`);
+    },
+    approve: (id) => request(`/contractor/subcontractor-drivers/${id}/approve`, { method: 'PATCH', body: '{}' }),
+    decline: (id, body) => request(`/contractor/subcontractor-drivers/${id}/decline`, { method: 'PATCH', body: JSON.stringify(body) }),
   },
   library: {
     documentTypes: () => request('/contractor/library/document-types'),

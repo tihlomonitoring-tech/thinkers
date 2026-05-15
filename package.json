@@ -90,6 +90,7 @@
     "db:unlock-user-login": "node scripts/unlock-user-login.js",
     "db:sign-up-requests": "node scripts/run-sign-up-requests-schema.js",
     "db:contractor-info-library": "node scripts/run-contractor-info-and-library.js",
+    "db:subcontractor-fleet-workflow": "node scripts/run-subcontractor-fleet-workflow.js",
     "db:contractor-library-entity-links": "node scripts/run-contractor-library-entity-links.js",
     "db:contractors-multi": "node scripts/run-contractors-multi-schema.js",
     "db:backfill-contractor-id": "node scripts/run-backfill-contractor-id.js",

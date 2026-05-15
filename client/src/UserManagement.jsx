@@ -89,6 +89,8 @@ export default function UserManagement() {
   const [approvalsLoading, setApprovalsLoading] = useState(false);
   const [formContractors, setFormContractors] = useState([]);
   const [formContractorsLoading, setFormContractorsLoading] = useState(false);
+  const [formSubcontractors, setFormSubcontractors] = useState([]);
+  const [formSubcontractorsLoading, setFormSubcontractorsLoading] = useState(false);
   const [newContractorName, setNewContractorName] = useState('');
   const [addingContractor, setAddingContractor] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState([]);
@@ -291,7 +293,7 @@ export default function UserManagement() {
   };
 
   const openCreate = () => {
-    setFormUser({ email: '', full_name: '', password: '', role: 'user', id_number: '', cellphone: '', tenant_id: me?.tenant_id || '', tenant_ids: me?.tenant_id ? [me.tenant_id] : [], page_roles: [], contractor_ids: [] });
+    setFormUser({ email: '', full_name: '', password: '', role: 'user', id_number: '', cellphone: '', tenant_id: me?.tenant_id || '', tenant_ids: me?.tenant_id ? [me.tenant_id] : [], page_roles: [], contractor_ids: [], subcontractor_ids: [] });
     setFormContractors([]);
     setModal('create');
     setError('');
@@ -313,8 +315,10 @@ export default function UserManagement() {
       tenant_ids: tenantIds,
       page_roles: Array.isArray(u.page_roles) ? u.page_roles.slice() : [],
       contractor_ids: (Array.isArray(u.contractor_ids) ? u.contractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
+      subcontractor_ids: (Array.isArray(u.subcontractor_ids) ? u.subcontractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
     });
     setFormContractors([]);
+    setFormSubcontractors([]);
     setModal('create');
     setError('');
   };
@@ -330,8 +334,10 @@ export default function UserManagement() {
       page_roles: Array.isArray(u.page_roles) ? u.page_roles.slice() : [],
       tenant_ids: tenantIds,
       contractor_ids: (Array.isArray(u.contractor_ids) ? u.contractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
+      subcontractor_ids: (Array.isArray(u.subcontractor_ids) ? u.subcontractor_ids : []).map((id) => (id != null ? String(id) : '')).filter(Boolean),
     });
     setFormContractors([]);
+    setFormSubcontractors([]);
     setModal('edit');
     setError('');
   };
@@ -370,6 +376,20 @@ export default function UserManagement() {
       })
       .finally(() => setFormContractorsLoading(false));
   }, [modal, resolveTenantIdsForContractors]);
+
+  useEffect(() => {
+    const cids = (formUser?.contractor_ids || []).map((id) => String(id)).filter(Boolean);
+    if (!modal || !(formUser?.page_roles || []).includes('contractor') || cids.length === 0) {
+      setFormSubcontractors([]);
+      setFormSubcontractorsLoading(false);
+      return;
+    }
+    setFormSubcontractorsLoading(true);
+    usersApi.subcontractorsForContractors(cids)
+      .then((d) => setFormSubcontractors(d.subcontractors || []))
+      .catch(() => setFormSubcontractors([]))
+      .finally(() => setFormSubcontractorsLoading(false));
+  }, [modal, formUser?.contractor_ids, formUser?.page_roles]);
 
   const refreshFormContractors = useCallback(() => {
     const ids = resolveTenantIdsForContractors();
@@ -423,6 +443,7 @@ export default function UserManagement() {
           tenant_ids: (formUser.tenant_ids || []).length ? formUser.tenant_ids : (formUser.tenant_id ? [formUser.tenant_id] : []),
           page_roles: formUser.page_roles || [],
           contractor_ids: formUser.contractor_ids || [],
+          subcontractor_ids: formUser.subcontractor_ids || [],
         });
       } else {
         await usersApi.update(formUser.id, {
@@ -435,6 +456,7 @@ export default function UserManagement() {
           tenant_ids: formUser.tenant_ids,
           page_roles: formUser.page_roles || [],
           contractor_ids: formUser.contractor_ids || [],
+          subcontractor_ids: formUser.subcontractor_ids || [],
           ...(formUser.password ? { password: formUser.password } : {}),
         });
       }
@@ -1232,6 +1254,45 @@ export default function UserManagement() {
                         </button>
                       </form>
                     </>
+                  )}
+                </div>
+              )}
+              {(formUser.page_roles || []).includes('contractor') && (formUser.contractor_ids || []).length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-surface-700 mb-1">Sub-contractor user access</label>
+                  <p className="text-xs text-surface-500 mb-2">
+                    Select sub-contractor companies registered under the main contractor(s) above. The user will only see trucks for those companies.
+                  </p>
+                  {formSubcontractorsLoading ? (
+                    <p className="text-sm text-surface-500">Loading sub-contractors…</p>
+                  ) : formSubcontractors.length === 0 ? (
+                    <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      No sub-contractor companies for the selected contractor(s). Add them under Contractor → Subcontract details first.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-3 max-h-36 overflow-y-auto">
+                      {formSubcontractors.map((s) => (
+                        <label key={s.id} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={(formUser.subcontractor_ids || []).map((x) => String(x)).includes(String(s.id))}
+                            onChange={(e) => {
+                              const current = (formUser.subcontractor_ids || []).map((x) => String(x));
+                              const next = new Set(current);
+                              const sid = String(s.id);
+                              if (e.target.checked) next.add(sid);
+                              else next.delete(sid);
+                              setFormUser((f) => ({ ...f, subcontractor_ids: [...next] }));
+                            }}
+                            className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          <span className="text-sm text-surface-700">
+                            {s.company_name}
+                            {s.contractor_name ? <span className="text-surface-500"> ({s.contractor_name})</span> : null}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
                   )}
                 </div>
               )}

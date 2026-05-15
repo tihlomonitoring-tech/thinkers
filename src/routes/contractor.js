@@ -7,7 +7,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
-import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails, isSubcontractorPortalEmail } from '../lib/emailRecipients.js';
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
@@ -23,6 +23,16 @@ import {
   writeDistributionInfoBlock,
   writeListRows,
 } from '../lib/distributionExcel.js';
+import {
+  getUserSubcontractorIds,
+  getUserSubcontractorDetails,
+  getSubcontractorScopeForUser,
+  isSubcontractorPortalUser,
+  buildTruckScopeClause,
+  buildDriverSubcontractorClause,
+  buildDriverMainContractorClause,
+  rejectSubcontractorPortalUser,
+} from '../lib/subcontractorFleet.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -223,6 +233,33 @@ async function getAllowedContractorIds(req) {
   }
 }
 
+async function getRequestSubcontractorIds(req) {
+  return getUserSubcontractorIds(req.user?.id);
+}
+
+async function getRequestSubcontractorScope(req) {
+  return getSubcontractorScopeForUser(req.user?.id);
+}
+
+/** Resolve subcontractor company for a subcontractor-portal user creating a truck. */
+async function resolveSubcontractorForCreate(req, bodySubcontractorId) {
+  const subIds = await getRequestSubcontractorIds(req);
+  if (!isSubcontractorPortalUser(subIds)) return null;
+  const pickId = bodySubcontractorId && subIds.some((id) => String(id).toLowerCase() === String(bodySubcontractorId).toLowerCase())
+    ? bodySubcontractorId
+    : subIds[0];
+  const r = await query(
+    `SELECT id, company_name, contractor_id FROM contractor_subcontractors WHERE id = @id AND tenant_id = @tenantId`,
+    { id: pickId, tenantId: getTenantId(req) }
+  );
+  const row = r.recordset?.[0];
+  if (!row) return { error: { status: 400, message: 'Sub-contractor company not found for your account.' } };
+  const id = row.id ?? row.Id;
+  const companyName = row.company_name ?? row.Company_Name ?? '';
+  const contractorId = row.contractor_id ?? row.Contractor_Id ?? null;
+  return { subcontractorId: id, companyName: String(companyName).trim(), contractorId };
+}
+
 /**
  * enrollmentPortal=1: Contractor app “Fleet and driver enrollment” only — never tenant-wide for hauliers,
  * even if they also have Rector access. Rector UI keeps calling the same URLs without this flag.
@@ -359,7 +396,16 @@ router.get('/context', async (req, res, next) => {
         contractors = r.recordset || [];
       }
     } catch (_) {}
-    res.json({ ok: true, tenantId, tenantName, contractors });
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    const subcontractors = subcontractorIds.length > 0 ? await getUserSubcontractorDetails(req.user.id) : [];
+    res.json({
+      ok: true,
+      tenantId,
+      tenantName,
+      contractors,
+      isSubcontractorUser: subcontractorIds.length > 0,
+      subcontractors,
+    });
   } catch (err) {
     next(err);
   }
@@ -517,9 +563,10 @@ function notifyFleetDriverEmails(tenantName, contractorName, type, list, senderE
         const html = newFleetDriverNotificationHtml({ type, tenantName, contractorName, list, action });
         await sendEmail({ to: toList, subject: `${label} ${action}: ${Array.isArray(list) && list.length ? list.slice(0, 3).join(', ') + (list.length > 3 ? '…' : '') : type}`, body: html, html: true });
       }
-      if (senderEmail && (senderEmail || '').trim()) {
+      const sender = (senderEmail || '').trim();
+      if (sender && !(await isSubcontractorPortalEmail(query, sender))) {
         const html = newFleetDriverConfirmationHtml({ type, list, action, contractorName });
-        await sendEmail({ to: (senderEmail || '').trim(), subject: `${label} ${action} successfully`, body: html, html: true });
+        await sendEmail({ to: sender, subject: `${label} ${action} successfully`, body: html, html: true });
       }
     } catch (e) {
       console.error('[contractor] Fleet/driver email error:', e?.message || e);
@@ -533,12 +580,18 @@ router.get('/trucks', async (req, res, next) => {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
     const allowed = await getAllowedContractorIds(req);
-    let sql = `SELECT t.*, co.name AS contractor_company_name
+    const subScopeCtx = await getRequestSubcontractorScope(req);
+    const subcontractorIds = subScopeCtx.ids;
+    const includePending = String(req.query.include_pending || '') === '1';
+    let sql = `SELECT t.*, co.name AS contractor_company_name, sc.company_name AS subcontractor_company_name,
+        u.full_name AS added_by_name
        FROM contractor_trucks t
        LEFT JOIN contractors co ON co.id = t.contractor_id AND co.tenant_id = @tenantId
+       LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id
+       LEFT JOIN users u ON u.id = t.added_by_user_id
        WHERE t.tenant_id = @tenantId`;
     const params = { tenantId };
-    if (allowed && allowed.length === 0) {
+    if (allowed && allowed.length === 0 && !isSubcontractorPortalUser(subcontractorIds)) {
       return res.json({ trucks: [] });
     }
     if (allowed && allowed.length > 0) {
@@ -546,7 +599,12 @@ router.get('/trucks', async (req, res, next) => {
       sql += ` AND t.contractor_id IN (${placeholders})`;
       allowed.forEach((id, i) => { params[`c${i}`] = id; });
     }
-    sql += ` ORDER BY created_at DESC`;
+    const subScope = buildTruckScopeClause(subScopeCtx, {
+      fleetTabForMainContractor: !isSubcontractorPortalUser(subcontractorIds) && !includePending,
+    });
+    sql += subScope.clause;
+    Object.assign(params, subScope.params);
+    sql += ` ORDER BY t.created_at DESC`;
     const result = await query(sql, params);
     res.json({ trucks: result.recordset });
   } catch (err) {
@@ -564,19 +622,36 @@ router.post('/trucks', async (req, res, next) => {
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
       commodity_type, capacity_tonnes, status, contractor_id: bodyContractorId,
     } = req.body || {};
-    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    const subResolved = await resolveSubcontractorForCreate(req, req.body?.subcontractor_id);
+    if (subResolved?.error) return res.status(subResolved.error.status).json({ error: subResolved.error.message });
+
+    let contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    let subContractorName = sub_contractor || null;
+    let subcontractorId = null;
+    let contractorApprovalStatus = 'approved_contractor';
+    let skipCcApplication = false;
+
+    if (subResolved) {
+      contractorId = subResolved.contractorId || contractorId;
+      subContractorName = subResolved.companyName;
+      subcontractorId = subResolved.subcontractorId;
+      contractorApprovalStatus = 'pending_contractor';
+      skipCcApplication = true;
+    }
+
     const regTrim = registration != null ? String(registration).trim() : '';
     if (regTrim && (await truckRegistrationExists(req.user.tenant_id, regTrim, null, contractorId))) {
       return res.status(409).json({ error: 'A truck with this registration already exists under this contractor.' });
     }
     const result = await query(
-      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
-       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status)`,
+      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status], contractor_approval_status, added_by_user_id)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status, @contractor_approval_status, @added_by_user_id)`,
       {
         tenantId: req.user.tenant_id,
         contractorId: contractorId || null,
         main_contractor: main_contractor || null,
-        sub_contractor: sub_contractor || null,
+        sub_contractor: subContractorName || null,
+        subcontractor_id: subcontractorId,
         make_model: make_model || null,
         year_model: year_model || null,
         ownership_desc: ownership_desc || null,
@@ -590,13 +665,17 @@ router.post('/trucks', async (req, res, next) => {
         commodity_type: commodity_type || null,
         capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
         status: status || 'active',
+        contractor_approval_status: contractorApprovalStatus,
+        added_by_user_id: req.user?.id || null,
       }
     );
     const truck = result.recordset[0];
-    if (truck?.id) await createFleetApplication(req.user.tenant_id, 'truck', truck.id, 'manual');
+    if (truck?.id && !skipCcApplication) await createFleetApplication(req.user.tenant_id, 'truck', truck.id, 'manual');
     const contractorName = await getContractorName(contractorId || truck?.contractor_id);
-    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck?.registration].filter(Boolean), req.user?.email);
-    res.status(201).json({ truck });
+    if (!skipCcApplication) {
+      notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck?.registration].filter(Boolean), req.user?.email);
+    }
+    res.status(201).json({ truck, pendingContractorApproval: skipCcApplication });
   } catch (err) {
     next(err);
   }
@@ -673,7 +752,13 @@ router.post('/trucks/bulk', async (req, res, next) => {
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Request must include a non-empty trucks array' });
     }
-    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    const subResolved = await resolveSubcontractorForCreate(req, req.body?.subcontractor_id);
+    if (subResolved?.error) return res.status(subResolved.error.status).json({ error: subResolved.error.message });
+
+    let contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    const isSubCreate = Boolean(subResolved);
+    if (subResolved?.contractorId) contractorId = subResolved.contractorId;
+
     const inserted = [];
     const skipped = []; // duplicate or empty registration
     for (const row of items) {
@@ -688,14 +773,16 @@ router.post('/trucks/bulk', async (req, res, next) => {
         skipped.push(regTrim);
         continue;
       }
+      const subName = isSubCreate ? subResolved.companyName : (sub_contractor || null);
       const result = await query(
-        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status])
-         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status)`,
+        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status], contractor_approval_status, added_by_user_id)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status, @contractor_approval_status, @added_by_user_id)`,
         {
           tenantId: req.user.tenant_id,
           contractorId: contractorId || null,
           main_contractor: main_contractor || null,
-          sub_contractor: sub_contractor || null,
+          sub_contractor: subName || null,
+          subcontractor_id: isSubCreate ? subResolved.subcontractorId : null,
           make_model: make_model || null,
           year_model: year_model || null,
           ownership_desc: ownership_desc || null,
@@ -709,14 +796,16 @@ router.post('/trucks/bulk', async (req, res, next) => {
           commodity_type: commodity_type || null,
           capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
           status: status || 'active',
+          contractor_approval_status: isSubCreate ? 'pending_contractor' : 'approved_contractor',
+          added_by_user_id: req.user?.id || null,
         }
       );
       const insertedRow = result.recordset[0];
       inserted.push(insertedRow);
-      if (insertedRow?.id) await createFleetApplication(req.user.tenant_id, 'truck', insertedRow.id, 'import');
+      if (insertedRow?.id && !isSubCreate) await createFleetApplication(req.user.tenant_id, 'truck', insertedRow.id, 'import');
     }
     const regList = inserted.map((t) => t.registration || '').filter(Boolean);
-    if (regList.length > 0) {
+    if (regList.length > 0 && !isSubCreate) {
       const contractorName = await getContractorName(contractorId);
       notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', regList, req.user?.email, 'added (import)');
     }
@@ -732,9 +821,12 @@ router.get('/drivers', async (req, res, next) => {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
     const allowed = await getAllowedContractorIds(req);
+    const subScopeCtx = await getRequestSubcontractorScope(req);
+    const subcontractorIds = subScopeCtx.ids;
+    const includePending = String(req.query.include_pending || '') === '1';
     let whereClause = ' WHERE d.tenant_id = @tenantId';
     const params = { tenantId };
-    if (allowed && allowed.length === 0) {
+    if (allowed && allowed.length === 0 && !isSubcontractorPortalUser(subcontractorIds)) {
       return res.json({ drivers: [] });
     }
     if (allowed && allowed.length > 0) {
@@ -742,18 +834,27 @@ router.get('/drivers', async (req, res, next) => {
       whereClause += ` AND d.contractor_id IN (${placeholders})`;
       allowed.forEach((id, i) => { params[`c${i}`] = id; });
     }
+    const driverSubScope = buildDriverSubcontractorClause(subScopeCtx, { truckAlias: 't' });
+    const driverMainScope = !isSubcontractorPortalUser(subcontractorIds) && !includePending
+      ? buildDriverMainContractorClause('d')
+      : { clause: '', params: {} };
     let rows = [];
     try {
       const result = await query(
-        `SELECT d.*, t.registration AS linked_truck_registration, t.make_model AS linked_truck_make_model, t.fleet_no AS linked_truck_fleet_no
+        `SELECT d.*, t.registration AS linked_truck_registration, t.make_model AS linked_truck_make_model, t.fleet_no AS linked_truck_fleet_no, t.sub_contractor AS linked_truck_sub_contractor,
+          sc.company_name AS subcontractor_company_name, u.full_name AS added_by_name
          FROM contractor_drivers d
          LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
-         ${whereClause} ORDER BY d.created_at DESC`,
-        params
+         LEFT JOIN contractor_subcontractors sc ON sc.id = d.subcontractor_id
+         LEFT JOIN users u ON u.id = d.added_by_user_id
+         ${whereClause}${driverSubScope.clause}${driverMainScope.clause} ORDER BY d.created_at DESC`,
+        { ...params, ...driverSubScope.params, ...driverMainScope.params }
       );
       rows = result.recordset || [];
     } catch (colErr) {
-      if (colErr.message && (colErr.message.includes('linked_truck_id') || colErr.message.includes('Invalid column') || colErr.message.includes('contractor_id'))) {
+      const msg = colErr.message || '';
+      if (msg.includes('linked_truck_id') || msg.includes('Invalid column') || msg.includes('contractor_id')
+        || msg.includes('could not be bound') || msg.includes('subcontractor_id') || msg.includes('contractor_approval_status')) {
         const fallbackWhere = allowed && allowed.length > 0
           ? ` WHERE tenant_id = @tenantId AND contractor_id IN (${allowed.map((_, i) => `@c${i}`).join(',')})`
           : ' WHERE tenant_id = @tenantId';
@@ -784,8 +885,38 @@ router.post('/drivers', async (req, res, next) => {
     if (!restrictions.allow_driver_manual) {
       return res.status(403).json({ error: 'Driver manual add is restricted by Access Management.' });
     }
-    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, contractor_id: bodyContractorId } = req.body || {};
-    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, contractor_id: bodyContractorId, linked_truck_id: linkedTruckId } = req.body || {};
+    const subResolved = await resolveSubcontractorForCreate(req, req.body?.subcontractor_id);
+    if (subResolved?.error) return res.status(subResolved.error.status).json({ error: subResolved.error.message });
+
+    let contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    let subcontractorId = null;
+    let contractorApprovalStatus = 'approved_contractor';
+    let skipCcApplication = false;
+
+    if (subResolved) {
+      contractorId = subResolved.contractorId || contractorId;
+      subcontractorId = subResolved.subcontractorId;
+      contractorApprovalStatus = 'pending_contractor';
+      skipCcApplication = true;
+    }
+
+    if (linkedTruckId) {
+      const truckRow = await query(
+        `SELECT id, contractor_id, subcontractor_id FROM contractor_trucks WHERE id = @id AND tenant_id = @tenantId`,
+        { id: linkedTruckId, tenantId: req.user.tenant_id }
+      );
+      const tr = truckRow.recordset?.[0];
+      if (!tr) return res.status(400).json({ error: 'Selected truck not found.' });
+      if (subResolved) {
+        const tid = tr.subcontractor_id ?? tr.Subcontractor_Id;
+        if (tid && String(tid).toLowerCase() !== String(subcontractorId).toLowerCase()) {
+          return res.status(400).json({ error: 'Selected truck does not belong to your sub-contractor company.' });
+        }
+        if (!subcontractorId && tr.subcontractor_id) subcontractorId = tr.subcontractor_id;
+      }
+    }
+
     const firstName = full_name || name || '';
     const lastName = surname || '';
     const fullName = [firstName, lastName].filter(Boolean).join(' ') || firstName || lastName || '';
@@ -793,8 +924,8 @@ router.post('/drivers', async (req, res, next) => {
       return res.status(409).json({ error: 'A driver with this ID number or licence number already exists.' });
     }
     const result = await query(
-      `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email)
-       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email)`,
+      `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id, subcontractor_id, contractor_approval_status, added_by_user_id)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email, @linked_truck_id, @subcontractor_id, @contractor_approval_status, @added_by_user_id)`,
       {
         tenantId: req.user.tenant_id,
         contractorId: contractorId || null,
@@ -805,14 +936,20 @@ router.post('/drivers', async (req, res, next) => {
         license_expiry: license_expiry || null,
         phone: phone || null,
         email: email || null,
+        linked_truck_id: linkedTruckId || null,
+        subcontractor_id: subcontractorId,
+        contractor_approval_status: contractorApprovalStatus,
+        added_by_user_id: req.user?.id || null,
       }
     );
     const driver = result.recordset[0];
-    if (driver?.id) await createFleetApplication(req.user.tenant_id, 'driver', driver.id, 'manual');
-    const driverLabel = [driver?.full_name, driver?.surname].filter(Boolean).join(' ').trim() || 'Driver';
-    const contractorName = await getContractorName(contractorId || driver?.contractor_id);
-    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email);
-    res.status(201).json({ driver });
+    if (driver?.id && !skipCcApplication) await createFleetApplication(req.user.tenant_id, 'driver', driver.id, 'manual');
+    if (!skipCcApplication) {
+      const driverLabel = [driver?.full_name, driver?.surname].filter(Boolean).join(' ').trim() || 'Driver';
+      const contractorName = await getContractorName(contractorId || driver?.contractor_id);
+      notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email);
+    }
+    res.status(201).json({ driver, pendingContractorApproval: skipCcApplication });
   } catch (err) {
     next(err);
   }
@@ -899,7 +1036,13 @@ router.post('/drivers/bulk', async (req, res, next) => {
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Request must include a non-empty drivers array' });
     }
-    const contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    const subResolved = await resolveSubcontractorForCreate(req, req.body?.subcontractor_id);
+    if (subResolved?.error) return res.status(subResolved.error.status).json({ error: subResolved.error.message });
+
+    let contractorId = await resolveContractorIdForCreate(req, bodyContractorId);
+    const isSubCreate = Boolean(subResolved);
+    if (subResolved?.contractorId) contractorId = subResolved.contractorId;
+
     const inserted = [];
     let skipped = 0;
     for (const row of items) {
@@ -913,8 +1056,8 @@ router.post('/drivers/bulk', async (req, res, next) => {
         continue;
       }
       const result = await query(
-        `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email)
-         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email)`,
+        `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email, subcontractor_id, contractor_approval_status, added_by_user_id)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email, @subcontractor_id, @contractor_approval_status, @added_by_user_id)`,
         {
           tenantId: req.user.tenant_id,
           contractorId: contractorId || null,
@@ -925,14 +1068,17 @@ router.post('/drivers/bulk', async (req, res, next) => {
           license_expiry: license_expiry || null,
           phone: phone || null,
           email: email || null,
+          subcontractor_id: isSubCreate ? subResolved.subcontractorId : null,
+          contractor_approval_status: isSubCreate ? 'pending_contractor' : 'approved_contractor',
+          added_by_user_id: req.user?.id || null,
         }
       );
       const insertedRow = result.recordset[0];
       inserted.push(insertedRow);
-      if (insertedRow?.id) await createFleetApplication(req.user.tenant_id, 'driver', insertedRow.id, 'import');
+      if (insertedRow?.id && !isSubCreate) await createFleetApplication(req.user.tenant_id, 'driver', insertedRow.id, 'import');
     }
     const driverList = inserted.map((d) => [d.full_name, d.surname].filter(Boolean).join(' ').trim() || 'Driver').filter(Boolean);
-    if (driverList.length > 0) {
+    if (driverList.length > 0 && !isSubCreate) {
       const contractorName = await getContractorName(contractorId);
       notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', driverList, req.user?.email, 'added (import)');
     }
@@ -948,15 +1094,31 @@ router.get('/incidents', async (req, res, next) => {
     const tenantId = getTenantId(req);
     const { dateFrom, dateTo, type, resolved } = req.query || {};
     const allowed = await getAllowedContractorIds(req);
-    let sql = `SELECT * FROM contractor_incidents WHERE tenant_id = @tenantId`;
+    const subScopeCtx = await getRequestSubcontractorScope(req);
+    let sql = `SELECT i.* FROM contractor_incidents i WHERE i.tenant_id = @tenantId`;
     const params = { tenantId };
-    if (allowed && allowed.length === 0) {
+    if (allowed && allowed.length === 0 && !isSubcontractorPortalUser(subScopeCtx.ids)) {
       return res.json({ incidents: [] });
     }
     if (allowed && allowed.length > 0) {
       const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
-      sql += ` AND contractor_id IN (${placeholders})`;
+      sql += ` AND i.contractor_id IN (${placeholders})`;
       allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    if (isSubcontractorPortalUser(subScopeCtx.ids)) {
+      const truckScope = buildTruckScopeClause(subScopeCtx, { alias: 't' });
+      const driverScope = buildDriverSubcontractorClause(subScopeCtx, { driverAlias: 'd', truckAlias: 'lt' });
+      sql += ` AND (
+        (i.truck_id IS NOT NULL AND EXISTS (
+          SELECT 1 FROM contractor_trucks t WHERE t.id = i.truck_id AND t.tenant_id = @tenantId${truckScope.clause}
+        ))
+        OR (i.driver_id IS NOT NULL AND EXISTS (
+          SELECT 1 FROM contractor_drivers d
+          LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = d.tenant_id
+          WHERE d.id = i.driver_id AND d.tenant_id = @tenantId${driverScope.clause}
+        ))
+      )`;
+      Object.assign(params, truckScope.params, driverScope.params);
     }
     if (dateFrom) { sql += ` AND reported_at >= @dateFrom`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND reported_at <= @dateTo`; params.dateTo = dateTo; }
@@ -1978,6 +2140,7 @@ router.delete('/routes/:id', async (req, res, next) => {
 /** Trucks that are approved (facility_access=1) and not currently suspended. Scoped by company (contractor_id) when user has contractor scope. */
 router.get('/enrollment/approved-trucks', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
@@ -1999,6 +2162,13 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
       sql += ` AND t.contractor_id IN (${placeholders})`;
       allowed.forEach((id, i) => { params[`c${i}`] = id; });
     }
+    const subScopeCtx = await getRequestSubcontractorScope(req);
+    const truckScope = buildTruckScopeClause(subScopeCtx, {
+      fleetTabForMainContractor: !isSubcontractorPortalUser(subScopeCtx.ids),
+      alias: 't',
+    });
+    sql += truckScope.clause;
+    Object.assign(params, truckScope.params);
     sql += ` ORDER BY t.registration ASC`;
     const result = await query(sql, params);
     res.json({ trucks: result.recordset });
@@ -2010,12 +2180,14 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
 /** Drivers that are approved and not suspended. Scoped by company (contractor_id) when user has contractor scope. */
 router.get('/enrollment/approved-drivers', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
     const allowed = scope.allowed;
     let sql = `SELECT d.id, d.full_name, d.license_number, d.phone, d.facility_access
        FROM contractor_drivers d
+       LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
        WHERE d.tenant_id = @tenantId AND d.facility_access = 1
          AND NOT EXISTS (
            SELECT 1 FROM contractor_suspensions s
@@ -2031,6 +2203,11 @@ router.get('/enrollment/approved-drivers', async (req, res, next) => {
       sql += ` AND d.contractor_id IN (${placeholders})`;
       allowed.forEach((id, i) => { params[`c${i}`] = id; });
     }
+    const subScopeCtx = await getRequestSubcontractorScope(req);
+    const driverSub = buildDriverSubcontractorClause(subScopeCtx, { truckAlias: 't' });
+    const driverMain = !isSubcontractorPortalUser(subScopeCtx.ids) ? buildDriverMainContractorClause('d') : { clause: '', params: {} };
+    sql += driverSub.clause + driverMain.clause;
+    Object.assign(params, driverSub.params, driverMain.params);
     sql += ` ORDER BY d.full_name ASC`;
     const result = await query(sql, params);
     res.json({ drivers: result.recordset });
@@ -2073,6 +2250,8 @@ router.get('/routes/enrolled-by-truck/:truckId', async (req, res, next) => {
 /** GET single route with enrolled trucks and drivers. Tenant-scoped; trucks/drivers filtered by company when user is contractor-scoped (not Access Management / Rector / Command Centre). */
 router.get('/routes/:id', async (req, res, next) => {
   try {
+    const portalStrict = String(req.query.enrollmentPortal || '') === '1' || String(req.query.enrollmentPortal || '').toLowerCase() === 'true';
+    if (portalStrict && (await rejectSubcontractorPortalUser(req, res))) return;
     const tenantId = getTenantId(req);
     const { id } = req.params;
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
@@ -2127,6 +2306,7 @@ router.get('/routes/:id', async (req, res, next) => {
 /** POST enroll trucks on route (body: { truckIds: [] }). Only trucks belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/trucks', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
     if (!restrictions.allow_enrollment) {
       return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
@@ -2201,6 +2381,7 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
 /** DELETE unenroll truck from route */
 router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
     if (!restrictions.allow_enrollment) {
       return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
@@ -2238,6 +2419,7 @@ router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
 /** POST enroll drivers on route (body: { driverIds: [] }). Only drivers belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/drivers', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
     if (!restrictions.allow_enrollment) {
       return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
@@ -2282,6 +2464,7 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
 /** DELETE unenroll driver from route */
 router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
     if (!restrictions.allow_enrollment) {
       return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
@@ -2319,6 +2502,7 @@ router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
 /** GET fleet list CSV or Excel (approved trucks; optional ?routeId= or ?routeIds=id1,id2, ?format=excel). Scoped by company when user has contractor scope. */
 router.get('/enrollment/fleet-list', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
@@ -2382,6 +2566,7 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
 /** GET driver list CSV or Excel (approved drivers; optional ?routeId= or ?routeIds=id1,id2, ?format=excel). Scoped by company when user has contractor scope. */
 router.get('/enrollment/driver-list', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
@@ -4008,6 +4193,7 @@ router.get('/distribution-history/export', async (req, res, next) => {
 // --- Contractor information (company details, CIPC, admin, control room, mechanic, emergency) ---
 router.get('/info', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const result = await query(
       `SELECT * FROM contractor_info WHERE tenant_id = @tenantId`,
@@ -4035,6 +4221,7 @@ router.get('/info', async (req, res, next) => {
 
 router.patch('/info', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const b = req.body || {};
     const fields = [
@@ -4085,14 +4272,319 @@ router.patch('/info', async (req, res, next) => {
   }
 });
 
+// --- Subcontractor fleet (contractor reviews before Fleet tab + Command Centre) ---
+router.get('/subcontractor-fleets', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required' });
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subcontractorIds)) {
+      return res.status(403).json({ error: 'Only main contractor users can review subcontractor fleet submissions.' });
+    }
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) return res.json({ trucks: [], subcontractors: [] });
+
+    const { status = 'pending_contractor', subcontractor_id: filterSubId, search = '', sort = 'created_at', order = 'desc' } = req.query || {};
+    const params = { tenantId };
+    let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.sub_contractor, t.subcontractor_id,
+        t.contractor_approval_status, t.contractor_reviewed_at, t.contractor_decline_reason, t.created_at,
+        t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type,
+        sc.company_name AS subcontractor_company_name, co.name AS contractor_company_name,
+        u.full_name AS added_by_name
+       FROM contractor_trucks t
+       LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id
+       LEFT JOIN contractors co ON co.id = t.contractor_id
+       LEFT JOIN users u ON u.id = t.added_by_user_id
+       WHERE t.tenant_id = @tenantId AND t.subcontractor_id IS NOT NULL`;
+
+    if (status && status !== 'all') {
+      sql += ` AND t.contractor_approval_status = @status`;
+      params.status = status;
+    }
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND t.contractor_id IN (${ph})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    if (filterSubId) {
+      sql += ` AND t.subcontractor_id = @filterSubId`;
+      params.filterSubId = filterSubId;
+    }
+    const q = String(search || '').trim();
+    if (q) {
+      sql += ` AND (t.registration LIKE @search OR sc.company_name LIKE @search OR t.make_model LIKE @search OR t.fleet_no LIKE @search)`;
+      params.search = `%${q}%`;
+    }
+    const validSort = ['created_at', 'registration', 'sub_contractor'].includes(sort) ? sort : 'created_at';
+    const ord = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const sortCol = validSort === 'sub_contractor' ? 'sc.company_name' : `t.${validSort}`;
+    sql += ` ORDER BY ${sortCol} ${ord}`;
+
+    const trResult = await query(sql, params);
+    let subList = [];
+    try {
+      let subSql = `SELECT DISTINCT s.id, s.company_name FROM contractor_subcontractors s
+        INNER JOIN contractor_trucks t ON t.subcontractor_id = s.id AND t.tenant_id = @tenantId`;
+      const subParams = { tenantId };
+      if (allowed && allowed.length > 0) {
+        const ph = allowed.map((_, i) => `@sc${i}`).join(',');
+        subSql += ` WHERE s.contractor_id IN (${ph}) OR s.contractor_id IS NULL`;
+        allowed.forEach((id, i) => { subParams[`sc${i}`] = id; });
+      }
+      subSql += ' ORDER BY s.company_name';
+      const subResult = await query(subSql, subParams);
+      subList = (subResult.recordset || []).map((r) => ({ id: r.id ?? r.Id, company_name: r.company_name ?? r.Company_Name }));
+    } catch (_) {}
+
+    res.json({ trucks: trResult.recordset || [], subcontractors: subList });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/subcontractor-fleets/:id/approve', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subcontractorIds)) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
+    const allowed = await getAllowedContractorIds(req);
+    const chk = await query(
+      `SELECT t.id, t.registration, t.contractor_id, t.contractor_approval_status
+       FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Truck not found' });
+    if (allowed && allowed.length > 0) {
+      const cid = row.contractor_id ?? row.Contractor_Id;
+      if (!allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+        return res.status(403).json({ error: 'Not permitted for this contractor' });
+      }
+    }
+    const st = row.contractor_approval_status ?? row.Contractor_Approval_Status;
+    if (st !== 'pending_contractor') {
+      return res.status(400).json({ error: 'This truck is not awaiting contractor approval.' });
+    }
+    const upd = await query(
+      `UPDATE contractor_trucks SET contractor_approval_status = N'approved_contractor',
+        contractor_reviewed_at = SYSUTCDATETIME(), contractor_reviewed_by_user_id = @userId,
+        contractor_decline_reason = NULL, updated_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId, userId: req.user.id }
+    );
+    const truck = upd.recordset?.[0];
+    if (truck?.id) await createFleetApplication(tenantId, 'truck', truck.id, 'manual');
+    const contractorName = await getContractorName(truck.contractor_id ?? truck.Contractor_Id);
+    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck.registration || truck.Registration].filter(Boolean), req.user?.email);
+    res.json({ truck, message: 'Approved. Truck is now on your Fleet tab and submitted for facility access review.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/subcontractor-fleets/:id/decline', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Decline reason is required' });
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subcontractorIds)) return res.status(403).json({ error: 'Not permitted' });
+    const allowed = await getAllowedContractorIds(req);
+    const chk = await query(
+      `SELECT t.id, t.contractor_id, t.contractor_approval_status FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Truck not found' });
+    if (allowed && allowed.length > 0) {
+      const cid = row.contractor_id ?? row.Contractor_Id;
+      if (!allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+        return res.status(403).json({ error: 'Not permitted' });
+      }
+    }
+    const upd = await query(
+      `UPDATE contractor_trucks SET contractor_approval_status = N'declined_contractor',
+        contractor_reviewed_at = SYSUTCDATETIME(), contractor_reviewed_by_user_id = @userId,
+        contractor_decline_reason = @reason, updated_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId, userId: req.user.id, reason }
+    );
+    res.json({ truck: upd.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Subcontractor drivers (contractor reviews before Driver register) ---
+router.get('/subcontractor-drivers', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required' });
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subcontractorIds)) {
+      return res.status(403).json({ error: 'Only main contractor users can review subcontractor driver submissions.' });
+    }
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) return res.json({ drivers: [], subcontractors: [] });
+
+    const { status = 'pending_contractor', subcontractor_id: filterSubId, search = '', sort = 'created_at', order = 'desc' } = req.query || {};
+    const params = { tenantId };
+    let sql = `SELECT d.id, d.full_name, d.surname, d.id_number, d.license_number, d.license_expiry, d.phone, d.email,
+        d.contractor_approval_status, d.contractor_reviewed_at, d.contractor_decline_reason, d.created_at,
+        d.linked_truck_id, t.registration AS linked_truck_registration,
+        sc.company_name AS subcontractor_company_name, co.name AS contractor_company_name,
+        u.full_name AS added_by_name
+       FROM contractor_drivers d
+       LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractor_subcontractors sc ON sc.id = d.subcontractor_id
+       LEFT JOIN contractors co ON co.id = d.contractor_id
+       LEFT JOIN users u ON u.id = d.added_by_user_id
+       WHERE d.tenant_id = @tenantId AND d.subcontractor_id IS NOT NULL`;
+
+    if (status && status !== 'all') {
+      sql += ` AND d.contractor_approval_status = @status`;
+      params.status = status;
+    }
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND d.contractor_id IN (${ph})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    if (filterSubId) {
+      sql += ` AND d.subcontractor_id = @filterSubId`;
+      params.filterSubId = filterSubId;
+    }
+    const q = String(search || '').trim();
+    if (q) {
+      sql += ` AND (d.full_name LIKE @search OR d.surname LIKE @search OR d.id_number LIKE @search OR d.license_number LIKE @search OR sc.company_name LIKE @search)`;
+      params.search = `%${q}%`;
+    }
+    const validSort = ['created_at', 'full_name'].includes(sort) ? sort : 'created_at';
+    const ord = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const sortCol = validSort === 'full_name' ? 'd.full_name' : `d.${validSort}`;
+    sql += ` ORDER BY ${sortCol} ${ord}`;
+
+    const drResult = await query(sql, params);
+    let subList = [];
+    try {
+      let subSql = `SELECT DISTINCT s.id, s.company_name FROM contractor_subcontractors s
+        INNER JOIN contractor_drivers d ON d.subcontractor_id = s.id AND d.tenant_id = @tenantId`;
+      const subParams = { tenantId };
+      if (allowed && allowed.length > 0) {
+        const ph = allowed.map((_, i) => `@sc${i}`).join(',');
+        subSql += ` WHERE s.contractor_id IN (${ph}) OR s.contractor_id IS NULL`;
+        allowed.forEach((id, i) => { subParams[`sc${i}`] = id; });
+      }
+      subSql += ' ORDER BY s.company_name';
+      const subResult = await query(subSql, subParams);
+      subList = (subResult.recordset || []).map((r) => ({ id: r.id ?? r.Id, company_name: r.company_name ?? r.Company_Name }));
+    } catch (_) {}
+
+    res.json({ drivers: drResult.recordset || [], subcontractors: subList });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/subcontractor-drivers/:id/approve', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subcontractorIds)) return res.status(403).json({ error: 'Not permitted' });
+    const allowed = await getAllowedContractorIds(req);
+    const chk = await query(
+      `SELECT d.id, d.full_name, d.surname, d.contractor_id, d.contractor_approval_status
+       FROM contractor_drivers d WHERE d.id = @id AND d.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Driver not found' });
+    if (allowed && allowed.length > 0) {
+      const cid = row.contractor_id ?? row.Contractor_Id;
+      if (!allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+        return res.status(403).json({ error: 'Not permitted for this contractor' });
+      }
+    }
+    const st = row.contractor_approval_status ?? row.Contractor_Approval_Status;
+    if (st !== 'pending_contractor') {
+      return res.status(400).json({ error: 'This driver is not awaiting contractor approval.' });
+    }
+    const upd = await query(
+      `UPDATE contractor_drivers SET contractor_approval_status = N'approved_contractor',
+        contractor_reviewed_at = SYSUTCDATETIME(), contractor_reviewed_by_user_id = @userId,
+        contractor_decline_reason = NULL, updated_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId, userId: req.user.id }
+    );
+    const driver = upd.recordset?.[0];
+    if (driver?.id) await createFleetApplication(tenantId, 'driver', driver.id, 'manual');
+    const driverLabel = [driver.full_name, driver.surname].filter(Boolean).join(' ').trim() || 'Driver';
+    const contractorName = await getContractorName(driver.contractor_id ?? driver.Contractor_Id);
+    notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email);
+    res.json({ driver, message: 'Approved. Driver is now on your Driver register and submitted for facility access review.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/subcontractor-drivers/:id/decline', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Decline reason is required' });
+    const subcontractorIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subcontractorIds)) return res.status(403).json({ error: 'Not permitted' });
+    const allowed = await getAllowedContractorIds(req);
+    const chk = await query(
+      `SELECT d.id, d.contractor_id, d.contractor_approval_status FROM contractor_drivers d WHERE d.id = @id AND d.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Driver not found' });
+    if (allowed && allowed.length > 0) {
+      const cid = row.contractor_id ?? row.Contractor_Id;
+      if (!allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+        return res.status(403).json({ error: 'Not permitted' });
+      }
+    }
+    const upd = await query(
+      `UPDATE contractor_drivers SET contractor_approval_status = N'declined_contractor',
+        contractor_reviewed_at = SYSUTCDATETIME(), contractor_reviewed_by_user_id = @userId,
+        contractor_decline_reason = @reason, updated_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId, userId: req.user.id, reason }
+    );
+    res.json({ driver: upd.recordset?.[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --- Subcontractors ---
 router.get('/subcontractors', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
-    const result = await query(
-      `SELECT * FROM contractor_subcontractors WHERE tenant_id = @tenantId ORDER BY [order_index] ASC, company_name ASC`,
-      { tenantId }
-    );
+    const allowed = await getAllowedContractorIds(req);
+    const filterContractorId = req.query.contractor_id ? String(req.query.contractor_id).trim() : null;
+    let sql = `SELECT * FROM contractor_subcontractors WHERE tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (filterContractorId) {
+      sql += ` AND contractor_id = @contractorId`;
+      params.contractorId = filterContractorId;
+    } else if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND (contractor_id IN (${ph}) OR contractor_id IS NULL)`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    sql += ` ORDER BY [order_index] ASC, company_name ASC`;
+    const result = await query(sql, params);
     res.json({ subcontractors: result.recordset || [] });
   } catch (err) {
     if (err.message?.includes('Invalid object name')) return res.json({ subcontractors: [] });
@@ -4102,13 +4594,16 @@ router.get('/subcontractors', async (req, res, next) => {
 
 router.post('/subcontractors', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const b = req.body || {};
+    const contractorId = b.contractor_id ? await resolveContractorIdForCreate(req, b.contractor_id) : null;
     const result = await query(
-      `INSERT INTO contractor_subcontractors (tenant_id, company_name, contact_person, contact_phone, contact_email, control_room_contact, control_room_phone, mechanic_name, mechanic_phone, emergency_contact_name, emergency_contact_phone, [order_index])
-       OUTPUT INSERTED.* VALUES (@tenantId, @company_name, @contact_person, @contact_phone, @contact_email, @control_room_contact, @control_room_phone, @mechanic_name, @mechanic_phone, @emergency_contact_name, @emergency_contact_phone, @order_index)`,
+      `INSERT INTO contractor_subcontractors (tenant_id, contractor_id, company_name, contact_person, contact_phone, contact_email, control_room_contact, control_room_phone, mechanic_name, mechanic_phone, emergency_contact_name, emergency_contact_phone, [order_index])
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractor_id, @company_name, @contact_person, @contact_phone, @contact_email, @control_room_contact, @control_room_phone, @mechanic_name, @mechanic_phone, @emergency_contact_name, @emergency_contact_phone, @order_index)`,
       {
         tenantId,
+        contractor_id: contractorId || null,
         company_name: b.company_name ?? '',
         contact_person: b.contact_person ?? null,
         contact_phone: b.contact_phone ?? null,
@@ -4131,6 +4626,7 @@ router.post('/subcontractors', async (req, res, next) => {
 
 router.patch('/subcontractors/:id', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const tenantId = getTenantId(req);
     const { id } = req.params;
     const b = req.body || {};
@@ -4157,6 +4653,7 @@ router.patch('/subcontractors/:id', async (req, res, next) => {
 
 router.delete('/subcontractors/:id', async (req, res, next) => {
   try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
     const { id } = req.params;
     await query(`DELETE FROM contractor_subcontractors WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId: getTenantId(req) });
     res.status(204).send();

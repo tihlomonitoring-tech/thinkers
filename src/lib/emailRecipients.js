@@ -250,24 +250,72 @@ export async function getRectorEmailsForAlertTypeAndRoutes(query, alertType, rou
   return Array.from(emails);
 }
 
-/** All users in a tenant (for contractor notifications e.g. approval). */
+/** SQL fragment: exclude users linked as subcontractor-portal accounts (user_subcontractors). */
+const EXCLUDE_SUBCONTRACTOR_PORTAL_USERS_SQL = `AND NOT EXISTS (SELECT 1 FROM user_subcontractors us WHERE us.user_id = u.id)`;
+
+/** True when this login email belongs to a subcontractor-portal user. */
+export async function isSubcontractorPortalEmail(query, email) {
+  const e = (email || '').trim();
+  if (!e || !e.includes('@')) return false;
+  try {
+    const result = await query(
+      `SELECT 1 AS ok FROM users u
+       INNER JOIN user_subcontractors us ON us.user_id = u.id
+       WHERE LOWER(LTRIM(RTRIM(u.email))) = LOWER(LTRIM(RTRIM(@email)))`,
+      { email: e }
+    );
+    return (result.recordset || []).length > 0;
+  } catch (err) {
+    if (err.message?.includes('Invalid object name')) return false;
+    console.warn('[emailRecipients] isSubcontractorPortalEmail:', err?.message || err);
+    return false;
+  }
+}
+
+/** Remove subcontractor-portal addresses from an arbitrary recipient list. */
+export async function filterSubcontractorPortalEmails(query, emails) {
+  const list = [...new Set((emails || []).map((e) => (e || '').trim()).filter((e) => e && e.includes('@')))];
+  if (!list.length) return [];
+  const out = [];
+  for (const e of list) {
+    if (!(await isSubcontractorPortalEmail(query, e))) out.push(e);
+  }
+  return out;
+}
+
+/** All users in a tenant (for contractor notifications e.g. approval). Excludes subcontractor-portal users. */
 export async function getTenantUserEmails(query, tenantId) {
   if (!tenantId) return [];
   const emails = new Set();
   try {
     const result = await query(
-      `SELECT email FROM users WHERE tenant_id = @tenantId AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''`,
+      `SELECT u.email FROM users u
+       WHERE u.tenant_id = @tenantId AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+       ${EXCLUDE_SUBCONTRACTOR_PORTAL_USERS_SQL}`,
       { tenantId }
     );
     for (const row of result.recordset || []) {
       const e = (row.email || '').trim();
       if (e) emails.add(e);
     }
-  } catch (_) {}
+  } catch (err) {
+    if (err.message?.includes('Invalid object name')) {
+      try {
+        const fallback = await query(
+          `SELECT email FROM users WHERE tenant_id = @tenantId AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''`,
+          { tenantId }
+        );
+        for (const row of fallback.recordset || []) {
+          const e = (row.email || '').trim();
+          if (e) emails.add(e);
+        }
+      } catch (_) {}
+    }
+  }
   return Array.from(emails);
 }
 
-/** Users in a tenant who are scoped to a specific contractor (company): users with no user_contractors rows (tenant-wide) or linked to this contractor_id. Use for per-company alerts (approval, suspend, reinstate, breakdown). */
+/** Users in a tenant who are scoped to a specific contractor (company): users with no user_contractors rows (tenant-wide) or linked to this contractor_id. Use for per-company alerts (approval, suspend, reinstate, breakdown). Excludes subcontractor-portal users. */
 export async function getContractorUserEmails(query, tenantId, contractorId) {
   if (!tenantId || !contractorId) return [];
   const emails = new Set();
@@ -276,7 +324,8 @@ export async function getContractorUserEmails(query, tenantId, contractorId) {
       `SELECT u.email FROM users u
        WHERE u.tenant_id = @tenantId AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
          AND (NOT EXISTS (SELECT 1 FROM user_contractors uc WHERE uc.user_id = u.id)
-              OR EXISTS (SELECT 1 FROM user_contractors uc WHERE uc.user_id = u.id AND uc.contractor_id = @contractorId))`,
+              OR EXISTS (SELECT 1 FROM user_contractors uc WHERE uc.user_id = u.id AND uc.contractor_id = @contractorId))
+         ${EXCLUDE_SUBCONTRACTOR_PORTAL_USERS_SQL}`,
       { tenantId, contractorId }
     );
     for (const row of result.recordset || []) {
@@ -289,7 +338,7 @@ export async function getContractorUserEmails(query, tenantId, contractorId) {
   return Array.from(emails);
 }
 
-/** Only users explicitly linked to this contractor (user_contractors). Excludes tenant-wide users. Use when only the submitting contractor must be notified (e.g. fleet/driver approval) for privacy. */
+/** Only users explicitly linked to this contractor (user_contractors). Excludes tenant-wide and subcontractor-portal users. Use when only the submitting contractor must be notified (e.g. fleet/driver approval) for privacy. */
 export async function getContractorOnlyUserEmails(query, tenantId, contractorId) {
   if (!tenantId || !contractorId) return [];
   const emails = new Set();
@@ -297,7 +346,8 @@ export async function getContractorOnlyUserEmails(query, tenantId, contractorId)
     const result = await query(
       `SELECT u.email FROM users u
        INNER JOIN user_contractors uc ON uc.user_id = u.id AND uc.contractor_id = @contractorId
-       WHERE u.tenant_id = @tenantId AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`,
+       WHERE u.tenant_id = @tenantId AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+       ${EXCLUDE_SUBCONTRACTOR_PORTAL_USERS_SQL}`,
       { tenantId, contractorId }
     );
     for (const row of result.recordset || []) {

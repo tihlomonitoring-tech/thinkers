@@ -53,6 +53,50 @@ async function getTenantIdsForUsers(pool, userIds) {
   }
 }
 
+async function getSubcontractorIdsForUsers(pool, userIds) {
+  if (!userIds || userIds.length === 0) return {};
+  try {
+    const request = pool.request();
+    const placeholders = userIds.map((_, i) => `@id${i}`).join(',');
+    userIds.forEach((id, i) => { request.input(`id${i}`, id); });
+    const result = await request.query(
+      `SELECT user_id, subcontractor_id FROM user_subcontractors WHERE user_id IN (${placeholders})`
+    );
+    const byUser = {};
+    for (const row of result.recordset || []) {
+      const uid = row.user_id ?? row.user_Id;
+      if (!byUser[uid]) byUser[uid] = [];
+      byUser[uid].push(row.subcontractor_id ?? row.subcontractor_Id);
+    }
+    return byUser;
+  } catch (_) {
+    return {};
+  }
+}
+
+async function syncUserSubcontractors(userId, subcontractorIds, contractorIds) {
+  await query(`DELETE FROM user_subcontractors WHERE user_id = @userId`, { userId });
+  const subs = Array.isArray(subcontractorIds) ? [...new Set(subcontractorIds.filter(Boolean))] : [];
+  if (subs.length === 0) return;
+  const cids = Array.isArray(contractorIds) ? contractorIds.filter(Boolean) : [];
+  if (cids.length === 0) return;
+  const cPh = cids.map((_, i) => `@cid${i}`).join(',');
+  for (const sid of subs) {
+    const cp = { sid };
+    cids.forEach((cid, i) => { cp[`cid${i}`] = cid; });
+    const chk = await query(
+      `SELECT 1 AS ok FROM contractor_subcontractors WHERE id = @sid AND contractor_id IN (${cPh})`,
+      cp
+    );
+    if (chk.recordset?.length) {
+      await query(
+        `INSERT INTO user_subcontractors (user_id, subcontractor_id) VALUES (@userId, @subcontractorId)`,
+        { userId, subcontractorId: sid }
+      );
+    }
+  }
+}
+
 async function getContractorIdsForUsers(pool, userIds) {
   if (!userIds || userIds.length === 0) return {};
   try {
@@ -112,6 +156,33 @@ router.get('/contractors-for-tenants', async (req, res, next) => {
     if (err.message && (err.message.includes('Invalid object name') || err.message.includes("contractors"))) {
       return res.status(200).json({ contractors: [], _error: 'Contractors table may not exist. Run the multi-contractor schema (e.g. npm run db:contractors-multi).' });
     }
+    next(err);
+  }
+});
+
+/** GET sub-contractor companies for given contractor IDs (must exist under those contractors). */
+router.get('/subcontractors-for-contractors', async (req, res, next) => {
+  try {
+    const raw = req.query?.contractor_ids;
+    const contractorIds = (typeof raw === 'string' ? raw.split(',') : Array.isArray(raw) ? raw : [])
+      .map((id) => (id != null ? String(id).trim().replace(/^\{|\}$/g, '') : ''))
+      .filter(Boolean);
+    if (contractorIds.length === 0) return res.json({ subcontractors: [] });
+
+    const pool = await getPool();
+    const request = pool.request();
+    contractorIds.forEach((id, i) => { request.input(`c${i}`, sql.UniqueIdentifier, id); });
+    const placeholders = contractorIds.map((_, i) => `@c${i}`).join(',');
+    const result = await request.query(
+      `SELECT s.id, s.tenant_id, s.contractor_id, s.company_name, c.name AS contractor_name
+       FROM contractor_subcontractors s
+       LEFT JOIN contractors c ON c.id = s.contractor_id
+       WHERE s.contractor_id IN (${placeholders})
+       ORDER BY c.name, s.company_name`
+    );
+    res.json({ subcontractors: result.recordset || [] });
+  } catch (err) {
+    if (err.message?.includes('Invalid object name')) return res.json({ subcontractors: [] });
     next(err);
   }
 });
@@ -205,16 +276,20 @@ router.get('/', async (req, res, next) => {
     const pageRolesByUser = await getPageRolesForUsers(pool, list.map((u) => u.id));
     const tenantIdsByUser = await getTenantIdsForUsers(pool, list.map((u) => u.id));
     const contractorIdsByUser = await getContractorIdsForUsers(pool, list.map((u) => u.id));
+    const subcontractorIdsByUser = await getSubcontractorIdsForUsers(pool, list.map((u) => u.id));
     const usersWithRoles = list.map((u) => {
       const fromTable = tenantIdsByUser[u.id];
       const tenant_ids = (Array.isArray(fromTable) && fromTable.length > 0)
         ? fromTable
         : (u.tenant_id != null ? [u.tenant_id] : []);
+      const subcontractor_ids = subcontractorIdsByUser[u.id] || [];
       return {
         ...u,
         page_roles: pageRolesByUser[u.id] || [],
         tenant_ids,
         contractor_ids: contractorIdsByUser[u.id] || [],
+        subcontractor_ids,
+        is_subcontractor_user: subcontractor_ids.length > 0,
       };
     });
 
@@ -521,8 +596,19 @@ router.get('/:id', async (req, res, next) => {
     if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
     const pageRolesByUser = await getPageRolesForUsers(pool, [user.id]);
     const contractorIdsByUser = await getContractorIdsForUsers(pool, [user.id]);
+    const subcontractorIdsByUser = await getSubcontractorIdsForUsers(pool, [user.id]);
     const contractor_ids = contractorIdsByUser[user.id] || [];
-    res.json({ user: { ...user, page_roles: pageRolesByUser[user.id] || [], tenant_ids, contractor_ids } });
+    const subcontractor_ids = subcontractorIdsByUser[user.id] || [];
+    res.json({
+      user: {
+        ...user,
+        page_roles: pageRolesByUser[user.id] || [],
+        tenant_ids,
+        contractor_ids,
+        subcontractor_ids,
+        is_subcontractor_user: subcontractor_ids.length > 0,
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -555,7 +641,7 @@ router.get('/:id/activity', async (req, res, next) => {
 
 router.post('/', requireTenantAdmin, async (req, res, next) => {
   try {
-    const { email, password, full_name, role, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds } = req.body || {};
+    const { email, password, full_name, role, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds, subcontractor_ids: bodySubcontractorIds } = req.body || {};
     if (!email || !password || !full_name) {
       return res.status(400).json({ error: 'Email, password, and full_name required' });
     }
@@ -608,6 +694,10 @@ router.post('/', requireTenantAdmin, async (req, res, next) => {
         }
       }
     }
+    try {
+      const cMap = await getContractorIdsForUsers(pool, [user.id]);
+      await syncUserSubcontractors(user.id, bodySubcontractorIds, cMap[user.id] || []);
+    } catch (_) {}
     await auditLog({
       tenantId: user.tenant_id,
       userId: req.user.id,
@@ -639,7 +729,18 @@ router.post('/', requireTenantAdmin, async (req, res, next) => {
       }
     }
     const contractorIdsByUser = await getContractorIdsForUsers(pool, [user.id]);
-    res.status(201).json({ user: { ...user, page_roles: pageIds, tenant_ids: tenantIds, contractor_ids: contractorIdsByUser[user.id] || [] } });
+    const subcontractorIdsByUser = await getSubcontractorIdsForUsers(pool, [user.id]);
+    const subcontractor_ids = subcontractorIdsByUser[user.id] || [];
+    res.status(201).json({
+      user: {
+        ...user,
+        page_roles: pageIds,
+        tenant_ids: tenantIds,
+        contractor_ids: contractorIdsByUser[user.id] || [],
+        subcontractor_ids,
+        is_subcontractor_user: subcontractor_ids.length > 0,
+      },
+    });
   } catch (err) {
     if (err.number === 2627) return res.status(409).json({ error: 'Email already exists in this tenant' });
     next(err);
@@ -658,7 +759,7 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
     const canAccess = canAccessTenant(req, existing.tenant_id) || existingList.includes(req.user.tenant_id);
     if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
 
-    const { full_name, email: bodyEmail, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds } = req.body || {};
+    const { full_name, email: bodyEmail, role, status, password, page_roles, tenant_ids: bodyTenantIds, id_number, cellphone, contractor_ids: bodyContractorIds, subcontractor_ids: bodySubcontractorIds } = req.body || {};
     const updates = [];
     const params = { id };
 
@@ -710,9 +811,11 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
         params.primaryTenantId = newTenantIds[0];
       }
     }
+    let effectiveContractorIds = null;
     if (bodyContractorIds !== undefined) {
       await query(`DELETE FROM user_contractors WHERE user_id = @id`, { id });
       const newContractorIds = Array.isArray(bodyContractorIds) ? bodyContractorIds.filter(Boolean) : [];
+      effectiveContractorIds = newContractorIds;
       const userTenantIds = bodyTenantIds !== undefined ? (Array.isArray(bodyTenantIds) ? bodyTenantIds.filter(Boolean) : existingList) : existingList;
       if (newContractorIds.length > 0 && userTenantIds.length > 0) {
         const tPh = userTenantIds.map((_, i) => `@tid${i}`).join(',');
@@ -726,7 +829,19 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
         }
       }
     }
-    if (updates.length === 0 && page_roles === undefined && bodyTenantIds === undefined && bodyContractorIds === undefined) return res.status(400).json({ error: 'No fields to update' });
+    if (bodySubcontractorIds !== undefined) {
+      let cids = effectiveContractorIds;
+      if (cids === null) {
+        const cMap = await getContractorIdsForUsers(pool, [id]);
+        cids = cMap[id] || [];
+      }
+      try {
+        await syncUserSubcontractors(id, bodySubcontractorIds, cids);
+      } catch (_) {}
+    }
+    if (updates.length === 0 && page_roles === undefined && bodyTenantIds === undefined && bodyContractorIds === undefined && bodySubcontractorIds === undefined) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
     if (updates.length > 0) {
       updates.push('updated_at = SYSUTCDATETIME()');
       await query(`UPDATE users SET ${updates.join(', ')} WHERE id = @id`, params);
@@ -748,8 +863,19 @@ router.patch('/:id', requireTenantAdmin, async (req, res, next) => {
     });
     const tenantIdsByUser = await getTenantIdsForUsers(pool, [id]);
     const contractorIdsByUser = await getContractorIdsForUsers(pool, [id]);
+    const subcontractorIdsByUser = await getSubcontractorIdsForUsers(pool, [id]);
     const tenant_ids = tenantIdsByUser[id] || (updatedUser.tenant_id ? [updatedUser.tenant_id] : []);
-    res.json({ user: { ...updatedUser, page_roles: pageRolesByUser[id] || [], tenant_ids, contractor_ids: contractorIdsByUser[id] || [] } });
+    const subcontractor_ids = subcontractorIdsByUser[id] || [];
+    res.json({
+      user: {
+        ...updatedUser,
+        page_roles: pageRolesByUser[id] || [],
+        tenant_ids,
+        contractor_ids: contractorIdsByUser[id] || [],
+        subcontractor_ids,
+        is_subcontractor_user: subcontractor_ids.length > 0,
+      },
+    });
   } catch (err) {
     next(err);
   }
