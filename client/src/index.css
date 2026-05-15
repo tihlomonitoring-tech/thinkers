@@ -6,11 +6,17 @@
    does not tint scrollbars, form controls, or html “gutter” behind the layout. */
 html:not(.dark) {
   color-scheme: light;
-  background-color: #f8fafc;
+  background-color: #e2e8f0;
 }
 
 body {
-  @apply bg-surface-50 text-surface-900 font-sans antialiased;
+  @apply text-surface-900 font-sans antialiased;
+  background-color: transparent;
+}
+
+#root {
+  min-height: 100vh;
+  background-color: transparent;
 }
 
 html.dark {

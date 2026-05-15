@@ -18,6 +18,7 @@ import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import { getApiBase } from './lib/apiBase.js';
 import TruckUpdateRecordsTab from './components/TruckUpdateRecordsTab.jsx';
 import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
+import TabAtomicFleetVerification from './commandCentre/TabAtomicFleetVerification.jsx';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
 
@@ -105,6 +106,7 @@ const CC_TABS = [
   { id: 'contractor_expiries', label: 'Contractor expiries', icon: 'calendar', section: 'Operations' },
   { id: 'breakdowns', label: 'Reported breakdowns', icon: 'alert', section: 'Operations' },
   { id: 'fleet_verification', label: 'Fleet verification (AI)', icon: 'sparkles', section: 'Operations' },
+  { id: 'atomic_fleet_verification', label: 'Atomic fleet verification (AI)', icon: 'sparkles', section: 'Operations' },
   { id: 'delete_fleet_drivers', label: 'Delete contractors fleets/drivers', icon: 'trash', section: 'Operations' },
   { id: 'command_centre_settings', label: 'Command centre settings', icon: 'settings', section: 'Settings' },
 ];
@@ -539,6 +541,7 @@ export default function CommandCentre() {
           {activeTab === 'contractor_expiries' && canSeeTab('contractor_expiries') && <TabContractorExpiries />}
           {activeTab === 'breakdowns' && canSeeTab('breakdowns') && <TabBreakdowns />}
           {activeTab === 'fleet_verification' && canSeeTab('fleet_verification') && <TabFleetVerification />}
+          {activeTab === 'atomic_fleet_verification' && canSeeTab('atomic_fleet_verification') && <TabAtomicFleetVerification />}
           {activeTab === 'delete_fleet_drivers' && canSeeTab('delete_fleet_drivers') && <TabDeleteFleetDrivers />}
           {activeTab === 'command_centre_settings' && canSeeTab('command_centre_settings') && <TabCommandCentreSettings user={user} />}
 
@@ -9573,6 +9576,8 @@ function TabDeleteFleetDrivers() {
   const [error, setError] = useState('');
   const [tenantId, setTenantId] = useState('');
   const [contractorId, setContractorId] = useState('');
+  const [subContractor, setSubContractor] = useState('');
+  const [subcontractors, setSubcontractors] = useState([]);
   const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'truck' | 'driver' | 'breakdown'
   const [deletingTruckId, setDeletingTruckId] = useState(null);
   const [deletingDriverId, setDeletingDriverId] = useState(null);
@@ -9593,11 +9598,13 @@ function TabDeleteFleetDrivers() {
     const params = {};
     if (tenantId) params.tenant_id = tenantId;
     if (contractorId) params.contractor_id = contractorId;
+    if (subContractor) params.sub_contractor = subContractor;
     if (typeFilter) params.type = typeFilter;
     return ccApi.deleteFleetDrivers.list(params)
       .then((r) => {
         setTenants(r.tenants || []);
         setContractors(r.contractors || []);
+        setSubcontractors(r.subcontractors || []);
         setTrucks(r.trucks || []);
         setDrivers(r.drivers || []);
         setBreakdowns(r.breakdowns || []);
@@ -9606,7 +9613,7 @@ function TabDeleteFleetDrivers() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [tenantId, contractorId, typeFilter]);
+  useEffect(() => { load(); }, [tenantId, contractorId, subContractor, typeFilter]);
 
   const toggleTruck = (id) => {
     setSelectedTruckIds((prev) => {
@@ -9716,6 +9723,7 @@ function TabDeleteFleetDrivers() {
   };
 
   const formatBreakdownDate = (d) => (d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
+  const formatEnrolledDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '—');
   const q = search.trim().toLowerCase();
   const filteredTrucks = trucks.filter((t) => {
     if (!q) return true;
@@ -9723,6 +9731,7 @@ function TabDeleteFleetDrivers() {
       String(t.registration || '').toLowerCase().includes(q) ||
       String(t.makeModel || '').toLowerCase().includes(q) ||
       String(t.contractorName || '').toLowerCase().includes(q) ||
+      String(t.subContractor || '').toLowerCase().includes(q) ||
       String(t.tenantName || '').toLowerCase().includes(q) ||
       String(t.status || '').toLowerCase().includes(q)
     );
@@ -9734,6 +9743,7 @@ function TabDeleteFleetDrivers() {
       String(d.idNumber || '').toLowerCase().includes(q) ||
       String(d.licenseNumber || '').toLowerCase().includes(q) ||
       String(d.contractorName || '').toLowerCase().includes(q) ||
+      String(d.subContractor || '').toLowerCase().includes(q) ||
       String(d.tenantName || '').toLowerCase().includes(q)
     );
   });
@@ -9773,16 +9783,31 @@ function TabDeleteFleetDrivers() {
       <div className="flex flex-wrap gap-4 items-center">
         <label className="flex items-center gap-2">
           <span className="text-sm font-medium text-surface-700">Tenant</span>
-          <select value={tenantId} onChange={(e) => { setTenantId(e.target.value); setContractorId(''); }} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]">
+          <select value={tenantId} onChange={(e) => { setTenantId(e.target.value); setContractorId(''); setSubContractor(''); }} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]">
             <option value="">All tenants</option>
             {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </label>
         <label className="flex items-center gap-2">
           <span className="text-sm font-medium text-surface-700">Contractor</span>
-          <select value={contractorId} onChange={(e) => setContractorId(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]" disabled={!tenantId}>
+          <select value={contractorId} onChange={(e) => { setContractorId(e.target.value); setSubContractor(''); }} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]" disabled={!tenantId}>
             <option value="">All contractors</option>
             {contractors.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-surface-700">Sub-contractor</span>
+          <select
+            value={subContractor}
+            onChange={(e) => setSubContractor(e.target.value)}
+            className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[180px]"
+            disabled={!contractorId}
+            title={!contractorId ? 'Select a contractor first' : undefined}
+          >
+            <option value="">All sub-contractors</option>
+            {subcontractors.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
           </select>
         </label>
         <label className="flex items-center gap-2">
@@ -9799,7 +9824,7 @@ function TabDeleteFleetDrivers() {
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Advanced search: registration, name, ID, contractor, status, breakdown..."
+          placeholder="Search: registration, name, ID, contractor, sub-contractor, status…"
           className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm min-w-[280px]"
         />
       </div>
@@ -9841,6 +9866,8 @@ function TabDeleteFleetDrivers() {
                         <th className="text-left p-2 font-medium text-surface-700">Make / model</th>
                         <th className="text-left p-2 font-medium text-surface-700">Tenant</th>
                         <th className="text-left p-2 font-medium text-surface-700">Contractor</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Sub-contractor</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Enrolled</th>
                         <th className="text-left p-2 font-medium text-surface-700">Status</th>
                         <th className="p-2 w-24" />
                       </tr>
@@ -9855,6 +9882,8 @@ function TabDeleteFleetDrivers() {
                           <td className="p-2 text-surface-600">{t.makeModel || '—'}</td>
                           <td className="p-2 text-surface-600">{t.tenantName || '—'}</td>
                           <td className="p-2 text-surface-600">{t.contractorName || '—'}</td>
+                          <td className="p-2 text-surface-600">{t.subContractor || '—'}</td>
+                          <td className="p-2 text-surface-600 whitespace-nowrap">{formatEnrolledDate(t.enrolledAt)}</td>
                           <td className="p-2 text-surface-600">{t.status || '—'}</td>
                           <td className="p-2">
                             <button type="button" disabled={deletingTruckId === t.id} onClick={() => handleDeleteTruck(t)} className="px-2 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingTruckId === t.id ? 'Deleting…' : 'Delete'}</button>
@@ -9884,6 +9913,8 @@ function TabDeleteFleetDrivers() {
                         <th className="text-left p-2 font-medium text-surface-700">ID / licence</th>
                         <th className="text-left p-2 font-medium text-surface-700">Tenant</th>
                         <th className="text-left p-2 font-medium text-surface-700">Contractor</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Sub-contractor</th>
+                        <th className="text-left p-2 font-medium text-surface-700">Enrolled</th>
                         <th className="p-2 w-24" />
                       </tr>
                     </thead>
@@ -9897,6 +9928,8 @@ function TabDeleteFleetDrivers() {
                           <td className="p-2 text-surface-600">{d.idNumber || d.licenseNumber || '—'}</td>
                           <td className="p-2 text-surface-600">{d.tenantName || '—'}</td>
                           <td className="p-2 text-surface-600">{d.contractorName || '—'}</td>
+                          <td className="p-2 text-surface-600">{d.subContractor || '—'}</td>
+                          <td className="p-2 text-surface-600 whitespace-nowrap">{formatEnrolledDate(d.enrolledAt)}</td>
                           <td className="p-2">
                             <button type="button" disabled={deletingDriverId === d.id} onClick={() => handleDeleteDriver(d)} className="px-2 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{deletingDriverId === d.id ? 'Deleting…' : 'Delete'}</button>
                           </td>
@@ -11464,27 +11497,27 @@ function TabFleetVerification() {
                     <div className="mt-2 grid sm:grid-cols-2 gap-3">
                       <div className="rounded-md border border-surface-200 bg-white px-3 py-2">
                         <p className="font-semibold text-surface-800 mb-1">Sheets</p>
-                        <p>Trucks: <span className="font-medium text-surface-900">{result.detected.sheets?.trucks || '— not found —'}</span>{result.detected.sheets?.trucks_header_row != null ? <span className="text-surface-500"> (header row {result.detected.sheets.trucks_header_row})</span> : null}</p>
-                        <p>Drivers: <span className="font-medium text-surface-900">{result.detected.sheets?.drivers || '— not found —'}</span>{result.detected.sheets?.drivers_header_row != null ? <span className="text-surface-500"> (header row {result.detected.sheets.drivers_header_row})</span> : null}</p>
-                        <p className="text-surface-500 mt-1">All sheets: {(result.detected.sheets?.all_sheets || []).join(', ') || '—'}</p>
+                        <p>Trucks: <span className="font-medium text-surface-900">{result.detected?.sheets?.trucks || '— not found —'}</span>{result.detected?.sheets?.trucks_header_row != null ? <span className="text-surface-500"> (header row {result.detected?.sheets?.trucks_header_row})</span> : null}</p>
+                        <p>Drivers: <span className="font-medium text-surface-900">{result.detected?.sheets?.drivers || '— not found —'}</span>{result.detected?.sheets?.drivers_header_row != null ? <span className="text-surface-500"> (header row {result.detected?.sheets?.drivers_header_row})</span> : null}</p>
+                        <p className="text-surface-500 mt-1">All sheets: {(result.detected?.sheets?.all_sheets || result.detected?.all_sheets || []).join(', ') || '—'}</p>
                       </div>
                       <div className="rounded-md border border-surface-200 bg-white px-3 py-2">
                         <p className="font-semibold text-surface-800 mb-1">Mapped headers</p>
-                        <p>Truck registration: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.registration || '— missing —'}</span></p>
-                        <p>Truck contractor: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.contractor || '— missing —'}</span></p>
-                        <p>Truck sub-contractor: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.sub_contractor || '— missing —'}</span></p>
-                        <p>Truck fleet no.: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.fleet_no || '— missing —'}</span></p>
-                        <p>Truck trailer 1: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.trailer_1_reg || '— missing —'}</span></p>
-                        <p>Truck trailer 2: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.trailer_2_reg || '— missing —'}</span></p>
-                        <p>Tracking no.: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.tracking_no || '— missing —'}</span></p>
-                        <p>Tracking username: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.tracking_username || '— missing —'}</span></p>
-                        <p>Tracking password: <span className="font-medium text-surface-900">{result.detected.columns?.trucks?.tracking_password || '— missing —'}</span></p>
-                        <p>Driver ID number: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.id_number || '— missing —'}</span></p>
-                        <p>Driver licence: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.license_number || '— missing —'}</span></p>
-                        <p>Driver first name: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.given_name || '— missing —'}</span></p>
-                        <p>Driver surname: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.surname || '— missing —'}</span></p>
-                        <p>Driver contractor: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.contractor || '— missing —'}</span></p>
-                        <p>Driver sub-contractor: <span className="font-medium text-surface-900">{result.detected.columns?.drivers?.sub_contractor || '— missing —'}</span></p>
+                        <p>Truck registration: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.registration || '— missing —'}</span></p>
+                        <p>Truck contractor: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.contractor || '— missing —'}</span></p>
+                        <p>Truck sub-contractor: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.sub_contractor || '— missing —'}</span></p>
+                        <p>Truck fleet no.: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.fleet_no || '— missing —'}</span></p>
+                        <p>Truck trailer 1: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.trailer_1_reg || '— missing —'}</span></p>
+                        <p>Truck trailer 2: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.trailer_2_reg || '— missing —'}</span></p>
+                        <p>Tracking no.: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.tracking_no || '— missing —'}</span></p>
+                        <p>Tracking username: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.tracking_username || '— missing —'}</span></p>
+                        <p>Tracking password: <span className="font-medium text-surface-900">{result.detected?.columns?.trucks?.tracking_password || '— missing —'}</span></p>
+                        <p>Driver ID number: <span className="font-medium text-surface-900">{result.detected?.columns?.drivers?.id_number || '— missing —'}</span></p>
+                        <p>Driver licence: <span className="font-medium text-surface-900">{result.detected?.columns?.drivers?.license_number || '— missing —'}</span></p>
+                        <p>Driver first name: <span className="font-medium text-surface-900">{result.detected?.columns?.drivers?.given_name || '— missing —'}</span></p>
+                        <p>Driver surname: <span className="font-medium text-surface-900">{result.detected?.columns?.drivers?.surname || '— missing —'}</span></p>
+                        <p>Driver contractor: <span className="font-medium text-surface-900">{result.detected?.columns?.drivers?.contractor || '— missing —'}</span></p>
+                        <p>Driver sub-contractor: <span className="font-medium text-surface-900">{result.detected?.columns?.drivers?.sub_contractor || '— missing —'}</span></p>
                       </div>
                     </div>
                   </details>

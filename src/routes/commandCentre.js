@@ -100,6 +100,7 @@ export const CC_TAB_IDS = [
   'delete_fleet_drivers',
   'handed_over_analysis',
   'fleet_verification',
+  'atomic_fleet_verification',
   'command_centre_settings',
 ];
 
@@ -110,6 +111,16 @@ function pruneFleetVerificationCache() {
   for (const [k, v] of fleetVerificationCache.entries()) {
     if (!v?.createdAt || now - v.createdAt > FLEET_VERIFICATION_CACHE_TTL_MS) {
       fleetVerificationCache.delete(k);
+    }
+  }
+}
+
+const atomicFleetVerificationCache = new Map();
+function pruneAtomicFleetVerificationCache() {
+  const now = Date.now();
+  for (const [k, v] of atomicFleetVerificationCache.entries()) {
+    if (!v?.createdAt || now - v.createdAt > FLEET_VERIFICATION_CACHE_TTL_MS) {
+      atomicFleetVerificationCache.delete(k);
     }
   }
 }
@@ -446,6 +457,55 @@ function rowText(v) {
   return String(v).trim();
 }
 
+/** Read LastLocationDatetimeString from an Excel cell (text or date). */
+function atomicLastLocationFromCell(cell) {
+  if (!cell) return '';
+  let v = cell.value;
+  if (v == null) return '';
+  if (typeof v === 'object' && v !== null && 'result' in v) v = v.result;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
+    try {
+      return formatDateForAppTz(v);
+    } catch (_) {
+      return v.toISOString();
+    }
+  }
+  return rowText(v);
+}
+
+function isIntegratedOnAtomic(lastLocationText) {
+  return !!String(lastLocationText || '').trim();
+}
+
+/** Load an uploaded .xlsx buffer; friendly errors when the file is corrupt or not Excel. */
+async function loadUploadedExcelWorkbook(buffer) {
+  if (!buffer || !(buffer.length > 0)) {
+    const err = new Error('The uploaded file is empty.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const workbook = new ExcelJS.Workbook();
+  try {
+    await workbook.xlsx.load(buffer);
+  } catch (loadErr) {
+    const detail = loadErr?.message || 'invalid format';
+    const err = new Error(
+      /sheets/i.test(detail)
+        ? 'Could not read the Excel file. Upload a valid Atomic fleet .xlsx export (not .xls, CSV, or a renamed file).'
+        : `Could not read the Excel file: ${detail}`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const worksheets = workbook.worksheets || [];
+  if (!worksheets.length) {
+    const err = new Error('The workbook has no worksheets.');
+    err.statusCode = 400;
+    throw err;
+  }
+  return workbook;
+}
+
 function pickFirstHeaderIndex(headersNorm, candidates) {
   for (let i = 0; i < headersNorm.length; i++) {
     if (candidates.includes(headersNorm[i])) return i + 1;
@@ -509,8 +569,9 @@ function bestHeaderRowForFleetSheet(sheet, scoreFn, maxProbeRows = 12) {
 }
 
 function pickBestTrucksWorksheet(workbook) {
-  let best = { sheet: workbook.worksheets[0] || null, headerRow: 1, score: -1 };
-  for (const ws of workbook.worksheets) {
+  const worksheets = workbook?.worksheets || [];
+  let best = { sheet: worksheets[0] || null, headerRow: 1, score: -1 };
+  for (const ws of worksheets) {
     const { headerRow, score } = bestHeaderRowForFleetSheet(ws, scoreTruckImportHeaderNorms);
     const nameBonus = /truck|fleet|vehicle|haul|transport/i.test(String(ws.name || '')) ? 6 : 0;
     const total = score + nameBonus;
@@ -522,7 +583,8 @@ function pickBestTrucksWorksheet(workbook) {
 /** Pick a drivers sheet by name and header shape; avoid re-using the trucks sheet. */
 function pickBestDriversWorksheet(workbook, trucksSheet) {
   let best = null;
-  for (const ws of workbook.worksheets) {
+  const worksheets = workbook?.worksheets || [];
+  for (const ws of worksheets) {
     if (trucksSheet && ws === trucksSheet) continue;
     const { headerRow, score } = bestHeaderRowForFleetSheet(ws, scoreDriverImportHeaderNorms);
     const nameBonus = /driver|personnel|employee|staff/i.test(String(ws.name || '')) ? 6 : 0;
@@ -587,6 +649,94 @@ function sortFleetVerificationRows(rows, regKey = 'registration') {
     const k2 = String(b[regKey] || b.full_name || b.id_number || '');
     return k1.localeCompare(k2, undefined, { sensitivity: 'base' });
   });
+}
+
+function scoreAtomicFleetHeaderNorms(headersNorm) {
+  if (!headersNorm?.length) return 0;
+  const list = headersNorm.filter(Boolean);
+  let s = 0;
+  if (list.some((h) => h === 'vehicledescr' || h.includes('vehicledesc'))) s += 10;
+  if (list.some((h) => h === 'registrationnumber' || (h.includes('registration') && h.includes('number')))) s += 10;
+  if (list.some((h) => h.includes('trailer1'))) s += 8;
+  if (list.some((h) => h.includes('trailer2'))) s += 8;
+  if (list.some((h) => h === 'parentownership' || (h.includes('parent') && h.includes('ownership')))) s += 8;
+  if (list.includes('ownership') || list.some((h) => h === 'ownership' || (h.includes('ownership') && !h.includes('parent')))) s += 8;
+  if (list.some((h) => h.includes('lastlocation'))) s += 6;
+  return s;
+}
+
+function pickBestAtomicFleetWorksheet(workbook) {
+  const worksheets = workbook?.worksheets || [];
+  let best = { sheet: worksheets[0] || null, headerRow: 1, score: -1 };
+  for (const ws of worksheets) {
+    const { headerRow, score } = bestHeaderRowForFleetSheet(ws, scoreAtomicFleetHeaderNorms);
+    const nameBonus = /atomic|fleet|vehicle|truck|transport/i.test(String(ws.name || '')) ? 6 : 0;
+    const total = score + nameBonus;
+    if (total > best.score) best = { sheet: ws, headerRow, score: total };
+  }
+  return best;
+}
+
+function pickParentOwnershipColumnIndex(headersNorm) {
+  const exact = ['parentownership', 'parentowner', 'maincontractor', 'haulier', 'contractor', 'company'];
+  for (const p of exact) {
+    const i = headersNorm.findIndex((h) => h === p);
+    if (i >= 0) return i + 1;
+  }
+  for (let i = 0; i < headersNorm.length; i++) {
+    const h = headersNorm[i];
+    if (h && h.includes('parent') && h.includes('own')) return i + 1;
+  }
+  return pickContractorColumnIndex(headersNorm);
+}
+
+function pickAtomicOwnershipColumnIndex(headersNorm) {
+  for (let i = 0; i < headersNorm.length; i++) {
+    if (headersNorm[i] === 'ownership') return i + 1;
+  }
+  for (let i = 0; i < headersNorm.length; i++) {
+    const h = headersNorm[i];
+    if (h && h.includes('ownership') && !h.includes('parent')) return i + 1;
+  }
+  return pickSubContractorColumnIndex(headersNorm);
+}
+
+async function inferAtomicFleetColumnsWithAi(sheetHeaders) {
+  if (!isAiConfigured()) return null;
+  try {
+    const client = getOpenAiClient();
+    const model = getAiModel();
+    const prompt = [
+      'You map Excel headers for Atomic Fleet export verification.',
+      'Return strict JSON only: ',
+      '{"vehicleDescr":"","registrationNumber":"","trailer1RegistrationNumber":"","trailer2RegistrationNumber":"","parentOwnership":"","ownership":"","lastLocationDatetimeString":""}',
+      'Pick EXACT header names from the array (preserve spelling/case) or empty string if missing.',
+      'parentOwnership = main contractor / haulier. ownership = sub-contractor / operator.',
+      `Headers: ${JSON.stringify(sheetHeaders || [])}`,
+    ].join('\n');
+    const response = await Promise.race([
+      client.responses.create({
+        model,
+        input: [{ role: 'user', content: prompt }],
+        max_output_tokens: 320,
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('AI timeout')), 3500)),
+    ]);
+    const out = String(response?.output_text || '').trim();
+    if (!out) return null;
+    const cleaned = out
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    const jsonStr = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+    const parsed = JSON.parse(jsonStr);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function inferVerificationColumnsWithAi(sheetHeaders) {
@@ -1754,8 +1904,7 @@ router.post('/fleet-verification/verify', fleetVerificationUpload, async (req, r
     const contractorId = checkAllContractors ? null : rawContractorScope;
     const startedAt = Date.now();
 
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(req.file.buffer);
+    const workbook = await loadUploadedExcelWorkbook(req.file.buffer);
 
     const truckPick = pickBestTrucksWorksheet(workbook);
     const trucksSheet = truckPick.sheet;
@@ -2191,10 +2340,430 @@ router.get('/fleet-verification/download/:token', async (req, res, next) => {
   }
 });
 
-/** GET list for Delete contractors fleets/drivers tab. Query: tenant_id, contractor_id, type=truck|driver|breakdown|all. Returns trucks, drivers, breakdowns, tenants, contractors. */
+/** List contractors for Atomic fleet verification haulier filter. */
+router.get('/atomic-fleet-verification/contractors', async (req, res, next) => {
+  try {
+    const tenantId = String(req.query?.tenant_id || '').trim() || null;
+    if (!tenantId) return res.json({ contractors: [] });
+    const result = await query(
+      `SELECT c.id, c.name,
+              (SELECT COUNT(1) FROM contractor_trucks t WHERE t.tenant_id = @tenantId AND t.contractor_id = c.id) AS truck_count
+       FROM contractors c
+       WHERE c.tenant_id = @tenantId
+       ORDER BY c.name`,
+      { tenantId }
+    );
+    const contractors = (result.recordset || []).map((r) => ({
+      id: r.id,
+      name: r.name || '',
+      truck_count: Number(r.truck_count || 0),
+    }));
+    res.json({ contractors });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/atomic-fleet-verification/verify', fleetVerificationUpload, async (req, res, next) => {
+  try {
+    pruneAtomicFleetVerificationCache();
+    if (!req.file?.buffer) return res.status(400).json({ error: 'Upload an Atomic fleet Excel file (.xlsx)' });
+    const tenantId = String(req.body?.tenant_id || '').trim() || null;
+    const rawContractorScope = String(req.body?.contractor_id || '').trim();
+    const checkAllContractors = !rawContractorScope || rawContractorScope.toLowerCase() === 'all';
+    const contractorId = checkAllContractors ? null : rawContractorScope;
+    const startedAt = Date.now();
+
+    const workbook = await loadUploadedExcelWorkbook(req.file.buffer);
+
+    const atomicPick = pickBestAtomicFleetWorksheet(workbook);
+    const atomicSheet = atomicPick.sheet;
+    const headerRow = atomicPick.headerRow || 1;
+    if (!atomicSheet || atomicPick.score < 4) {
+      return res.status(400).json({
+        error: 'Could not find an Atomic fleet sheet. Expected columns such as VehicleDescr, RegistrationNumber, ParentOwnership, Ownership, Trailer1RegistrationNumber.',
+        detected_sheets: workbook.worksheets.map((ws) => ws.name),
+      });
+    }
+
+    const headersRaw = readSheetHeaderRowRaw(atomicSheet, headerRow);
+    const headersNorm = headersRaw.map((h) => normalizeFleetKey(h));
+    const aiColumns = await inferAtomicFleetColumnsWithAi(headersRaw);
+    const findHeaderIdx = (headerName) => {
+      const target = normalizeFleetKey(headerName);
+      if (!target) return 0;
+      const idx = headersRaw.findIndex((h) => normalizeFleetKey(h) === target);
+      return idx >= 0 ? idx + 1 : 0;
+    };
+
+    const vehicleDescrCol = findHeaderIdx(aiColumns?.vehicleDescr) || pickFirstHeaderIndex(headersNorm, [
+      'vehicledescr', 'vehicledescription', 'vehicleid', 'fleetno', 'fleetnumber', 'fleetcode', 'unitno',
+    ]);
+    const regCol = findHeaderIdx(aiColumns?.registrationNumber) || pickFirstHeaderIndex(headersNorm, [
+      'registrationnumber', 'registration', 'truckregno', 'truckregistration', 'regno', 'vehicleregistration',
+    ]);
+    const trailer1Col = findHeaderIdx(aiColumns?.trailer1RegistrationNumber) || pickFirstHeaderIndex(headersNorm, [
+      'trailer1registrationnumber', 'trailer1regno', 'trailer1reg', 'trailer1', 'trailer_1',
+    ]);
+    const trailer2Col = findHeaderIdx(aiColumns?.trailer2RegistrationNumber) || pickFirstHeaderIndex(headersNorm, [
+      'trailer2registrationnumber', 'trailer2regno', 'trailer2reg', 'trailer2', 'trailer_2',
+    ]);
+    const parentOwnershipCol = findHeaderIdx(aiColumns?.parentOwnership) || pickParentOwnershipColumnIndex(headersNorm);
+    const ownershipCol = findHeaderIdx(aiColumns?.ownership) || pickAtomicOwnershipColumnIndex(headersNorm);
+    const lastLocationCol = findHeaderIdx(aiColumns?.lastLocationDatetimeString) || pickFirstHeaderIndex(headersNorm, [
+      'lastlocationdatetimestring', 'lastlocationdatetime', 'lastlocation', 'lastreported', 'lastposition', 'lastgps',
+    ]);
+
+    const detectedColumns = {
+      header_row: headerRow,
+      vehicle_descr: vehicleDescrCol ? headersRaw[vehicleDescrCol - 1] : null,
+      registration: regCol ? headersRaw[regCol - 1] : null,
+      trailer_1_reg: trailer1Col ? headersRaw[trailer1Col - 1] : null,
+      trailer_2_reg: trailer2Col ? headersRaw[trailer2Col - 1] : null,
+      parent_ownership: parentOwnershipCol ? headersRaw[parentOwnershipCol - 1] : null,
+      ownership: ownershipCol ? headersRaw[ownershipCol - 1] : null,
+      last_location: lastLocationCol ? headersRaw[lastLocationCol - 1] : null,
+    };
+
+    let hauliierLabel = checkAllContractors ? 'All contractors' : '';
+    if (contractorId) {
+      try {
+        const params = { contractorId };
+        let whereSql = '';
+        if (tenantId) {
+          whereSql = 'AND tenant_id = @tenantId';
+          params.tenantId = tenantId;
+        }
+        const cnameRes = await query(
+          `SELECT name FROM contractors WHERE id = @contractorId ${whereSql}`,
+          params
+        );
+        hauliierLabel = rowText(cnameRes.recordset?.[0]?.name) || 'Selected contractor';
+      } catch (_) {
+        hauliierLabel = 'Selected contractor';
+      }
+    }
+    let tenantLabel = '';
+    if (tenantId) {
+      try {
+        const tnameRes = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
+        tenantLabel = rowText(tnameRes.recordset?.[0]?.name) || '';
+      } catch (_) { /* ignore */ }
+    }
+
+    const truckParams = {};
+    const truckWhere = [];
+    if (tenantId) { truckWhere.push('tr.tenant_id = @tenantId'); truckParams.tenantId = tenantId; }
+    if (contractorId) { truckWhere.push('tr.contractor_id = @contractorId'); truckParams.contractorId = contractorId; }
+    const truckWhereSql = truckWhere.length ? `WHERE ${truckWhere.join(' AND ')}` : '';
+    const truckRows = await query(
+      `SELECT tr.id, tr.registration, tr.fleet_no, tr.main_contractor, tr.sub_contractor,
+              tr.trailer_1_reg_no, tr.trailer_2_reg_no, tr.tracking_provider, tr.[status],
+              c.name AS contractor_name, c.id AS contractor_id
+       FROM contractor_trucks tr
+       LEFT JOIN contractors c ON c.id = tr.contractor_id
+       ${truckWhereSql}`,
+      truckParams
+    );
+
+    const truckByReg = new Map();
+    const truckByFleetNo = new Map();
+    const systemTruckKeys = new Set();
+    for (const r of truckRows.recordset || []) {
+      const regKey = normalizeFleetKey(getRow(r, 'registration'));
+      const fleetKey = normalizeFleetKey(getRow(r, 'fleet_no'));
+      if (regKey) {
+        truckByReg.set(regKey, r);
+        systemTruckKeys.add(regKey);
+      }
+      if (fleetKey && !truckByFleetNo.has(fleetKey)) truckByFleetNo.set(fleetKey, r);
+    }
+
+    const atomicRegKeysSeen = new Set();
+    const results = [];
+    let matchedOnSystem = 0;
+    let integratedOnAtomic = 0;
+
+    const maxColScan = Math.max(headersRaw.length, 60, atomicSheet.columnCount || 0);
+    const dataStart = headerRow + 1;
+    for (let r = dataStart; r <= atomicSheet.rowCount; r++) {
+      const row = atomicSheet.getRow(r);
+      let hasAnyVal = false;
+      for (let c = 1; c <= maxColScan; c++) {
+        if (rowText(row.getCell(c).value)) { hasAnyVal = true; break; }
+      }
+      if (!hasAnyVal) continue;
+
+      const vehicleDescr = vehicleDescrCol ? rowText(row.getCell(vehicleDescrCol).value) : '';
+      const registration = regCol ? rowText(row.getCell(regCol).value) : '';
+      const trailer1 = trailer1Col ? rowText(row.getCell(trailer1Col).value) : '';
+      const trailer2 = trailer2Col ? rowText(row.getCell(trailer2Col).value) : '';
+      const contractor = parentOwnershipCol ? rowText(row.getCell(parentOwnershipCol).value) : '';
+      const subContractor = ownershipCol ? rowText(row.getCell(ownershipCol).value) : '';
+      const lastLocation = lastLocationCol ? atomicLastLocationFromCell(row.getCell(lastLocationCol)) : '';
+
+      const regNorm = normalizeFleetKey(registration);
+      const descrNorm = normalizeFleetKey(vehicleDescr);
+      if (regNorm) atomicRegKeysSeen.add(regNorm);
+      if (descrNorm && !regNorm) atomicRegKeysSeen.add(descrNorm);
+
+      const hit = (regNorm && truckByReg.get(regNorm))
+        || (descrNorm && truckByFleetNo.get(descrNorm))
+        || (descrNorm && truckByReg.get(descrNorm))
+        || null;
+      const onSystem = !!hit;
+      if (onSystem) matchedOnSystem++;
+
+      const integratedAtomic = isIntegratedOnAtomic(lastLocation);
+      if (integratedAtomic) integratedOnAtomic++;
+      const atomicStatus = integratedAtomic ? 'Integrated on Atomic' : 'Not integrated on Atomic';
+      const systemStatus = onSystem ? 'On our system' : 'Not on our system';
+
+      const sysReg = onSystem ? rowText(getRow(hit, 'registration')) : '';
+      const sysFleet = onSystem ? rowText(getRow(hit, 'fleet_no')) : '';
+      const sysContractor = onSystem ? rowText(getRow(hit, 'contractor_name') || getRow(hit, 'main_contractor')) : '';
+      const sysSub = onSystem ? rowText(getRow(hit, 'sub_contractor')) : '';
+      const sysTrailer1 = onSystem ? rowText(getRow(hit, 'trailer_1_reg_no')) : '';
+      const sysTrailer2 = onSystem ? rowText(getRow(hit, 'trailer_2_reg_no')) : '';
+
+      const notes = [];
+      if (!integratedAtomic) notes.push('Not integrated on Atomic — LastLocationDatetimeString is blank');
+      if (!registration && !vehicleDescr) notes.push('Missing registration and vehicle description');
+      else if (!onSystem) notes.push('Truck is on Atomic export but not enrolled in Thinkers');
+      else {
+        if (sysReg && registration && normalizeFleetKey(sysReg) !== regNorm) notes.push(`System registration ${sysReg}`);
+        if (sysTrailer1 && trailer1 && normalizeFleetKey(sysTrailer1) !== normalizeFleetKey(trailer1)) {
+          notes.push('Trailer 1 differs on system');
+        }
+        if (sysTrailer2 && trailer2 && normalizeFleetKey(sysTrailer2) !== normalizeFleetKey(trailer2)) {
+          notes.push('Trailer 2 differs on system');
+        }
+        if (!notes.length) notes.push(onSystem ? `Matched on Thinkers${sysReg ? `: ${sysReg}` : ''}` : '');
+      }
+
+      const fleetNoOut = vehicleDescr || sysFleet;
+      results.push({
+        source_row: r,
+        contractor: contractor || sysContractor,
+        sub_contractor: subContractor || sysSub,
+        fleet_no: fleetNoOut,
+        registration: registration || sysReg,
+        trailer_1_reg: trailer1 || sysTrailer1,
+        trailer_2_reg: trailer2 || sysTrailer2,
+        last_location_atomic: lastLocation,
+        atomic_status: atomicStatus,
+        system_status: systemStatus,
+        system_contractor: sysContractor,
+        system_sub_contractor: sysSub,
+        system_registration: sysReg,
+        system_fleet_no: sysFleet,
+        notes: notes.filter(Boolean).join('; ') || (onSystem ? 'Aligned with Thinkers fleet' : ''),
+      });
+    }
+
+    const onSystemOnly = [];
+    for (const r of truckRows.recordset || []) {
+      const regKey = normalizeFleetKey(getRow(r, 'registration'));
+      if (!regKey || atomicRegKeysSeen.has(regKey)) continue;
+      const fleetKey = normalizeFleetKey(getRow(r, 'fleet_no'));
+      if (fleetKey && atomicRegKeysSeen.has(fleetKey)) continue;
+      onSystemOnly.push({
+        contractor: rowText(getRow(r, 'contractor_name') || getRow(r, 'main_contractor')),
+        sub_contractor: rowText(getRow(r, 'sub_contractor')),
+        fleet_no: rowText(getRow(r, 'fleet_no')),
+        registration: rowText(getRow(r, 'registration')),
+        trailer_1_reg: rowText(getRow(r, 'trailer_1_reg_no')),
+        trailer_2_reg: rowText(getRow(r, 'trailer_2_reg_no')),
+        atomic_status: 'Not on Atomic export',
+        system_status: 'On our system only',
+        notes: 'Enrolled in Thinkers but absent from uploaded Atomic fleet file',
+      });
+    }
+
+    const sortAtomicRows = (rows) => rows.slice().sort((a, b) => {
+      const c1 = String(a.contractor || '').toLowerCase();
+      const c2 = String(b.contractor || '').toLowerCase();
+      if (c1 !== c2) return c1.localeCompare(c2);
+      const s1 = String(a.sub_contractor || '').toLowerCase();
+      const s2 = String(b.sub_contractor || '').toLowerCase();
+      if (s1 !== s2) return s1.localeCompare(s2);
+      return String(a.registration || a.fleet_no || '').localeCompare(String(b.registration || b.fleet_no || ''), undefined, { sensitivity: 'base' });
+    });
+
+    const INTEGRATED_FILL = 'FFD8E4BC';
+    const ATOMIC_ONLY_FILL = 'FFFEF3C7';
+    const SYSTEM_ONLY_FILL = 'FFFEE2E2';
+    const valueStyles = {
+      system_status: {
+        'On our system': { fill: INTEGRATED_FILL, font: { color: { argb: 'FF1F3D0A' }, bold: true } },
+        'Not on our system': { fill: ATOMIC_ONLY_FILL, font: { color: { argb: 'FF92400E' }, bold: true } },
+      },
+      atomic_status: {
+        'Integrated on Atomic': { fill: INTEGRATED_FILL, font: { color: { argb: 'FF1F3D0A' }, bold: true } },
+        'Not integrated on Atomic': { fill: ATOMIC_ONLY_FILL, font: { color: { argb: 'FF92400E' }, bold: true } },
+      },
+    };
+
+    const outWorkbook = new ExcelJS.Workbook();
+    outWorkbook.creator = 'Thinkers';
+    const generatedAt = new Date();
+
+    const atomicHeaders = [
+      'Contractor', 'Sub-contractor (ownership)', 'Fleet no / vehicle', 'Truck registration',
+      'Trailer 1', 'Trailer 2', 'Last location (Atomic)', 'Atomic fleet status', 'On our system', 'Notes',
+    ];
+    const atomicKeys = [
+      'contractor', 'sub_contractor', 'fleet_no', 'registration',
+      'trailer_1_reg', 'trailer_2_reg', 'last_location_atomic', 'atomic_status', 'system_status', 'notes',
+    ];
+    buildStyledListSheet(outWorkbook, {
+      sheetName: 'Atomic fleet (verified)',
+      headers: atomicHeaders,
+      keys: atomicKeys,
+      rows: sortAtomicRows(results),
+      info: [
+        ['Tenant:', tenantLabel || '—'],
+        ['Contractor filter:', hauliierLabel],
+        ['Source sheet:', atomicSheet.name],
+        ['Date & time:', formatDateForAppTz(generatedAt)],
+        ['Rows from Atomic file:', String(results.length)],
+        ['Integrated on Atomic:', String(integratedOnAtomic)],
+        ['Not integrated on Atomic:', String(results.length - integratedOnAtomic)],
+        ['On our system:', String(matchedOnSystem)],
+        ['Not on our system:', String(results.length - matchedOnSystem)],
+        ['On system only (not in file):', String(onSystemOnly.length)],
+      ],
+      groupBy: 'sub_contractor',
+      minColumnWidth: 12,
+      maxColumnWidth: 44,
+      columnWidths: {
+        notes: 40,
+        last_location_atomic: 22,
+        atomic_status: 18,
+        system_status: 16,
+        registration: 16,
+        fleet_no: 14,
+      },
+      autoFilter: true,
+      valueStyles,
+    });
+
+    if (onSystemOnly.length) {
+      const sysHeaders = [
+        'Contractor', 'Sub-contractor', 'Fleet no', 'Truck registration', 'Trailer 1', 'Trailer 2',
+        'Atomic fleet status', 'On our system', 'Notes',
+      ];
+      const sysKeys = [
+        'contractor', 'sub_contractor', 'fleet_no', 'registration', 'trailer_1_reg', 'trailer_2_reg',
+        'atomic_status', 'system_status', 'notes',
+      ];
+      buildStyledListSheet(outWorkbook, {
+        sheetName: 'On Thinkers only',
+        headers: sysHeaders,
+        keys: sysKeys,
+        rows: sortAtomicRows(onSystemOnly),
+        info: [
+          ['Tenant:', tenantLabel || '—'],
+          ['Contractor filter:', hauliierLabel],
+          ['Date & time:', formatDateForAppTz(generatedAt)],
+          ['Trucks on Thinkers not in Atomic file:', String(onSystemOnly.length)],
+        ],
+        groupBy: 'sub_contractor',
+        minColumnWidth: 12,
+        maxColumnWidth: 40,
+        autoFilter: true,
+        valueStyles: {
+          system_status: {
+            'On our system only': { fill: SYSTEM_ONLY_FILL, font: { color: { argb: 'FF991B1B' }, bold: true } },
+          },
+        },
+      });
+    }
+
+    const outBuffer = await outWorkbook.xlsx.writeBuffer();
+    const token = randomUUID();
+    const inName = rowText(req.file.originalname) || 'atomic-fleet.xlsx';
+    const baseName = inName.toLowerCase().endsWith('.xlsx') ? inName.replace(/\.xlsx$/i, '') : inName;
+    const safeHaulier = (checkAllContractors ? 'All contractors' : hauliierLabel || 'Contractor').replace(/[^A-Za-z0-9 _-]+/g, '').trim();
+    const filename = `${baseName} - Atomic fleet verification (${safeHaulier}).xlsx`;
+    atomicFleetVerificationCache.set(token, {
+      createdAt: Date.now(),
+      filename,
+      buffer: Buffer.from(outBuffer),
+    });
+
+    res.json({
+      ok: true,
+      token,
+      download_url: `/api/command-centre/atomic-fleet-verification/download/${token}`,
+      file_name: filename,
+      haulier: { id: contractorId, label: hauliierLabel, check_all: checkAllContractors },
+      tenant: { id: tenantId, label: tenantLabel },
+      summary: {
+        total_atomic_rows: results.length,
+        integrated_on_atomic: integratedOnAtomic,
+        not_integrated_on_atomic: results.length - integratedOnAtomic,
+        on_system: matchedOnSystem,
+        not_on_system: results.length - matchedOnSystem,
+        on_system_only: onSystemOnly.length,
+      },
+      results: {
+        atomic: results,
+        on_system_only: onSystemOnly,
+      },
+      ai: {
+        used: !!aiColumns,
+        model: aiColumns ? getAiModel() : null,
+        mapped_headers: detectedColumns,
+      },
+      detected: {
+        sheet: atomicSheet.name,
+        header_row: headerRow,
+        columns: detectedColumns,
+        all_sheets: (workbook.worksheets || []).map((ws) => ws.name),
+        sheets: {
+          atomic: atomicSheet.name,
+          header_row: headerRow,
+          all_sheets: (workbook.worksheets || []).map((ws) => ws.name),
+        },
+      },
+      warnings: [
+        ...(!detectedColumns.registration ? ['No registration column detected. Expected RegistrationNumber or similar.'] : []),
+        ...(!detectedColumns.parent_ownership ? ['No ParentOwnership (contractor) column detected.'] : []),
+        ...(!detectedColumns.ownership ? ['No Ownership (sub-contractor) column detected.'] : []),
+        ...(!detectedColumns.last_location ? ['No LastLocationDatetimeString column detected. Atomic integration requires this column — blank means not integrated.'] : []),
+      ],
+      elapsed_ms: Date.now() - startedAt,
+    });
+  } catch (err) {
+    if (err?.statusCode === 400) return res.status(400).json({ error: err.message });
+    next(err);
+  }
+});
+
+router.get('/atomic-fleet-verification/download/:token', async (req, res, next) => {
+  try {
+    pruneAtomicFleetVerificationCache();
+    const token = String(req.params.token || '');
+    const item = atomicFleetVerificationCache.get(token);
+    if (!item) return res.status(404).json({ error: 'Verification file expired or not found' });
+    if (Date.now() - item.createdAt > FLEET_VERIFICATION_CACHE_TTL_MS) {
+      atomicFleetVerificationCache.delete(token);
+      return res.status(410).json({ error: 'Verification file expired. Please run verification again.' });
+    }
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${item.filename}"`);
+    res.send(item.buffer);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET list for Delete contractors fleets/drivers tab. Query: tenant_id, contractor_id, sub_contractor, type=truck|driver|breakdown|all. */
 router.get('/delete-fleet-drivers/list', async (req, res, next) => {
   try {
-    const { tenant_id: tenantId, contractor_id: contractorId, type = 'all' } = req.query || {};
+    const { tenant_id: tenantId, contractor_id: contractorId, sub_contractor: subContractor, type = 'all' } = req.query || {};
+    const subContractorFilter = String(subContractor || '').trim() || null;
     let tenants = [];
     try {
       const tenantsResult = await query(
@@ -2217,22 +2786,45 @@ router.get('/delete-fleet-drivers/list', async (req, res, next) => {
       );
       contractors = (cResult.recordset || []).map((r) => ({ id: r.id, name: r.name || '' }));
     }
+
+    let subcontractors = [];
+    if (tenantId && contractorId) {
+      try {
+        const subResult = await query(
+          `SELECT DISTINCT LTRIM(RTRIM(sub_contractor)) AS name
+           FROM contractor_trucks
+           WHERE tenant_id = @tenantId AND contractor_id = @contractorId
+             AND sub_contractor IS NOT NULL AND LTRIM(RTRIM(sub_contractor)) <> ''
+           ORDER BY name`,
+          { tenantId, contractorId }
+        );
+        subcontractors = (subResult.recordset || [])
+          .map((r) => rowText(getRow(r, 'name')))
+          .filter(Boolean);
+      } catch (_) {
+        subcontractors = [];
+      }
+    }
+
     const tenantFilter = tenantId ? ' AND tr.tenant_id = @tenantId' : '';
     const contractorFilter = contractorId ? ' AND tr.contractor_id = @contractorId' : '';
+    const subContractorTruckFilter = subContractorFilter ? ' AND LTRIM(RTRIM(tr.sub_contractor)) = @subContractor' : '';
     const params = {};
     if (tenantId) params.tenantId = tenantId;
     if (contractorId) params.contractorId = contractorId;
+    if (subContractorFilter) params.subContractor = subContractorFilter;
 
     let trucks = [];
     if (type === 'all' || type === 'truck') {
       const trResult = await query(
         `SELECT tr.id, tr.tenant_id, tr.contractor_id, tr.registration, tr.make_model, tr.[status],
+          tr.sub_contractor, tr.created_at AS enrolled_at,
           t.name AS tenant_name, c.name AS contractor_name
          FROM contractor_trucks tr
          LEFT JOIN tenants t ON t.id = tr.tenant_id
          LEFT JOIN contractors c ON c.id = tr.contractor_id
-         WHERE 1=1 ${tenantFilter} ${contractorFilter}
-         ORDER BY t.name, c.name, tr.registration`,
+         WHERE 1=1 ${tenantFilter} ${contractorFilter} ${subContractorTruckFilter}
+         ORDER BY t.name, c.name, tr.sub_contractor, tr.registration`,
         params
       );
       trucks = (trResult.recordset || []).map((r) => ({
@@ -2242,6 +2834,8 @@ router.get('/delete-fleet-drivers/list', async (req, res, next) => {
         registration: getRow(r, 'registration'),
         makeModel: getRow(r, 'make_model'),
         status: getRow(r, 'status'),
+        subContractor: getRow(r, 'sub_contractor'),
+        enrolledAt: getRow(r, 'enrolled_at'),
         tenantName: getRow(r, 'tenant_name'),
         contractorName: getRow(r, 'contractor_name'),
       }));
@@ -2251,14 +2845,19 @@ router.get('/delete-fleet-drivers/list', async (req, res, next) => {
     if (type === 'all' || type === 'driver') {
       const drFilter = tenantId ? ' AND d.tenant_id = @tenantId' : '';
       const drContractorFilter = contractorId ? ' AND d.contractor_id = @contractorId' : '';
+      const subContractorDriverFilter = subContractorFilter
+        ? ' AND LTRIM(RTRIM(lt.sub_contractor)) = @subContractor'
+        : '';
       const drResult = await query(
         `SELECT d.id, d.tenant_id, d.contractor_id, d.full_name, d.surname, d.id_number, d.license_number,
+          d.created_at AS enrolled_at, lt.sub_contractor,
           t.name AS tenant_name, c.name AS contractor_name
          FROM contractor_drivers d
          LEFT JOIN tenants t ON t.id = d.tenant_id
          LEFT JOIN contractors c ON c.id = d.contractor_id
-         WHERE 1=1 ${drFilter} ${drContractorFilter}
-         ORDER BY t.name, c.name, d.full_name, d.surname`,
+         LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id
+         WHERE 1=1 ${drFilter} ${drContractorFilter} ${subContractorDriverFilter}
+         ORDER BY t.name, c.name, lt.sub_contractor, d.full_name, d.surname`,
         params
       );
       drivers = (drResult.recordset || []).map((r) => ({
@@ -2269,6 +2868,8 @@ router.get('/delete-fleet-drivers/list', async (req, res, next) => {
         surname: getRow(r, 'surname'),
         idNumber: getRow(r, 'id_number'),
         licenseNumber: getRow(r, 'license_number'),
+        subContractor: getRow(r, 'sub_contractor'),
+        enrolledAt: getRow(r, 'enrolled_at'),
         tenantName: getRow(r, 'tenant_name'),
         contractorName: getRow(r, 'contractor_name'),
       }));
@@ -2332,7 +2933,7 @@ router.get('/delete-fleet-drivers/list', async (req, res, next) => {
       }
     }
 
-    res.json({ trucks, drivers, breakdowns, tenants, contractors });
+    res.json({ trucks, drivers, breakdowns, tenants, contractors, subcontractors });
   } catch (err) {
     next(err);
   }

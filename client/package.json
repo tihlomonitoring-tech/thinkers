@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "fetch-bg": "node scripts/fetch-shell-bg.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

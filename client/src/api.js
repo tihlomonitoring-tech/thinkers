@@ -657,11 +657,39 @@ export const commandCentre = {
     },
     downloadUrl: (token) => `${API}/command-centre/fleet-verification/download/${encodeURIComponent(token)}`,
   },
+  atomicFleetVerification: {
+    contractors: (tenantId) => {
+      const q = new URLSearchParams();
+      if (tenantId) q.set('tenant_id', tenantId);
+      return request(`/command-centre/atomic-fleet-verification/contractors${q.toString() ? `?${q.toString()}` : ''}`);
+    },
+    verify: (file, tenantId, contractorId) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (tenantId) formData.append('tenant_id', tenantId);
+      if (contractorId) formData.append('contractor_id', contractorId);
+      return fetch(`${API}/command-centre/atomic-fleet-verification/verify`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        })
+        .catch((err) => {
+          throw wrapNetworkError(err);
+        });
+    },
+    downloadUrl: (token) => `${API}/command-centre/atomic-fleet-verification/download/${encodeURIComponent(token)}`,
+  },
   deleteFleetDrivers: {
     list: (params = {}) => {
       const q = new URLSearchParams();
       if (params.tenant_id) q.set('tenant_id', params.tenant_id);
       if (params.contractor_id) q.set('contractor_id', params.contractor_id);
+      if (params.sub_contractor) q.set('sub_contractor', params.sub_contractor);
       if (params.type) q.set('type', params.type);
       return request(`/command-centre/delete-fleet-drivers/list${q.toString() ? `?${q.toString()}` : ''}`);
     },

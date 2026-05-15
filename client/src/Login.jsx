@@ -4,9 +4,7 @@ import { useAuth } from './AuthContext';
 import { getFirstAllowedPath } from './lib/pageAccess.js';
 import { getCurrentPosition } from './lib/geolocation.js';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
-
-const BG_IMAGE =
-  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=2400&q=85';
+import ShellBackgroundImage from './components/ShellBackgroundImage.jsx';
 
 const REMEMBER_KEY = 'thinkers-login-remember';
 const EMAIL_KEY = 'thinkers-login-email';
@@ -112,7 +110,7 @@ export default function Login() {
     >
       {/* Full-bleed cinematic background */}
       <div className="fixed inset-0 z-0" aria-hidden>
-        <img src={BG_IMAGE} alt="" className="h-full w-full object-cover scale-105" />
+        <ShellBackgroundImage className="h-full w-full object-cover scale-105" />
         <div className="absolute inset-0 bg-gradient-to-r from-black/88 via-black/55 to-slate-950/75" />
         <div className="absolute inset-0 bg-gradient-to-t from-orange-950/50 via-transparent to-amber-500/15" />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_120%_80%_at_0%_20%,rgba(251,146,60,0.35),transparent_55%)]" />
