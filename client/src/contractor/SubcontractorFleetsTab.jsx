@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import { contractor as contractorApi } from '../api';
+import FleetChangeDiffTable from '../components/FleetChangeDiffTable.jsx';
 
 function formatDateTime(d) {
   if (!d) return '—';
@@ -32,8 +33,19 @@ export default function SubcontractorFleetsTab({ onChanged, setError: setParentE
   const [declineTarget, setDeclineTarget] = useState(null);
   const [declineReason, setDeclineReason] = useState('');
   const [declineKind, setDeclineKind] = useState('fleet');
+  const [changeRequests, setChangeRequests] = useState([]);
 
   const load = useCallback(() => {
+    if (section === 'edits') {
+      setLoading(true);
+      return contractorApi.fleetChangeRequests.list({ scope: 'contractor' })
+        .then((r) => setChangeRequests(r.changeRequests || []))
+        .catch((e) => {
+          setChangeRequests([]);
+          if (setParentError) setParentError(e?.message || 'Failed to load pending edits');
+        })
+        .finally(() => setLoading(false));
+    }
     setLoading(true);
     const params = { status: statusFilter, search: search.trim(), sort, order };
     if (subFilter) params.subcontractor_id = subFilter;
@@ -123,8 +135,22 @@ export default function SubcontractorFleetsTab({ onChanged, setError: setParentE
 
   const pendingFleet = trucks.filter((t) => (t.contractor_approval_status || t.contractorApprovalStatus) === 'pending_contractor').length;
   const pendingDrivers = drivers.filter((d) => (d.contractor_approval_status || d.contractorApprovalStatus) === 'pending_contractor').length;
-  const pendingCount = section === 'fleet' ? pendingFleet : pendingDrivers;
+  const pendingCount = section === 'fleet' ? pendingFleet : section === 'drivers' ? pendingDrivers : changeRequests.length;
   const rows = section === 'fleet' ? trucks : drivers;
+
+  const approveChange = async (id) => {
+    setActingId(id);
+    if (setParentError) setParentError('');
+    try {
+      await contractorApi.fleetChangeRequests.approveContractor(id);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      if (setParentError) setParentError(e?.message || 'Approve failed');
+    } finally {
+      setActingId(null);
+    }
+  };
 
   return (
     <div className="w-full space-y-4">
@@ -151,8 +177,58 @@ export default function SubcontractorFleetsTab({ onChanged, setError: setParentE
             Drivers
             {pendingDrivers > 0 && <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-900">{pendingDrivers}</span>}
           </button>
+          <button
+            type="button"
+            onClick={() => setSection('edits')}
+            className={`px-4 py-1.5 text-sm rounded-md font-medium transition-colors ${section === 'edits' ? 'bg-white text-surface-900 shadow-sm' : 'text-surface-600 hover:text-surface-900'}`}
+          >
+            Pending edits
+            {changeRequests.length > 0 && <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full bg-red-200 text-red-900">{changeRequests.length}</span>}
+          </button>
         </div>
 
+        {section === 'edits' ? (
+          loading ? (
+            <p className="text-sm text-surface-500">Loading…</p>
+          ) : changeRequests.length === 0 ? (
+            <p className="text-sm text-surface-500">No sub-contractor edits awaiting your approval.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-red-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-red-50 border-b border-red-100">
+                    <th className="text-left p-2">Sub-contractor</th>
+                    <th className="text-left p-2">Truck</th>
+                    <th className="text-left p-2">Comment</th>
+                    <th className="text-left p-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {changeRequests.map((cr) => (
+                    <Fragment key={cr.id}>
+                      <tr className="border-b border-red-50 bg-red-50/40">
+                        <td className="p-2">{cr.subcontractorDisplay || '—'}</td>
+                        <td className="p-2 font-mono">{cr.truckRegistration || cr.proposed?.registration || '—'}</td>
+                        <td className="p-2 max-w-xs truncate" title={cr.commentText || ''}>{cr.commentText || '—'}</td>
+                        <td className="p-2">
+                          <button type="button" disabled={actingId === cr.id} onClick={() => approveChange(cr.id)} className="px-2 py-1 text-xs rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
+                            Approve for CC
+                          </button>
+                        </td>
+                      </tr>
+                      <tr className="border-b border-red-50 bg-red-50/20">
+                        <td colSpan={4} className="p-3">
+                          <FleetChangeDiffTable previous={cr.previous} proposed={cr.proposed} />
+                        </td>
+                      </tr>
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : (
+        <>
         <div className="flex flex-wrap gap-3 items-end mb-4">
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium text-surface-600">Status</span>
@@ -316,6 +392,8 @@ export default function SubcontractorFleetsTab({ onChanged, setError: setParentE
               </tbody>
             </table>
           </div>
+        )}
+        </>
         )}
       </div>
 

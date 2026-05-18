@@ -33,6 +33,14 @@ import {
   buildDriverMainContractorClause,
   rejectSubcontractorPortalUser,
 } from '../lib/subcontractorFleet.js';
+import {
+  submitTruckChangeRequest,
+  truckNeedsChangeApproval,
+  mapChangeRequestRow,
+  applyTruckChangeRequest,
+  getActiveChangeRequest,
+} from '../lib/fleetChangeRequests.js';
+import logisticsFlowRouter from './logisticsFlow.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -671,11 +679,23 @@ router.get('/trucks', async (req, res, next) => {
     const subcontractorIds = subScopeCtx.ids;
     const includePending = String(req.query.include_pending || '') === '1';
     let sql = `SELECT t.*, co.name AS contractor_company_name, sc.company_name AS subcontractor_company_name,
-        u.full_name AS added_by_name
+        u.full_name AS added_by_name,
+        pcr.id AS pending_change_id, pcr.contractor_status AS pending_change_contractor_status,
+        pcr.cc_status AS pending_change_cc_status, pcr.registration_changed AS pending_change_registration_changed,
+        pcr.had_facility_access AS pending_change_had_facility_access, pcr.comment_text AS pending_change_comment,
+        pcr.submitter_role AS pending_change_submitter_role, pcr.proposed_json AS pending_change_proposed_json,
+        pcr.previous_json AS pending_change_previous_json
        FROM contractor_trucks t
        LEFT JOIN contractors co ON co.id = t.contractor_id AND co.tenant_id = @tenantId
        LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id
        LEFT JOIN users u ON u.id = t.added_by_user_id
+       OUTER APPLY (
+         SELECT TOP 1 cr.id, cr.contractor_status, cr.cc_status, cr.registration_changed, cr.had_facility_access,
+           cr.comment_text, cr.submitter_role, cr.proposed_json, cr.previous_json
+         FROM contractor_fleet_change_requests cr
+         WHERE cr.entity_type = N'truck' AND cr.entity_id = t.id AND cr.cc_status = N'pending'
+         ORDER BY cr.created_at DESC
+       ) pcr
        WHERE t.tenant_id = @tenantId`;
     const params = { tenantId };
     if (allowed && allowed.length === 0 && !isSubcontractorPortalUser(subcontractorIds)) {
@@ -692,12 +712,144 @@ router.get('/trucks', async (req, res, next) => {
     sql += subScope.clause;
     Object.assign(params, subScope.params);
     sql += ` ORDER BY t.created_at DESC`;
-    const result = await query(sql, params);
-    res.json({ trucks: result.recordset });
+    let result;
+    try {
+      result = await query(sql, params);
+    } catch (err) {
+      if (err.message?.includes('contractor_fleet_change_requests')) {
+        sql = sql.replace(/OUTER APPLY \([\s\S]*?\) pcr\s*/m, '');
+        sql = sql.replace(/,\s*pcr\.[^\n]+/g, '');
+        result = await query(sql, params);
+      } else throw err;
+    }
+    const trucks = (result.recordset || []).map((row) => {
+      const pendingChangeId = row.pending_change_id ?? row.Pending_Change_Id;
+      if (!pendingChangeId) return row;
+      let proposed = null;
+      let previous = null;
+      const proposedJson = row.pending_change_proposed_json ?? row.Pending_Change_Proposed_Json;
+      const previousJson = row.pending_change_previous_json ?? row.Pending_Change_Previous_Json;
+      try { proposed = JSON.parse(proposedJson || '{}'); } catch (_) {}
+      try { previous = JSON.parse(previousJson || '{}'); } catch (_) {}
+      return {
+        ...row,
+        has_pending_change: true,
+        pending_change: {
+          id: pendingChangeId,
+          contractor_status: row.pending_change_contractor_status ?? row.Pending_Change_Contractor_Status,
+          cc_status: row.pending_change_cc_status ?? row.Pending_Change_Cc_Status,
+          registration_changed: !!(row.pending_change_registration_changed ?? row.Pending_Change_Registration_Changed),
+          had_facility_access: !!(row.pending_change_had_facility_access ?? row.Pending_Change_Had_Facility_Access),
+          comment: row.pending_change_comment ?? row.Pending_Change_Comment ?? null,
+          submitter_role: row.pending_change_submitter_role ?? row.Pending_Change_Submitter_Role,
+          proposed,
+          previous,
+        },
+      };
+    });
+    res.json({ trucks });
   } catch (err) {
     next(err);
   }
 });
+
+router.get('/fleet-change-requests', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const subIds = await getRequestSubcontractorIds(req);
+    if (isSubcontractorPortalUser(subIds)) {
+      return res.status(403).json({ error: 'Sub-contractor users cannot list change requests.' });
+    }
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) return res.json({ changeRequests: [] });
+
+    const scope = String(req.query.scope || 'contractor');
+    let statusClause = `cr.cc_status = N'pending' AND cr.contractor_status = N'pending_contractor'`;
+    if (scope === 'cc') statusClause = `cr.cc_status = N'pending' AND cr.contractor_status IN (N'approved_contractor', N'not_required')`;
+
+    const params = { tenantId };
+    let sql = `SELECT cr.*, t.registration AS truck_registration, sc.company_name AS subcontractor_company_name,
+        c.name AS contractor_company_name
+       FROM contractor_fleet_change_requests cr
+       INNER JOIN contractor_trucks t ON t.id = cr.entity_id AND cr.entity_type = N'truck'
+       LEFT JOIN contractors c ON c.id = t.contractor_id
+       LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id
+       WHERE cr.tenant_id = @tenantId AND ${statusClause}`;
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND t.contractor_id IN (${ph})`;
+      allowed.forEach((id, i) => { params[`c${i}`] = id; });
+    }
+    sql += ' ORDER BY cr.created_at DESC';
+    const result = await query(sql, params);
+    const changeRequests = (result.recordset || []).map((r) => ({
+      ...mapChangeRequestRow(r),
+      truckRegistration: r.truck_registration ?? r.Truck_Registration,
+      contractorName: r.contractor_company_name ?? r.Contractor_Company_Name,
+      subcontractorDisplay: r.subcontractor_company_name ?? r.Subcontractor_Company_Name,
+    }));
+    res.json({ changeRequests });
+  } catch (err) {
+    if (err.message?.includes('Invalid object name')) return res.json({ changeRequests: [], migrationRequired: true });
+    next(err);
+  }
+});
+
+router.patch('/fleet-change-requests/:id/approve-contractor', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    if (await rejectSubcontractorPortalUser(req, res)) return;
+    const allowed = await getAllowedContractorIds(req);
+    const chk = await query(
+      `SELECT cr.*, t.contractor_id FROM contractor_fleet_change_requests cr
+       INNER JOIN contractor_trucks t ON t.id = cr.entity_id
+       WHERE cr.id = @id AND cr.tenant_id = @tenantId AND cr.cc_status = N'pending'`,
+      { id, tenantId }
+    );
+    const row = chk.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Pending change not found' });
+    if ((row.contractor_status ?? row.Contractor_Status) !== 'pending_contractor') {
+      return res.status(400).json({ error: 'Not awaiting contractor approval' });
+    }
+    const cid = row.contractor_id ?? row.Contractor_Id;
+    if (allowed && allowed.length > 0 && !allowed.some((a) => String(a).toLowerCase() === String(cid).toLowerCase())) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
+    await query(
+      `UPDATE contractor_fleet_change_requests
+       SET contractor_status = N'approved_contractor', contractor_reviewed_by_user_id = @userId,
+           contractor_reviewed_at = SYSUTCDATETIME(), contractor_decline_reason = NULL
+       WHERE id = @id`,
+      { id, userId: req.user?.id }
+    );
+    res.json({ ok: true, message: 'Change approved. It is now with Command Centre for final acceptance.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/fleet-change-requests/:id/decline-contractor', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Decline reason is required' });
+    if (await rejectSubcontractorPortalUser(req, res)) return;
+    await query(
+      `UPDATE contractor_fleet_change_requests
+       SET contractor_status = N'declined_contractor', cc_status = N'declined',
+           contractor_decline_reason = @reason, contractor_reviewed_by_user_id = @userId,
+           contractor_reviewed_at = SYSUTCDATETIME(), cc_reviewed_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId AND contractor_status = N'pending_contractor'`,
+      { id, tenantId, reason, userId: req.user?.id }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/trucks', async (req, res, next) => {
   try {
     const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
@@ -772,22 +924,72 @@ router.patch('/trucks/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const body = req.body || {};
+    const tenantId = getTenantId(req);
     const {
       main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
       commodity_type, capacity_tonnes, status,
     } = body;
+    const existingResult = await query(
+      `SELECT t.* FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const existingRow = existingResult.recordset?.[0];
+    if (!existingRow) return res.status(404).json({ error: 'Truck not found' });
+
+    const subIds = await getRequestSubcontractorIds(req);
+    const isSubUser = isSubcontractorPortalUser(subIds);
+    if (isSubUser) {
+      const scope = buildTruckScopeClause(await getRequestSubcontractorScope(req), { alias: 't' });
+      const scopeCheck = await query(
+        `SELECT 1 AS ok FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId${scope.clause}`,
+        { id, tenantId, ...scope.params }
+      );
+      if (!scopeCheck.recordset?.length) return res.status(403).json({ error: 'Not permitted for this truck' });
+    }
+
     const regTrim = registration != null ? String(registration).trim() : null;
     if (regTrim !== null && regTrim !== '') {
-      const existingRow = await query(
-        'SELECT contractor_id FROM contractor_trucks WHERE id = @id AND tenant_id = @tenantId',
-        { id, tenantId: req.user.tenant_id }
-      );
-      const existingContractorId = existingRow.recordset?.[0]?.contractor_id ?? null;
-      if (await truckRegistrationExists(req.user.tenant_id, regTrim, id, existingContractorId)) {
+      const existingContractorId = existingRow.contractor_id ?? existingRow.Contractor_Id ?? null;
+      if (await truckRegistrationExists(tenantId, regTrim, id, existingContractorId)) {
         return res.status(409).json({ error: 'Another truck with this registration already exists under this contractor.' });
       }
     }
+
+    const commentText = body.change_comment ?? body.comment ?? null;
+    if (truckNeedsChangeApproval(existingRow, isSubUser)) {
+      try {
+        const submitted = await submitTruckChangeRequest({
+          tenantId,
+          truckId: id,
+          existingRow,
+          body,
+          userId: req.user?.id,
+          isSubcontractorUser: isSubUser,
+          commentText,
+        });
+        if (submitted.skipped) {
+          return res.json({ truck: existingRow, pendingChange: false });
+        }
+        const active = await getActiveChangeRequest('truck', id);
+        return res.json({
+          truck: existingRow,
+          pendingChange: true,
+          changeRequest: mapChangeRequestRow(active),
+          message: isSubUser
+            ? 'Changes submitted for contractor approval, then Command Centre review.'
+            : 'Changes submitted for Command Centre approval. They stay highlighted until accepted.',
+          registrationChanged: submitted.registrationChanged,
+          requiresReenrollmentOnAccept: submitted.registrationChanged && submitted.hadFacilityAccess,
+        });
+      } catch (e) {
+        if (e.message?.includes('Invalid object name')) {
+          return res.status(503).json({ error: 'Change approval is not set up. Run: node scripts/run-fleet-change-requests-schema.js' });
+        }
+        throw e;
+      }
+    }
+
     const result = await query(
       `UPDATE contractor_trucks SET
         main_contractor = @main_contractor, sub_contractor = @sub_contractor, make_model = @make_model, year_model = @year_model,
@@ -5139,5 +5341,7 @@ router.get('/messages/:id/attachments/:attachmentId', async (req, res, next) => 
     next(err);
   }
 });
+
+router.use('/logistics-flow', logisticsFlowRouter);
 
 export default router;

@@ -13,6 +13,9 @@ import SubcontractorFleetsTab from './contractor/SubcontractorFleetsTab.jsx';
 import FleetAdvancedView from './contractor/FleetAdvancedView.jsx';
 import DriverAdvancedView from './contractor/DriverAdvancedView.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
+import FleetChangeDiffTable from './components/FleetChangeDiffTable.jsx';
+import LogisticsFlowPage from './components/LogisticsFlowPage.jsx';
+import { parsePendingChangeJson } from './lib/fleetChangeDiff.js';
 
 const CONTRACTOR_NAV = [
   {
@@ -54,6 +57,7 @@ const CONTRACTOR_NAV = [
   {
     section: 'Operations',
     items: [
+      { id: 'logistics-flow', label: 'Logistics flow & updates', icon: 'route' },
       { id: 'incidents', label: 'Report breakdown / incidents', icon: 'alert' },
       { id: 'expiries', label: 'Expiries', icon: 'calendar' },
       { id: 'suspensions', label: 'Suspensions and appeals', icon: 'ban' },
@@ -261,6 +265,7 @@ export default function Contractor() {
   const [driverLinkedTruckDropdownOpen, setDriverLinkedTruckDropdownOpen] = useState(false);
   const driverLinkedTruckDropdownRef = useRef(null);
   const [savingTruck, setSavingTruck] = useState(false);
+  const [fleetChangeComment, setFleetChangeComment] = useState('');
   const [savingDriver, setSavingDriver] = useState(false);
   const [expiryRefSearch, setExpiryRefSearch] = useState('');
   const [expiryRefDropdownOpen, setExpiryRefDropdownOpen] = useState(false);
@@ -1142,8 +1147,15 @@ export default function Contractor() {
         status: form.status?.value || 'active',
       };
       if (newPassword) body.tracking_password = newPassword;
+      if (fleetChangeComment.trim()) body.change_comment = fleetChangeComment.trim();
       const res = await contractorApi.trucks.update(selectedFleetTruck.id, body);
-      if (res?.truck) setSelectedFleetTruck(res.truck);
+      if (res?.pendingChange) {
+        setFleetChangeComment('');
+        window.alert(res.message || 'Changes submitted for approval. The truck stays highlighted until accepted.');
+      } else if (res?.truck) {
+        setSelectedFleetTruck(res.truck);
+        setFleetChangeComment('');
+      }
       load();
     } catch (err) {
       setError(err?.message || 'Failed to save truck');
@@ -1928,6 +1940,23 @@ export default function Contractor() {
                       const providerInList = TRACKING_PROVIDERS.some((p) => (p || '') === (trackingProvider || ''));
                       return (
                         <>
+                          {(t.has_pending_change || t.pending_change?.id) && (() => {
+                            const { previous, proposed } = parsePendingChangeJson(t);
+                            return (
+                            <div className="rounded-lg border border-red-300 bg-red-50 p-3 mb-2 space-y-2">
+                              <p className="text-xs font-medium text-red-800 uppercase tracking-wider">Pending changes</p>
+                              <p className="text-sm text-red-900">
+                                {t.pending_change?.contractor_status === 'pending_contractor'
+                                  ? 'Awaiting main contractor approval, then Command Centre.'
+                                  : 'Awaiting Command Centre to accept your changes.'}
+                              </p>
+                              {t.pending_change?.comment && (
+                                <p className="text-sm text-red-800 whitespace-pre-wrap">Comment: {t.pending_change.comment}</p>
+                              )}
+                              <FleetChangeDiffTable previous={previous} proposed={proposed} />
+                            </div>
+                            );
+                          })()}
                           <div className="rounded-lg border border-surface-200 bg-surface-50 p-3 mb-2">
                             <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Facility access</p>
                             {t.facility_access ? (
@@ -2016,6 +2045,17 @@ export default function Contractor() {
                               <option value="active">Active</option>
                               <option value="inactive">Inactive</option>
                             </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Comment (optional)</label>
+                            <textarea
+                              value={fleetChangeComment}
+                              onChange={(e) => setFleetChangeComment(e.target.value)}
+                              rows={2}
+                              placeholder="Explain changes for approvers…"
+                              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                            />
+                            <p className="text-xs text-surface-500 mt-1">Edits are highlighted until approved. Registration changes on approved trucks require re-enrollment after acceptance.</p>
                           </div>
                         </>
                       );
@@ -2255,6 +2295,10 @@ export default function Contractor() {
                   )}
                 </div>
               </div>
+            )}
+
+            {activeTab === 'logistics-flow' && (
+              <LogisticsFlowPage logisticsApi={contractorApi.logisticsFlow} routesApi={contractorApi.routes} portal="contractor" />
             )}
 
             {activeTab === 'incidents' && (

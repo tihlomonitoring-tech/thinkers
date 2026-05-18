@@ -23,6 +23,7 @@
     "db:contractor-unique": "node scripts/run-contractor-unique.js",
     "db:command-centre": "node scripts/run-command-centre-schema.js",
     "db:truck-analysis-handovers": "node scripts/run-truck-analysis-handovers.js",
+    "db:logistics-flow": "node scripts/run-logistics-flow-schema.js",
     "db:command-centre-shift-reports": "node scripts/run-command-centre-shift-reports.js",
     "db:command-centre-single-ops-shift-reports": "node scripts/run-command-centre-single-ops-shift-reports.js",
     "db:command-centre-controller-evaluations": "node scripts/run-command-centre-controller-evaluations.js",

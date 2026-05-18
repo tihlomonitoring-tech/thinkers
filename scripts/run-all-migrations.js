@@ -32,6 +32,7 @@ const SCRIPTS = [
   'db:contractor-unique',
   'db:command-centre',
   'db:truck-analysis-handovers',
+  'db:logistics-flow',
   'db:command-centre-shift-reports',
   'db:command-centre-investigation-reports',
   'db:command-centre-library-documents',

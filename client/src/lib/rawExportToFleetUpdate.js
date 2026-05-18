@@ -16,7 +16,13 @@ function normalizeRawExportLine(line) {
 }
 
 function stripMarkdownBold(s) {
-  return String(s || '').replace(/\*\*/g, '').trim();
+  return String(s || '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
+}
+
+/** WhatsApp single-asterisk bold. */
+function wrapWhatsAppBold(inner) {
+  const s = stripMarkdownBold(inner);
+  return s ? `*${s}*` : '';
 }
 
 /**
@@ -328,26 +334,41 @@ function wrapFleetStatusBold(inner) {
   return s ? `*${s}*` : '*—*';
 }
 
+function normalizeStatusToken(plain) {
+  return String(plain || '')
+    .replace(/\s*\([DO]\)\s*$/i, '')
+    .replace(/\bOFF[\s-]?LOAD(?:ING)?\b/gi, 'OFFLOADING')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function formatStatusForFleetLine(rawStatus, dest) {
   const d = (dest || 'destination').trim() || 'destination';
-  const plain = stripMarkdownBold(rawStatus);
+  let plain = normalizeStatusToken(stripMarkdownBold(rawStatus));
   const u = plain.toUpperCase();
+  if (/\bat\s+[A-Za-z][A-Za-z0-9\s]{1,40}$/i.test(plain) && !/^\s*QUEU/i.test(plain)) {
+    return wrapFleetStatusBold(plain);
+  }
   // Queuing / queueing / queue at (exports vary in spelling and spacing)
   const queuingAt =
     /QUEU(?:E)?ING\s+AT\b/i.test(plain) ||
     /\bQUEUE\s+AT\b/i.test(plain) ||
     /\bIN\s+QUEUE\s+(?:AT|FOR)\b/i.test(u);
+  const offloading =
+    /\bOFFLOAD(?:ING)?\b/i.test(plain) ||
+    /\bOFF[\s-]?LOAD(?:ING)?\b/i.test(plain) ||
+    /\bUNLOAD(?:ING)?\b/i.test(u);
   const queuingLoose =
     /\bQUEU(?:E)?ING\b/i.test(plain) &&
     !/\bDEQUEU/i.test(u) &&
     !/\bEN[\s-]?ROUTE\b/.test(u) &&
     !/\bENROUTE\b/.test(u) &&
-    !/\bOFFLOAD/.test(u);
+    !offloading;
+  if (offloading) {
+    return wrapFleetStatusBold(`Offloading at ${d}`);
+  }
   if (queuingAt || queuingLoose) {
     return wrapFleetStatusBold(`Queuing at ${d}`);
-  }
-  if (/\bOFFLOAD/.test(u)) {
-    return wrapFleetStatusBold(`Offloading at ${d}`);
   }
   if (/\bEN[\s-]?ROUTE\b/.test(u) || /\bENROUTE\b/.test(u) || /\bIN\s+TRANSIT\b/.test(u)) {
     return wrapFleetStatusBold(`Enroute to ${d}`);
@@ -552,6 +573,110 @@ export function convertRawExportToFleetUpdate(opts) {
 
   return { text: `${out.join('\n')}\n`, warnings, linesConverted };
 }
+
+/** Plain status for tables (no WhatsApp asterisks). */
+export function formatPresentableStatus(rawStatus, destShort) {
+  return stripMarkdownBold(formatStatusForFleetLine(rawStatus, destShort));
+}
+
+export function resolveRouteDestinationShort(routeLabel) {
+  if (!routeLabel) return 'destination';
+  return shortDestinationLabel(destinationFromRouteName(routeLabel)) || String(routeLabel).trim() || 'destination';
+}
+
+/**
+ * Refine parsed row status for WhatsApp (Queuing at Majuba PS, not QUEUEING (D)).
+ */
+export function refineRowForWhatsApp(row, routeLabel) {
+  const route = routeLabel || row.route || '';
+  const destShort = resolveRouteDestinationShort(route);
+  const imported = row.rawStatus ?? row.status ?? '';
+  const displayStatus = formatPresentableStatus(imported, destShort);
+  return {
+    ...row,
+    rawStatus: row.rawStatus ?? imported,
+    status: displayStatus,
+    displayStatus,
+  };
+}
+
+/**
+ * Build full WhatsApp fleet update block from reviewed rows.
+ */
+export function buildWhatsAppFleetUpdateFromRows({ rows, routeLabel, dayName, isoDate }) {
+  const fallback = defaultHeaderNow();
+  const dn = dayName || fallback.dayName;
+  const id = isoDate || fallback.isoDate;
+  const routeLine = String(routeLabel || '')
+    .replace(/\*/g, '')
+    .trim();
+  const destShort = resolveRouteDestinationShort(routeLine);
+  const validRows = (rows || []).filter((r) => normalizeRegistration(r.registration));
+  const truckCount = validRows.length;
+  const totalTons = validRows.reduce(
+    (sum, r) => sum + (Number.isFinite(Number(r.tons)) ? Number(r.tons) : 0),
+    0
+  );
+
+  const out = [];
+  out.push('*FLEET UPDATE/ALLOCATION*');
+  out.push('');
+  out.push(dn);
+  out.push('');
+  out.push(id);
+  out.push('');
+  out.push(`*Total trucks for this update:* ${truckCount}`);
+  out.push(`*Total tonnages for this update:* ${totalTons.toFixed(2)}`);
+  out.push('');
+  if (routeLine) {
+    out.push(`*${routeLine}*`);
+    out.push('');
+  }
+
+  for (const row of validRows) {
+    const reg = normalizeRegistration(row.registration);
+    const entity = formatEntityParen(
+      row.suggestedContractor || row.systemContractor || row.entity || 'Unknown'
+    );
+    const statusPlain = row.statusManuallyEdited
+      ? stripMarkdownBold(row.displayStatus || row.status || '')
+      : formatPresentableStatus(row.rawStatus || row.displayStatus || row.status || '', destShort);
+    const statusPart = wrapWhatsAppBold(statusPlain);
+    const tons = Number(row.tons);
+    const hours = Number(row.hours);
+    if (Number.isNaN(tons) || Number.isNaN(hours)) continue;
+    const regPart =
+      row.enrollmentFound === false ? `*${reg}* ⚠ Not integrated` : reg;
+    let line = `${regPart} - ${entity} - ${statusPart} - Tons ${tons.toFixed(2)} - Hours: ${hours.toFixed(2)}`;
+    const comment = String(row.comment || '').trim();
+    if (comment) {
+      line += ` — Comment: ${comment}`;
+    }
+    out.push(line);
+  }
+
+  return `${out.join('\n')}\n`;
+}
+
+/** Example refined output (Load sample). */
+export const WHATSAPP_FLEET_UPDATE_SAMPLE = `*FLEET UPDATE/ALLOCATION*
+
+Monday
+
+2026-05-18
+
+*Total trucks for this update:* 6
+*Total tonnages for this update:* 204.38
+
+*NTSHOVELO -> MAJUBA POWER STATION*
+
+JW40LXGP - (SINGISI) - *Queuing at Majuba PS* - Tons 33.00 - Hours: 24.19
+KGM364MP - (SINGISI) - *Queuing at Majuba PS* - Tons 33.00 - Hours: 24.18
+LBG177MP - (TTC) - *Queuing at Majuba PS* - Tons 33.00 - Hours: 24.15
+JWV080MP - (SINGISI) - *Enroute to Majuba PS* - Tons 36.00 - Hours: 1.61
+KGC381MP - (SINGISI) - *Offloading at Majuba PS* - Tons 34.40 - Hours: 1.48
+*MF49BMGP* ⚠ Not integrated - (COLT LOGISTICS) - *Queuing at Ntshovelo* - Tons 34.80 - Hours: 0.26
+`;
 
 const RE_BREAKDOWN_HINT =
   /\b(break\s*down|breakdown|broke\s+down|tyre|tire|puncture|overheat|accident|immobil|stuck|cannot\s+move|engine\s+fault|transmission\s+fault|hydraulic|axle)\b/i;

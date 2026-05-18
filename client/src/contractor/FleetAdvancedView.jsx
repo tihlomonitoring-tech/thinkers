@@ -1,6 +1,20 @@
 import { useMemo, useState } from 'react';
 
+function pendingChangeBadge(t) {
+  if (!t.has_pending_change && !t.pending_change?.id) return null;
+  const pc = t.pending_change || {};
+  if (pc.contractor_status === 'pending_contractor') {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300">Awaiting contractor approval</span>;
+  }
+  return (
+    <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300" title={pc.comment || 'Pending change'}>
+      Pending change — CC review
+    </span>
+  );
+}
+
 function facilityBadge(t) {
+  if (t.has_pending_change || t.pending_change?.id) return pendingChangeBadge(t);
   if (t.facility_access) return <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Facility access</span>;
   if (t.last_decline_reason) return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800" title={t.last_decline_reason}>Declined</span>;
   const cas = t.contractor_approval_status ?? t.contractorApprovalStatus;
@@ -36,6 +50,7 @@ export default function FleetAdvancedView({ trucks, onSelectTruck, selectedTruck
       if (statusFilter === 'pending_cc') return !t.facility_access && !t.last_decline_reason && (t.contractor_approval_status ?? t.contractorApprovalStatus) !== 'pending_contractor';
       if (statusFilter === 'pending_contractor') return (t.contractor_approval_status ?? t.contractorApprovalStatus) === 'pending_contractor';
       if (statusFilter === 'declined') return Boolean(t.last_decline_reason) || (t.contractor_approval_status ?? t.contractorApprovalStatus) === 'declined_contractor';
+      if (statusFilter === 'pending_changes') return Boolean(t.has_pending_change || t.pending_change?.id);
       if (!q) return true;
       return (
         String(t.registration || '').toLowerCase().includes(q) ||
@@ -97,6 +112,7 @@ export default function FleetAdvancedView({ trucks, onSelectTruck, selectedTruck
             <option value="pending_cc">Pending Command Centre</option>
             {!isSubcontractorUser && <option value="pending_contractor">Awaiting contractor</option>}
             <option value="declined">Declined</option>
+            <option value="pending_changes">Pending changes</option>
           </select>
         </label>
       </div>
@@ -143,7 +159,11 @@ export default function FleetAdvancedView({ trucks, onSelectTruck, selectedTruck
                   onClick={() => onSelectTruck?.(t)}
                   onKeyDown={(e) => e.key === 'Enter' && onSelectTruck?.(t)}
                   className={`border-b border-surface-100 cursor-pointer transition-colors ${
-                    selectedTruckId === t.id ? 'bg-brand-50' : 'hover:bg-surface-50/80'
+                    t.has_pending_change || t.pending_change?.id
+                      ? 'bg-red-50 border-l-4 border-l-red-500 hover:bg-red-100/80'
+                      : selectedTruckId === t.id
+                        ? 'bg-brand-50'
+                        : 'hover:bg-surface-50/80'
                   }`}
                 >
                   <td className="p-2 font-mono font-medium">{t.registration || '—'}</td>

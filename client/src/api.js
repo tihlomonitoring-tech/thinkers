@@ -1,4 +1,5 @@
 import { getApiBase } from './lib/apiBase.js';
+import { createLogisticsFlowApi } from './lib/logisticsFlowApi.js';
 
 // In dev, call API directly so it works even if proxy fails. Override with VITE_API_BASE in client .env.
 const API = getApiBase();
@@ -194,6 +195,17 @@ export const contractor = {
     if (params.contractor_id) q.set('contractor_id', params.contractor_id);
     return request(`/contractor/fleet-truck-approval-summary${q.toString() ? `?${q.toString()}` : ''}`);
   },
+  fleetChangeRequests: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return request(`/contractor/fleet-change-requests${q ? `?${q}` : ''}`);
+    },
+    approveContractor: (id) =>
+      request(`/contractor/fleet-change-requests/${encodeURIComponent(id)}/approve-contractor`, { method: 'PATCH', body: '{}' }),
+    declineContractor: (id, body) =>
+      request(`/contractor/fleet-change-requests/${encodeURIComponent(id)}/decline-contractor`, { method: 'PATCH', body: JSON.stringify(body || {}) }),
+  },
+  logisticsFlow: createLogisticsFlowApi(request, 'contractor'),
   trucks: {
     list: () => request('/contractor/trucks'),
     create: (body) => request('/contractor/trucks', { method: 'POST', body: JSON.stringify(body) }),
@@ -679,6 +691,20 @@ export const commandCentre = {
     if (params.tenantId) q.set('tenantId', params.tenantId);
     return request(`/command-centre/fleet-truck-approval-summary${q.toString() ? `?${q.toString()}` : ''}`);
   },
+  fleetChangeRequests: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return request(`/command-centre/fleet-change-requests${q ? `?${q}` : ''}`);
+    },
+    approve: (id) =>
+      request(`/command-centre/fleet-change-requests/${encodeURIComponent(id)}/approve`, { method: 'PATCH', body: '{}' }),
+    decline: (id, declineReason) =>
+      request(`/command-centre/fleet-change-requests/${encodeURIComponent(id)}/decline`, {
+        method: 'PATCH',
+        body: JSON.stringify({ decline_reason: declineReason }),
+      }),
+  },
+  logisticsFlow: createLogisticsFlowApi(request, 'command-centre'),
   fleetVerification: {
     contractors: (tenantId) => {
       const q = new URLSearchParams();

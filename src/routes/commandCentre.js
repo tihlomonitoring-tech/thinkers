@@ -30,6 +30,8 @@ import { todayYmd, addCalendarDays, toYmdFromDbOrString } from '../lib/appTime.j
 import { getAiModel, getOpenAiClient, isAiConfigured } from '../lib/ai.js';
 import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
 import { buildStyledListSheet } from '../lib/distributionExcel.js';
+import { applyTruckChangeRequest, mapChangeRequestRow } from '../lib/fleetChangeRequests.js';
+import logisticsFlowRouter from './logisticsFlow.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
 const libraryUpload = multer({
@@ -83,6 +85,7 @@ export const CC_TAB_IDS = [
   'saved_reports',
   'trends',
   'truck_update_records',
+  'logistics_flow',
   'shift_items',
   'shift_report_exports',
   'messages',
@@ -3798,6 +3801,80 @@ router.patch('/fleet-applications/:id/decline', async (req, res, next) => {
   }
 });
 
+/** Pending truck edits awaiting Command Centre acceptance (after contractor approval when applicable). */
+router.get('/fleet-change-requests', async (req, res, next) => {
+  try {
+    const statusFilter = req.query.status === 'all' ? '' : `AND cr.cc_status = N'pending' AND cr.contractor_status IN (N'approved_contractor', N'not_required')`;
+    const result = await query(
+      `SELECT cr.*, t.registration AS truck_registration, t.facility_access,
+        COALESCE(c.name, ten.name) AS contractor_name,
+        COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), N'')) AS subcontractor_display
+       FROM contractor_fleet_change_requests cr
+       INNER JOIN contractor_trucks t ON t.id = cr.entity_id AND cr.entity_type = N'truck'
+       INNER JOIN tenants ten ON ten.id = cr.tenant_id
+       LEFT JOIN contractors c ON c.id = t.contractor_id
+       LEFT JOIN contractor_subcontractors sc ON sc.id = t.subcontractor_id
+       WHERE 1=1 ${statusFilter}
+       ORDER BY cr.created_at DESC`
+    );
+    const changeRequests = (result.recordset || []).map((r) => ({
+      ...mapChangeRequestRow(r),
+      truckRegistration: getRow(r, 'truck_registration'),
+      contractorName: getRow(r, 'contractor_name'),
+      subcontractorDisplay: getRow(r, 'subcontractor_display'),
+      facilityAccess: !!getRow(r, 'facility_access'),
+    }));
+    res.json({ changeRequests });
+  } catch (err) {
+    if (err.message?.includes('Invalid object name')) {
+      return res.json({ changeRequests: [], migrationRequired: true });
+    }
+    next(err);
+  }
+});
+
+router.patch('/fleet-change-requests/:id/approve', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const applied = await applyTruckChangeRequest(id, req.user?.id);
+    if (applied.error) return res.status(applied.error.status).json({ error: applied.error.message });
+    let message = 'Change accepted and applied to the system.';
+    if (applied.facilityAccessReset) {
+      message = applied.requiresReenrollment
+        ? 'Change accepted. The truck had facility access — it is now pending facility approval with the new details; route enrollments were cleared because registration changed.'
+        : 'Change accepted. The truck had facility access — it is now pending facility approval with the new details applied.';
+    }
+    res.json({
+      ok: true,
+      truck: applied.truck,
+      requiresReenrollment: applied.requiresReenrollment,
+      facilityAccessReset: applied.facilityAccessReset,
+      message,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/fleet-change-requests/:id/decline', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const reason = String(req.body?.decline_reason || req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'A decline reason is required' });
+    const upd = await query(
+      `UPDATE contractor_fleet_change_requests
+       SET cc_status = N'declined', cc_decline_reason = @reason, cc_reviewed_by_user_id = @userId, cc_reviewed_at = SYSUTCDATETIME()
+       OUTPUT INSERTED.id
+       WHERE id = @id AND cc_status = N'pending'`,
+      { id, reason, userId: req.user?.id }
+    );
+    if (!upd.recordset?.length) return res.status(404).json({ error: 'Pending change not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --- Shift reports ---
 const SHIFT_REPORT_STATUSES = ['draft', 'pending_approval', 'provisional', 'approved', 'rejected'];
 
@@ -6193,5 +6270,7 @@ export async function runCommandCentreReminderNotifications() {
   }
   return { reminders: rows.length, sent };
 }
+
+router.use('/logistics-flow', logisticsFlowRouter);
 
 export default router;

@@ -17,11 +17,14 @@ import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js'
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import { getApiBase } from './lib/apiBase.js';
 import TruckUpdateRecordsTab from './components/TruckUpdateRecordsTab.jsx';
+import LogisticsFlowPage from './components/LogisticsFlowPage.jsx';
 import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
 import TabAtomicFleetVerification from './commandCentre/TabAtomicFleetVerification.jsx';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
+import FleetPendingChangesTab from './components/FleetPendingChangesTab.jsx';
+import { buildStyledListSheet, groupRowsByContractorAndSubContractor } from './lib/styledListExcel.js';
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
@@ -32,6 +35,7 @@ const FLEET_APP_EXPORT_COLUMNS = [
   { id: 'source', label: 'Source', getValue: (app) => ((app.source || 'manual') === 'import' ? 'Import' : 'Manual') },
   { id: 'submitted', label: 'Submitted', getValue: (app, { formatDate }) => (app.createdAt ? (formatDate ? formatDate(app.createdAt) : app.createdAt) : '') },
   { id: 'status', label: 'Status', getValue: (app) => app.status || '' },
+  { id: 'comments', label: 'Comments', getValue: (app, opts) => opts?.commentsByAppId?.[app.id] || '' },
   { id: 'reviewed_at', label: 'Reviewed at', getValue: (app, { formatDate }) => (app.reviewedAt ? (formatDate ? formatDate(app.reviewedAt) : app.reviewedAt) : '') },
   { id: 'decline_reason', label: 'Decline reason', getValue: (app) => app.declineReason || '' },
   { id: 'truck_registration', label: 'Truck registration', getValue: (app) => (app.entityType === 'truck' ? (app.truckRegistration || '') : '') },
@@ -92,6 +96,7 @@ const CC_TABS = [
   { id: 'saved_reports', label: 'View saved shift reports', icon: 'folder', section: 'Operations' },
   { id: 'trends', label: 'Trends', icon: 'chart', section: 'Analytics' },
   { id: 'truck_update_records', label: 'Truck update records', icon: 'truck', section: 'Analytics' },
+  { id: 'logistics_flow', label: 'Logistics flow & updates', icon: 'route', section: 'Analytics' },
   { id: 'handed_over_analysis', label: 'Handed over analysis', icon: 'send', section: 'Analytics' },
   { id: 'shift_items', label: 'Shift by route', icon: 'route', section: 'Operations' },
   { id: 'shift_report_exports', label: 'Export sections', icon: 'download', section: 'Operations' },
@@ -517,6 +522,9 @@ export default function CommandCentre() {
               resumeServerSessionId={truckAnalysisResumeId}
               onResumeConsumed={() => setTruckAnalysisResumeId(null)}
             />
+          )}
+          {activeTab === 'logistics_flow' && canSeeTab('logistics_flow') && (
+            <LogisticsFlowPage logisticsApi={ccApi.logisticsFlow} routesApi={contractorApi.routes} portal="command_centre" />
           )}
           {activeTab === 'handed_over_analysis' && canSeeTab('handed_over_analysis') && (
             <HandedOverAnalysisTab
@@ -10138,7 +10146,7 @@ function TabContractorBlock() {
 }
 
 function TabApplications() {
-  const [applicationsSubTab, setApplicationsSubTab] = useState('contract-additions'); // 'contract-additions' | 'integration' | 'facility-summary'
+  const [applicationsSubTab, setApplicationsSubTab] = useState('contract-additions'); // 'contract-additions' | 'pending-changes' | 'integration' | 'facility-summary'
   const [applications, setApplications] = useState([]);
   const [filter, setFilter] = useState('pending'); // 'pending' | 'all'
   const [loading, setLoading] = useState(true);
@@ -10160,7 +10168,11 @@ function TabApplications() {
   const [filterSource, setFilterSource] = useState(''); // '' | 'manual' | 'import'
   const [showExportExcelModal, setShowExportExcelModal] = useState(false);
   const [exportColumnIds, setExportColumnIds] = useState(() => FLEET_APP_EXPORT_COLUMNS.map((c) => c.id));
+  const [exportGroupBySubContractor, setExportGroupBySubContractor] = useState(true);
+  const [groupTableBySubContractor, setGroupTableBySubContractor] = useState(false);
   const [exportingExcel, setExportingExcel] = useState(false);
+  const [pendingChangeRequests, setPendingChangeRequests] = useState([]);
+  const [changeRequestsLoading, setChangeRequestsLoading] = useState(false);
   const [rectors, setRectors] = useState([]);
   const [showApproveModal, setShowApproveModal] = useState(false);
   const [approveModalId, setApproveModalId] = useState(null);
@@ -10183,6 +10195,52 @@ function TabApplications() {
   };
 
   useEffect(() => { loadList(); }, [filter]);
+
+  const loadPendingChangeRequests = () => {
+    setChangeRequestsLoading(true);
+    return ccApi.fleetChangeRequests.list()
+      .then((r) => setPendingChangeRequests(r.changeRequests || []))
+      .catch(() => setPendingChangeRequests([]))
+      .finally(() => setChangeRequestsLoading(false));
+  };
+
+  useEffect(() => {
+    if (applicationsSubTab !== 'contract-additions' && applicationsSubTab !== 'pending-changes') return;
+    loadPendingChangeRequests();
+  }, [applicationsSubTab, applications.length]);
+
+  const handleApproveFleetChange = async (id) => {
+    setActing(true);
+    try {
+      const r = await ccApi.fleetChangeRequests.approve(id);
+      window.alert(r.message || 'Accepted.');
+      await loadPendingChangeRequests();
+      loadList();
+    } catch (e) {
+      window.alert(e?.message || 'Failed');
+      throw e;
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handleDeclineFleetChange = async (id, reason) => {
+    setActing(true);
+    try {
+      await ccApi.fleetChangeRequests.decline(id, reason);
+      await loadPendingChangeRequests();
+    } catch (e) {
+      window.alert(e?.message || 'Failed');
+      throw e;
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const pendingChangeEntityIds = useMemo(
+    () => new Set((pendingChangeRequests || []).map((c) => c.entityId).filter(Boolean)),
+    [pendingChangeRequests]
+  );
 
   const [applicationComments, setApplicationComments] = useState([]);
   const [applicationCommentBody, setApplicationCommentBody] = useState('');
@@ -10488,53 +10546,48 @@ function TabApplications() {
       enriched = applicationsToExport;
     }
     try {
-    const rows = enriched.map((app) =>
-      selectedCols.map((col) => {
-        const v = col.getValue(app, opts);
-        return v != null ? String(v) : '';
+    const commentsByAppId = {};
+    await Promise.all(
+      enriched.map(async (app) => {
+        try {
+          const r = await ccApi.fleetApplications.getComments(app.id);
+          const lines = (r.comments || []).map((c) => {
+            const who = c.authorName || c.author_name || 'User';
+            const when = c.createdAt || c.created_at ? formatDate(c.createdAt || c.created_at) : '';
+            return `${who}${when ? ` (${when})` : ''}: ${c.body || ''}`;
+          });
+          commentsByAppId[app.id] = lines.join('\n');
+        } catch (_) {
+          commentsByAppId[app.id] = '';
+        }
       })
     );
+    const exportOpts = { formatDate, commentsByAppId };
+    const keys = selectedCols.map((c) => c.id);
+    const exportRows = enriched.map((app) => {
+      const row = {
+        contractor: app.contractorName || '',
+        sub_contractor: app.subcontractorDisplay || app.truckSubContractor || '',
+      };
+      selectedCols.forEach((col) => {
+        row[col.id] = col.getValue(app, exportOpts) != null ? String(col.getValue(app, exportOpts)) : '';
+      });
+      return row;
+    });
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Thinkers Afrika';
-    const ws = workbook.addWorksheet('Fleet & driver applications', {
-      views: [{ state: 'frozen', ySplit: 1 }],
-      properties: { defaultColWidth: 16 },
-    });
-    const headerRow = ws.addRow(headers);
-    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-    headerRow.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFB91C1C' },
-    };
-    headerRow.alignment = { vertical: 'middle', wrapText: true };
-    headerRow.height = 22;
-    ws.getRow(1).eachCell((cell, colNumber) => {
-      cell.border = {
-        top: { style: 'thin' },
-        left: { style: 'thin' },
-        bottom: { style: 'thin' },
-        right: { style: 'thin' },
-      };
-    });
-    rows.forEach((rowValues) => {
-      const row = ws.addRow(rowValues);
-      row.alignment = { vertical: 'middle', wrapText: true };
-      row.eachCell((cell, colNumber) => {
-        cell.border = {
-          top: { style: 'thin' },
-          left: { style: 'thin' },
-          bottom: { style: 'thin' },
-          right: { style: 'thin' },
-        };
-      });
-    });
-    const colWidths = headers.map((h, i) => {
-      const maxContent = Math.max(h.length, ...rows.map((r) => (r[i] || '').length));
-      return Math.min(Math.max(maxContent + 2, 12), 40);
-    });
-    ws.columns.forEach((col, i) => {
-      if (colWidths[i] != null) col.width = colWidths[i];
+    buildStyledListSheet(workbook, {
+      sheetName: 'Fleet & driver applications',
+      headers,
+      keys,
+      rows: exportRows,
+      info: [
+        ['Exported', new Date().toLocaleString()],
+        ['Records', String(exportRows.length)],
+        ['Group by sub-contractor', exportGroupBySubContractor ? 'Yes' : 'No'],
+      ],
+      groupBy: exportGroupBySubContractor ? 'sub_contractor' : undefined,
+      autoFilter: true,
     });
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -10545,6 +10598,8 @@ function TabApplications() {
     a.click();
     URL.revokeObjectURL(url);
     setShowExportExcelModal(false);
+    } catch (e) {
+      window.alert(e?.message || 'Export failed');
     } finally {
       setExportingExcel(false);
     }
@@ -10584,6 +10639,16 @@ function TabApplications() {
           </button>
           <button
             type="button"
+            onClick={() => setApplicationsSubTab('pending-changes')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${applicationsSubTab === 'pending-changes' ? 'border-brand-600 text-brand-600' : 'border-transparent text-surface-600 hover:text-surface-900'}`}
+          >
+            Pending fleet changes
+            {pendingChangeRequests.length > 0 && (
+              <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">{pendingChangeRequests.length}</span>
+            )}
+          </button>
+          <button
+            type="button"
             onClick={() => setApplicationsSubTab('integration')}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${applicationsSubTab === 'integration' ? 'border-brand-600 text-brand-600' : 'border-transparent text-surface-600 hover:text-surface-900'}`}
           >
@@ -10600,6 +10665,17 @@ function TabApplications() {
 
         {applicationsSubTab === 'facility-summary' && (
           <FleetTruckApprovalSummaryPanel commandCentre />
+        )}
+
+        {applicationsSubTab === 'pending-changes' && (
+          <FleetPendingChangesTab
+            changeRequests={pendingChangeRequests}
+            loading={changeRequestsLoading}
+            acting={acting}
+            onRefresh={loadPendingChangeRequests}
+            onApprove={handleApproveFleetChange}
+            onDecline={handleDeclineFleetChange}
+          />
         )}
 
         {applicationsSubTab === 'integration' && (
@@ -10689,6 +10765,15 @@ function TabApplications() {
           <button type="button" onClick={exportCsv} disabled={applicationsToExport.length === 0} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50">
             Export CSV{selectedIds.size > 0 ? ` (${applicationsToExport.length})` : ''}
           </button>
+          <label className="flex items-center gap-2 text-sm text-surface-700 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={groupTableBySubContractor}
+              onChange={(e) => setGroupTableBySubContractor(e.target.checked)}
+              className="rounded border-surface-300"
+            />
+            Separate sub-contractors in table
+          </label>
           <button type="button" onClick={() => setShowExportExcelModal(true)} disabled={applicationsToExport.length === 0} className="px-4 py-2 text-sm font-medium rounded-lg bg-red-700 text-white hover:bg-red-800 disabled:opacity-50">
             Export Excel{selectedIds.size > 0 ? ` (${applicationsToExport.length} selected)` : ''}
           </button>
@@ -10703,6 +10788,16 @@ function TabApplications() {
             </button>
           )}
         </div>
+
+        {pendingChangeRequests.length > 0 && (
+          <p className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+            {pendingChangeRequests.length} fleet change{pendingChangeRequests.length === 1 ? '' : 's'} awaiting review — open the{' '}
+            <button type="button" onClick={() => setApplicationsSubTab('pending-changes')} className="font-semibold underline text-red-900">
+              Pending fleet changes
+            </button>{' '}
+            tab to compare current vs requested values before accepting.
+          </p>
+        )}
 
         <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
@@ -10742,7 +10837,13 @@ function TabApplications() {
                       <tr
                         key={app.id}
                         onClick={() => setSelectedId(app.id)}
-                        className={`border-b border-surface-100 last:border-0 hover:bg-brand-50 cursor-pointer ${selectedId === app.id ? 'bg-brand-50' : ''}`}
+                        className={`border-b border-surface-100 last:border-0 hover:bg-brand-50 cursor-pointer ${
+                          app.entityType === 'truck' && pendingChangeEntityIds.has(app.entityId)
+                            ? 'bg-red-50 border-l-4 border-l-red-500'
+                            : selectedId === app.id
+                              ? 'bg-brand-50'
+                              : ''
+                        }`}
                       >
                         <td className="px-2 py-2 w-10" onClick={(e) => e.stopPropagation()}>
                           <input
@@ -10974,6 +11075,16 @@ function TabApplications() {
                 ))}
               </div>
               <p className="text-xs text-surface-500 mt-3">{exportColumnIds.length} column(s) selected</p>
+              <label className="flex items-center gap-2 mt-4 cursor-pointer text-sm text-surface-800">
+                <input
+                  type="checkbox"
+                  checked={exportGroupBySubContractor}
+                  onChange={(e) => setExportGroupBySubContractor(e.target.checked)}
+                  className="rounded border-surface-300"
+                />
+                Separate sub-contractors (like list distribution)
+              </label>
+              <p className="text-xs text-surface-500 mt-1">Blue headers, contractor/sub-contractor banners, and Excel column filters.</p>
             </div>
             <div className="p-4 border-t border-surface-200 flex gap-3 justify-end">
               <button type="button" onClick={() => setShowExportExcelModal(false)} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
