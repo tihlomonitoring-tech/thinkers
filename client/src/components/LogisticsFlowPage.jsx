@@ -65,6 +65,9 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
   const [routesLoading, setRoutesLoading] = useState(false);
   const [selectedRouteId, setSelectedRouteId] = useState('');
   const [routeTruckCount, setRouteTruckCount] = useState(null);
+  const [routeAnalysis, setRouteAnalysis] = useState(null);
+  const [enrolledNotInPaste, setEnrolledNotInPaste] = useState([]);
+  const [enrichingRoute, setEnrichingRoute] = useState(false);
   const [whatsappExportText, setWhatsappExportText] = useState('');
   const [showExportAfterAccept, setShowExportAfterAccept] = useState(false);
   const [reviewSearch, setReviewSearch] = useState('');
@@ -154,6 +157,22 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
     }
   }, [shift?.routeId, selectedRouteId]);
 
+  useEffect(() => {
+    if (!selectedRouteId || !routesApi?.get || parsedRows.length > 0) return;
+    let cancelled = false;
+    routesApi
+      .get(selectedRouteId)
+      .then((r) => {
+        if (!cancelled) setRouteTruckCount((r.trucks || []).length);
+      })
+      .catch(() => {
+        if (!cancelled) setRouteTruckCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRouteId, routesApi, parsedRows.length]);
+
   const loadHistory = useCallback(async () => {
     try {
       const r = await logisticsApi.listShifts('completed');
@@ -194,45 +213,85 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
     }
   };
 
-  const applyParseResult = (r) => {
-    const meta = r.meta || {};
-    const label = selectedRoute?.name || meta.route || '';
+  const applyEnrichedRows = (r, metaOverride = null) => {
+    const meta = metaOverride || parseMeta || r.meta || {};
+    const label =
+      selectedRoute?.name || r.routeAnalysis?.routeLabel || meta.route_label || meta.route || '';
     const rows = (r.rows || []).map((row, i) => {
       const refined = refineRowForWhatsApp(
         { ...row, entity: row.suggestedContractor || row.entity || '' },
         label
       );
-      return { ...refined, _id: `row-${i}` };
+      return { ...refined, _id: row._id || `row-${i}` };
     });
     setParsedRows(rows);
+    setRouteAnalysis(r.routeAnalysis || null);
+    setEnrolledNotInPaste(r.enrolledNotInPaste || []);
+    setRouteTruckCount(r.routeTruckCount ?? r.routeAnalysis?.enrolledCount ?? null);
+    rebuildWhatsAppExport(rows, meta);
+    return rows;
+  };
+
+  const applyParseResult = (r) => {
+    const meta = r.meta || {};
+    if (meta.route_id && !selectedRouteId) {
+      setSelectedRouteId(meta.route_id);
+    }
+    if (!selectedRouteId && meta.route && routes.length) {
+      const matched = matchRouteFromPaste(meta.route, routes);
+      if (matched) setSelectedRouteId(matched);
+    }
     setParseMeta(meta);
     setReviewSearch('');
     setReviewFilter('all');
     setParseWarnings(r.warnings || []);
     setParseMethod(r.parseMethod || 'regex');
     setAiAvailable(!!r.aiAvailable);
-    setRouteTruckCount(r.routeTruckCount ?? null);
-    rebuildWhatsAppExport(rows, meta);
-    if (!selectedRouteId && meta.route && routes.length) {
-      const matched = matchRouteFromPaste(meta.route, routes);
-      if (matched) setSelectedRouteId(matched);
+    applyEnrichedRows(r, meta);
+  };
+
+  const reEnrichForRoute = async (routeId) => {
+    if (!parsedRows.length || !routeId || !logisticsApi.enrichRows) return;
+    setEnrichingRoute(true);
+    setError('');
+    try {
+      const label = routes.find((r) => String(r.id) === String(routeId))?.name || '';
+      const r = await logisticsApi.enrichRows({
+        rows: parsedRows.map(({ _id, ...rest }) => rest),
+        route_id: routeId,
+        route_label: label,
+        paste_route: parseMeta.route || null,
+        meta: parseMeta,
+      });
+      applyEnrichedRows(r, { ...parseMeta, route_id: routeId, route_label: label });
+    } catch (e) {
+      setError(e?.message || 'Could not re-verify against route');
+    } finally {
+      setEnrichingRoute(false);
     }
   };
 
   const handleRouteSelect = (routeId) => {
     setSelectedRouteId(routeId);
+    if (!routeId) {
+      setRouteTruckCount(null);
+      setRouteAnalysis(null);
+      setEnrolledNotInPaste([]);
+      return;
+    }
+    if (parsedRows.length) {
+      reEnrichForRoute(routeId);
+      return;
+    }
     setRouteTruckCount(null);
-    const label = routes.find((r) => String(r.id) === String(routeId))?.name || '';
-    setParsedRows((prev) => {
-      if (!prev.length) return prev;
-      const next = prev.map((row) => refineRowForWhatsApp(row, label));
-      rebuildWhatsAppExport(next, parseMeta);
-      return next;
-    });
   };
 
   const runParse = async (useAi) => {
     if (!pasteText.trim()) return;
+    if (!selectedRouteId) {
+      setError('Select a route first — import & verify matches trucks against that route’s enrolment.');
+      return;
+    }
     parseAbortRef.current?.abort();
     const controller = new AbortController();
     parseAbortRef.current = controller;
@@ -296,9 +355,10 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
     const q = reviewSearch.trim().toLowerCase();
     return parsedRows.filter((row) => {
       if (reviewFilter === 'not_register' && row.enrollmentFound) return false;
-      if (reviewFilter === 'not_route' && (!row.enrollmentFound || !row.notOnSelectedRoute)) return false;
+      if (reviewFilter === 'not_route' && (row.routeEnrolled || !row.enrollmentFound)) return false;
+      if (reviewFilter === 'route_ok' && !row.routeEnrolled) return false;
       if (reviewFilter === 'contractor_mismatch' && !row.contractorMismatch) return false;
-      if (reviewFilter === 'ok' && (!row.enrollmentFound || row.notOnSelectedRoute || row.contractorMismatch)) {
+      if (reviewFilter === 'ok' && (!row.routeEnrolled || row.contractorMismatch)) {
         return false;
       }
       if (!q) return true;
@@ -553,10 +613,10 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                     <select
                       value={selectedRouteId}
                       onChange={(e) => handleRouteSelect(e.target.value)}
-                      disabled={routesLoading}
+                      disabled={routesLoading || enrichingRoute}
                       className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
                     >
-                      <option value="">All fleet (no route filter)</option>
+                      <option value="">Select route (required)</option>
                       {routes.map((r) => (
                         <option key={r.id} value={r.id}>
                           {r.name || r.id}
@@ -564,8 +624,11 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                       ))}
                     </select>
                     <p className="text-xs text-surface-500 mt-1">
-                      Select the route this paste concerns — matching is faster and flags trucks not enrolled on that route.
+                      Required. Parse and verify match each truck against this route&apos;s enrolment — contractor names and plates come from enrolled trucks.
                     </p>
+                    {enrichingRoute && (
+                      <p className="text-xs text-brand-700 mt-1 font-medium">Re-checking against route enrolment…</p>
+                    )}
                   </div>
                   {selectedRouteId && routeTruckCount != null && (
                     <p className="text-sm text-brand-800 bg-white border border-brand-200 rounded-lg px-3 py-2">
@@ -580,7 +643,7 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                   <h2 className="font-semibold text-surface-900">Paste exported text</h2>
                   <InfoHint
                     title="Import"
-                    text="Paste WhatsApp or export-system fleet updates. Rule-based parse is free; use AI only when lines are messy."
+                    text="Select a route first. Each line is matched to trucks enrolled on that route; plates may be auto-corrected when close to an enrolled registration. AI refine uses the route enrolment list when configured."
                   />
                 </div>
                 <textarea
@@ -593,7 +656,7 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                 <div className="flex flex-wrap gap-2 mt-3">
                   <button
                     type="button"
-                    disabled={parsing || !pasteText.trim()}
+                    disabled={parsing || enrichingRoute || !pasteText.trim() || !selectedRouteId}
                     onClick={() => runParse(false)}
                     className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
                   >
@@ -601,7 +664,7 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                   </button>
                   <button
                     type="button"
-                    disabled={parsing || !pasteText.trim()}
+                    disabled={parsing || enrichingRoute || !pasteText.trim() || !selectedRouteId}
                     onClick={() => runParse(true)}
                     className="px-4 py-2 text-sm font-medium rounded-lg border border-violet-300 text-violet-800 hover:bg-violet-50 disabled:opacity-50"
                     title={aiAvailable ? 'Uses OpenAI when configured' : 'Requires OPENAI_API_KEY on server'}
@@ -652,7 +715,105 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                     {parseWarnings.length > 0 && ` · ${parseWarnings.length} line(s) could not be read automatically`}
                   </p>
                 )}
+                {!selectedRouteId && pasteText.trim() && (
+                  <p className="text-xs text-amber-800 mt-2 font-medium">Select a route above before studying this paste.</p>
+                )}
               </section>
+
+              {routeAnalysis && parsedRows.length > 0 && (
+                <section className="app-glass-card p-4 border border-brand-200 bg-brand-50/40">
+                  <h3 className="text-sm font-semibold text-brand-900 mb-2">Route verification summary</h3>
+                  {routeAnalysis.pasteRouteMismatch && (
+                    <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+                      Pasted route banner does not match the selected route closely. WhatsApp status uses{' '}
+                      <span className="font-medium">{routeAnalysis.routeLabel}</span>.
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <span className="text-surface-500 text-xs block">On route enrolment</span>
+                      <span className="font-semibold text-emerald-800">
+                        {routeAnalysis.onRouteCount} / {routeAnalysis.pastedCount}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-surface-500 text-xs block">Route coverage</span>
+                      <span className="font-semibold text-surface-900">
+                        {routeAnalysis.routeCoveragePercent != null
+                          ? `${routeAnalysis.routeCoveragePercent}%`
+                          : '—'}
+                      </span>
+                      <span className="text-[10px] text-surface-500 block">of {routeAnalysis.enrolledCount} enrolled</span>
+                    </div>
+                    <div>
+                      <span className="text-surface-500 text-xs block">Not on route</span>
+                      <span className="font-semibold text-amber-800">{routeAnalysis.notOnRouteCount}</span>
+                    </div>
+                    <div>
+                      <span className="text-surface-500 text-xs block">Not on register</span>
+                      <span className="font-semibold text-red-800">{routeAnalysis.notOnRegisterCount}</span>
+                    </div>
+                    <div>
+                      <span className="text-surface-500 text-xs block">Contractor mismatch</span>
+                      <span className="font-semibold text-amber-800">{routeAnalysis.contractorMismatchCount}</span>
+                    </div>
+                    <div>
+                      <span className="text-surface-500 text-xs block">Plates auto-corrected</span>
+                      <span className="font-semibold text-surface-900">
+                        {routeAnalysis.registrationCorrectedCount || 0}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-surface-500 text-xs block">Enrolled, not in paste</span>
+                      <span className="font-semibold text-surface-700">
+                        {routeAnalysis.enrolledNotInPasteCount ?? enrolledNotInPaste.length}
+                      </span>
+                    </div>
+                    {routeAnalysis.pasteRouteMatchScore != null && (
+                      <div>
+                        <span className="text-surface-500 text-xs block">Paste route match</span>
+                        <span className="font-semibold text-surface-900">{routeAnalysis.pasteRouteMatchScore}%</span>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {enrolledNotInPaste.length > 0 && (
+                <section className="app-glass-panel-2xl border border-surface-200 overflow-hidden">
+                  <div className="px-4 py-3 bg-surface-50 border-b border-surface-200">
+                    <h3 className="font-semibold text-surface-900 text-sm">
+                      Enrolled on route but not in this paste ({enrolledNotInPaste.length})
+                    </h3>
+                    <p className="text-xs text-surface-600 mt-0.5">
+                      These trucks are on the route enrolment list but were not in the pasted update — they may have completed or not loaded yet.
+                    </p>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-surface-100 text-surface-600">
+                          <th className="text-left px-3 py-1.5 font-medium">Registration</th>
+                          <th className="text-left px-3 py-1.5 font-medium">Contractor (route)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {enrolledNotInPaste.slice(0, 80).map((t) => (
+                          <tr key={t.registration} className="border-t border-surface-100">
+                            <td className="px-3 py-1.5 font-mono">{t.registration}</td>
+                            <td className="px-3 py-1.5">{t.systemContractor || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {enrolledNotInPaste.length > 80 && (
+                      <p className="text-xs text-surface-500 px-3 py-2">
+                        Showing 80 of {enrolledNotInPaste.length} enrolled trucks.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              )}
 
               {(whatsappExportText || parsedRows.length > 0) && (
                 <section className="app-glass-panel-2xl p-4 border border-emerald-200 bg-emerald-50/40">
@@ -716,9 +877,10 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                       >
                         <option value="all">All trucks</option>
                         <option value="not_register">Not on register</option>
+                        <option value="route_ok">On route enrolment</option>
                         <option value="not_route">Not on selected route</option>
                         <option value="contractor_mismatch">Contractor mismatch</option>
-                        <option value="ok">Matched OK</option>
+                        <option value="ok">Matched OK (route)</option>
                       </select>
                     </div>
                     <p className="text-xs text-surface-500 pb-2">
@@ -752,13 +914,15 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                           <tr
                             key={row._id}
                             className={`border-b border-surface-100 ${
-                              row.notOnSelectedRoute
-                                ? 'bg-amber-50'
-                                : row.contractorMismatch
-                                  ? 'bg-amber-50/70'
-                                  : row.enrollmentFound
-                                    ? ''
-                                    : 'bg-red-50/60'
+                              !row.enrollmentFound
+                                ? 'bg-red-50/60'
+                                : row.notOnSelectedRoute
+                                  ? 'bg-amber-50'
+                                  : row.contractorMismatch
+                                    ? 'bg-amber-50/70'
+                                    : row.routeEnrolled
+                                      ? 'bg-emerald-50/40'
+                                      : ''
                             }`}
                           >
                             <td className="px-3 py-2">
@@ -833,15 +997,20 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                               />
                             </td>
                             <td className="px-3 py-2 text-xs">
-                              {!row.enrollmentFound && <span className="text-red-700 font-medium">Not on register</span>}
+                              {row.registrationCorrected && (
+                                <span className="text-violet-800 font-medium block">Plate corrected</span>
+                              )}
+                              {!row.enrollmentFound && (
+                                <span className="text-red-700 font-medium">Not on register</span>
+                              )}
+                              {row.routeEnrolled && !row.contractorMismatch && (
+                                <span className="text-emerald-700 font-medium">On route</span>
+                              )}
                               {row.enrollmentFound && row.notOnSelectedRoute && (
-                                <span className="text-amber-800 font-medium">Not on selected route</span>
+                                <span className="text-amber-800 font-medium">Not on route</span>
                               )}
-                              {row.enrollmentFound && !row.notOnSelectedRoute && row.contractorMismatch && (
-                                <span className="text-amber-800">Contractor name differs</span>
-                              )}
-                              {row.enrollmentFound && !row.notOnSelectedRoute && !row.contractorMismatch && (
-                                <span className="text-emerald-700">OK</span>
+                              {row.contractorMismatch && (
+                                <span className="text-amber-800 block">Contractor differs</span>
                               )}
                             </td>
                           </tr>

@@ -5,6 +5,10 @@ import { parseLogisticsFlowText, normReg } from '../lib/logisticsFlowParse.js';
 import { parseLogisticsFlowWithAi } from '../lib/logisticsFlowAi.js';
 import { isAiConfigured } from '../lib/ai.js';
 import { refineRowsForWhatsApp } from '../lib/logisticsFlowWhatsApp.js';
+import {
+  loadRouteEnrollmentDetail,
+  enrichRowsWithRoute,
+} from '../lib/logisticsFlowRouteEnrich.js';
 
 const router = Router();
 
@@ -43,48 +47,15 @@ async function loadTruckEnrollmentMap(tenantIdVal) {
   return map;
 }
 
-async function loadRouteRegistrationSet(tenantIdVal, routeId) {
-  if (!routeId) return null;
-  const result = await query(
-    `SELECT t.registration
-     FROM contractor_route_trucks rt
-     INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
-     WHERE rt.route_id = @routeId`,
-    { tenantId: tenantIdVal, routeId }
-  );
-  const set = new Set();
-  for (const row of result.recordset || []) {
-    const reg = normReg(getRow(row, 'registration'));
-    if (reg) set.add(reg);
-  }
-  return set;
-}
+async function finalizeRowsForRoute(tenantIdVal, { rows, enrollmentMap, routeId, routeLabel, pasteRoute }) {
+  const routeEnrollment = routeId
+    ? await loadRouteEnrollmentDetail(query, tenantIdVal, routeId)
+    : { routeLabel: null, byRegistration: new Map(), registrations: [] };
 
-function enrichRows(rows, enrollmentMap, routeRegSet = null) {
-  return (rows || []).map((r) => {
-    const key = normReg(r.registration);
-    const sys = enrollmentMap.get(key);
-    const pastedEntity = String(r.entity || '').trim();
-    const systemContractor = sys?.systemContractor || '';
-    const contractorMismatch =
-      pastedEntity &&
-      systemContractor &&
-      pastedEntity.toLowerCase() !== systemContractor.toLowerCase() &&
-      !systemContractor.toLowerCase().includes(pastedEntity.toLowerCase().slice(0, 8));
-    const enrollmentFound = !!sys;
-    const enrolledOnRoute = routeRegSet ? routeRegSet.has(key) : null;
-    const notOnSelectedRoute = routeRegSet && enrollmentFound && !routeRegSet.has(key);
-    return {
-      ...r,
-      registration: key || r.registration,
-      truckId: sys?.truckId || null,
-      systemContractor,
-      enrollmentFound,
-      enrolledOnRoute,
-      notOnSelectedRoute,
-      contractorMismatch,
-      suggestedContractor: systemContractor || pastedEntity,
-    };
+  return enrichRowsWithRoute(rows, enrollmentMap, routeEnrollment, {
+    routeId,
+    routeLabel: routeLabel || routeEnrollment.routeLabel,
+    pasteRoute,
   });
 }
 
@@ -105,12 +76,14 @@ async function runParsePipeline({ text, useAi, tenantIdVal, routeId, routeLabel,
 
   progress({ phase: 'enrollment', percent: 42, message: 'Matching trucks on your register…' });
   const enrollmentMap = await loadTruckEnrollmentMap(tenantIdVal);
-  const routeRegSet = await loadRouteRegistrationSet(tenantIdVal, routeId);
+
+  let routeEnrollmentPreview = null;
   if (routeId) {
+    routeEnrollmentPreview = await loadRouteEnrollmentDetail(query, tenantIdVal, routeId);
     progress({
       phase: 'enrollment',
       percent: 48,
-      message: `Route filter: ${routeRegSet?.size ?? 0} truck(s) enrolled on selected route`,
+      message: `Route enrolment: ${routeEnrollmentPreview.registrations.length} truck(s) on ${routeLabel || routeEnrollmentPreview.routeLabel || 'selected route'}`,
     });
   }
 
@@ -129,7 +102,10 @@ async function runParsePipeline({ text, useAi, tenantIdVal, routeId, routeLabel,
       });
     }, 2500);
     try {
-      const aiParsed = await parseLogisticsFlowWithAi(text);
+      const aiParsed = await parseLogisticsFlowWithAi(text, {
+        routeLabel: routeLabel || parsed.meta?.route,
+        routeRegistrations: routeEnrollmentPreview?.registrations || [],
+      });
       if (aiParsed.error) return { error: aiParsed.error };
       parsed = aiParsed;
     } finally {
@@ -138,20 +114,50 @@ async function runParsePipeline({ text, useAi, tenantIdVal, routeId, routeLabel,
     progress({ phase: 'ai', percent: 90, message: 'AI extraction finished — verifying rows…' });
   }
 
-  let rows = enrichRows(parsed.rows, enrollmentMap, routeRegSet);
-  const labelForStatus = routeLabel || parsed.meta?.route || null;
-  rows = refineRowsForWhatsApp(rows, labelForStatus);
-  progress({ phase: 'finalize', percent: 96, message: `Prepared ${rows.length} truck row(s) for review` });
+  const pasteRoute = parsed.meta?.route || null;
+  const { rows: enrichedRows, routeAnalysis, enrolledNotInPaste } = await finalizeRowsForRoute(
+    tenantIdVal,
+    {
+      rows: parsed.rows,
+      enrollmentMap,
+      routeId,
+      routeLabel,
+      pasteRoute,
+    }
+  );
+  const labelForStatus = routeLabel || routeAnalysis?.routeLabel || pasteRoute || null;
+  let rows = refineRowsForWhatsApp(enrichedRows, labelForStatus);
+  progress({
+    phase: 'finalize',
+    percent: 96,
+    message: routeId
+      ? `Prepared ${rows.length} truck(s) — ${routeAnalysis.onRouteCount ?? 0} matched route enrolment`
+      : `Prepared ${rows.length} truck row(s) for review`,
+  });
+
+  const warnings = [...(parsed.warnings || [])];
+  if (routeAnalysis?.pasteRouteMismatch) {
+    warnings.push({
+      line: 0,
+      text: `Pasted route "${pasteRoute}" does not closely match selected route "${routeAnalysis.routeLabel}". Status text uses the selected route destination.`,
+    });
+  }
 
   return {
     rows,
-    warnings: parsed.warnings,
+    warnings,
     comments: parsed.comments,
-    meta: parsed.meta,
+    meta: {
+      ...parsed.meta,
+      route_id: routeId || null,
+      route_label: routeAnalysis?.routeLabel || routeLabel || null,
+    },
     parseMethod: parsed.parseMethod || 'regex',
     aiError: parsed.aiError || null,
     aiAvailable: isAiConfigured(),
-    routeTruckCount: routeRegSet?.size ?? null,
+    routeTruckCount: routeAnalysis?.enrolledCount ?? routeEnrollmentPreview?.registrations?.length ?? null,
+    routeAnalysis,
+    enrolledNotInPaste: enrolledNotInPaste?.slice(0, 500) || [],
   };
 }
 
@@ -245,6 +251,42 @@ function computeShiftSummary(updates, confirmations) {
     truckTouchpoints: Object.keys(conf).length,
   };
 }
+
+/** Re-run route enrolment matching on already-parsed rows (e.g. user changed route dropdown). */
+router.post('/enrich-rows', async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    if (!tid) return res.status(403).json({ error: 'Tenant required' });
+    const rows = req.body?.rows;
+    const routeId = req.body?.route_id || req.body?.routeId || null;
+    const routeLabel = String(req.body?.route_label || req.body?.routeLabel || '').trim() || null;
+    const pasteRoute = String(req.body?.paste_route || req.body?.pasteRoute || req.body?.meta?.route || '').trim() || null;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: 'rows array required' });
+    }
+    if (!routeId) {
+      return res.status(400).json({ error: 'Select a route to verify against route enrolment.' });
+    }
+    const enrollmentMap = await loadTruckEnrollmentMap(tid);
+    const { rows: enriched, routeAnalysis, enrolledNotInPaste } = await finalizeRowsForRoute(tid, {
+      rows,
+      enrollmentMap,
+      routeId,
+      routeLabel,
+      pasteRoute,
+    });
+    const labelForStatus = routeLabel || routeAnalysis?.routeLabel || pasteRoute;
+    const refined = refineRowsForWhatsApp(enriched, labelForStatus);
+    res.json({
+      rows: refined,
+      routeAnalysis,
+      enrolledNotInPaste: enrolledNotInPaste?.slice(0, 500) || [],
+      routeTruckCount: routeAnalysis?.enrolledCount ?? null,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 
 router.post('/parse', async (req, res, next) => {
   try {

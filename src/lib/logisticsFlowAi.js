@@ -14,22 +14,34 @@ const ROW_SCHEMA = `{
   "meta": { "date": "YYYY-MM-DD or null", "route": "route string or null" }
 }`;
 
+function routeContextBlock(opts = {}) {
+  const label = String(opts.routeLabel || '').trim();
+  const regs = opts.routeRegistrations || [];
+  if (!label && !regs.length) return '';
+  const sample = regs.slice(0, 200).join(', ');
+  const more = regs.length > 200 ? ` … and ${regs.length - 200} more` : '';
+  return `\nRoute context (use for validation — pasted trucks should be on this route):\n- Selected route: ${label || 'unknown'}\n- Enrolled registrations (${regs.length}): ${sample || 'none'}${more}\nPrefer registrations from this enrolment list when OCR is ambiguous.`;
+}
+
 /**
  * AI parse only when regex yields few rows; merges with regex when both succeed.
+ * @param {string} text
+ * @param {{ routeLabel?: string, routeRegistrations?: string[] }} [routeOpts]
  */
-export async function parseLogisticsFlowWithAi(text) {
+export async function parseLogisticsFlowWithAi(text, routeOpts = {}) {
   if (!isAiConfigured()) {
     return { error: 'OPENAI_API_KEY not configured' };
   }
   const regexResult = parseLogisticsFlowText(text);
   const client = getOpenAiClient();
   const model = getAiModel();
+  const routeCtx = routeContextBlock(routeOpts);
   const completion = await client.chat.completions.create({
     model,
     messages: [
       {
         role: 'system',
-        content: `You extract truck fleet update lines from pasted operational text. Return ONLY valid JSON matching this schema (no markdown):\n${ROW_SCHEMA}\nRules: registration uppercase no spaces; tons and hours as numbers; include every truck line; ignore headers like FLEET UPDATE, day names; route/date in meta when present.`,
+        content: `You extract truck fleet update lines from pasted operational text. Return ONLY valid JSON matching this schema (no markdown):\n${ROW_SCHEMA}\nRules: registration uppercase no spaces; tons and hours as numbers; include every truck line; ignore headers like FLEET UPDATE, day names; route/date in meta when present.${routeCtx}`,
       },
       {
         role: 'user',

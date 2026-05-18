@@ -64,6 +64,7 @@ export function createLogisticsFlowApi(request, prefix) {
   return {
     parse: (body) => request(`${base}/parse`, { method: 'POST', body: JSON.stringify(body) }),
     parseStream,
+    enrichRows: (body) => request(`${base}/enrich-rows`, { method: 'POST', body: JSON.stringify(body) }),
     getActiveShift: () => request(`${base}/shifts/active`),
     listShifts: (status = 'completed') => request(`${base}/shifts?status=${encodeURIComponent(status)}`),
     getShift: (id) => request(`${base}/shifts/${encodeURIComponent(id)}`),
