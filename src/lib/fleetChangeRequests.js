@@ -1,4 +1,5 @@
 import { query } from '../db.js';
+import { logFleetApplicationHistory } from './fleetApplicationHistory.js';
 
 const TRUCK_PATCH_FIELDS = [
   'main_contractor', 'sub_contractor', 'make_model', 'year_model', 'ownership_desc', 'fleet_no',
@@ -255,12 +256,35 @@ export async function applyTruckChangeRequest(changeRequestId, ccUserId) {
       `SELECT id FROM cc_fleet_applications WHERE entity_type = N'truck' AND entity_id = @entityId AND tenant_id = @tenantId AND [status] = N'pending'`,
       { entityId, tenantId }
     );
-    if (!pendingApp.recordset?.length) {
-      await query(
+    let historyApplicationId = pendingApp.recordset?.[0] ? get(pendingApp.recordset[0], 'id') : null;
+    if (!historyApplicationId) {
+      const insApp = await query(
         `INSERT INTO cc_fleet_applications (tenant_id, entity_type, entity_id, source, [status])
+         OUTPUT INSERTED.id
          VALUES (@tenantId, N'truck', @entityId, N'manual', N'pending')`,
         { tenantId, entityId }
       );
+      historyApplicationId = get(insApp.recordset?.[0], 'id');
+      if (historyApplicationId) {
+        await logFleetApplicationHistory(query, {
+          applicationId: historyApplicationId,
+          action: 'resubmitted',
+          userId: ccUserId,
+          toStatus: 'pending',
+          details: 'New application after material truck change',
+        });
+      }
+    } else {
+      await logFleetApplicationHistory(query, {
+        applicationId: historyApplicationId,
+        action: 'returned_to_pending',
+        userId: ccUserId,
+        fromStatus: 'approved',
+        toStatus: 'pending',
+        details: registrationChanged
+          ? 'Truck change approved — registration changed; re-approval required'
+          : 'Truck change approved — facility access reset; re-approval required',
+      });
     }
   }
 

@@ -83,6 +83,7 @@
     "db:tracking-mock": "node scripts/seed-tracking-mock.js",
     "db:user-page-roles-tracking-integration": "node scripts/run-add-tracking-integration-page-role.js",
     "db:fleet-app-comments": "node scripts/run-fleet-application-comments.js",
+    "db:fleet-app-history": "node scripts/run-fleet-application-history-schema.js",
     "db:user-tenants": "node scripts/run-user-tenants.js",
     "db:reassign-mbuyelo-to-thinkers-dual-home": "node scripts/reassign-mbuyelo-rows-to-thinkers-dual-home.js",
     "db:password-reset": "node scripts/run-password-reset-tokens.js",

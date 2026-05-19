@@ -35,6 +35,7 @@ const FLEET_APP_EXPORT_COLUMNS = [
   { id: 'source', label: 'Source', getValue: (app) => ((app.source || 'manual') === 'import' ? 'Import' : 'Manual') },
   { id: 'submitted', label: 'Submitted', getValue: (app, { formatDate }) => (app.createdAt ? (formatDate ? formatDate(app.createdAt) : app.createdAt) : '') },
   { id: 'status', label: 'Status', getValue: (app) => app.status || '' },
+  { id: 'approval_date', label: 'Date of approval', getValue: (app, { formatDate }) => (app.status === 'approved' && app.reviewedAt ? (formatDate ? formatDate(app.reviewedAt) : app.reviewedAt) : '') },
   { id: 'comments', label: 'Comments', getValue: (app, opts) => opts?.commentsByAppId?.[app.id] || '' },
   { id: 'reviewed_at', label: 'Reviewed at', getValue: (app, { formatDate }) => (app.reviewedAt ? (formatDate ? formatDate(app.reviewedAt) : app.reviewedAt) : '') },
   { id: 'decline_reason', label: 'Decline reason', getValue: (app) => app.declineReason || '' },
@@ -10148,7 +10149,10 @@ function TabContractorBlock() {
 function TabApplications() {
   const [applicationsSubTab, setApplicationsSubTab] = useState('contract-additions'); // 'contract-additions' | 'pending-changes' | 'integration' | 'facility-summary'
   const [applications, setApplications] = useState([]);
-  const [filter, setFilter] = useState('pending'); // 'pending' | 'all'
+  const [filter, setFilter] = useState('pending'); // 'pending' | 'approved' | 'declined' | 'all'
+  const [filterDateField, setFilterDateField] = useState('submitted'); // 'submitted' | 'approval'
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedId, setSelectedId] = useState(null);
@@ -10179,6 +10183,9 @@ function TabApplications() {
   const [notifyRectors, setNotifyRectors] = useState(false);
   const [selectedRectorIds, setSelectedRectorIds] = useState(new Set());
   const [showBulkApproveModal, setShowBulkApproveModal] = useState(false);
+  const [showRevokeModal, setShowRevokeModal] = useState(false);
+  const [revokeTargetIds, setRevokeTargetIds] = useState([]);
+  const [revokeReason, setRevokeReason] = useState('');
   const [applicationsHelpOpen, setApplicationsHelpOpen] = useState(false);
 
   useEffect(() => {
@@ -10188,7 +10195,7 @@ function TabApplications() {
   const loadList = () => {
     setLoading(true);
     setError('');
-    ccApi.fleetApplications.list(filter === 'pending' ? 'pending' : undefined)
+    ccApi.fleetApplications.list(filter === 'all' ? undefined : filter)
       .then((r) => { setApplications(r.applications || []); })
       .catch((e) => { setError(e?.message || 'Failed to load applications'); setApplications([]); })
       .finally(() => setLoading(false));
@@ -10246,11 +10253,13 @@ function TabApplications() {
   const [applicationCommentBody, setApplicationCommentBody] = useState('');
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [applicationHistory, setApplicationHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [entityLibraryDocs, setEntityLibraryDocs] = useState([]);
   const [entityLibraryLoading, setEntityLibraryLoading] = useState(false);
 
   useEffect(() => {
-    if (!selectedId) { setDetail(null); setApplicationComments([]); return; }
+    if (!selectedId) { setDetail(null); setApplicationComments([]); setApplicationHistory([]); return; }
     setDetailLoading(true);
     ccApi.fleetApplications.get(selectedId)
       .then((r) => { setDetail(r.application); })
@@ -10265,6 +10274,15 @@ function TabApplications() {
       .then((r) => { setApplicationComments(r.comments || []); })
       .catch(() => setApplicationComments([]))
       .finally(() => setCommentsLoading(false));
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    setHistoryLoading(true);
+    ccApi.fleetApplications.getHistory(selectedId)
+      .then((r) => { setApplicationHistory(r.history || []); })
+      .catch(() => setApplicationHistory([]))
+      .finally(() => setHistoryLoading(false));
   }, [selectedId]);
 
   useEffect(() => {
@@ -10302,6 +10320,8 @@ function TabApplications() {
       setApplicationCommentBody('');
       const r = await ccApi.fleetApplications.getComments(selectedId);
       setApplicationComments(r.comments || []);
+      const h = await ccApi.fleetApplications.getHistory(selectedId);
+      setApplicationHistory(h.history || []);
     } catch (e) {
       window.alert(e?.message || 'Failed to add comment');
     } finally {
@@ -10352,6 +10372,53 @@ function TabApplications() {
     setShowDeclineModal(true);
   };
 
+  const openRevokeModal = (ids) => {
+    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    if (list.length === 0) return;
+    setRevokeTargetIds(list);
+    setRevokeReason('');
+    setShowRevokeModal(true);
+  };
+
+  const openBulkRevokeModal = () => {
+    const ids = [...selectedIds].filter((id) => approvedInList.some((a) => a.id === id));
+    if (ids.length === 0) return;
+    openRevokeModal(ids);
+  };
+
+  const handleRevokeSubmit = async () => {
+    if (revokeTargetIds.length === 0) return;
+    setActing(true);
+    try {
+      const reason = revokeReason.trim();
+      const body = reason ? { reason } : {};
+      if (revokeTargetIds.length === 1) {
+        await ccApi.fleetApplications.revokeApproval(revokeTargetIds[0], body);
+      } else {
+        const r = await ccApi.fleetApplications.bulkRevokeApproval(revokeTargetIds, body);
+        if (r.revoked === 0) {
+          window.alert('No approved applications were revoked. They may already be pending or declined.');
+          return;
+        }
+      }
+      setShowRevokeModal(false);
+      setRevokeReason('');
+      setRevokeTargetIds([]);
+      clearSelection();
+      loadList();
+      if (selectedId && revokeTargetIds.includes(selectedId)) {
+        const r = await ccApi.fleetApplications.get(selectedId);
+        setDetail(r.application || null);
+        const h = await ccApi.fleetApplications.getHistory(selectedId);
+        setApplicationHistory(h.history || []);
+      }
+    } catch (e) {
+      window.alert(e?.message || 'Failed to revoke approval');
+    } finally {
+      setActing(false);
+    }
+  };
+
   const handleDeclineSubmit = async () => {
     const reason = declineReason.trim();
     if (!reason) {
@@ -10377,6 +10444,22 @@ function TabApplications() {
   const displayName = (app) => app.entityType === 'truck' ? (app.truckRegistration || '—') : (app.driverName || '—');
   const displayType = (app) => app.entityType === 'truck' ? 'Truck' : 'Driver';
   const displaySource = (app) => (app.source || 'manual') === 'import' ? 'Import' : 'Manual';
+
+  const dateValueInRange = (iso, fromYmd, toYmd) => {
+    if (!fromYmd && !toYmd) return true;
+    if (!iso) return false;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return false;
+    if (fromYmd) {
+      const from = new Date(`${fromYmd}T00:00:00`);
+      if (d < from) return false;
+    }
+    if (toYmd) {
+      const to = new Date(`${toYmd}T23:59:59.999`);
+      if (d > to) return false;
+    }
+    return true;
+  };
 
   const subcontractorOptions = useMemo(() => {
     const set = new Set();
@@ -10430,9 +10513,16 @@ function TabApplications() {
         .some((v) => String(v || '').toLowerCase().includes(dq));
       if (!driverMatch) return false;
     }
+    if (filterDateFrom || filterDateTo) {
+      const dateIso = filterDateField === 'approval' ? app.reviewedAt : app.createdAt;
+      if (!dateValueInRange(dateIso, filterDateFrom, filterDateTo)) return false;
+    }
     return true;
   });
   const pendingInList = filteredApplications.filter((a) => a.status === 'pending');
+  const approvedInList = filteredApplications.filter((a) => a.status === 'approved');
+  const selectedPendingCount = [...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length;
+  const selectedApprovedCount = [...selectedIds].filter((id) => approvedInList.some((a) => a.id === id)).length;
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -10442,14 +10532,14 @@ function TabApplications() {
     });
   };
   const selectAllPending = () => setSelectedIds(new Set(pendingInList.map((a) => a.id)));
+  const selectAllApproved = () => setSelectedIds(new Set(approvedInList.map((a) => a.id)));
   const selectAllFiltered = () => setSelectedIds(new Set(filteredApplications.map((a) => a.id)));
   const clearSelection = () => setSelectedIds(new Set());
   const applicationsToExport = selectedIds.size > 0
     ? filteredApplications.filter((app) => selectedIds.has(app.id))
     : filteredApplications;
   const openBulkApproveModal = () => {
-    const ids = [...selectedIds].filter((id) => pendingInList.some((a) => a.id === id));
-    if (ids.length === 0) return;
+    if (selectedPendingCount === 0) return;
     setNotifyRectors(false);
     setSelectedRectorIds(new Set());
     setShowBulkApproveModal(true);
@@ -10475,7 +10565,7 @@ function TabApplications() {
     }
   };
   const exportCsv = () => {
-    const headers = ['Contractor', 'Sub-contractor', 'Type', 'Name / Registration', 'Source', 'Submitted', 'Status'];
+    const headers = ['Contractor', 'Sub-contractor', 'Type', 'Name / Registration', 'Source', 'Submitted', 'Status', 'Date of approval'];
     const rows = applicationsToExport.map((app) => [
       app.contractorName || '',
       app.subcontractorDisplay || '',
@@ -10484,6 +10574,7 @@ function TabApplications() {
       displaySource(app),
       app.createdAt ? new Date(app.createdAt).toISOString() : '',
       app.status || '',
+      app.status === 'approved' && app.reviewedAt ? new Date(app.reviewedAt).toISOString() : '',
     ]);
     const csv = [headers.join(','), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -10701,11 +10792,50 @@ function TabApplications() {
           </button>
           <button
             type="button"
+            onClick={() => setFilter('approved')}
+            className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'approved' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
+          >
+            Approved
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilter('declined')}
+            className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'declined' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
+          >
+            Declined
+          </button>
+          <button
+            type="button"
             onClick={() => setFilter('all')}
             className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'all' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
           >
             All
           </button>
+          <select
+            value={filterDateField}
+            onChange={(e) => setFilterDateField(e.target.value)}
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            aria-label="Date filter field"
+          >
+            <option value="submitted">Date: submitted</option>
+            <option value="approval">Date: approval</option>
+          </select>
+          <input
+            type="date"
+            value={filterDateFrom}
+            onChange={(e) => setFilterDateFrom(e.target.value)}
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            aria-label="From date"
+            title="From date"
+          />
+          <input
+            type="date"
+            value={filterDateTo}
+            onChange={(e) => setFilterDateTo(e.target.value)}
+            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
+            aria-label="To date"
+            title="To date"
+          />
           <input
             type="text"
             value={searchContractor}
@@ -10757,7 +10887,7 @@ function TabApplications() {
           />
           <button
             type="button"
-            onClick={() => { setSearchContractor(''); setSearchAdvanced(''); setFilterType(''); setFilterSource(''); setFilterTruckOnly(''); setFilterDriverOnly(''); setFilterSubcontractor(''); }}
+            onClick={() => { setSearchContractor(''); setSearchAdvanced(''); setFilterType(''); setFilterSource(''); setFilterTruckOnly(''); setFilterDriverOnly(''); setFilterSubcontractor(''); setFilterDateFrom(''); setFilterDateTo(''); setFilterDateField('submitted'); }}
             className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
           >
             Clear filters
@@ -10777,16 +10907,30 @@ function TabApplications() {
           <button type="button" onClick={() => setShowExportExcelModal(true)} disabled={applicationsToExport.length === 0} className="px-4 py-2 text-sm font-medium rounded-lg bg-red-700 text-white hover:bg-red-800 disabled:opacity-50">
             Export Excel{selectedIds.size > 0 ? ` (${applicationsToExport.length} selected)` : ''}
           </button>
-          <button type="button" onClick={selectAllFiltered} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all</button>
+          <button type="button" onClick={selectAllFiltered} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all visible</button>
           {pendingInList.length > 0 && (
             <button type="button" onClick={selectAllPending} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all pending</button>
           )}
-          <button type="button" onClick={clearSelection} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Clear selection</button>
-          {pendingInList.length > 0 && (
-            <button type="button" onClick={openBulkApproveModal} disabled={acting || selectedIds.size === 0} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
-              {acting ? 'Approving…' : `Bulk approve (${[...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length})`}
-            </button>
+          {approvedInList.length > 0 && (
+            <button type="button" onClick={selectAllApproved} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all approved</button>
           )}
+          <button type="button" onClick={clearSelection} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Clear selection</button>
+          <button
+            type="button"
+            onClick={openBulkApproveModal}
+            disabled={acting || selectedPendingCount === 0}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            {acting ? 'Approving…' : `Bulk approve (${selectedPendingCount})`}
+          </button>
+          <button
+            type="button"
+            onClick={openBulkRevokeModal}
+            disabled={acting || selectedApprovedCount === 0}
+            className="px-4 py-2 text-sm font-medium rounded-lg border border-amber-500 text-amber-900 bg-amber-50 hover:bg-amber-100 disabled:opacity-50"
+          >
+            {acting ? 'Revoking…' : `Bulk revoke (${selectedApprovedCount})`}
+          </button>
         </div>
 
         {pendingChangeRequests.length > 0 && (
@@ -10827,11 +10971,12 @@ function TabApplications() {
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Source</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Submitted</th>
                     <th className="text-left font-semibold text-surface-700 px-4 py-2">Status</th>
+                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Date of approval</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredApplications.length === 0 ? (
-                    <tr><td colSpan={8} className="px-4 py-8 text-surface-500 text-center">No applications match the filter.</td></tr>
+                    <tr><td colSpan={9} className="px-4 py-8 text-surface-500 text-center">No applications match the filter.</td></tr>
                   ) : (
                     filteredApplications.map((app) => (
                       <tr
@@ -10864,6 +11009,9 @@ function TabApplications() {
                           <span className={`text-xs px-2 py-0.5 rounded-full ${app.status === 'approved' ? 'bg-green-100 text-green-800' : app.status === 'declined' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
                             {app.status === 'pending' ? 'Pending' : app.status === 'approved' ? 'Approved' : 'Declined'}
                           </span>
+                        </td>
+                        <td className="px-4 py-2 text-surface-600 whitespace-nowrap">
+                          {app.status === 'approved' && app.reviewedAt ? formatDate(app.reviewedAt) : '—'}
                         </td>
                       </tr>
                     ))
@@ -10991,6 +11139,13 @@ function TabApplications() {
                     </div>
                   )}
 
+                  {detail.status === 'approved' && detail.reviewedAt && (
+                    <div className="border-t border-surface-200 pt-3">
+                      <p className="font-medium text-surface-900">Date of approval</p>
+                      <p className="text-surface-600 mt-1">{formatDate(detail.reviewedAt)}</p>
+                    </div>
+                  )}
+
                   {detail.status === 'pending' && (
                     <div className="border-t border-surface-200 pt-4 flex flex-wrap gap-3">
                       <button type="button" disabled={acting} onClick={() => openApproveModal(detail.id)} className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
@@ -11001,6 +11156,63 @@ function TabApplications() {
                       </button>
                     </div>
                   )}
+
+                  {detail.status === 'approved' && (
+                    <div className="border-t border-surface-200 pt-4">
+                      <button type="button" disabled={acting} onClick={() => openRevokeModal([detail.id])} className="px-4 py-2 text-sm font-medium rounded-lg border border-amber-400 text-amber-900 bg-amber-50 hover:bg-amber-100 disabled:opacity-50">
+                        {acting ? 'Processing…' : 'Revoke approval'}
+                      </button>
+                      <p className="text-xs text-surface-500 mt-2">Returns the application to pending review, removes facility access, records review history, and emails super admins for this tenant.</p>
+                    </div>
+                  )}
+
+                  {/* Review history */}
+                  <div className="border-t border-surface-200 pt-4">
+                    <p className="font-medium text-surface-900 mb-2">Review history</p>
+                    <p className="text-xs text-surface-500 mb-3">Who submitted, approved, declined, or commented — with date and time.</p>
+                    {historyLoading ? (
+                      <p className="text-surface-500 text-xs">Loading review history…</p>
+                    ) : applicationHistory.length === 0 ? (
+                      <p className="text-surface-500 text-xs">No review activity recorded yet.</p>
+                    ) : (
+                      <ol className="space-y-3 border-l border-surface-200 ml-1.5 pl-4">
+                        {applicationHistory.map((ev) => (
+                          <li key={ev.id} className="relative">
+                            <span
+                              className={`absolute -left-[1.2rem] top-1.5 w-2 h-2 rounded-full ring-2 ring-white ${
+                                ev.action === 'approved'
+                                  ? 'bg-green-500'
+                                  : ev.action === 'declined'
+                                    ? 'bg-red-500'
+                                    : ev.action === 'approval_revoked'
+                                      ? 'bg-orange-500'
+                                      : ev.action === 'comment_added'
+                                        ? 'bg-surface-400'
+                                        : 'bg-amber-400'
+                              }`}
+                              aria-hidden
+                            />
+                            <p className="text-sm font-medium text-surface-900">{ev.action_label || ev.action}</p>
+                            <p className="text-xs text-surface-600 mt-0.5">
+                              {ev.performed_by_name || (ev.action === 'submitted' || ev.action === 'resubmitted' ? 'Contractor portal' : 'Unknown user')}
+                              {' · '}
+                              {ev.performed_at ? formatDate(ev.performed_at) : '—'}
+                            </p>
+                            {ev.from_status && ev.to_status && (
+                              <p className="text-xs text-surface-500 mt-0.5 capitalize">
+                                {ev.from_status} → {ev.to_status}
+                              </p>
+                            )}
+                            {ev.details && (
+                              <p className="text-xs text-surface-700 mt-1 whitespace-pre-wrap rounded-lg bg-surface-50 px-2 py-1.5 border border-surface-100">
+                                {ev.details}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
 
                   {/* Comments */}
                   <div className="border-t border-surface-200 pt-4">
@@ -11094,6 +11306,36 @@ function TabApplications() {
         </div>
       )}
 
+      {/* Revoke approval modal */}
+      {showRevokeModal && revokeTargetIds.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowRevokeModal(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold text-surface-900 mb-2">
+              {revokeTargetIds.length === 1 ? 'Revoke approval' : `Bulk revoke approval (${revokeTargetIds.length})`}
+            </h3>
+            <p className="text-sm text-surface-600 mb-4">
+              {revokeTargetIds.length === 1
+                ? 'Returns the application to pending, removes facility access, records review history, and emails super admins for this tenant only.'
+                : 'Selected applications return to pending, facility access is removed, review history is updated, and super admins are emailed per tenant.'}
+            </p>
+            <label className="block text-sm font-medium text-surface-800 mb-1">Reason (optional)</label>
+            <textarea
+              value={revokeReason}
+              onChange={(e) => setRevokeReason(e.target.value)}
+              placeholder="e.g. Documentation issue discovered after approval…"
+              rows={3}
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-4 resize-y"
+            />
+            <div className="flex gap-3 justify-end">
+              <button type="button" onClick={() => !acting && setShowRevokeModal(false)} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
+              <button type="button" disabled={acting} onClick={handleRevokeSubmit} className="px-4 py-2 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
+                {acting ? 'Revoking…' : revokeTargetIds.length === 1 ? 'Revoke approval' : `Revoke ${revokeTargetIds.length} approvals`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Decline reason modal */}
       {showDeclineModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => !acting && setShowDeclineModal(false)}>
@@ -11165,7 +11407,7 @@ function TabApplications() {
                 title="Bulk approval"
                 text={
                   <>
-                    Approves {[...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length} application(s), grants facility access,
+                    Approves {selectedPendingCount} application(s), grants facility access,
                     sends one email to contractors listing approved items, and optionally notifies selected rectors.
                   </>
                 }

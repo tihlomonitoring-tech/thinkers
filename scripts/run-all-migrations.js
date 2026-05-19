@@ -78,6 +78,7 @@ const SCRIPTS = [
   'db:tracking-integration',
   'db:tracking-expand-contractor-truck',
   'db:fleet-app-comments',
+  'db:fleet-app-history',
   'db:contractor-info-library',
   'db:contractor-library-entity-links',
   'db:contractors-multi',

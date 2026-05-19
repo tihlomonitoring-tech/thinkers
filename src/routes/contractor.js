@@ -33,6 +33,7 @@ import {
   buildDriverMainContractorClause,
   rejectSubcontractorPortalUser,
 } from '../lib/subcontractorFleet.js';
+import { logFleetApplicationHistory } from '../lib/fleetApplicationHistory.js';
 import {
   submitTruckChangeRequest,
   truckNeedsChangeApproval,
@@ -550,12 +551,24 @@ function listHandler(table, orderBy = 'created_at') {
 }
 
 /** Insert a fleet application (pending) when a truck or driver is added. */
-async function createFleetApplication(tenantId, entityType, entityId, source = 'manual') {
-  await query(
+async function createFleetApplication(tenantId, entityType, entityId, source = 'manual', submittedByUserId = null) {
+  const ins = await query(
     `INSERT INTO cc_fleet_applications (tenant_id, entity_type, entity_id, source, [status])
+     OUTPUT INSERTED.id
      VALUES (@tenantId, @entityType, @entityId, @source, N'pending')`,
     { tenantId, entityType, entityId, source }
   );
+  const appId = ins.recordset?.[0]?.id;
+  if (appId) {
+    await logFleetApplicationHistory(query, {
+      applicationId: appId,
+      action: 'submitted',
+      userId: submittedByUserId,
+      toStatus: 'pending',
+      details: source === 'import' ? 'Submitted via fleet import' : 'Submitted from contractor portal',
+    });
+  }
+  return appId;
 }
 
 /** Fire-and-forget: notify Command Centre and Access Management only (never rectors) and sender when fleet/driver added or edited. contractorName = company (contractor) name. */
@@ -909,7 +922,7 @@ router.post('/trucks', async (req, res, next) => {
       }
     );
     const truck = result.recordset[0];
-    if (truck?.id && !skipCcApplication) await createFleetApplication(req.user.tenant_id, 'truck', truck.id, 'manual');
+    if (truck?.id && !skipCcApplication) await createFleetApplication(req.user.tenant_id, 'truck', truck.id, 'manual', req.user?.id);
     const contractorName = await getContractorName(contractorId || truck?.contractor_id);
     if (!skipCcApplication) {
       notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck?.registration].filter(Boolean), req.user?.email);
@@ -1091,7 +1104,7 @@ router.post('/trucks/bulk', async (req, res, next) => {
       );
       const insertedRow = result.recordset[0];
       inserted.push(insertedRow);
-      if (insertedRow?.id && !isSubCreate) await createFleetApplication(req.user.tenant_id, 'truck', insertedRow.id, 'import');
+      if (insertedRow?.id && !isSubCreate) await createFleetApplication(req.user.tenant_id, 'truck', insertedRow.id, 'import', req.user?.id);
     }
     const regList = inserted.map((t) => t.registration || '').filter(Boolean);
     if (regList.length > 0 && !isSubCreate) {
@@ -1232,7 +1245,7 @@ router.post('/drivers', async (req, res, next) => {
       }
     );
     const driver = result.recordset[0];
-    if (driver?.id && !skipCcApplication) await createFleetApplication(req.user.tenant_id, 'driver', driver.id, 'manual');
+    if (driver?.id && !skipCcApplication) await createFleetApplication(req.user.tenant_id, 'driver', driver.id, 'manual', req.user?.id);
     if (!skipCcApplication) {
       const driverLabel = [driver?.full_name, driver?.surname].filter(Boolean).join(' ').trim() || 'Driver';
       const contractorName = await getContractorName(contractorId || driver?.contractor_id);
@@ -1364,7 +1377,7 @@ router.post('/drivers/bulk', async (req, res, next) => {
       );
       const insertedRow = result.recordset[0];
       inserted.push(insertedRow);
-      if (insertedRow?.id && !isSubCreate) await createFleetApplication(req.user.tenant_id, 'driver', insertedRow.id, 'import');
+      if (insertedRow?.id && !isSubCreate) await createFleetApplication(req.user.tenant_id, 'driver', insertedRow.id, 'import', req.user?.id);
     }
     const driverList = inserted.map((d) => [d.full_name, d.surname].filter(Boolean).join(' ').trim() || 'Driver').filter(Boolean);
     if (driverList.length > 0 && !isSubCreate) {
@@ -4665,7 +4678,7 @@ router.patch('/subcontractor-fleets/:id/approve', async (req, res, next) => {
       { id, tenantId, userId: req.user.id }
     );
     const truck = upd.recordset?.[0];
-    if (truck?.id) await createFleetApplication(tenantId, 'truck', truck.id, 'manual');
+    if (truck?.id) await createFleetApplication(tenantId, 'truck', truck.id, 'manual', req.user?.id);
     const contractorName = await getContractorName(truck.contractor_id ?? truck.Contractor_Id);
     notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck.registration || truck.Registration].filter(Boolean), req.user?.email);
     res.json({ truck, message: 'Approved. Truck is now on your Fleet tab and submitted for facility access review.' });
@@ -4811,7 +4824,7 @@ router.patch('/subcontractor-drivers/:id/approve', async (req, res, next) => {
       { id, tenantId, userId: req.user.id }
     );
     const driver = upd.recordset?.[0];
-    if (driver?.id) await createFleetApplication(tenantId, 'driver', driver.id, 'manual');
+    if (driver?.id) await createFleetApplication(tenantId, 'driver', driver.id, 'manual', req.user?.id);
     const driverLabel = [driver.full_name, driver.surname].filter(Boolean).join(' ').trim() || 'Driver';
     const contractorName = await getContractorName(driver.contractor_id ?? driver.Contractor_Id);
     notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email);

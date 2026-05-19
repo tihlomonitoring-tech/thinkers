@@ -6,12 +6,14 @@ import multer from 'multer';
 import ExcelJS from 'exceljs';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
-import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails } from '../lib/emailRecipients.js';
+import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails, getSuperAdminEmailsForTenant } from '../lib/emailRecipients.js';
 import {
   applicationApprovedHtml,
   applicationBulkApprovedHtml,
   applicationApprovedToRectorHtml,
   applicationBulkApprovedToRectorHtml,
+  fleetApplicationApprovalRevokedHtml,
+  fleetApplicationBulkApprovalRevokedHtml,
   breakdownReportHtml,
   breakdownResolvedHtml,
   truckSuspendedToContractorHtml,
@@ -31,6 +33,7 @@ import { getAiModel, getOpenAiClient, isAiConfigured } from '../lib/ai.js';
 import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
 import { buildStyledListSheet } from '../lib/distributionExcel.js';
 import { applyTruckChangeRequest, mapChangeRequestRow } from '../lib/fleetChangeRequests.js';
+import { logFleetApplicationHistory, getFleetApplicationHistory } from '../lib/fleetApplicationHistory.js';
 import logisticsFlowRouter from './logisticsFlow.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
@@ -1744,10 +1747,15 @@ router.get('/rectors-with-routes', async (req, res, next) => {
   }
 });
 
-/** GET list fleet applications (all contract additions including imports). Optional ?status=pending */
+/** GET list fleet applications (all contract additions including imports). Optional ?status=pending|approved|declined */
 router.get('/fleet-applications', async (req, res, next) => {
   try {
-    const statusFilter = req.query.status === 'pending' ? "AND a.[status] = N'pending'" : '';
+    const st = String(req.query.status || '').toLowerCase();
+    const statusFilter =
+      st === 'pending' ? "AND a.[status] = N'pending'"
+        : st === 'approved' ? "AND a.[status] = N'approved'"
+          : st === 'declined' ? "AND a.[status] = N'declined'"
+            : '';
     const result = await query(
       `SELECT a.id, a.tenant_id, a.entity_type, a.entity_id, a.source, a.[status], a.reviewed_by_user_id, a.reviewed_at, a.decline_reason, a.created_at,
         COALESCE(c.name, t.name) AS contractor_name,
@@ -3511,6 +3519,19 @@ router.get('/fleet-applications/:id', async (req, res, next) => {
   }
 });
 
+/** GET fleet application review history (audit trail) */
+router.get('/fleet-applications/:id/history', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const appCheck = await query(`SELECT id FROM cc_fleet_applications WHERE id = @id`, { id });
+    if (!appCheck.recordset?.[0]) return res.status(404).json({ error: 'Application not found' });
+    const history = await getFleetApplicationHistory(query, id);
+    res.json({ history });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** GET fleet application comments */
 router.get('/fleet-applications/:id/comments', async (req, res, next) => {
   try {
@@ -3557,6 +3578,12 @@ router.post('/fleet-applications/:id/comments', async (req, res, next) => {
     const row = result.recordset?.[0];
     const authorResult = row ? await query(`SELECT full_name FROM users WHERE id = @userId`, { userId: req.user.id }) : null;
     const authorName = authorResult?.recordset?.[0] ? getRow(authorResult.recordset[0], 'full_name') : null;
+    await logFleetApplicationHistory(query, {
+      applicationId: id,
+      action: 'comment_added',
+      userId: req.user.id,
+      details: body.length > 200 ? `${body.slice(0, 200)}…` : body,
+    });
     res.status(201).json({
       comment: row ? {
         id: getRow(row, 'id'),
@@ -3589,6 +3616,14 @@ router.patch('/fleet-applications/:id/approve', async (req, res, next) => {
       `UPDATE cc_fleet_applications SET [status] = N'approved', reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME(), decline_reason = NULL WHERE id = @id`,
       { id, userId: req.user.id }
     );
+    await logFleetApplicationHistory(query, {
+      applicationId: id,
+      action: 'approved',
+      userId: req.user.id,
+      fromStatus: 'pending',
+      toStatus: 'approved',
+      details: 'Facility access granted',
+    });
     await query(
       `UPDATE ${table} SET facility_access = 1, last_decline_reason = NULL WHERE id = @entityId`,
       { entityId }
@@ -3679,6 +3714,14 @@ router.post('/fleet-applications/bulk-approve', async (req, res, next) => {
         `UPDATE cc_fleet_applications SET [status] = N'approved', reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME(), decline_reason = NULL WHERE id = @id`,
         { id, userId: req.user.id }
       );
+      await logFleetApplicationHistory(query, {
+        applicationId: id,
+        action: 'approved',
+        userId: req.user.id,
+        fromStatus: 'pending',
+        toStatus: 'approved',
+        details: 'Facility access granted (bulk approval)',
+      });
       await query(`UPDATE ${table} SET facility_access = 1, last_decline_reason = NULL WHERE id = @entityId`, { entityId });
       let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
       let contractorName = null;
@@ -3770,6 +3813,14 @@ router.patch('/fleet-applications/:id/decline', async (req, res, next) => {
       `UPDATE cc_fleet_applications SET [status] = N'declined', reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME(), decline_reason = @declineReason WHERE id = @id`,
       { id, userId: req.user.id, declineReason }
     );
+    await logFleetApplicationHistory(query, {
+      applicationId: id,
+      action: 'declined',
+      userId: req.user.id,
+      fromStatus: 'pending',
+      toStatus: 'declined',
+      details: declineReason,
+    });
     await query(
       `UPDATE ${table} SET last_decline_reason = @declineReason WHERE id = @entityId`,
       { entityId, declineReason }
@@ -3796,6 +3847,228 @@ router.patch('/fleet-applications/:id/decline', async (req, res, next) => {
         entityId,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH revoke approval: return application to pending (pre-approval state), remove facility access, notify super admins for tenant. */
+router.patch('/fleet-applications/:id/revoke-approval', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const reason = req.body?.reason != null ? String(req.body.reason).trim() : '';
+    const appResult = await query(
+      `SELECT a.id, a.tenant_id, a.entity_type, a.entity_id, a.[status], a.reviewed_at
+       FROM cc_fleet_applications a WHERE a.id = @id`,
+      { id }
+    );
+    const app = appResult.recordset?.[0];
+    if (!app) return res.status(404).json({ error: 'Application not found' });
+    if (getRow(app, 'status') !== 'approved') {
+      return res.status(400).json({ error: 'Only approved applications can have approval revoked' });
+    }
+    const entityType = getRow(app, 'entity_type');
+    const entityId = getRow(app, 'entity_id');
+    const tenantId = getRow(app, 'tenant_id');
+    const previousReviewedAt = getRow(app, 'reviewed_at');
+    const table = entityType === 'truck' ? 'contractor_trucks' : 'contractor_drivers';
+
+    await query(
+      `UPDATE cc_fleet_applications
+       SET [status] = N'pending', reviewed_by_user_id = NULL, reviewed_at = NULL, decline_reason = NULL
+       WHERE id = @id`,
+      { id }
+    );
+    await query(
+      `UPDATE ${table} SET facility_access = 0 WHERE id = @entityId`,
+      { entityId }
+    );
+
+    const detailParts = [
+      'Facility access removed; application returned to pending review.',
+      previousReviewedAt
+        ? `Previous approval date: ${formatDateForEmail(previousReviewedAt)}.`
+        : null,
+      reason || null,
+    ].filter(Boolean);
+    await logFleetApplicationHistory(query, {
+      applicationId: id,
+      action: 'approval_revoked',
+      userId: req.user.id,
+      fromStatus: 'approved',
+      toStatus: 'pending',
+      details: detailParts.join(' '),
+    });
+
+    const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
+    const tenantName = tenantRow.recordset?.[0]?.name ?? null;
+    let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
+    let contractorName = null;
+    if (entityType === 'truck') {
+      const tr = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId });
+      const trRow = tr.recordset?.[0];
+      entityLabel = trRow?.registration || entityLabel;
+      if (trRow?.contractor_id) {
+        const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: trRow.contractor_id });
+        contractorName = cn.recordset?.[0]?.name ?? null;
+      }
+    } else {
+      const dr = await query(`SELECT full_name, surname, contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId });
+      const d = dr.recordset?.[0];
+      entityLabel = [d?.full_name, d?.surname].filter(Boolean).join(' ').trim() || entityLabel;
+      if (d?.contractor_id) {
+        const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: d.contractor_id });
+        contractorName = cn.recordset?.[0]?.name ?? null;
+      }
+    }
+
+    const revokerRow = await query(`SELECT full_name FROM users WHERE id = @userId`, { userId: req.user.id });
+    const revokedByName = revokerRow.recordset?.[0]?.full_name ?? null;
+
+    (async () => {
+      try {
+        if (!sendEmail || !tenantId) return;
+        const toEmails = await getSuperAdminEmailsForTenant(query, tenantId);
+        if (toEmails.length === 0) return;
+        const html = fleetApplicationApprovalRevokedHtml({
+          entityType,
+          entityLabel,
+          tenantName,
+          contractorName,
+          revokedByName,
+          reason: reason || null,
+        });
+        await sendEmail({
+          to: toEmails,
+          subject: `${entityType === 'truck' ? 'Truck' : 'Driver'} approval revoked: ${entityLabel}`,
+          body: html,
+          html: true,
+        });
+      } catch (e) {
+        console.error('[commandCentre] Revoke approval email error:', e?.message || e);
+      }
+    })();
+
+    res.json({
+      application: {
+        id,
+        status: 'pending',
+        reviewedAt: null,
+        entityType,
+        entityId,
+        contractorName: contractorName || tenantName,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST bulk-revoke-approval: return multiple approved applications to pending; notify super admins per tenant. */
+router.post('/fleet-applications/bulk-revoke-approval', async (req, res, next) => {
+  try {
+    const { ids, reason } = req.body || {};
+    const revokeReason = reason != null ? String(reason).trim() : '';
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array required' });
+
+    const revokerRow = await query(`SELECT full_name FROM users WHERE id = @userId`, { userId: req.user.id });
+    const revokedByName = revokerRow.recordset?.[0]?.full_name ?? null;
+
+    const revoked = [];
+    const itemsByTenant = new Map();
+
+    for (const id of ids) {
+      const appResult = await query(
+        `SELECT a.id, a.tenant_id, a.entity_type, a.entity_id, a.[status], a.reviewed_at
+         FROM cc_fleet_applications a WHERE a.id = @id`,
+        { id }
+      );
+      const app = appResult.recordset?.[0];
+      if (!app || getRow(app, 'status') !== 'approved') continue;
+
+      const entityType = getRow(app, 'entity_type');
+      const entityId = getRow(app, 'entity_id');
+      const tenantId = getRow(app, 'tenant_id');
+      const previousReviewedAt = getRow(app, 'reviewed_at');
+      const table = entityType === 'truck' ? 'contractor_trucks' : 'contractor_drivers';
+
+      await query(
+        `UPDATE cc_fleet_applications
+         SET [status] = N'pending', reviewed_by_user_id = NULL, reviewed_at = NULL, decline_reason = NULL
+         WHERE id = @id`,
+        { id }
+      );
+      await query(`UPDATE ${table} SET facility_access = 0 WHERE id = @entityId`, { entityId });
+
+      const detailParts = [
+        'Facility access removed; application returned to pending review (bulk revoke).',
+        previousReviewedAt ? `Previous approval date: ${formatDateForEmail(previousReviewedAt)}.` : null,
+        revokeReason || null,
+      ].filter(Boolean);
+      await logFleetApplicationHistory(query, {
+        applicationId: id,
+        action: 'approval_revoked',
+        userId: req.user.id,
+        fromStatus: 'approved',
+        toStatus: 'pending',
+        details: detailParts.join(' '),
+      });
+
+      let entityLabel = entityType === 'truck' ? 'Truck' : 'Driver';
+      let contractorName = null;
+      if (entityType === 'truck') {
+        const tr = await query(`SELECT registration, contractor_id FROM contractor_trucks WHERE id = @entityId`, { entityId });
+        const trRow = tr.recordset?.[0];
+        entityLabel = trRow?.registration || entityLabel;
+        if (trRow?.contractor_id) {
+          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: trRow.contractor_id });
+          contractorName = cn.recordset?.[0]?.name ?? null;
+        }
+      } else {
+        const dr = await query(`SELECT full_name, surname, contractor_id FROM contractor_drivers WHERE id = @entityId`, { entityId });
+        const d = dr.recordset?.[0];
+        entityLabel = [d?.full_name, d?.surname].filter(Boolean).join(' ').trim() || entityLabel;
+        if (d?.contractor_id) {
+          const cn = await query(`SELECT name FROM contractors WHERE id = @cid`, { cid: d.contractor_id });
+          contractorName = cn.recordset?.[0]?.name ?? null;
+        }
+      }
+
+      revoked.push({ id, entityType, entityId, tenantId });
+      if (tenantId) {
+        if (!itemsByTenant.has(tenantId)) itemsByTenant.set(tenantId, []);
+        itemsByTenant.get(tenantId).push({ entityType, entityLabel, contractorName });
+      }
+    }
+
+    if (revoked.length > 0 && sendEmail) {
+      (async () => {
+        try {
+          for (const [tenantId, items] of itemsByTenant) {
+            const toEmails = await getSuperAdminEmailsForTenant(query, tenantId);
+            if (toEmails.length === 0) continue;
+            const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
+            const tenantName = tenantRow.recordset?.[0]?.name ?? null;
+            const html = fleetApplicationBulkApprovalRevokedHtml({
+              items,
+              tenantName,
+              revokedByName,
+              reason: revokeReason || null,
+            });
+            await sendEmail({
+              to: toEmails,
+              subject: `Approvals revoked (${items.length}) – ${tenantName || 'tenant'}`,
+              body: html,
+              html: true,
+            });
+          }
+        } catch (e) {
+          console.error('[commandCentre] Bulk revoke approval email error:', e?.message || e);
+        }
+      })();
+    }
+
+    res.json({ revoked: revoked.length, applications: revoked });
   } catch (err) {
     next(err);
   }

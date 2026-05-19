@@ -435,3 +435,23 @@ export async function getSuperAdminEmails(query) {
   } catch (_) {}
   return Array.from(emails);
 }
+
+/** Super admin emails scoped to a tenant (global super_admin + super_admin linked to tenant). */
+export async function getSuperAdminEmailsForTenant(query, tenantId) {
+  if (!tenantId) return getSuperAdminEmails(query);
+  const emails = new Set();
+  try {
+    const result = await query(
+      `SELECT email FROM users
+       WHERE role = N'super_admin'
+         AND email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''
+         AND (tenant_id = @tenantId OR tenant_id IS NULL)`,
+      { tenantId }
+    );
+    for (const row of result.recordset || []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (_) {}
+  return Array.from(emails);
+}

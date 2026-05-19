@@ -232,6 +232,54 @@ export function applicationBulkApprovedHtml({ items }) {
   return wrap(content, 'Applications approved', { charcoal: false });
 }
 
+/** Fleet application approval revoked — notify super admin only. */
+export function fleetApplicationApprovalRevokedHtml({
+  entityType,
+  entityLabel,
+  tenantName,
+  contractorName,
+  revokedByName,
+  reason,
+}) {
+  const label = entityType === 'truck' ? 'Truck' : 'Driver';
+  const companyName = (contractorName && String(contractorName).trim()) || (tenantName && String(tenantName).trim()) || '—';
+  const reasonBlock = reason
+    ? `<p style="margin:12px 0 0;"><strong>Reason:</strong> ${escapeHtml(reason)}</p>`
+    : '';
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#2d3748;">${label} approval revoked</h1>
+    <p style="margin:0 0 12px;">Command Centre has revoked facility access approval for <strong>${escapeHtml(entityLabel || label)}</strong> (company: <strong>${escapeHtml(companyName)}</strong>).</p>
+    <p style="margin:0 0 12px;">The application is <strong>pending review</strong> again. Facility access has been removed until re-approved.</p>
+    ${revokedByName ? `<p style="margin:0 0 12px;color:#718096;font-size:14px;">Revoked by: ${escapeHtml(revokedByName)}</p>` : ''}
+    ${reasonBlock}
+  `;
+  return wrap(content, `${label} approval revoked`, { charcoal: false });
+}
+
+/** Bulk fleet application approvals revoked — notify super admin only. */
+export function fleetApplicationBulkApprovalRevokedHtml({ items, tenantName, revokedByName, reason }) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return wrap('<p>No items.</p>', 'Approvals revoked', { charcoal: false });
+  }
+  const listHtml = items.map((item) => {
+    const label = (item.entityType === 'truck' ? 'Truck' : 'Driver') + ': ' + escapeHtml(item.entityLabel || '—');
+    const company = (item.contractorName && String(item.contractorName).trim()) ? ` (${escapeHtml(item.contractorName)})` : '';
+    return `<li>${label}${company}</li>`;
+  }).join('');
+  const reasonBlock = reason
+    ? `<p style="margin:12px 0 0;"><strong>Reason:</strong> ${escapeHtml(reason)}</p>`
+    : '';
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#2d3748;">Approvals revoked (${items.length})</h1>
+    ${tenantName ? `<p style="margin:0 0 12px;">Tenant: <strong>${escapeHtml(tenantName)}</strong></p>` : ''}
+    <p style="margin:0 0 12px;">The following applications are <strong>pending review</strong> again. Facility access has been removed until re-approved.</p>
+    <ul style="margin:12px 0 0;padding-left:20px;">${listHtml}</ul>
+    ${revokedByName ? `<p style="margin:16px 0 0;color:#718096;font-size:14px;">Revoked by: ${escapeHtml(revokedByName)}</p>` : ''}
+    ${reasonBlock}
+  `;
+  return wrap(content, 'Approvals revoked', { charcoal: false });
+}
+
 /** Application approved – for rector awareness (notification only). */
 export function applicationApprovedToRectorHtml({ entityType, entityLabel, tenantName, contractorName }) {
   const label = entityType === 'truck' ? 'Truck' : 'Driver';

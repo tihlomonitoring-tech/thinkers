@@ -672,10 +672,15 @@ export const commandCentre = {
     list: (status) => request(`/command-centre/fleet-applications${status ? `?status=${encodeURIComponent(status)}` : ''}`),
     get: (id) => request(`/command-centre/fleet-applications/${id}`),
     getComments: (id) => request(`/command-centre/fleet-applications/${id}/comments`),
+    getHistory: (id) => request(`/command-centre/fleet-applications/${id}/history`),
     addComment: (id, body) => request(`/command-centre/fleet-applications/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
     approve: (id, body = {}) => request(`/command-centre/fleet-applications/${id}/approve`, { method: 'PATCH', body: JSON.stringify(body) }),
     bulkApprove: (ids, body = {}) => request('/command-centre/fleet-applications/bulk-approve', { method: 'POST', body: JSON.stringify({ ids, ...body }) }),
     decline: (id, declineReason) => request(`/command-centre/fleet-applications/${id}/decline`, { method: 'PATCH', body: JSON.stringify({ decline_reason: declineReason }) }),
+    revokeApproval: (id, body = {}) =>
+      request(`/command-centre/fleet-applications/${id}/revoke-approval`, { method: 'PATCH', body: JSON.stringify(body) }),
+    bulkRevokeApproval: (ids, body = {}) =>
+      request('/command-centre/fleet-applications/bulk-revoke-approval', { method: 'POST', body: JSON.stringify({ ids, ...body }) }),
   },
   /** Rectors (users in access_route_factors) for "Notify rectors" when approving fleet applications */
   rectors: () => request('/command-centre/rectors'),
