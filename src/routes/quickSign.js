@@ -403,6 +403,18 @@ authRouter.get('/', async (req, res, next) => {
   }
 });
 
+authRouter.get('/tenant-users', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT id, email, full_name FROM users WHERE tenant_id = @tenantId AND status = N'active' ORDER BY full_name`,
+      { tenantId: req.user.tenant_id }
+    );
+    res.json({ users: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
 authRouter.get('/:id', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
@@ -498,14 +510,16 @@ authRouter.post('/', (req, res, next) => {
       for (const rec of recipientList) {
         const email = String(rec.email || '').trim().toLowerCase();
         if (!email) continue;
+        const rType = rec.recipient_type === 'internal' || rec.type === 'internal' ? 'internal' : 'external';
         await query(
           `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, recipient_type, sign_order, access_token, status)
-           VALUES (@requestId, @tenantId, @email, @name, N'external', @ord, @tok, N'pending')`,
+           VALUES (@requestId, @tenantId, @email, @name, @rtype, @ord, @tok, N'pending')`,
           {
             requestId,
             tenantId,
             email,
             name: rec.name ? String(rec.name).trim() : null,
+            rtype: rType,
             ord: order++,
             tok: randomBytes(32).toString('hex'),
           }
@@ -631,18 +645,6 @@ authRouter.post('/:id/sender-sign', async (req, res, next) => {
     });
     await logEvent(id, 'sender_signed', req);
     res.json({ ok: true });
-  } catch (err) {
-    next(err);
-  }
-});
-
-authRouter.get('/tenant-users', async (req, res, next) => {
-  try {
-    const result = await query(
-      `SELECT id, email, full_name FROM users WHERE tenant_id = @tenantId AND status = N'active' ORDER BY full_name`,
-      { tenantId: req.user.tenant_id }
-    );
-    res.json({ users: result.recordset || [] });
   } catch (err) {
     next(err);
   }

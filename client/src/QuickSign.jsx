@@ -45,7 +45,7 @@ function eventLabel(type) {
   return labels[t] || t.replace(/_/g, ' ');
 }
 
-const emptyRecipient = { email: '', name: '' };
+const emptyRecipient = { email: '', name: '', recipient_type: 'external' };
 
 const emptyForm = {
   title: '',
@@ -94,7 +94,10 @@ export default function QuickSign() {
 
   useEffect(() => {
     loadList();
-    qsApi.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => {});
+    qsApi
+      .tenantUsers()
+      .then((d) => setTenantUsers(d.users || []))
+      .catch((e) => console.warn('[QuickSign] tenant users:', e?.message));
   }, [loadList]);
 
   const filteredList = useMemo(() => {
@@ -140,7 +143,11 @@ export default function QuickSign() {
       return;
     }
     const recipients = (form.recipients || [])
-      .map((r) => ({ email: (r.email || '').trim(), name: (r.name || '').trim() }))
+      .map((r) => ({
+        email: (r.email || '').trim(),
+        name: (r.name || '').trim(),
+        recipient_type: r.recipient_type === 'internal' ? 'internal' : 'external',
+      }))
       .filter((r) => r.email);
     if (recipients.length === 0) {
       setError('Add at least one signer email.');
@@ -218,10 +225,18 @@ export default function QuickSign() {
   };
 
   const pickInternalUser = (idx, userId) => {
-    const u = tenantUsers.find((x) => x.id === userId);
+    const u = tenantUsers.find((x) => String(x.id) === String(userId));
     if (!u) return;
-    updateRecipient(idx, 'email', u.email || '');
-    updateRecipient(idx, 'name', u.full_name || '');
+    setForm((f) => {
+      const next = [...(f.recipients || [])];
+      next[idx] = {
+        ...next[idx],
+        recipient_type: 'internal',
+        email: u.email || '',
+        name: u.full_name || '',
+      };
+      return { ...f, recipients: next };
+    });
   };
 
   const handleSenderSign = async () => {
@@ -368,18 +383,38 @@ export default function QuickSign() {
                           </button>
                         ) : null}
                       </div>
-                      {tenantUsers.length > 0 ? (
-                        <select
-                          value=""
-                          onChange={(e) => pickInternalUser(idx, e.target.value)}
-                          className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-sm"
-                        >
-                          <option value="">Fill from internal user…</option>
-                          {tenantUsers.map((u) => (
-                            <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
-                          ))}
-                        </select>
-                      ) : null}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">Type</label>
+                          <select
+                            value={rec.recipient_type || 'external'}
+                            onChange={(e) => updateRecipient(idx, 'recipient_type', e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-sm"
+                          >
+                            <option value="external">External</option>
+                            <option value="internal">Internal user</option>
+                          </select>
+                        </div>
+                        {rec.recipient_type === 'internal' && tenantUsers.length > 0 ? (
+                          <div>
+                            <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">Select user</label>
+                            <select
+                              value=""
+                              onChange={(e) => pickInternalUser(idx, e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-sm"
+                            >
+                              <option value="">— Choose —</option>
+                              {tenantUsers.map((u) => (
+                                <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : rec.recipient_type === 'internal' ? (
+                          <p className="text-xs text-amber-700 dark:text-amber-300 sm:col-span-2">
+                            Internal users could not be loaded. Enter email below or refresh the page.
+                          </p>
+                        ) : null}
+                      </div>
                       <input
                         type="email"
                         value={rec.email}
@@ -387,12 +422,14 @@ export default function QuickSign() {
                         placeholder="Email *"
                         className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
                         required
+                        readOnly={rec.recipient_type === 'internal' && !!rec.email}
                       />
                       <input
                         value={rec.name}
                         onChange={(e) => updateRecipient(idx, 'name', e.target.value)}
                         placeholder="Full name"
                         className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
+                        readOnly={rec.recipient_type === 'internal' && !!rec.name}
                       />
                     </div>
                   ))}
