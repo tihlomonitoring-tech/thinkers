@@ -115,10 +115,12 @@ export default function QuickSign() {
   }, [list]);
 
   const loadDetail = (id) => {
-    setDetailId(id);
+    const rid = id && String(id) !== 'undefined' ? String(id).trim() : '';
+    if (!rid || !/^[0-9a-f-]{36}$/i.test(rid)) return;
+    setDetailId(rid);
     setDetailLoading(true);
     qsApi
-      .get(id)
+      .get(rid)
       .then((data) => {
         setDetail(data.request);
         setDetailRecipients(data.recipients || []);
@@ -554,7 +556,7 @@ export default function QuickSign() {
                             {filteredList.map((r) => (
                               <tr
                                 key={r.id}
-                                onClick={() => loadDetail(r.id)}
+                                onClick={() => r.id && loadDetail(r.id)}
                                 className={`cursor-pointer transition-colors ${
                                   detailId === r.id
                                     ? 'bg-brand-50/80 dark:bg-brand-950/25'

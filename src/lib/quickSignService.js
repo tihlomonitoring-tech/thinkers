@@ -6,11 +6,12 @@ import path from 'path';
 import fs from 'fs';
 import bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
-import { query } from '../db.js';
+import { queryWithGuids } from './queryWithGuids.js';
 import { sendEmail, isEmailConfigured } from './emailService.js';
 import { quickSignInviteHtml, quickSignSignedCopyHtml } from './emailTemplates.js';
 import { stampSignaturesOnPdf, getPdfPageCount, copyPdfFile } from './quickSignPdfStamp.js';
-import { buildSignedRecordPdf } from './quickSignPdf.js';
+
+const qsQuery = queryWithGuids;
 
 const BCRYPT_ROUNDS = 10;
 const uploadsRoot = path.join(process.cwd(), 'uploads', 'quick-sign');
@@ -52,7 +53,7 @@ export async function logEvent(requestId, eventType, req, metadata = null, recip
   const meta = metadata != null ? JSON.stringify(metadata) : null;
   const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim() || null;
   const ua = (req.headers['user-agent'] || '').toString().slice(0, 500) || null;
-  await query(
+  await qsQuery(
     `INSERT INTO quick_sign_events (request_id, event_type, ip_address, user_agent, metadata_json)
      VALUES (@requestId, @eventType, @ip, @ua, @meta)`,
     { requestId, eventType, ip, ua, meta }
@@ -64,7 +65,7 @@ export async function resolveByToken(token) {
   const t = (token || '').trim();
   if (!t) return null;
 
-  const rec = await query(
+  const rec = await qsQuery(
     `SELECT r.*, req.id AS request_id, req.tenant_id, req.title, req.notes, req.status AS request_status,
             req.document_original_name, req.document_original_path, req.document_working_path, req.document_signed_path,
             req.document_mime, req.signing_mode, req.allow_sender_sign, req.page_count, req.link_expires_at,
@@ -79,7 +80,7 @@ export async function resolveByToken(token) {
     return { mode: 'recipient', recipient: rec.recordset[0], request: rec.recordset[0] };
   }
 
-  const leg = await query(
+  const leg = await qsQuery(
     `SELECT r.*, u.full_name AS sender_name, u.email AS sender_email
      FROM quick_sign_requests r
      LEFT JOIN users u ON u.id = r.created_by_user_id
@@ -119,7 +120,7 @@ export function getWorkingDocumentRel(request) {
 }
 
 export async function ensureWorkingPdf(requestId, tenantId) {
-  const r = await query(
+  const r = await qsQuery(
     `SELECT document_original_path, document_working_path, document_mime FROM quick_sign_requests WHERE id = @id`,
     { id: requestId }
   );
@@ -140,7 +141,7 @@ export async function ensureWorkingPdf(requestId, tenantId) {
     await copyPdfFile(orig, workingFull);
     workingRel = path.relative(process.cwd(), workingFull).split(path.sep).join('/');
     const pageCount = await getPdfPageCount(workingFull);
-    await query(
+    await qsQuery(
       `UPDATE quick_sign_requests SET document_working_path = @wp, page_count = @pc, updated_at = SYSUTCDATETIME() WHERE id = @id`,
       { id: requestId, wp: workingRel, pc: pageCount }
     );
@@ -149,7 +150,7 @@ export async function ensureWorkingPdf(requestId, tenantId) {
 }
 
 export async function loadRecipients(requestId) {
-  const r = await query(
+  const r = await qsQuery(
     `SELECT id, email, full_name, recipient_type, sign_order, status, signed_at, is_sender, access_token
      FROM quick_sign_recipients WHERE request_id = @id ORDER BY sign_order ASC, created_at ASC`,
     { id: requestId }
@@ -159,7 +160,7 @@ export async function loadRecipients(requestId) {
 
 export async function refreshRequestStatus(requestId) {
   const recs = await loadRecipients(requestId);
-  const req = await query(`SELECT allow_sender_sign, signing_mode FROM quick_sign_requests WHERE id = @id`, { id: requestId });
+  const req = await qsQuery(`SELECT allow_sender_sign, signing_mode FROM quick_sign_requests WHERE id = @id`, { id: requestId });
   const allowSender = !!getRow(req.recordset?.[0], 'allow_sender_sign');
   const allRequired = recs.filter((r) => !getRow(r, 'is_sender') || allowSender);
   const signedCount = allRequired.filter((r) => getRow(r, 'status') === 'signed').length;
@@ -168,7 +169,7 @@ export async function refreshRequestStatus(requestId) {
   else if (signedCount >= allRequired.length && allRequired.length > 0) status = 'completed';
   else status = 'in_progress';
 
-  await query(
+  await qsQuery(
     `UPDATE quick_sign_requests SET status = @status, updated_at = SYSUTCDATETIME(),
        document_signed_path = CASE WHEN @status = N'completed' THEN document_working_path ELSE document_signed_path END
      WHERE id = @id`,
@@ -200,7 +201,7 @@ export async function applySignerPlacements(requestId, recipientId, tenantId, si
   const stampList = [];
   for (const p of placements || []) {
     const placementId = randomBytes(16).toString('hex');
-    await query(
+    await qsQuery(
       `INSERT INTO quick_sign_placements (request_id, recipient_id, placement_type, page_index, x_pct, y_pct, width_pct, height_pct, image_path)
        VALUES (@requestId, @recipientId, @type, @page, @x, @y, @w, @h, @img)`,
       {
@@ -236,7 +237,7 @@ export async function applySignerPlacements(requestId, recipientId, tenantId, si
     });
   }
 
-  const allPlacements = await query(
+  const allPlacements = await qsQuery(
     `SELECT page_index, x_pct, y_pct, width_pct, height_pct, image_path
      FROM quick_sign_placements WHERE request_id = @id ORDER BY created_at`,
     { id: requestId }
@@ -250,7 +251,7 @@ export async function applySignerPlacements(requestId, recipientId, tenantId, si
     imagePath: safeResolveStored(getRow(row, 'image_path')),
   })).filter((x) => x.imagePath);
 
-  const origRel = (await query(`SELECT document_original_path FROM quick_sign_requests WHERE id = @id`, { id: requestId })).recordset?.[0];
+  const origRel = (await qsQuery(`SELECT document_original_path FROM quick_sign_requests WHERE id = @id`, { id: requestId })).recordset?.[0];
   const origFull = safeResolveStored(getRow(origRel, 'document_original_path'));
   const tmpOut = path.join(uploadsRoot, String(tenantId), 'working', `${randomBytes(8).toString('hex')}.pdf`);
   await stampSignaturesOnPdf(origFull, tmpOut, rebuildList);
@@ -258,7 +259,7 @@ export async function applySignerPlacements(requestId, recipientId, tenantId, si
   try { fs.unlinkSync(tmpOut); } catch (_) {}
 
   const signedAt = new Date();
-  await query(
+  await qsQuery(
     `UPDATE quick_sign_recipients SET
        status = N'signed', signed_at = @signedAt,
        signer_id_number = @idNum,
@@ -314,7 +315,7 @@ export async function sendRecipientInvites(req, requestId, requestRow, recipient
     const otp = generateOtp();
     const otpHash = await bcrypt.hash(otp, BCRYPT_ROUNDS);
     const otpExp = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await query(
+    await qsQuery(
       `UPDATE quick_sign_recipients SET otp_hash = @hash, otp_expires_at = @exp, status = N'sent', updated_at = SYSUTCDATETIME() WHERE id = @id`,
       { id: getRow(rec, 'id'), hash: otpHash, exp: otpExp.toISOString() }
     );

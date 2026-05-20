@@ -4,7 +4,15 @@ import fs from 'fs';
 import multer from 'multer';
 import bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
-import { query } from '../db.js';
+import { queryWithGuids } from '../lib/queryWithGuids.js';
+import { parseGuid, isReservedPathId } from '../lib/guidUtils.js';
+
+const qsQuery = queryWithGuids;
+
+function parseRequestId(param) {
+  if (isReservedPathId(param)) return null;
+  return parseGuid(param);
+}
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { isEmailConfigured } from '../lib/emailService.js';
 import { buildSignedRecordPdf } from '../lib/quickSignPdf.js';
@@ -63,7 +71,7 @@ function mapRequest(row, recipients = []) {
   if (!row) return null;
   const signed = recipients.filter((r) => getRow(r, 'status') === 'signed').length;
   return {
-    id: getRow(row, 'id'),
+    id: parseGuid(getRow(row, 'id')) || getRow(row, 'id'),
     title: getRow(row, 'title'),
     notes: getRow(row, 'notes'),
     status: getRow(row, 'status'),
@@ -83,7 +91,7 @@ function mapRequest(row, recipients = []) {
 }
 
 async function countOtpFailures(requestId, recipientId = null) {
-  const r = await query(
+  const r = await qsQuery(
     `SELECT COUNT(*) AS c FROM quick_sign_events
      WHERE request_id = @id AND event_type = N'otp_failed'
        AND created_at > DATEADD(hour, -2, SYSUTCDATETIME())`,
@@ -167,13 +175,13 @@ router.post('/public/:token/verify-otp', async (req, res, next) => {
       }
       const sessionToken = randomBytes(32).toString('hex');
       const sessionExp = new Date(Date.now() + SESSION_TTL_MS);
-      await query(
+      await qsQuery(
         `UPDATE quick_sign_recipients SET signer_session_token = @st, signer_session_expires_at = @exp,
            status = CASE WHEN status = N'sent' THEN N'accessed' ELSE status END, updated_at = SYSUTCDATETIME()
          WHERE id = @id`,
         { id: getRow(recipient, 'id'), st: sessionToken, exp: sessionExp.toISOString() }
       );
-      await query(
+      await qsQuery(
         `UPDATE quick_sign_requests SET last_accessed_at = SYSUTCDATETIME(), first_accessed_at = COALESCE(first_accessed_at, SYSUTCDATETIME()),
            status = CASE WHEN status = N'sent' THEN N'in_progress' ELSE status END WHERE id = @id`,
         { id: requestId }
@@ -199,7 +207,7 @@ router.post('/public/:token/verify-otp', async (req, res, next) => {
     }
     const sessionToken = randomBytes(32).toString('hex');
     const sessionExp = new Date(Date.now() + SESSION_TTL_MS);
-    await query(
+    await qsQuery(
       `UPDATE quick_sign_requests SET signer_session_token = @st, signer_session_expires_at = @exp,
          otp_verified_at = SYSUTCDATETIME(), status = N'accessed', last_accessed_at = SYSUTCDATETIME() WHERE id = @id`,
       { id: requestId, st: sessionToken, exp: sessionExp.toISOString() }
@@ -242,7 +250,7 @@ router.get('/public/:token/document', async (req, res, next) => {
 
     const full = safeResolveStored(rel);
     if (!full) return res.status(404).json({ error: 'Document not found' });
-    await query(`UPDATE quick_sign_requests SET last_accessed_at = SYSUTCDATETIME() WHERE id = @id`, { id: requestId });
+    await qsQuery(`UPDATE quick_sign_requests SET last_accessed_at = SYSUTCDATETIME() WHERE id = @id`, { id: requestId });
     res.setHeader('Content-Type', mime || 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(name || 'document')}"`);
     fs.createReadStream(full).pipe(res);
@@ -259,7 +267,7 @@ router.get('/public/:token/placements', async (req, res, next) => {
     const { recipient, request } = resolved;
     if (!isRecipientSessionValid(recipient, sessionToken)) return res.status(401).json({ error: 'Session expired' });
     const requestId = getRow(request, 'request_id') || getRow(request, 'id');
-    const all = await query(
+    const all = await qsQuery(
       `SELECT p.page_index, p.x_pct, p.y_pct, p.width_pct, p.height_pct, p.placement_type, r.full_name AS signer_name
        FROM quick_sign_placements p
        JOIN quick_sign_recipients r ON r.id = p.recipient_id
@@ -351,7 +359,7 @@ router.post('/public/:token/complete', async (req, res, next) => {
       signatureImagePath: sigFull,
     });
 
-    await query(
+    await qsQuery(
       `UPDATE quick_sign_requests SET status = N'signed', signed_at = @signedAt,
          signer_id_number = @idNum, signer_latitude = @lat, signer_longitude = @lng,
          signer_location_accuracy = @acc, signer_location_captured_at = @signedAt,
@@ -386,7 +394,7 @@ authRouter.use(requirePageAccess('quick_sign'));
 authRouter.get('/', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
-    const result = await query(
+    const result = await qsQuery(
       `SELECT r.*, u.full_name AS sender_name FROM quick_sign_requests r
        LEFT JOIN users u ON u.id = r.created_by_user_id
        WHERE r.tenant_id = @tenantId ORDER BY r.created_at DESC`,
@@ -394,7 +402,8 @@ authRouter.get('/', async (req, res, next) => {
     );
     const out = [];
     for (const row of result.recordset || []) {
-      const recs = await loadRecipients(getRow(row, 'id'));
+      const rid = parseGuid(getRow(row, 'id'));
+      const recs = rid ? await loadRecipients(rid) : [];
       out.push(mapRequest(row, recs));
     }
     res.json({ requests: out });
@@ -405,7 +414,7 @@ authRouter.get('/', async (req, res, next) => {
 
 authRouter.get('/tenant-users', async (req, res, next) => {
   try {
-    const result = await query(
+    const result = await qsQuery(
       `SELECT id, email, full_name FROM users WHERE tenant_id = @tenantId AND status = N'active' ORDER BY full_name`,
       { tenantId: req.user.tenant_id }
     );
@@ -417,25 +426,27 @@ authRouter.get('/tenant-users', async (req, res, next) => {
 
 authRouter.get('/:id', async (req, res, next) => {
   try {
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
     const tenantId = req.user.tenant_id;
-    const result = await query(
+    const result = await qsQuery(
       `SELECT r.*, u.full_name AS sender_name, u.email AS sender_email
        FROM quick_sign_requests r LEFT JOIN users u ON u.id = r.created_by_user_id
        WHERE r.id = @id AND r.tenant_id = @tenantId`,
-      { id: req.params.id, tenantId }
+      { id, tenantId }
     );
     const row = result.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
-    const recipients = await loadRecipients(req.params.id);
-    const events = await query(
+    const recipients = await loadRecipients(id);
+    const events = await qsQuery(
       `SELECT id, event_type, metadata_json, created_at FROM quick_sign_events WHERE request_id = @id ORDER BY created_at ASC`,
-      { id: req.params.id }
+      { id }
     );
-    const placements = await query(
+    const placements = await qsQuery(
       `SELECT p.*, r.full_name AS signer_name, r.email AS signer_email
        FROM quick_sign_placements p JOIN quick_sign_recipients r ON r.id = p.recipient_id
        WHERE p.request_id = @id ORDER BY p.page_index, p.created_at`,
-      { id: req.params.id }
+      { id }
     );
     res.json({
       request: { ...mapRequest(row, recipients), notes: getRow(row, 'notes'), allow_sender_sign: !!getRow(row, 'allow_sender_sign') },
@@ -481,7 +492,7 @@ authRouter.post('/', (req, res, next) => {
       const pageCount = await getPdfPageCount(req.file.path);
       const accessToken = randomBytes(32).toString('hex');
 
-      const ins = await query(
+      const ins = await qsQuery(
         `INSERT INTO quick_sign_requests (
            tenant_id, title, notes, status, signing_mode, allow_sender_sign, page_count,
            document_original_name, document_original_path, document_mime, access_token, created_by_user_id,
@@ -505,13 +516,14 @@ authRouter.post('/', (req, res, next) => {
           n1: recipientList[0]?.name || '',
         }
       );
-      const requestId = getRow(ins.recordset?.[0], 'id');
+      const requestId = parseGuid(getRow(ins.recordset?.[0], 'id'));
+      if (!requestId) return res.status(500).json({ error: 'Failed to create signing request' });
       let order = 0;
       for (const rec of recipientList) {
         const email = String(rec.email || '').trim().toLowerCase();
         if (!email) continue;
         const rType = rec.recipient_type === 'internal' || rec.type === 'internal' ? 'internal' : 'external';
-        await query(
+        await qsQuery(
           `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, recipient_type, sign_order, access_token, status)
            VALUES (@requestId, @tenantId, @email, @name, @rtype, @ord, @tok, N'pending')`,
           {
@@ -526,7 +538,7 @@ authRouter.post('/', (req, res, next) => {
         );
       }
       if (allowSenderSign) {
-        await query(
+        await qsQuery(
           `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, recipient_type, sign_order, access_token, status, is_sender)
            VALUES (@requestId, @tenantId, @email, @name, N'internal', @ord, @tok, N'pending', 1)`,
           {
@@ -550,16 +562,17 @@ authRouter.post('/', (req, res, next) => {
 
 authRouter.post('/:id/send', async (req, res, next) => {
   try {
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
     const tenantId = req.user.tenant_id;
-    const { id } = req.params;
-    const row = (await query(`SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId })).recordset?.[0];
+    const row = (await qsQuery(`SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId })).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
     if (getRow(row, 'status') !== 'draft') return res.status(400).json({ error: 'Only drafts can be sent' });
     if (!isEmailConfigured()) return res.status(503).json({ error: 'Email not configured' });
 
     await ensureWorkingPdf(id, tenantId);
     const linkExp = new Date(Date.now() + LINK_TTL_MS);
-    await query(
+    await qsQuery(
       `UPDATE quick_sign_requests SET status = N'sent', link_expires_at = @exp, sent_at = SYSUTCDATETIME() WHERE id = @id`,
       { id, exp: linkExp.toISOString() }
     );
@@ -576,12 +589,14 @@ authRouter.post('/:id/send', async (req, res, next) => {
 
 authRouter.get('/:id/document', async (req, res, next) => {
   try {
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
     const tenantId = req.user.tenant_id;
     const kind = (req.query.kind || 'working').toString();
-    const row = (await query(
+    const row = (await qsQuery(
       `SELECT document_original_path, document_working_path, document_signed_path, document_original_name, document_mime
        FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`,
-      { id: req.params.id, tenantId }
+      { id, tenantId }
     )).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
     let rel = getRow(row, 'document_working_path') || getRow(row, 'document_original_path');
@@ -599,12 +614,14 @@ authRouter.get('/:id/document', async (req, res, next) => {
 
 authRouter.get('/:id/placements', async (req, res, next) => {
   try {
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
     const tenantId = req.user.tenant_id;
-    const all = await query(
+    const all = await qsQuery(
       `SELECT p.page_index, p.x_pct, p.y_pct, p.width_pct, p.height_pct, p.placement_type, r.full_name AS signer_name, r.email
        FROM quick_sign_placements p JOIN quick_sign_recipients r ON r.id = p.recipient_id
        WHERE p.request_id = @id AND EXISTS (SELECT 1 FROM quick_sign_requests req WHERE req.id = @id AND req.tenant_id = @tenantId)`,
-      { id: req.params.id, tenantId }
+      { id, tenantId }
     );
     res.json({ placements: all.recordset || [] });
   } catch (err) {
@@ -614,19 +631,20 @@ authRouter.get('/:id/placements', async (req, res, next) => {
 
 authRouter.post('/:id/sender-sign', async (req, res, next) => {
   try {
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
     const tenantId = req.user.tenant_id;
-    const { id } = req.params;
     const { id_number, latitude, longitude, accuracy, signatureDataUrl, placements } = req.body || {};
-    const row = (await query(`SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId })).recordset?.[0];
+    const row = (await qsQuery(`SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId })).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
     if (!getRow(row, 'allow_sender_sign')) return res.status(400).json({ error: 'Sender signing not enabled' });
 
-    let senderRec = (await query(
+    let senderRec = (await qsQuery(
       `SELECT id FROM quick_sign_recipients WHERE request_id = @id AND is_sender = 1`,
       { id }
     )).recordset?.[0];
     if (!senderRec) {
-      const ins = await query(
+      const ins = await qsQuery(
         `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, access_token, status, is_sender, sign_order)
          OUTPUT INSERTED.id VALUES (@id, @tenantId, @email, @name, @tok, N'pending', 1, 999)`,
         { id, tenantId, email: req.user.email, name: req.user.full_name, tok: randomBytes(32).toString('hex') }
@@ -652,9 +670,11 @@ authRouter.post('/:id/sender-sign', async (req, res, next) => {
 
 authRouter.get('/:id/signature-image', async (req, res, next) => {
   try {
-    const row = (await query(
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
+    const row = (await qsQuery(
       `SELECT signature_image_path FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`,
-      { id: req.params.id, tenantId: req.user.tenant_id }
+      { id, tenantId: req.user.tenant_id }
     )).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
     const full = safeResolveStored(getRow(row, 'signature_image_path'));
@@ -668,10 +688,12 @@ authRouter.get('/:id/signature-image', async (req, res, next) => {
 
 authRouter.post('/:id/cancel', async (req, res, next) => {
   try {
-    await query(
+    const id = parseRequestId(req.params.id);
+    if (!id) return res.status(404).json({ error: 'Not found' });
+    await qsQuery(
       `UPDATE quick_sign_requests SET status = N'cancelled', updated_at = SYSUTCDATETIME()
        WHERE id = @id AND tenant_id = @tenantId`,
-      { id: req.params.id, tenantId: req.user.tenant_id }
+      { id, tenantId: req.user.tenant_id }
     );
     res.json({ ok: true });
   } catch (err) {
