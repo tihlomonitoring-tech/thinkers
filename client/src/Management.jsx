@@ -13,6 +13,7 @@ import PerformanceEvaluationQuestionsEditor from './components/PerformanceEvalua
 import PerformanceEvaluationPeriodSection from './components/PerformanceEvaluationPeriodSection.jsx';
 import PerformanceEvaluationAuditorResultsSection from './components/PerformanceEvaluationAuditorResultsSection.jsx';
 import EmployeeDetailsManagementSection from './components/EmployeeDetailsManagementSection.jsx';
+import ComposeOnboardmentSection from './components/ComposeOnboardmentSection.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
@@ -25,6 +26,7 @@ const SECTIONS = [
   { id: 'leave', label: 'Leave applications' },
   { id: 'documents', label: 'Documents library' },
   { id: 'employee-details', label: 'Employee details' },
+  { id: 'compose_onboardment', label: 'Compose onboardment' },
   { id: 'warnings-rewards', label: 'Warnings & rewards' },
   { id: 'queries', label: 'Queries (grievances)' },
   { id: 'evaluations', label: 'Evaluations' },
@@ -499,6 +501,10 @@ export default function Management() {
           )}
 
           {activeSection === 'employee-details' && <EmployeeDetailsManagementSection onError={setError} />}
+
+          {activeSection === 'compose_onboardment' && (
+            <ComposeOnboardmentSection tenantUsers={tenantUsers} onError={setError} />
+          )}
 
           {activeSection === 'warnings-rewards' && (
             <WarningsRewardsSection

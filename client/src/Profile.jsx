@@ -17,6 +17,7 @@ import DepartmentStrategyView from './components/DepartmentStrategyView.jsx';
 import CareerDevelopmentHub from './components/CareerDevelopmentHub.jsx';
 import ColleagueEvaluationResultsTab from './components/ColleagueEvaluationResultsTab.jsx';
 import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
+import EmployeeOnboardmentTab from './components/EmployeeOnboardmentTab.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import {
@@ -41,6 +42,7 @@ const TABS = [
   { id: 'shift_activity', label: 'Shift activity' },
   { id: 'leave', label: 'Leave application' },
   { id: 'employee_details', label: 'Employee details' },
+  { id: 'employee_onboardment', label: 'Employee onboardment' },
   { id: 'documents', label: 'Employee documents' },
   { id: 'disciplinary', label: 'Disciplinary & rewards' },
   { id: 'queries', label: 'Queries' },
@@ -972,6 +974,8 @@ export default function Profile() {
           )}
 
           {activeTab === 'employee_details' && <EmployeeDetailsTab onError={setError} />}
+
+          {activeTab === 'employee_onboardment' && <EmployeeOnboardmentTab onError={setError} />}
 
           {activeTab === 'documents' && (
             <DocumentsTab

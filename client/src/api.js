@@ -138,6 +138,16 @@ export const users = {
     if (ids.length === 0) return Promise.resolve({ subcontractors: [] });
     return request(`/users/subcontractors-for-contractors?contractor_ids=${encodeURIComponent(ids.join(','))}`);
   },
+  subcontractorRobot: {
+    preview: (tenantId, contractorIds) => {
+      const q = new URLSearchParams();
+      if (tenantId) q.set('tenant_id', tenantId);
+      q.set('contractor_ids', (Array.isArray(contractorIds) ? contractorIds : []).filter(Boolean).join(','));
+      return request(`/users/subcontractor-robot/preview?${q.toString()}`);
+    },
+    bulkCreate: (body) =>
+      request('/users/subcontractor-robot/bulk-create', { method: 'POST', body: JSON.stringify(body) }),
+  },
   activity: (id) => request(`/users/${id}/activity`),
   loginActivity: (id, params = {}) => {
     const q = new URLSearchParams(params).toString();
@@ -1410,6 +1420,31 @@ export const profileManagement = {
     getProgress: (id) => pm(`/pip/${id}/progress`),
     addProgress: (id, body) => pm(`/pip/${id}/progress`, { method: 'POST', body: JSON.stringify(body) }),
   },
+  onboarding: {
+    my: () => pm('/onboarding/my'),
+    phaseJournal: (phaseId) => pm(`/onboarding/my/phases/${phaseId}/journal`),
+    addJournal: (phaseId, body) => pm(`/onboarding/my/phases/${phaseId}/journal`, { method: 'POST', body: JSON.stringify(body) }),
+    updateJournal: (entryId, body) => pm(`/onboarding/my/journal/${entryId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    attachmentDownloadUrl: (id) => `${API}/profile-management/onboarding/attachments/${id}/download`,
+    plans: {
+      list: () => pm('/onboarding/plans'),
+      get: (id) => pm(`/onboarding/plans/${id}`),
+      create: (body) => pm('/onboarding/plans', { method: 'POST', body: JSON.stringify(body) }),
+      advance: (id) => pm(`/onboarding/plans/${id}/advance`, { method: 'POST' }),
+      journals: (id) => pm(`/onboarding/plans/${id}/journals`),
+    },
+    updatePhase: (phaseId, body) => pm(`/onboarding/phases/${phaseId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    uploadAttachment: (phaseId, file) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return fetch(`${API}/profile-management/onboarding/phases/${phaseId}/attachments`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+    deleteAttachment: (id) => pm(`/onboarding/attachments/${id}`, { method: 'DELETE' }),
+  },
   scheduleEvents: {
     list: (month, year) => pm(`/schedule-events${month != null && year != null ? `?month=${month}&year=${year}` : ''}`),
     create: (body) => pm('/schedule-events', { method: 'POST', body: JSON.stringify(body) }),
@@ -1921,4 +1956,44 @@ export const tracking = {
     },
     acknowledge: (id) => trk(`/alarms/${id}/ack`, { method: 'PATCH' }),
   },
+};
+
+const qs = (path, options = {}) =>
+  request(`/quick-sign${path}`, options);
+
+export const quickSign = {
+  list: () => qs('/'),
+  get: (id) => qs(`/${id}`),
+  tenantUsers: () => qs('/tenant-users'),
+  create: (formData) =>
+    fetch(`${API}/quick-sign`, { method: 'POST', body: formData, credentials: 'include' }).then((res) =>
+      res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))
+    ),
+  send: (id) => qs(`/${id}/send`, { method: 'POST' }),
+  cancel: (id) => qs(`/${id}/cancel`, { method: 'POST' }),
+  documentUrl: (id, kind = 'original') => `${API}/quick-sign/${id}/document?kind=${encodeURIComponent(kind)}`,
+  signatureImageUrl: (id) => `${API}/quick-sign/${id}/signature-image`,
+};
+
+export const quickSignPublic = {
+  getMeta: (token) =>
+    fetch(`${API}/quick-sign/public/${encodeURIComponent(token)}`, { credentials: 'include' }).then((res) =>
+      res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))
+    ),
+  verifyOtp: (token, code) =>
+    fetch(`${API}/quick-sign/public/${encodeURIComponent(token)}/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ code }),
+    }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))),
+  documentUrl: (token, sessionToken) =>
+    `${API}/quick-sign/public/${encodeURIComponent(token)}/document?session=${encodeURIComponent(sessionToken)}`,
+  complete: (token, body) =>
+    fetch(`${API}/quick-sign/public/${encodeURIComponent(token)}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body),
+    }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))),
 };

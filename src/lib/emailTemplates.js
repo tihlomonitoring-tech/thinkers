@@ -1320,3 +1320,44 @@ export function companyLibraryExpiryReminderHtml({ recipientName, documentTitle,
   `;
   return taskEmailLayout('Company library — document expiry reminder', inner, 'Company library');
 }
+
+/** Quick Sign: recipient receives link + one-time PIN to sign a document. */
+export function quickSignInviteHtml({ recipientName, documentTitle, signLink, otp, senderName, expiresAt }) {
+  const expStr = expiresAt ? new Date(expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+  const inner = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(recipientName || 'there')},</p>
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">
+      <strong>${escapeHtml(senderName || 'A colleague')}</strong> has asked you to sign a document using <strong>Quick Sign</strong>.
+    </p>
+    <p style="margin: 0 0 8px 0; font-size: 14px; color: #475569;"><strong>Document:</strong> ${escapeHtml(documentTitle || '—')}</p>
+    <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px 20px; text-align: center; margin: 20px 0;">
+      <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 600; color: #1e40af; text-transform: uppercase; letter-spacing: 0.06em;">One-time PIN</p>
+      <p style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: 0.15em; color: #1d4ed8; font-family: ui-monospace, monospace;">${escapeHtml(String(otp || ''))}</p>
+      <p style="margin: 10px 0 0 0; font-size: 12px; color: #3b82f6;">Enter this PIN on the signing page. Link expires: ${escapeHtml(expStr)}</p>
+    </div>
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml(signLink)}" style="display:inline-block;background:#991B1B;color:#fff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;">Open document to sign →</a></p>
+    <p style="margin: 16px 0 0; font-size: 13px; color: #64748b;">You must enable location on your device when signing. Do not forward this email — the PIN is for you only.</p>
+  `;
+  return taskEmailLayout('Document signing request', inner, 'Quick Sign');
+}
+
+/** Employee onboardment: notify employee they advanced to a new phase. */
+export function onboardingPhaseAdvancedHtml({ employeeName, planTitle, phaseTitle, phaseDescription, appUrl }) {
+  const inner = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(employeeName || 'there')},</p>
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">
+      You have moved to a new phase in your <strong>employee onboardment</strong> plan.
+    </p>
+    ${taskSectionBar('Plan')}
+    ${taskKeyValueTable([
+      ['Plan', planTitle || '—'],
+      ['Current phase', phaseTitle || '—'],
+    ])}
+    ${phaseDescription ? `<p style="margin: 12px 0 0; font-size: 14px; color: #475569; white-space: pre-wrap;">${escapeHtml(phaseDescription)}</p>` : ''}
+    <p style="margin: 16px 0 0; font-size: 14px; color: #64748b;">
+      Open your profile, go to <strong>Employee onboardment</strong>, and use the daily journal for this phase to record progress (draft or publish entries with timestamps).
+    </p>
+    ${appUrl ? `<p style="margin: 16px 0 0;"><a href="${escapeHtml(appUrl)}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open Employee onboardment →</a></p>` : ''}
+  `;
+  return taskEmailLayout('New onboardment phase', inner, 'Management');
+}

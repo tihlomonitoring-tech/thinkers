@@ -7,13 +7,18 @@ import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { newUserCreatedHtml, accountApprovedHtml } from '../lib/emailTemplates.js';
 import { randomBytes } from 'crypto';
 import { getSuperAdminEmails } from '../lib/emailRecipients.js';
+import {
+  SUBCONTRACTOR_ROBOT_PASSWORD,
+  allocateSubcontractorEmails,
+  subcontractorRobotRowStatus,
+} from '../lib/subcontractorUserRobot.js';
 
 const router = Router();
 const SALT_ROUNDS = 10;
 
 /** Page IDs that can be assigned as roles (main app pages). Must match client PAGE_ROLES. */
 /** Allowed page_id values; DB CHECK CK_user_page_roles_page_id must match — run `npm run db:user-page-roles-check-sync` after adding a page here. */
-export const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'case_management', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'fuel_data', 'team_leader_admin', 'performance_evaluations', 'auditor', 'company_library'];
+export const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'case_management', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'fuel_data', 'team_leader_admin', 'performance_evaluations', 'auditor', 'company_library', 'quick_sign'];
 
 async function getPageRolesForUsers(pool, userIds) {
   if (!userIds || userIds.length === 0) return {};
@@ -219,6 +224,240 @@ function canAccessTenant(req, tenantId) {
   if (req.user.role === 'tenant_admin' || isEnterprise) return true;
   return false;
 }
+
+function parseUuidList(raw) {
+  return (typeof raw === 'string' ? raw.split(',') : Array.isArray(raw) ? raw : [])
+    .map((id) => (id != null ? String(id).trim().replace(/^\{|\}$/g, '') : ''))
+    .filter(Boolean);
+}
+
+/** GET preview subcontractor portal users to auto-create (robot). */
+router.get('/subcontractor-robot/preview', requireTenantAdmin, async (req, res, next) => {
+  try {
+    const tenantId = String(req.query?.tenant_id || req.user.tenant_id || '').trim().replace(/^\{|\}$/g, '');
+    const contractorIds = parseUuidList(req.query?.contractor_ids);
+    if (!tenantId) return res.status(400).json({ error: 'tenant_id is required' });
+    if (!canAccessTenant(req, tenantId)) return res.status(403).json({ error: 'Forbidden' });
+    if (contractorIds.length === 0) return res.json({ password: SUBCONTRACTOR_ROBOT_PASSWORD, rows: [] });
+
+    const cPh = contractorIds.map((_, i) => `@c${i}`).join(',');
+    const cParams = { tenantId };
+    contractorIds.forEach((id, i) => { cParams[`c${i}`] = id; });
+    const subResult = await query(
+      `SELECT s.id, s.tenant_id, s.contractor_id, s.company_name, c.name AS contractor_name
+       FROM contractor_subcontractors s
+       LEFT JOIN contractors c ON c.id = s.contractor_id
+       WHERE s.contractor_id IN (${cPh}) AND s.tenant_id = @tenantId
+       ORDER BY c.name, s.company_name`,
+      cParams
+    );
+    const subs = (subResult.recordset || []).map((r) => ({
+      id: r.id,
+      tenant_id: r.tenant_id,
+      contractor_id: r.contractor_id,
+      company_name: r.company_name,
+      contractor_name: r.contractor_name,
+    }));
+
+    if (subs.length === 0) {
+      return res.json({ password: SUBCONTRACTOR_ROBOT_PASSWORD, rows: [] });
+    }
+
+    const emailResult = await query(
+      `SELECT LOWER(LTRIM(RTRIM(email))) AS email FROM users WHERE tenant_id = @tenantId AND email IS NOT NULL`,
+      { tenantId }
+    );
+    const existingEmails = new Set(
+      (emailResult.recordset || []).map((r) => (r.email || '').toLowerCase()).filter(Boolean)
+    );
+
+    const subIds = subs.map((s) => s.id);
+    const subPh = subIds.map((_, i) => `@s${i}`).join(',');
+    const portalParams = {};
+    subIds.forEach((id, i) => { portalParams[`s${i}`] = id; });
+    const portalResult = subIds.length
+      ? await query(
+        `SELECT us.subcontractor_id, u.email, u.full_name
+         FROM user_subcontractors us
+         INNER JOIN users u ON u.id = us.user_id
+         WHERE us.subcontractor_id IN (${subPh})`,
+        portalParams
+      )
+      : { recordset: [] };
+    const portalUserBySubId = new Map();
+    for (const row of portalResult.recordset || []) {
+      const sid = String(row.subcontractor_id ?? row.subcontractor_Id ?? '');
+      portalUserBySubId.set(sid, {
+        email: row.email,
+        full_name: row.full_name,
+      });
+    }
+
+    const withEmails = allocateSubcontractorEmails(subs, existingEmails);
+    const rows = withEmails.map((sub) => {
+      const st = subcontractorRobotRowStatus(sub, portalUserBySubId);
+      return {
+        subcontractor_id: sub.id,
+        contractor_id: sub.contractor_id,
+        contractor_name: sub.contractor_name,
+        company_name: sub.company_name,
+        proposed_email: sub.proposed_email,
+        proposed_full_name: sub.proposed_full_name,
+        status: st.status,
+        message: st.message,
+        selectable: st.selectable,
+        existing_user_email: st.existing_user_email || null,
+      };
+    });
+
+    res.json({
+      password: SUBCONTRACTOR_ROBOT_PASSWORD,
+      rows,
+      summary: {
+        total: rows.length,
+        ready: rows.filter((r) => r.status === 'ready').length,
+        has_portal_user: rows.filter((r) => r.status === 'has_portal_user').length,
+      },
+    });
+  } catch (err) {
+    if (err.message?.includes('Invalid object name')) {
+      return res.json({ password: SUBCONTRACTOR_ROBOT_PASSWORD, rows: [], summary: { total: 0, ready: 0, has_portal_user: 0 } });
+    }
+    next(err);
+  }
+});
+
+/** POST bulk-create subcontractor portal users (robot). */
+router.post('/subcontractor-robot/bulk-create', requireTenantAdmin, async (req, res, next) => {
+  try {
+    const { tenant_id, items } = req.body || {};
+    const tenantId = String(tenant_id || req.user.tenant_id || '').trim().replace(/^\{|\}$/g, '');
+    if (!tenantId) return res.status(400).json({ error: 'tenant_id is required' });
+    if (!canAccessTenant(req, tenantId)) return res.status(403).json({ error: 'Forbidden' });
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) return res.status(400).json({ error: 'items array required (subcontractor_id per row)' });
+
+    const password = SUBCONTRACTOR_ROBOT_PASSWORD;
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    const created = [];
+    const skipped = [];
+    const failed = [];
+
+    for (const item of list) {
+      const subcontractorId = item?.subcontractor_id != null ? String(item.subcontractor_id).trim() : '';
+      if (!subcontractorId) {
+        failed.push({ subcontractor_id: null, error: 'Missing subcontractor_id' });
+        continue;
+      }
+
+      const subRow = await query(
+        `SELECT s.id, s.company_name, s.contractor_id, s.tenant_id, c.name AS contractor_name
+         FROM contractor_subcontractors s
+         LEFT JOIN contractors c ON c.id = s.contractor_id
+         WHERE s.id = @subcontractorId AND s.tenant_id = @tenantId`,
+        { subcontractorId, tenantId }
+      );
+      const sub = subRow.recordset?.[0];
+      if (!sub) {
+        failed.push({ subcontractor_id: subcontractorId, error: 'Sub-contractor not found for tenant' });
+        continue;
+      }
+
+      const contractorId = sub.contractor_id ?? sub.contractor_Id;
+      const existingPortal = await query(
+        `SELECT u.email FROM user_subcontractors us
+         INNER JOIN users u ON u.id = us.user_id
+         WHERE us.subcontractor_id = @subcontractorId`,
+        { subcontractorId }
+      );
+      if (existingPortal.recordset?.[0]) {
+        skipped.push({
+          subcontractor_id: subcontractorId,
+          company_name: sub.company_name,
+          reason: 'Portal user already exists',
+          email: existingPortal.recordset[0].email,
+        });
+        continue;
+      }
+
+      const companyName = sub.company_name || sub.company_Name || 'Sub-contractor';
+      const emailRaw = item?.email != null ? String(item.email).trim().toLowerCase() : '';
+      const email = emailRaw || allocateSubcontractorEmails([{ company_name: companyName }], new Set())[0]?.proposed_email;
+      if (!email || !email.includes('@')) {
+        failed.push({ subcontractor_id: subcontractorId, error: 'Could not generate email' });
+        continue;
+      }
+
+      const fullName = (item?.full_name != null ? String(item.full_name).trim() : '') || companyName;
+
+      try {
+        const ins = await query(
+          `INSERT INTO users (tenant_id, email, password_hash, full_name, role, status)
+           OUTPUT INSERTED.id, INSERTED.email, INSERTED.full_name
+           VALUES (@tenantId, @email, @passwordHash, @fullName, N'user', N'active')`,
+          { tenantId, email, passwordHash, fullName }
+        );
+        const user = ins.recordset?.[0];
+        if (!user?.id) {
+          failed.push({ subcontractor_id: subcontractorId, error: 'Insert failed' });
+          continue;
+        }
+
+        await query(`INSERT INTO user_tenants (user_id, tenant_id) VALUES (@userId, @tenantId)`, {
+          userId: user.id,
+          tenantId,
+        });
+        await query(`INSERT INTO user_page_roles (user_id, page_id) VALUES (@userId, N'contractor')`, {
+          userId: user.id,
+        });
+        if (contractorId) {
+          await query(
+            `INSERT INTO user_contractors (user_id, contractor_id) VALUES (@userId, @contractorId)`,
+            { userId: user.id, contractorId }
+          );
+        }
+        await syncUserSubcontractors(user.id, [subcontractorId], contractorId ? [contractorId] : []);
+
+        await auditLog({
+          tenantId,
+          userId: req.user.id,
+          action: 'user.create',
+          entityType: 'user',
+          entityId: user.id,
+          details: { email: user.email, source: 'subcontractor_robot', subcontractor_id: subcontractorId },
+          ip: req.ip,
+        });
+
+        created.push({
+          subcontractor_id: subcontractorId,
+          company_name: companyName,
+          contractor_name: sub.contractor_name,
+          user_id: user.id,
+          email: user.email,
+          full_name: user.full_name,
+        });
+      } catch (e) {
+        if (e.number === 2627) {
+          skipped.push({ subcontractor_id: subcontractorId, company_name: companyName, reason: 'Email already exists', email });
+        } else {
+          failed.push({ subcontractor_id: subcontractorId, error: e.message || 'Create failed' });
+        }
+      }
+    }
+
+    res.status(201).json({
+      password,
+      created: created.length,
+      skipped: skipped.length,
+      failed: failed.length,
+      users: created,
+      skipped_items: skipped,
+      failed_items: failed,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** List users with filters; super_admin sees all, tenant_admin sees own tenant */
 router.get('/', async (req, res, next) => {

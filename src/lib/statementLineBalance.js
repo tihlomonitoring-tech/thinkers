@@ -17,24 +17,10 @@ export function computeStatementLineBalances(openingBalance, linesIn) {
   });
 }
 
-/** Invoice total (line totals + document discount % + tax % on document). */
+import { computeDocumentTotals } from './accountingLineTotals.js';
+
+/** Invoice grand total (per-line VAT; document VAT % only when no line has VAT %). */
 export function invoiceGrandTotal(inv, lines) {
-  let s = 0;
-  for (const l of lines || []) {
-    const qty = Number(l.quantity) || 0;
-    const up = Number(l.unit_price) || 0;
-    const dPct = Number(l.discount_percent) || 0;
-    const tPct = Number(l.tax_percent) || 0;
-    const lineSub = qty * up;
-    const lineDisc = lineSub * (dPct / 100);
-    const lineAfterDisc = lineSub - lineDisc;
-    const lineTax = lineAfterDisc * (tPct / 100);
-    s += lineAfterDisc + lineTax;
-  }
-  const discountPct = Number(inv.discount_percent) || 0;
-  const taxPct = Number(inv.tax_percent) || 0;
-  const discountAmt = s * (discountPct / 100);
-  const afterDiscount = s - discountAmt;
-  const taxAmt = afterDiscount * (taxPct / 100);
-  return Math.round((afterDiscount + taxAmt) * 100) / 100;
+  const t = computeDocumentTotals(lines, inv?.discount_percent, inv?.tax_percent);
+  return Math.round(t.total * 100) / 100;
 }

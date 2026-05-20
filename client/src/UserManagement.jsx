@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { todayYmd } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { users as usersApi, tenants as tenantsApi } from './api';
+import SubcontractorUserRobot from './components/SubcontractorUserRobot.jsx';
 
 const ROLES = ['super_admin', 'tenant_admin', 'user'];
 const STATUSES = ['active', 'inactive', 'invited'];
@@ -28,6 +29,8 @@ const PAGE_ROLES = [
   { id: 'team_leader_admin', label: 'Team leader admin' },
   { id: 'performance_evaluations', label: 'Performance evaluations' },
   { id: 'auditor', label: 'Auditor' },
+  { id: 'company_library', label: 'Company library' },
+  { id: 'quick_sign', label: 'Quick Sign' },
 ];
 
 function formatDate(d) {
@@ -95,6 +98,7 @@ export default function UserManagement() {
   const [addingContractor, setAddingContractor] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [blockRequestsLoading, setBlockRequestsLoading] = useState(false);
+  const [showSubcontractorRobot, setShowSubcontractorRobot] = useState(false);
 
   // Debounce search
   useEffect(() => {
@@ -556,13 +560,22 @@ export default function UserManagement() {
                 Export CSV
               </button>
               {canManageUsers && (
-                <button
-                  type="button"
-                  onClick={openCreate}
-                  className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
-                >
-                  Add user
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowSubcontractorRobot(true)}
+                    className="px-3 py-1.5 text-sm rounded-lg border border-brand-300 text-brand-800 bg-brand-50 hover:bg-brand-100"
+                  >
+                    Subcontractor user robot
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openCreate}
+                    className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+                  >
+                    Add user
+                  </button>
+                </>
               )}
             </>
           )}
@@ -1423,6 +1436,14 @@ export default function UserManagement() {
           </div>
         </div>
       )}
+
+      <SubcontractorUserRobot
+        open={showSubcontractorRobot}
+        onClose={() => setShowSubcontractorRobot(false)}
+        me={me}
+        tenants={tenants}
+        onCreated={() => fetchUsers()}
+      />
       </div>
     </div>
   );

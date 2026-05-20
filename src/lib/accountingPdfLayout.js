@@ -3,6 +3,8 @@
  * Uses PDFKit built-in fonts only (Helvetica).
  */
 
+import { computeLineItem, computeDocumentTotals, formatZar } from './accountingLineTotals.js';
+
 export const PDF_THEME = {
   accent: '#991B1B', // brand red (normal red, leaning toward dark red)
   accentBar: '#991B1B',
@@ -25,11 +27,12 @@ export function pdfPageWidth() {
   return PAGE.w - PAGE.margin * 2;
 }
 
+/** @deprecated Use formatZar — kept as alias for PDF amounts */
 export function formatMoney(n) {
-  const x = Number(n);
-  if (Number.isNaN(x)) return '0.00';
-  return x.toFixed(2);
+  return formatZar(n);
 }
+
+export { formatZar };
 
 export function formatDate(d) {
   if (d == null || d === '') return '';
@@ -40,25 +43,6 @@ export function formatDate(d) {
   } catch {
     return '';
   }
-}
-
-function lineItemCalc(l) {
-  const qty = Number(l.quantity) || 0;
-  const up = Number(l.unit_price) || 0;
-  const dPct = Number(l.discount_percent) || 0;
-  const tPct = Number(l.tax_percent) || 0;
-  const lineSub = qty * up;
-  const lineDisc = lineSub * (dPct / 100);
-  const lineAfterDisc = lineSub - lineDisc;
-  const lineTax = lineAfterDisc * (tPct / 100);
-  const lineTotal = lineAfterDisc + lineTax;
-  return { qty, up, dPct, tPct, lineTotal };
-}
-
-function sumLinesSubtotal(lines) {
-  let s = 0;
-  for (const l of lines || []) s += lineItemCalc(l).lineTotal;
-  return s;
 }
 
 /** Call after all content, before doc.end(), when doc was created with bufferPages: true */
@@ -279,7 +263,7 @@ export function renderCommercialPdf(doc, options) {
   doc.font('Helvetica', 'normal').fontSize(8.5).fillColor(PDF_THEME.ink);
   let rowIdx = 0;
   for (const l of lines || []) {
-    const { qty, up, dPct, tPct, lineTotal } = lineItemCalc(l);
+    const { qty, up, dPct, tPct, lineTotalInc: lineTotal } = computeLineItem(l);
     const desc = String(l.description ?? '').trim();
     const textH = Math.max(18, doc.heightOfString(desc || ' ', { width: descW }) + 8);
     const rowH = Math.min(textH + 4, 120);
@@ -316,13 +300,7 @@ export function renderCommercialPdf(doc, options) {
 
   y += 16;
 
-  const documentSubtotal = sumLinesSubtotal(lines);
-  const discountPct = Number(discountPercent) || 0;
-  const taxPct = Number(taxPercent) || 0;
-  const discountAmt = documentSubtotal * (discountPct / 100);
-  const afterDiscount = documentSubtotal - discountAmt;
-  const taxAmt = afterDiscount * (taxPct / 100);
-  const total = afterDiscount + taxAmt;
+  const totals = computeDocumentTotals(lines, discountPercent, taxPercent);
 
   const totalsW = 200;
   const totalsX = PAGE.margin + contentW - totalsW;
@@ -336,15 +314,17 @@ export function renderCommercialPdf(doc, options) {
     y += 14;
   }
 
-  totalsRow('Subtotal', formatMoney(documentSubtotal));
-  if (discountPct > 0) totalsRow(`Document discount (${discountPct}%)`, `−${formatMoney(discountAmt)}`);
-  if (taxPct > 0) totalsRow(`VAT (${taxPct}%)`, formatMoney(taxAmt));
+  totalsRow('Subtotal (ex VAT)', formatZar(totals.subtotalExVat));
+  if (totals.documentDiscountPercent > 0) {
+    totalsRow(`Document discount (${totals.documentDiscountPercent}%)`, `−${formatZar(totals.documentDiscountAmount)}`);
+  }
+  if (totals.vatAmount > 0) totalsRow(totals.vatLabel, formatZar(totals.vatAmount));
 
   y += 4;
   doc.roundedRect(totalsX - 8, y - 4, totalsW + 16, 26, 3).fill(PDF_THEME.totalBar);
   doc.font('Helvetica', 'bold').fontSize(11).fillColor('#ffffff');
   doc.text(totalLabel, totalsX, y + 4, { width: totalsW * 0.55 });
-  doc.text(formatMoney(total), totalsX + totalsW * 0.5, y + 4, { width: totalsW * 0.45, align: 'right' });
+  doc.text(formatZar(totals.total), totalsX + totalsW * 0.5, y + 4, { width: totalsW * 0.45, align: 'right' });
   y += 32;
 
   doc.font('Helvetica', 'normal').fontSize(8.5).fillColor(PDF_THEME.inkSoft);

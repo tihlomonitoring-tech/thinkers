@@ -7,6 +7,7 @@ import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachment
 import { getApiBase } from './lib/apiBase.js';
 import { buildAccountingPdfFilename, buildCustomerStatementPdfFilename } from './lib/accountingDocumentPdfFilename.js';
 import InfoHint from './components/InfoHint.jsx';
+import { computeLineItem, computeDocumentTotals, formatZar, formatZarDisplay } from './lib/accountingLineTotals.js';
 
 const NAV_SECTIONS = [
   {
@@ -742,7 +743,7 @@ function ItemsLibraryTab() {
                 <tr key={it.id} className="hover:bg-surface-50/50">
                   <td className="p-3 text-surface-900">{it.description || '—'}</td>
                   <td className="p-3 text-right text-surface-600">{it.default_quantity}</td>
-                  <td className="p-3 text-right text-surface-600">{Number(it.default_unit_price).toFixed(2)}</td>
+                  <td className="p-3 text-right text-surface-600">{formatZar(Number(it.default_unit_price) || 0)}</td>
                   <td className="p-3 text-right text-surface-600">{Number(it.discount_percent) || 0}%</td>
                   <td className="p-3 text-right text-surface-600">{Number(it.tax_percent) || 0}%</td>
                   <td className="p-3">
@@ -754,6 +755,59 @@ function ItemsLibraryTab() {
             </tbody>
           </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+function DocumentLinesViewTable({ lines, vatColumnLabel = 'VAT %' }) {
+  return (
+    <div className="mt-4 border rounded-lg overflow-x-auto">
+      <table className="w-full text-sm min-w-[500px]">
+        <thead className="bg-surface-50">
+          <tr>
+            <th className="text-left p-2">Description</th>
+            <th className="text-right p-2">Qty</th>
+            <th className="text-right p-2">Unit price</th>
+            <th className="text-right p-2">Disc %</th>
+            <th className="text-right p-2">{vatColumnLabel}</th>
+            <th className="text-right p-2">Line total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(lines || []).map((l, i) => {
+            const { qty, up, dPct, tPct, lineTotalInc } = computeLineItem(l);
+            return (
+              <tr key={i} className="border-t">
+                <td className="p-2">{l.description}</td>
+                <td className="p-2 text-right">{qty}</td>
+                <td className="p-2 text-right">{formatZar(up)}</td>
+                <td className="p-2 text-right">{dPct > 0 ? `${dPct}%` : '—'}</td>
+                <td className="p-2 text-right">{tPct > 0 ? `${tPct}%` : '—'}</td>
+                <td className="p-2 text-right font-medium text-surface-900">{formatZar(lineTotalInc)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const DOCUMENT_TAX_HINT = 'Applies only when line items have no VAT %. Line VAT is calculated per item.';
+
+function DocumentTotalsSummary({ lines, discount_percent = 0, tax_percent = 0 }) {
+  const t = computeDocumentTotals(lines, discount_percent, tax_percent);
+  return (
+    <div className="mt-2 text-sm text-surface-600 space-y-1">
+      <p>Subtotal (ex VAT): {formatZar(t.subtotalExVat)}</p>
+      {t.documentDiscountPercent > 0 && (
+        <p>Document discount ({t.documentDiscountPercent}%): −{formatZar(t.documentDiscountAmount)}</p>
+      )}
+      {t.vatAmount > 0 && <p>{t.vatLabel}: {formatZar(t.vatAmount)}</p>}
+      <p className="font-semibold text-surface-900">Total: {formatZar(t.total)}</p>
+      {t.anyLineHasVat && Number(tax_percent) > 0 && (
+        <p className="text-xs text-surface-500">Document VAT % is not added when line items already have VAT %.</p>
       )}
     </div>
   );
@@ -795,7 +849,7 @@ function DocumentLinesEditor({ lines, setLines, itemsLibrary = [], vatColumnLabe
             >
               <option value="">— Add from library —</option>
               {itemsLibrary.map((it) => (
-                <option key={it.id} value={it.id}>{it.description || '(No description)'} — {Number(it.default_unit_price) || 0}</option>
+                <option key={it.id} value={it.id}>{it.description || '(No description)'} — {formatZar(Number(it.default_unit_price) || 0)}</option>
               ))}
             </select>
           )}
@@ -811,20 +865,24 @@ function DocumentLinesEditor({ lines, setLines, itemsLibrary = [], vatColumnLabe
               <th className="text-right p-2 w-24 font-medium text-surface-600">Unit price</th>
               <th className="text-right p-2 w-16 font-medium text-surface-600">Disc %</th>
               <th className="text-right p-2 w-16 font-medium text-surface-600">{vatColumnLabel}</th>
+              <th className="text-right p-2 w-28 font-medium text-surface-600">Amount</th>
               <th className="w-10 p-2" />
             </tr>
           </thead>
           <tbody>
-            {lineList.map((line, i) => (
+            {lineList.map((line, i) => {
+              const { lineTotalInc } = computeLineItem(line);
+              return (
               <tr key={i} className="border-t border-surface-100">
                 <td className="p-2"><input value={line.description || ''} onChange={(e) => updateLine(i, 'description', e.target.value)} className="w-full min-w-[120px] px-2 py-1 rounded border border-surface-200" placeholder="" /></td>
                 <td className="p-2"><input type="number" min="0" step="any" value={line.quantity ?? 1} onChange={(e) => updateLine(i, 'quantity', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
                 <td className="p-2"><input type="number" min="0" step="0.01" value={line.unit_price ?? 0} onChange={(e) => updateLine(i, 'unit_price', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
                 <td className="p-2"><input type="number" min="0" max="100" step="0.01" value={line.discount_percent ?? 0} onChange={(e) => updateLine(i, 'discount_percent', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
                 <td className="p-2"><input type="number" min="0" max="100" step="0.01" value={line.tax_percent ?? 0} onChange={(e) => updateLine(i, 'tax_percent', e.target.value)} className="w-full px-2 py-1 text-right rounded border border-surface-200" /></td>
+                <td className="p-2 text-right text-surface-800 font-medium whitespace-nowrap">{formatZar(lineTotalInc)}</td>
                 <td className="p-2"><button type="button" onClick={() => removeLine(i)} className="text-red-600 hover:text-red-700">×</button></td>
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
       </div>
@@ -1074,10 +1132,15 @@ function QuotationsTab() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-surface-700 mb-1">Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, discount_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">Tax %</label><input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Tax %</label>
+                <input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+                <p className="text-xs text-surface-500 mt-1">{DOCUMENT_TAX_HINT}</p>
+              </div>
             </div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Notes</label><textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             <DocumentLinesEditor lines={form.lines} setLines={(linesOrUpdater) => setForm((f) => ({ ...f, lines: typeof linesOrUpdater === 'function' ? linesOrUpdater(Array.isArray(f.lines) ? f.lines : []) : (Array.isArray(linesOrUpdater) ? linesOrUpdater : []) }))} itemsLibrary={itemsLibrary} />
+            <DocumentTotalsSummary lines={form.lines} discount_percent={form.discount_percent} tax_percent={form.tax_percent} />
             <div className="flex gap-2">
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
               <button type="button" onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
@@ -1164,61 +1227,12 @@ function QuotationsTab() {
             {viewQuotation.valid_until && (
               <p className="text-sm text-surface-600">Valid until: {formatDate(viewQuotation.valid_until)}</p>
             )}
-            <div className="mt-4 border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm min-w-[500px]">
-                <thead className="bg-surface-50"><tr><th className="text-left p-2">Description</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Unit price</th><th className="text-right p-2">Disc %</th><th className="text-right p-2">Tax %</th><th className="text-right p-2">Line total</th></tr></thead>
-                <tbody>
-                  {(viewQuotation.lines || []).map((l, i) => {
-                    const qty = Number(l.quantity) || 0;
-                    const up = Number(l.unit_price) || 0;
-                    const dPct = Number(l.discount_percent) || 0;
-                    const tPct = Number(l.tax_percent) || 0;
-                    const lineSub = qty * up;
-                    const lineDisc = lineSub * (dPct / 100);
-                    const lineAfterDisc = lineSub - lineDisc;
-                    const lineTax = lineAfterDisc * (tPct / 100);
-                    const lineTotal = lineAfterDisc + lineTax;
-                    return (
-                      <tr key={i} className="border-t">
-                        <td className="p-2">{l.description}</td>
-                        <td className="p-2 text-right">{l.quantity}</td>
-                        <td className="p-2 text-right">{l.unit_price}</td>
-                        <td className="p-2 text-right">{dPct > 0 ? dPct + '%' : '—'}</td>
-                        <td className="p-2 text-right">{tPct > 0 ? tPct + '%' : '—'}</td>
-                        <td className="p-2 text-right">{lineTotal.toFixed(2)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {(() => {
-              const documentSubtotal = (viewQuotation.lines || []).reduce((s, l) => {
-                const qty = Number(l.quantity) || 0;
-                const up = Number(l.unit_price) || 0;
-                const dPct = Number(l.discount_percent) || 0;
-                const tPct = Number(l.tax_percent) || 0;
-                const lineSub = qty * up;
-                const lineDisc = lineSub * (dPct / 100);
-                const lineAfterDisc = lineSub - lineDisc;
-                const lineTax = lineAfterDisc * (tPct / 100);
-                return s + (lineAfterDisc + lineTax);
-              }, 0);
-              const dPct = Number(viewQuotation.discount_percent) || 0;
-              const tPct = Number(viewQuotation.tax_percent) || 0;
-              const discountAmt = documentSubtotal * (dPct / 100);
-              const afterDiscount = documentSubtotal - discountAmt;
-              const taxAmt = afterDiscount * (tPct / 100);
-              const total = afterDiscount + taxAmt;
-              return (
-                <div className="mt-2 text-sm text-surface-600 space-y-1">
-                  <p>Subtotal: {documentSubtotal.toFixed(2)}</p>
-                  {dPct > 0 && <p>Discount ({dPct}%): -{discountAmt.toFixed(2)}</p>}
-                  {tPct > 0 && <p>Tax ({tPct}%): {taxAmt.toFixed(2)}</p>}
-                  <p className="font-semibold text-surface-900">Total: {total.toFixed(2)}</p>
-                </div>
-              );
-            })()}
+            <DocumentLinesViewTable lines={viewQuotation.lines} vatColumnLabel="VAT %" />
+            <DocumentTotalsSummary
+              lines={viewQuotation.lines}
+              discount_percent={viewQuotation.discount_percent}
+              tax_percent={viewQuotation.tax_percent}
+            />
             <div className="mt-4 flex gap-2 flex-wrap">
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.quotations.pdfUrl(viewId))} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">View PDF</button>
               <button
@@ -1547,10 +1561,15 @@ function InvoicesTab() {
             <p className="text-xs text-surface-500 -mt-2">Use <strong>Mark paid</strong> on the list to record payment (date + reference). Recurring invoices use that short form by design.</p>
             <div className="grid grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-surface-700 mb-1">Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, discount_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">VAT %</label><input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">VAT %</label>
+                <input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+                <p className="text-xs text-surface-500 mt-1">{DOCUMENT_TAX_HINT}</p>
+              </div>
             </div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Notes</label><textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             <DocumentLinesEditor lines={form.lines} setLines={(linesOrUpdater) => setForm((f) => ({ ...f, lines: typeof linesOrUpdater === 'function' ? linesOrUpdater(Array.isArray(f.lines) ? f.lines : []) : (Array.isArray(linesOrUpdater) ? linesOrUpdater : []) }))} itemsLibrary={itemsLibrary} vatColumnLabel="VAT %" />
+            <DocumentTotalsSummary lines={form.lines} discount_percent={form.discount_percent} tax_percent={form.tax_percent} />
             <div className="flex gap-2">
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
               <button type="button" onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
@@ -1641,62 +1660,12 @@ function InvoicesTab() {
                 {viewInvoice.payment_reference ? ` · Ref: ${viewInvoice.payment_reference}` : ''}
               </p>
             ) : null}
-            <div className="mt-4 border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm min-w-[500px]">
-                <thead className="bg-surface-50"><tr><th className="text-left p-2">Description</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Unit price</th><th className="text-right p-2">Disc %</th><th className="text-right p-2">VAT %</th><th className="text-right p-2">Line total</th></tr></thead>
-                <tbody>
-                  {(viewInvoice.lines || []).map((l, i) => {
-                    const qty = Number(l.quantity) || 0;
-                    const up = Number(l.unit_price) || 0;
-                    const dPct = Number(l.discount_percent) || 0;
-                    const tPct = Number(l.tax_percent) || 0;
-                    const lineSub = qty * up;
-                    const lineDisc = lineSub * (dPct / 100);
-                    const lineAfterDisc = lineSub - lineDisc;
-                    const lineTax = lineAfterDisc * (tPct / 100);
-                    const lineTotal = lineAfterDisc + lineTax;
-                    const desc = (l.description != null ? String(l.description) : '').trim();
-                    return (
-                      <tr key={i} className="border-t">
-                        <td className="p-2">{desc}</td>
-                        <td className="p-2 text-right">{l.quantity}</td>
-                        <td className="p-2 text-right">{l.unit_price}</td>
-                        <td className="p-2 text-right">{dPct > 0 ? `${dPct}%` : ''}</td>
-                        <td className="p-2 text-right">{tPct > 0 ? `${tPct}%` : ''}</td>
-                        <td className="p-2 text-right">{lineTotal.toFixed(2)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {(() => {
-              const documentSubtotal = (viewInvoice.lines || []).reduce((s, l) => {
-                const qty = Number(l.quantity) || 0;
-                const up = Number(l.unit_price) || 0;
-                const dPct = Number(l.discount_percent) || 0;
-                const tPct = Number(l.tax_percent) || 0;
-                const lineSub = qty * up;
-                const lineDisc = lineSub * (dPct / 100);
-                const lineAfterDisc = lineSub - lineDisc;
-                const lineTax = lineAfterDisc * (tPct / 100);
-                return s + (lineAfterDisc + lineTax);
-              }, 0);
-              const dPct = Number(viewInvoice.discount_percent) || 0;
-              const tPct = Number(viewInvoice.tax_percent) || 0;
-              const discountAmt = documentSubtotal * (dPct / 100);
-              const afterDiscount = documentSubtotal - discountAmt;
-              const taxAmt = afterDiscount * (tPct / 100);
-              const total = afterDiscount + taxAmt;
-              return (
-                <div className="mt-2 text-sm text-surface-600 space-y-1">
-                  <p>Subtotal: {documentSubtotal.toFixed(2)}</p>
-                  {dPct > 0 && <p>Discount ({dPct}%): -{discountAmt.toFixed(2)}</p>}
-                  {tPct > 0 && <p>VAT ({tPct}%): {taxAmt.toFixed(2)}</p>}
-                  <p className="font-semibold text-surface-900">Total: {total.toFixed(2)}</p>
-                </div>
-              );
-            })()}
+            <DocumentLinesViewTable lines={viewInvoice.lines} vatColumnLabel="VAT %" />
+            <DocumentTotalsSummary
+              lines={viewInvoice.lines}
+              discount_percent={viewInvoice.discount_percent}
+              tax_percent={viewInvoice.tax_percent}
+            />
             <div className="mt-4 flex gap-2 flex-wrap">
               {String(viewInvoice.status || '').toLowerCase() !== 'paid' ? (
                 <button type="button" onClick={() => openMarkPaid(viewInvoice)} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">Mark paid</button>
@@ -1937,10 +1906,15 @@ function PurchaseOrdersTab() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-surface-700 mb-1">Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, discount_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
-              <div><label className="block text-sm font-medium text-surface-700 mb-1">Tax %</label><input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">Tax %</label>
+                <input type="number" min="0" max="100" step="0.01" value={form.tax_percent ?? 0} onChange={(e) => setForm((f) => ({ ...f, tax_percent: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+                <p className="text-xs text-surface-500 mt-1">{DOCUMENT_TAX_HINT}</p>
+              </div>
             </div>
             <div><label className="block text-sm font-medium text-surface-700 mb-1">Notes</label><textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" /></div>
             <DocumentLinesEditor lines={form.lines} setLines={(linesOrUpdater) => setForm((f) => ({ ...f, lines: typeof linesOrUpdater === 'function' ? linesOrUpdater(Array.isArray(f.lines) ? f.lines : []) : (Array.isArray(linesOrUpdater) ? linesOrUpdater : []) }))} itemsLibrary={itemsLibrary} />
+            <DocumentTotalsSummary lines={form.lines} discount_percent={form.discount_percent} tax_percent={form.tax_percent} />
             <div className="flex gap-2">
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
               <button type="button" onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
@@ -1983,61 +1957,12 @@ function PurchaseOrdersTab() {
             <h3 className="font-semibold text-surface-900 mb-4">Purchase order {viewPO.number}</h3>
             <p className="text-sm text-surface-600">Supplier: {viewPO.supplier_name_from_book || viewPO.supplier_name || '—'}</p>
             <p className="text-sm text-surface-600">Date: {formatDate(viewPO.date)} · Due: {formatDate(viewPO.due_date)}</p>
-            <div className="mt-4 border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm min-w-[500px]">
-                <thead className="bg-surface-50"><tr><th className="text-left p-2">Description</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Unit price</th><th className="text-right p-2">Disc %</th><th className="text-right p-2">Tax %</th><th className="text-right p-2">Line total</th></tr></thead>
-                <tbody>
-                  {(viewPO.lines || []).map((l, i) => {
-                    const qty = Number(l.quantity) || 0;
-                    const up = Number(l.unit_price) || 0;
-                    const dPct = Number(l.discount_percent) || 0;
-                    const tPct = Number(l.tax_percent) || 0;
-                    const lineSub = qty * up;
-                    const lineDisc = lineSub * (dPct / 100);
-                    const lineAfterDisc = lineSub - lineDisc;
-                    const lineTax = lineAfterDisc * (tPct / 100);
-                    const lineTotal = lineAfterDisc + lineTax;
-                    return (
-                      <tr key={i} className="border-t">
-                        <td className="p-2">{l.description}</td>
-                        <td className="p-2 text-right">{l.quantity}</td>
-                        <td className="p-2 text-right">{l.unit_price}</td>
-                        <td className="p-2 text-right">{dPct > 0 ? dPct + '%' : '—'}</td>
-                        <td className="p-2 text-right">{tPct > 0 ? tPct + '%' : '—'}</td>
-                        <td className="p-2 text-right">{lineTotal.toFixed(2)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {(() => {
-              const documentSubtotal = (viewPO.lines || []).reduce((s, l) => {
-                const qty = Number(l.quantity) || 0;
-                const up = Number(l.unit_price) || 0;
-                const dPct = Number(l.discount_percent) || 0;
-                const tPct = Number(l.tax_percent) || 0;
-                const lineSub = qty * up;
-                const lineDisc = lineSub * (dPct / 100);
-                const lineAfterDisc = lineSub - lineDisc;
-                const lineTax = lineAfterDisc * (tPct / 100);
-                return s + (lineAfterDisc + lineTax);
-              }, 0);
-              const dPct = Number(viewPO.discount_percent) || 0;
-              const tPct = Number(viewPO.tax_percent) || 0;
-              const discountAmt = documentSubtotal * (dPct / 100);
-              const afterDiscount = documentSubtotal - discountAmt;
-              const taxAmt = afterDiscount * (tPct / 100);
-              const total = afterDiscount + taxAmt;
-              return (
-                <div className="mt-2 text-sm text-surface-600 space-y-1">
-                  <p>Subtotal: {documentSubtotal.toFixed(2)}</p>
-                  {dPct > 0 && <p>Discount ({dPct}%): -{discountAmt.toFixed(2)}</p>}
-                  {tPct > 0 && <p>Tax ({tPct}%): {taxAmt.toFixed(2)}</p>}
-                  <p className="font-semibold text-surface-900">Total: {total.toFixed(2)}</p>
-                </div>
-              );
-            })()}
+            <DocumentLinesViewTable lines={viewPO.lines} vatColumnLabel="VAT %" />
+            <DocumentTotalsSummary
+              lines={viewPO.lines}
+              discount_percent={viewPO.discount_percent}
+              tax_percent={viewPO.tax_percent}
+            />
             <div className="mt-4 flex gap-2 flex-wrap">
               <button type="button" onClick={() => openAttachmentWithAuth(accountingApi.purchaseOrders.pdfUrl(viewId))} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm">View PDF</button>
               <button
@@ -2428,7 +2353,7 @@ function StatementsTab() {
                     <td className="p-2" colSpan={2}>Opening balance</td>
                     <td className="p-2 text-right">—</td>
                     <td className="p-2 text-right">—</td>
-                    <td className="p-2 text-right">{Number(form.opening_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="p-2 text-right">{formatZar(Number(form.opening_balance || 0))}</td>
                     <td className="p-2" />
                   </tr>
                   {computedFormLines.map((row, idx) => (
@@ -2438,7 +2363,7 @@ function StatementsTab() {
                       <td className="p-1"><input value={row.description} onChange={(e) => updateLine(idx, 'description', e.target.value)} className="w-full min-w-0 px-1 py-1 border border-surface-200 rounded text-xs" placeholder="Description" /></td>
                       <td className="p-1"><input type="number" step="0.01" value={row.debit} onChange={(e) => updateLine(idx, 'debit', e.target.value)} className="w-full min-w-0 px-1 py-1 border border-surface-200 rounded text-xs text-right" placeholder="0" /></td>
                       <td className="p-1"><input type="number" step="0.01" value={row.credit} onChange={(e) => updateLine(idx, 'credit', e.target.value)} className="w-full min-w-0 px-1 py-1 border border-surface-200 rounded text-xs text-right" placeholder="0" /></td>
-                      <td className="p-2 text-right font-medium text-surface-800">{row.balance_after != null ? row.balance_after.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
+                      <td className="p-2 text-right font-medium text-surface-800">{row.balance_after != null ? formatZar(row.balance_after) : '—'}</td>
                       <td className="p-1"><button type="button" onClick={() => removeLine(idx)} className="text-red-600 text-xs hover:underline">✕</button></td>
                     </tr>
                   ))}
@@ -2446,7 +2371,7 @@ function StatementsTab() {
               </table>
               <div className="px-3 py-2 text-sm text-surface-700 bg-surface-50 border-t border-surface-200">
                 <strong>Closing balance (preview):</strong>{' '}
-                {closingPreview.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {form.currency || 'ZAR'}
+                {formatZar(closingPreview)}
               </div>
             </div>
             <div>
@@ -2551,7 +2476,7 @@ function StatementsTab() {
             <h3 className="font-semibold text-surface-900 mb-4">{viewStatement.title || 'Statement'}</h3>
             <p className="text-sm text-surface-600">Type: {viewStatement.type} · Customer: {viewStatement.customer_name || '—'}</p>
             <p className="text-sm text-surface-600">
-              Ref: {viewStatement.statement_ref || '—'} · Currency: {viewStatement.currency || 'ZAR'} · Opening: {viewStatement.opening_balance != null ? Number(viewStatement.opening_balance).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—'}
+              Ref: {viewStatement.statement_ref || '—'} · Opening: {viewStatement.opening_balance != null ? formatZar(viewStatement.opening_balance) : '—'}
             </p>
             <p className="text-sm text-surface-600">Statement date: {formatDate(viewStatement.statement_date)} · Period: {formatDate(viewStatement.date_from)} – {formatDate(viewStatement.date_to)}</p>
             {viewStatement.preamble ? <div className="mt-3 p-3 rounded-lg bg-surface-50 text-surface-800 whitespace-pre-wrap text-sm border border-surface-100"><span className="text-xs font-semibold text-surface-500 uppercase">Notes</span><br />{viewStatement.preamble}</div> : null}
@@ -2565,9 +2490,9 @@ function StatementsTab() {
                         <td className="p-2">{l.txn_date ? formatDate(l.txn_date) : '—'}</td>
                         <td className="p-2">{l.reference || '—'}</td>
                         <td className="p-2">{l.description || '—'}</td>
-                        <td className="p-2 text-right">{l.debit != null ? Number(l.debit).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—'}</td>
-                        <td className="p-2 text-right">{l.credit != null ? Number(l.credit).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—'}</td>
-                        <td className="p-2 text-right font-medium">{l.balance_after != null ? Number(l.balance_after).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—'}</td>
+                        <td className="p-2 text-right">{l.debit != null ? formatZar(l.debit) : '—'}</td>
+                        <td className="p-2 text-right">{l.credit != null ? formatZar(l.credit) : '—'}</td>
+                        <td className="p-2 text-right font-medium">{l.balance_after != null ? formatZar(l.balance_after) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -31,6 +31,7 @@ import userCareerRoutes from './src/routes/userCareer.js';
 import caseManagementRoutes from './src/routes/caseManagement.js';
 import aiRoutes from './src/routes/ai.js';
 import companyLibraryRoutes, { runCompanyLibraryExpiryReminders } from './src/routes/companyLibrary.js';
+import quickSignRoutes from './src/routes/quickSign.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -154,6 +155,7 @@ app.use('/api/user-career', userCareerRoutes);
 app.use('/api/case-management', caseManagementRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/company-library', companyLibraryRoutes);
+app.use('/api/quick-sign', quickSignRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {

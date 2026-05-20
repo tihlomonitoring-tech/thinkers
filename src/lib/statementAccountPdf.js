@@ -11,18 +11,13 @@
  */
 
 import { PDF_THEME, formatDate, pdfPageWidth } from './accountingPdfLayout.js';
+import { formatZarDisplay } from './accountingLineTotals.js';
 import { computeStatementLineBalances } from './statementLineBalance.js';
 
 const PAGE = { w: 595.28, h: 841.89, margin: 48, footerTop: 38 };
 
 function formatMoneyDisplay(raw) {
-  if (raw == null || raw === '' || raw === '—') return raw === '—' ? '—' : '';
-  const s = String(raw).replace(/,/g, '').trim();
-  const n = Number(s);
-  if (!Number.isNaN(n)) {
-    return n.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-  return String(raw);
+  return formatZarDisplay(raw);
 }
 
 /** Remove "Balance due: …" lines and return display string for the banner */

@@ -26,6 +26,8 @@ import TeamLeaderAdmin from './TeamLeaderAdmin';
 import PerformanceEvaluations from './PerformanceEvaluations';
 import Auditor from './Auditor';
 import CompanyLibrary from './CompanyLibrary';
+import QuickSign from './QuickSign';
+import QuickSignPublic from './QuickSignPublic';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
@@ -87,6 +89,7 @@ function AppRoutes() {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/signup" element={<SignUp />} />
       <Route path="/apply/:token" element={<JobApplication />} />
+      <Route path="/quick-sign/:token" element={<QuickSignPublic />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<FirstAllowedRedirect />} />
         <Route path="users" element={<PageGate pathKey="/users"><UserManagement /></PageGate>} />
@@ -109,6 +112,7 @@ function AppRoutes() {
         <Route path="recruitment" element={<PageGate pathKey="/recruitment"><Recruitment /></PageGate>} />
         <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />
         <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />
+        <Route path="quick-sign" element={<PageGate pathKey="/quick-sign"><QuickSign /></PageGate>} />
         <Route path="no-access" element={<NoAccess />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
