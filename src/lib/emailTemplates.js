@@ -1361,3 +1361,16 @@ export function onboardingPhaseAdvancedHtml({ employeeName, planTitle, phaseTitl
   `;
   return taskEmailLayout('New onboardment phase', inner, 'Management');
 }
+
+/** Quick Sign: send signer a copy of the document with signatures applied. */
+export function quickSignSignedCopyHtml({ recipientName, documentTitle, appUrl }) {
+  const inner = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(recipientName || 'there')},</p>
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">
+      Thank you for signing. Attached is your copy of <strong>${escapeHtml(documentTitle || 'the document')}</strong> with your signature and initials on the document.
+    </p>
+    <p style="margin: 0; font-size: 13px; color: #64748b;">Other signers may still add their signatures on the shared document until everyone has completed.</p>
+    ${appUrl ? `<p style="margin: 16px 0 0;"><a href="${escapeHtml(appUrl)}" style="color: #dc2626; font-weight: 600;">Quick Sign</a></p>` : ''}
+  `;
+  return taskEmailLayout('Signed document copy', inner, 'Quick Sign');
+}

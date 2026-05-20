@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { quickSign as qsApi } from './api';
 import { openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import InfoHint from './components/InfoHint.jsx';
+import SignaturePad from './components/SignaturePad.jsx';
+import QuickSignDocumentEditor from './components/QuickSignDocumentEditor.jsx';
 
 const TABS = [
   { id: 'new', label: 'New signing request' },
@@ -20,6 +22,8 @@ function statusBadge(status) {
     sent: 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-200',
     accessed: 'bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200',
     signed: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200',
+    in_progress: 'bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200',
+    completed: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200',
     cancelled: 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-200',
     expired: 'bg-surface-200 text-surface-600',
   };
@@ -41,13 +45,14 @@ function eventLabel(type) {
   return labels[t] || t.replace(/_/g, ' ');
 }
 
+const emptyRecipient = { email: '', name: '' };
+
 const emptyForm = {
   title: '',
   notes: '',
-  recipient_email: '',
-  recipient_name: '',
-  recipient_type: 'external',
   document: null,
+  allow_sender_sign: false,
+  recipients: [{ ...emptyRecipient }],
 };
 
 function QuickSignGlyph({ className }) {
@@ -67,7 +72,13 @@ export default function QuickSign() {
   const [saving, setSaving] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [detailRecipients, setDetailRecipients] = useState([]);
+  const [detailEvents, setDetailEvents] = useState([]);
+  const [detailPlacements, setDetailPlacements] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [senderSigning, setSenderSigning] = useState(false);
+  const [senderSignature, setSenderSignature] = useState('');
+  const [senderPlacements, setSenderPlacements] = useState([]);
   const [tenantUsers, setTenantUsers] = useState([]);
   const [sending, setSending] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
@@ -92,7 +103,7 @@ export default function QuickSign() {
   }, [list, statusFilter]);
 
   const counts = useMemo(() => {
-    const c = { all: list.length, draft: 0, sent: 0, accessed: 0, signed: 0, cancelled: 0 };
+    const c = { all: list.length, draft: 0, sent: 0, accessed: 0, in_progress: 0, signed: 0, completed: 0, cancelled: 0 };
     for (const r of list) {
       const s = String(r.status || '').toLowerCase();
       if (c[s] != null) c[s] += 1;
@@ -105,7 +116,14 @@ export default function QuickSign() {
     setDetailLoading(true);
     qsApi
       .get(id)
-      .then((data) => setDetail(data.request))
+      .then((data) => {
+        setDetail(data.request);
+        setDetailRecipients(data.recipients || []);
+        setDetailEvents(data.events || []);
+        setDetailPlacements(data.placements || []);
+        setSenderPlacements([]);
+        setSenderSignature('');
+      })
       .catch((e) => setError(e?.message || 'Failed to load detail'))
       .finally(() => setDetailLoading(false));
   };
@@ -121,9 +139,16 @@ export default function QuickSign() {
       setError('Select a document to upload.');
       return;
     }
-    const email = (form.recipient_email || '').trim();
-    if (!email) {
-      setError('Recipient email is required.');
+    const recipients = (form.recipients || [])
+      .map((r) => ({ email: (r.email || '').trim(), name: (r.name || '').trim() }))
+      .filter((r) => r.email);
+    if (recipients.length === 0) {
+      setError('Add at least one signer email.');
+      return;
+    }
+    const mime = (form.document.type || '').toLowerCase();
+    if (mime !== 'application/pdf' && !form.document.name.toLowerCase().endsWith('.pdf')) {
+      setError('On-document signing requires a PDF file.');
       return;
     }
     setSaving(true);
@@ -132,9 +157,8 @@ export default function QuickSign() {
       const fd = new FormData();
       fd.append('document', form.document);
       fd.append('title', form.title.trim() || form.document.name);
-      fd.append('recipient_email', email);
-      fd.append('recipient_name', (form.recipient_name || '').trim());
-      fd.append('recipient_type', form.recipient_type);
+      fd.append('recipients', JSON.stringify(recipients));
+      fd.append('allow_sender_sign', form.allow_sender_sign ? 'true' : 'false');
       if (form.notes) fd.append('notes', form.notes.trim());
       const data = await qsApi.create(fd);
       resetForm();
@@ -149,7 +173,7 @@ export default function QuickSign() {
   };
 
   const handleSend = async (id) => {
-    if (!window.confirm('Send signing invitation email with one-time PIN to the recipient?')) return;
+    if (!window.confirm('Send signing invitations? Each signer will receive a unique PIN and link by email.')) return;
     setSending(true);
     setError('');
     try {
@@ -174,15 +198,54 @@ export default function QuickSign() {
     }
   };
 
-  const pickInternalUser = (userId) => {
+  const addRecipientRow = () => {
+    setForm((f) => ({ ...f, recipients: [...(f.recipients || []), { ...emptyRecipient }] }));
+  };
+
+  const updateRecipient = (idx, field, value) => {
+    setForm((f) => {
+      const next = [...(f.recipients || [])];
+      next[idx] = { ...next[idx], [field]: value };
+      return { ...f, recipients: next };
+    });
+  };
+
+  const removeRecipient = (idx) => {
+    setForm((f) => {
+      const next = (f.recipients || []).filter((_, i) => i !== idx);
+      return { ...f, recipients: next.length ? next : [{ ...emptyRecipient }] };
+    });
+  };
+
+  const pickInternalUser = (idx, userId) => {
     const u = tenantUsers.find((x) => x.id === userId);
     if (!u) return;
-    setForm((f) => ({
-      ...f,
-      recipient_type: 'internal',
-      recipient_email: u.email || '',
-      recipient_name: u.full_name || '',
-    }));
+    updateRecipient(idx, 'email', u.email || '');
+    updateRecipient(idx, 'name', u.full_name || '');
+  };
+
+  const handleSenderSign = async () => {
+    if (!detail?.id || !senderSignature || senderPlacements.length === 0) {
+      setError('Draw your signature and place it on the document.');
+      return;
+    }
+    setSenderSigning(true);
+    setError('');
+    try {
+      await qsApi.senderSign(detail.id, {
+        signatureDataUrl: senderSignature,
+        placements: senderPlacements,
+        id_number: 'SENDER',
+        latitude: 0,
+        longitude: 0,
+      });
+      loadDetail(detail.id);
+      loadList();
+    } catch (err) {
+      setError(err?.message || 'Sender sign failed');
+    } finally {
+      setSenderSigning(false);
+    }
   };
 
   return (
@@ -255,8 +318,8 @@ export default function QuickSign() {
               </div>
 
               <InfoHint className="mb-6">
-                Supported: PDF, images, Word. After saving a draft, open <strong>Document history</strong> to send the invitation.
-                Signers must enable location and confirm their ID number.
+                Upload a <strong>PDF</strong>. Add one or more signers — each gets a unique PIN and link to sign the same document.
+                Signatures are placed on the PDF. After saving a draft, send invitations from <strong>Document history</strong>.
               </InfoHint>
 
               <form onSubmit={handleCreate} className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-sm overflow-hidden">
@@ -277,7 +340,7 @@ export default function QuickSign() {
                     <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">File *</label>
                     <input
                       type="file"
-                      accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,image/*,application/pdf"
+                      accept=".pdf,application/pdf"
                       onChange={(e) => setForm((f) => ({ ...f, document: e.target.files?.[0] || null }))}
                       className="w-full text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-brand-50 file:text-brand-800 file:font-medium"
                       required
@@ -288,56 +351,60 @@ export default function QuickSign() {
                   </div>
                 </div>
 
-                <div className="px-5 py-4 border-b border-t border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50">
-                  <h3 className="text-sm font-semibold text-surface-800 dark:text-surface-200 uppercase tracking-wide">Recipient</h3>
+                <div className="px-5 py-4 border-b border-t border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50 flex justify-between items-center">
+                  <h3 className="text-sm font-semibold text-surface-800 dark:text-surface-200 uppercase tracking-wide">Signers</h3>
+                  <button type="button" onClick={addRecipientRow} className="text-xs font-semibold text-brand-600 hover:text-brand-700">
+                    + Add signer
+                  </button>
                 </div>
                 <div className="p-5 space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">Type</label>
-                      <select
-                        value={form.recipient_type}
-                        onChange={(e) => setForm((f) => ({ ...f, recipient_type: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
-                      >
-                        <option value="external">External</option>
-                        <option value="internal">Internal user</option>
-                      </select>
-                    </div>
-                    {form.recipient_type === 'internal' && tenantUsers.length > 0 ? (
-                      <div>
-                        <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">Select user</label>
+                  {(form.recipients || []).map((rec, idx) => (
+                    <div key={idx} className="p-4 rounded-lg border border-surface-200 dark:border-surface-700 space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-semibold text-surface-500">Signer {idx + 1}</span>
+                        {(form.recipients || []).length > 1 ? (
+                          <button type="button" onClick={() => removeRecipient(idx)} className="text-xs text-red-600">
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                      {tenantUsers.length > 0 ? (
                         <select
                           value=""
-                          onChange={(e) => pickInternalUser(e.target.value)}
-                          className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
+                          onChange={(e) => pickInternalUser(idx, e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-sm"
                         >
-                          <option value="">— Choose —</option>
+                          <option value="">Fill from internal user…</option>
                           {tenantUsers.map((u) => (
                             <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
                           ))}
                         </select>
-                      </div>
-                    ) : null}
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">Email *</label>
+                      ) : null}
+                      <input
+                        type="email"
+                        value={rec.email}
+                        onChange={(e) => updateRecipient(idx, 'email', e.target.value)}
+                        placeholder="Email *"
+                        className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
+                        required
+                      />
+                      <input
+                        value={rec.name}
+                        onChange={(e) => updateRecipient(idx, 'name', e.target.value)}
+                        placeholder="Full name"
+                        className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
+                      />
+                    </div>
+                  ))}
+                  <label className="flex items-center gap-2 text-sm text-surface-700 dark:text-surface-300">
                     <input
-                      type="email"
-                      value={form.recipient_email}
-                      onChange={(e) => setForm((f) => ({ ...f, recipient_email: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
-                      required
+                      type="checkbox"
+                      checked={form.allow_sender_sign}
+                      onChange={(e) => setForm((f) => ({ ...f, allow_sender_sign: e.target.checked }))}
+                      className="rounded border-surface-300"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">Full name</label>
-                    <input
-                      value={form.recipient_name}
-                      onChange={(e) => setForm((f) => ({ ...f, recipient_name: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
-                    />
-                  </div>
+                    I also need to sign this document
+                  </label>
                 </div>
 
                 <div className="px-5 py-4 border-b border-t border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50">
@@ -398,6 +465,8 @@ export default function QuickSign() {
                   { id: 'draft', label: 'Draft', count: counts.draft },
                   { id: 'sent', label: 'Sent', count: counts.sent },
                   { id: 'accessed', label: 'Accessed', count: counts.accessed },
+                  { id: 'in_progress', label: 'In progress', count: counts.in_progress },
+                  { id: 'completed', label: 'Completed', count: counts.completed },
                   { id: 'signed', label: 'Signed', count: counts.signed },
                   { id: 'cancelled', label: 'Cancelled', count: counts.cancelled },
                 ].map((f) => (
@@ -459,11 +528,19 @@ export default function QuickSign() {
                                   <span className="font-medium text-surface-900 dark:text-surface-100 block truncate max-w-[200px] sm:max-w-none">
                                     {r.title}
                                   </span>
-                                  <span className="text-xs text-surface-500 sm:hidden truncate block">{r.recipient_email}</span>
+                                  <span className="text-xs text-surface-500 sm:hidden truncate block">
+                                    {r.recipients_total ? `${r.recipients_signed}/${r.recipients_total} signed` : r.recipient_email}
+                                  </span>
                                 </td>
                                 <td className="px-4 py-3 text-surface-600 dark:text-surface-400 hidden sm:table-cell">
-                                  <span className="block truncate max-w-[180px]">{r.recipient_name || '—'}</span>
-                                  <span className="text-xs text-surface-500 truncate block max-w-[180px]">{r.recipient_email}</span>
+                                  {r.recipients_total ? (
+                                    <span className="text-xs">{r.recipients_signed}/{r.recipients_total} signed</span>
+                                  ) : (
+                                    <>
+                                      <span className="block truncate max-w-[180px]">{r.recipient_name || '—'}</span>
+                                      <span className="text-xs text-surface-500 truncate block max-w-[180px]">{r.recipient_email}</span>
+                                    </>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3">
                                   <span className={`inline-flex text-xs font-semibold px-2.5 py-0.5 rounded-full capitalize ${statusBadge(r.status)}`}>
@@ -507,12 +584,32 @@ export default function QuickSign() {
                             </span>
                           </div>
 
-                          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                          {detailRecipients.length > 0 ? (
                             <div>
-                              <dt className="text-xs font-semibold uppercase tracking-wide text-surface-500">Recipient</dt>
-                              <dd className="text-surface-800 dark:text-surface-200 mt-0.5">{detail.recipient_name || '—'}</dd>
-                              <dd className="text-surface-500 text-xs">{detail.recipient_email}</dd>
+                              <h4 className="text-xs font-semibold uppercase tracking-wide text-surface-500 mb-2">Signers</h4>
+                              <ul className="rounded-lg border border-surface-200 dark:border-surface-700 divide-y text-sm">
+                                {detailRecipients.map((rec) => (
+                                  <li key={rec.id} className="px-3 py-2 flex justify-between gap-2">
+                                    <span>
+                                      {rec.full_name || rec.email}
+                                      {rec.is_sender ? ' (you)' : ''}
+                                    </span>
+                                    <span className={`text-xs font-semibold capitalize ${statusBadge(rec.status)}`}>{rec.status}</span>
+                                  </li>
+                                ))}
+                              </ul>
                             </div>
+                          ) : (
+                            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                              <div>
+                                <dt className="text-xs font-semibold uppercase tracking-wide text-surface-500">Recipient</dt>
+                                <dd className="text-surface-800 dark:text-surface-200 mt-0.5">{detail.recipient_name || '—'}</dd>
+                                <dd className="text-surface-500 text-xs">{detail.recipient_email}</dd>
+                              </div>
+                            </dl>
+                          )}
+
+                          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 text-sm">
                             <div>
                               <dt className="text-xs font-semibold uppercase tracking-wide text-surface-500">File</dt>
                               <dd className="text-surface-800 dark:text-surface-200 mt-0.5 truncate">{detail.document_original_name}</dd>
@@ -550,6 +647,28 @@ export default function QuickSign() {
                             ) : null}
                           </dl>
 
+                          {(detail.has_working_document || detail.signing_mode === 'on_document') && detail.status !== 'draft' ? (
+                            <div className="rounded-lg border border-surface-200 dark:border-surface-700 overflow-hidden">
+                              <p className="px-3 py-2 text-xs font-semibold bg-surface-50 dark:bg-surface-800 text-surface-600">
+                                Shared document (updates as signers complete)
+                              </p>
+                              <QuickSignDocumentEditor
+                                documentUrl={qsApi.documentUrl(detail.id, 'working')}
+                                pageCount={detail.page_count || 1}
+                                placements={detailPlacements.map((p) => ({
+                                  page_index: p.page_index,
+                                  type: p.placement_type,
+                                  x_pct: p.x_pct,
+                                  y_pct: p.y_pct,
+                                  width_pct: p.width_pct,
+                                  height_pct: p.height_pct,
+                                  signer_name: p.signer_name,
+                                }))}
+                                readOnly
+                              />
+                            </div>
+                          ) : null}
+
                           <div className="flex flex-wrap gap-2 pt-1">
                             <button
                               type="button"
@@ -558,35 +677,28 @@ export default function QuickSign() {
                             >
                               Original
                             </button>
-                            {detail.has_signed_document ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => openAttachmentWithAuth(qsApi.documentUrl(detail.id, 'signed'))}
-                                  className="px-3 py-2 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-700"
-                                >
-                                  Signed record
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    downloadAttachmentWithAuth(
-                                      qsApi.documentUrl(detail.id, 'signed'),
-                                      `signed-${detail.document_original_name || 'record'}.pdf`
-                                    )
-                                  }
-                                  className="px-3 py-2 rounded-lg border border-brand-200 text-brand-700 text-xs font-medium"
-                                >
-                                  Download PDF
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openAttachmentWithAuth(qsApi.signatureImageUrl(detail.id))}
-                                  className="px-3 py-2 rounded-lg border border-surface-300 text-xs font-medium"
-                                >
-                                  Signature
-                                </button>
-                              </>
+                            {detail.has_working_document || detail.has_signed_document ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  downloadAttachmentWithAuth(
+                                    qsApi.documentUrl(detail.id, detail.status === 'completed' ? 'signed' : 'working'),
+                                    `signed-${detail.document_original_name || 'document.pdf'}`
+                                  )
+                                }
+                                className="px-3 py-2 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-700"
+                              >
+                                Download signed PDF
+                              </button>
+                            ) : null}
+                            {detail.has_signed_document && detail.signing_mode !== 'on_document' ? (
+                              <button
+                                type="button"
+                                onClick={() => openAttachmentWithAuth(qsApi.documentUrl(detail.id, 'signed'))}
+                                className="px-3 py-2 rounded-lg border text-xs font-medium"
+                              >
+                                Signed record
+                              </button>
                             ) : null}
                             {detail.status === 'draft' ? (
                               <button
@@ -598,7 +710,30 @@ export default function QuickSign() {
                                 {sending ? 'Sending…' : 'Send invitation'}
                               </button>
                             ) : null}
-                            {detail.status !== 'signed' && detail.status !== 'cancelled' ? (
+                            {detail.allow_sender_sign &&
+                            detailRecipients.some((r) => r.is_sender && r.status !== 'signed') ? (
+                              <div className="w-full border-t border-surface-200 dark:border-surface-700 pt-4 space-y-3">
+                                <h4 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Sign as sender</h4>
+                                <SignaturePad onChange={setSenderSignature} className="max-w-md" />
+                                <QuickSignDocumentEditor
+                                  documentUrl={qsApi.documentUrl(detail.id, 'working')}
+                                  pageCount={detail.page_count || 1}
+                                  signaturePreviewUrl={senderSignature}
+                                  placements={detailPlacements}
+                                  onPlacementsChange={setSenderPlacements}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={senderSigning || !senderSignature || senderPlacements.length === 0}
+                                  onClick={handleSenderSign}
+                                  className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium disabled:opacity-50"
+                                >
+                                  {senderSigning ? 'Applying…' : 'Apply my signature'}
+                                </button>
+                              </div>
+                            ) : null}
+
+                            {detail.status !== 'signed' && detail.status !== 'completed' && detail.status !== 'cancelled' ? (
                               <button
                                 type="button"
                                 onClick={() => handleCancel(detail.id)}
@@ -612,10 +747,10 @@ export default function QuickSign() {
                           <div>
                             <h4 className="text-xs font-semibold uppercase tracking-wide text-surface-500 mb-2">Activity log</h4>
                             <ul className="rounded-lg border border-surface-200 dark:border-surface-700 divide-y divide-surface-100 dark:divide-surface-800 text-xs max-h-40 overflow-y-auto">
-                              {(detail.events || []).length === 0 ? (
+                              {detailEvents.length === 0 ? (
                                 <li className="px-3 py-4 text-surface-500 text-center">No activity yet.</li>
                               ) : (
-                                detail.events.map((ev) => (
+                                detailEvents.map((ev) => (
                                   <li key={ev.id} className="px-3 py-2.5 flex justify-between gap-3">
                                     <span className="text-surface-800 dark:text-surface-200">{eventLabel(ev.event_type)}</span>
                                     <span className="text-surface-500 shrink-0">{formatDateTime(ev.created_at)}</span>

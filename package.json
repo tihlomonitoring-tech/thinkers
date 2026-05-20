@@ -25,6 +25,7 @@
     "db:truck-analysis-handovers": "node scripts/run-truck-analysis-handovers.js",
     "db:logistics-flow": "node scripts/run-logistics-flow-schema.js",
     "db:quick-sign": "node scripts/run-quick-sign-schema.js",
+    "db:quick-sign-v2": "node scripts/run-quick-sign-v2-schema.js",
     "db:employee-onboardment": "node scripts/run-employee-onboardment-schema.js",
     "db:user-page-roles-quick-sign": "node scripts/run-add-quick-sign-page-role.js",
     "db:command-centre-shift-reports": "node scripts/run-command-centre-shift-reports.js",
@@ -150,6 +151,7 @@
     "multer": "^2.1.0",
     "nodemailer": "^6.10.1",
     "openai": "^6.35.0",
+    "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
     "pdfkit": "^0.17.2",
     "pptxgenjs": "^3.12.0"

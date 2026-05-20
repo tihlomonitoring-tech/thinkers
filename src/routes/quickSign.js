@@ -6,71 +6,37 @@ import bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
-import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
-import { quickSignInviteHtml } from '../lib/emailTemplates.js';
+import { isEmailConfigured } from '../lib/emailService.js';
 import { buildSignedRecordPdf } from '../lib/quickSignPdf.js';
+import {
+  getRow,
+  safeResolveStored,
+  generateOtp,
+  appBaseUrl,
+  logEvent,
+  resolveByToken,
+  isLinkExpired,
+  isRecipientSessionValid,
+  isLegacySessionValid,
+  getWorkingDocumentRel,
+  ensureWorkingPdf,
+  loadRecipients,
+  applySignerPlacements,
+  emailSignedCopy,
+  sendRecipientInvites,
+  refreshRequestStatus,
+  BCRYPT_ROUNDS,
+  uploadsRoot,
+} from '../lib/quickSignService.js';
+import { quickSignInviteHtml } from '../lib/emailTemplates.js';
+import { sendEmail } from '../lib/emailService.js';
+import { getPdfPageCount } from '../lib/quickSignPdfStamp.js';
 
 const router = Router();
-const BCRYPT_ROUNDS = 10;
 const OTP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 8;
-
-const uploadsRoot = path.join(process.cwd(), 'uploads', 'quick-sign');
-
-function getRow(row, ...keys) {
-  if (!row) return undefined;
-  for (const k of keys) if (row[k] !== undefined && row[k] !== null) return row[k];
-  const lower = (keys[0] || '').toString().toLowerCase();
-  const entry = Object.entries(row).find(([key]) => key && String(key).toLowerCase() === lower);
-  return entry ? entry[1] : undefined;
-}
-
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim() || null;
-}
-
-function clientUa(req) {
-  return (req.headers['user-agent'] || '').toString().slice(0, 500) || null;
-}
-
-async function logEvent(requestId, eventType, req, metadata = null) {
-  const meta = metadata != null ? JSON.stringify(metadata) : null;
-  await query(
-    `INSERT INTO quick_sign_events (request_id, event_type, ip_address, user_agent, metadata_json)
-     VALUES (@requestId, @eventType, @ip, @ua, @meta)`,
-    { requestId, eventType, ip: clientIp(req), ua: clientUa(req), meta }
-  ).catch((e) => console.error('[quick-sign] audit', e?.message));
-}
-
-function appBaseUrl(req) {
-  let appUrl = (process.env.FRONTEND_ORIGIN || process.env.APP_URL || '').trim().replace(/\/$/, '');
-  if (!appUrl) {
-    const raw = req.get('origin') || req.get('referer') || '';
-    if (raw.startsWith('http://') || raw.startsWith('https://')) {
-      try {
-        const u = new URL(raw);
-        appUrl = `${u.protocol}//${u.host}`;
-      } catch (_) {}
-    }
-  }
-  return appUrl || 'http://localhost:5173';
-}
-
-function generateOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-function safeResolveStored(relPath) {
-  if (!relPath) return null;
-  const normalized = path.normalize(relPath).replace(/^(\.\.(\/|\\|$))+/, '');
-  const full = path.join(process.cwd(), normalized);
-  const root = path.join(process.cwd(), 'uploads', 'quick-sign');
-  if (!full.startsWith(root)) return null;
-  if (!fs.existsSync(full)) return null;
-  return full;
-}
 
 const docUpload = multer({
   storage: multer.diskStorage({
@@ -88,104 +54,90 @@ const docUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const mime = (file.mimetype || '').toLowerCase();
-    const ok =
-      mime === 'application/pdf' ||
-      mime.startsWith('image/') ||
-      mime === 'application/msword' ||
-      mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    cb(ok ? null : new Error('Only PDF, images, or Word documents are allowed'), ok);
+    const ok = mime === 'application/pdf' || mime.startsWith('image/');
+    cb(ok ? null : new Error('Upload PDF or image files for on-document signing'), ok);
   },
 }).single('document');
 
-async function getRequestByToken(token) {
-  const result = await query(
-    `SELECT r.*, u.full_name AS sender_name, u.email AS sender_email
-     FROM quick_sign_requests r
-     LEFT JOIN users u ON u.id = r.created_by_user_id
-     WHERE r.access_token = @token`,
-    { token: (token || '').trim() }
-  );
-  return result.recordset?.[0] || null;
-}
-
-function mapRequest(row) {
+function mapRequest(row, recipients = []) {
   if (!row) return null;
+  const signed = recipients.filter((r) => getRow(r, 'status') === 'signed').length;
   return {
     id: getRow(row, 'id'),
-    tenant_id: getRow(row, 'tenant_id'),
     title: getRow(row, 'title'),
     notes: getRow(row, 'notes'),
     status: getRow(row, 'status'),
-    recipient_email: getRow(row, 'recipient_email'),
-    recipient_name: getRow(row, 'recipient_name'),
-    recipient_type: getRow(row, 'recipient_type'),
+    signing_mode: getRow(row, 'signing_mode') || 'legacy',
+    allow_sender_sign: !!getRow(row, 'allow_sender_sign'),
+    page_count: getRow(row, 'page_count'),
     document_original_name: getRow(row, 'document_original_name'),
     document_mime: getRow(row, 'document_mime'),
-    has_signed_document: !!getRow(row, 'document_signed_path'),
-    first_accessed_at: getRow(row, 'first_accessed_at'),
-    last_accessed_at: getRow(row, 'last_accessed_at'),
-    signed_at: getRow(row, 'signed_at'),
-    signer_id_number: getRow(row, 'signer_id_number') ? '***' + String(getRow(row, 'signer_id_number')).slice(-4) : null,
-    signer_latitude: getRow(row, 'signer_latitude'),
-    signer_longitude: getRow(row, 'signer_longitude'),
-    signer_location_accuracy: getRow(row, 'signer_location_accuracy'),
-    signer_location_captured_at: getRow(row, 'signer_location_captured_at'),
+    has_working_document: !!getRow(row, 'document_working_path'),
+    has_signed_document: !!(getRow(row, 'document_signed_path') || getRow(row, 'document_working_path')),
+    recipients_signed: signed,
+    recipients_total: recipients.length,
     sent_at: getRow(row, 'sent_at'),
     created_at: getRow(row, 'created_at'),
-    updated_at: getRow(row, 'updated_at'),
     sender_name: getRow(row, 'sender_name'),
-    sender_email: getRow(row, 'sender_email'),
-    link_expires_at: getRow(row, 'link_expires_at'),
   };
 }
 
-function isLinkExpired(row) {
-  const exp = getRow(row, 'link_expires_at');
-  if (!exp) return false;
-  return new Date(exp).getTime() < Date.now();
-}
-
-function isSessionValid(row, sessionToken) {
-  const st = getRow(row, 'signer_session_token');
-  const exp = getRow(row, 'signer_session_expires_at');
-  if (!st || !sessionToken || st !== sessionToken) return false;
-  if (!exp || new Date(exp).getTime() < Date.now()) return false;
-  return true;
-}
-
-async function countRecentOtpFailures(requestId) {
+async function countOtpFailures(requestId, recipientId = null) {
   const r = await query(
     `SELECT COUNT(*) AS c FROM quick_sign_events
      WHERE request_id = @id AND event_type = N'otp_failed'
        AND created_at > DATEADD(hour, -2, SYSUTCDATETIME())`,
     { id: requestId }
   );
-  return Number(r.recordset?.[0]?.c ?? r.recordset?.[0]?.C ?? 0);
+  return Number(r.recordset?.[0]?.c ?? 0);
 }
 
-// --- Public routes (no session auth) ---
+function parseRecipientsBody(body) {
+  const raw = body?.recipients;
+  if (!raw) return [];
+  try {
+    const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+// --- Public routes ---
 
 router.get('/public/:token', async (req, res, next) => {
   try {
-    const row = await getRequestByToken(req.params.token);
-    if (!row) return res.status(404).json({ error: 'Invalid or expired signing link' });
-    if (getRow(row, 'status') === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
-    if (isLinkExpired(row)) return res.status(410).json({ error: 'This signing link has expired' });
-    if (getRow(row, 'status') === 'signed') {
+    const resolved = await resolveByToken(req.params.token);
+    if (!resolved) return res.status(404).json({ error: 'Invalid or expired signing link' });
+    const { mode, request, recipient } = resolved;
+    const reqRow = mode === 'recipient' ? request : request;
+    if (isLinkExpired(reqRow)) return res.status(410).json({ error: 'This signing link has expired' });
+    if (getRow(reqRow, 'request_status') === 'cancelled' || getRow(reqRow, 'status') === 'cancelled') {
+      return res.status(410).json({ error: 'This signing request was cancelled' });
+    }
+
+    if (mode === 'recipient') {
+      const already = getRow(recipient, 'status') === 'signed';
       return res.json({
-        title: getRow(row, 'title'),
-        recipientName: getRow(row, 'recipient_name'),
-        status: 'signed',
-        alreadySigned: true,
+        title: getRow(reqRow, 'title'),
+        recipientName: getRow(recipient, 'full_name'),
+        signingMode: getRow(reqRow, 'signing_mode') || 'on_document',
+        pageCount: getRow(reqRow, 'page_count') || 1,
+        documentMime: getRow(reqRow, 'document_mime'),
+        alreadySigned: already,
+        otpRequired: !already,
       });
     }
+
+    if (getRow(request, 'status') === 'signed') {
+      return res.json({ title: getRow(request, 'title'), alreadySigned: true, signingMode: 'legacy' });
+    }
     res.json({
-      title: getRow(row, 'title'),
-      recipientName: getRow(row, 'recipient_name'),
-      recipientEmail: getRow(row, 'recipient_email'),
-      status: getRow(row, 'status'),
-      otpRequired: true,
+      title: getRow(request, 'title'),
+      recipientName: getRow(request, 'recipient_name'),
+      signingMode: 'legacy',
       alreadySigned: false,
+      otpRequired: true,
     });
   } catch (err) {
     next(err);
@@ -194,61 +146,65 @@ router.get('/public/:token', async (req, res, next) => {
 
 router.post('/public/:token/verify-otp', async (req, res, next) => {
   try {
-    const token = (req.params.token || '').trim();
     const code = String(req.body?.code || req.body?.otp || '').trim();
-    if (!code || code.length < 4) return res.status(400).json({ error: 'Enter the one-time PIN from your email' });
+    if (!code) return res.status(400).json({ error: 'Enter the one-time PIN from your email' });
 
-    const row = await getRequestByToken(token);
-    if (!row) return res.status(404).json({ error: 'Invalid or expired signing link' });
-    if (isLinkExpired(row)) return res.status(410).json({ error: 'This signing link has expired' });
-    if (getRow(row, 'status') === 'signed') return res.status(400).json({ error: 'This document has already been signed' });
-    if (getRow(row, 'status') === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
+    const resolved = await resolveByToken(req.params.token);
+    if (!resolved) return res.status(404).json({ error: 'Invalid or expired signing link' });
 
+    if (resolved.mode === 'recipient') {
+      const { recipient, request } = resolved;
+      const requestId = getRow(request, 'request_id') || getRow(request, 'id');
+      if (isLinkExpired(request)) return res.status(410).json({ error: 'Link expired' });
+      if (getRow(recipient, 'status') === 'signed') return res.status(400).json({ error: 'You have already signed' });
+      if (await countOtpFailures(requestId) >= MAX_OTP_ATTEMPTS) {
+        return res.status(429).json({ error: 'Too many incorrect PIN attempts.' });
+      }
+      const hash = getRow(recipient, 'otp_hash');
+      if (!hash || !(await bcrypt.compare(code, hash))) {
+        await logEvent(requestId, 'otp_failed', req, null, getRow(recipient, 'id'));
+        return res.status(401).json({ error: 'Incorrect PIN' });
+      }
+      const sessionToken = randomBytes(32).toString('hex');
+      const sessionExp = new Date(Date.now() + SESSION_TTL_MS);
+      await query(
+        `UPDATE quick_sign_recipients SET signer_session_token = @st, signer_session_expires_at = @exp,
+           status = CASE WHEN status = N'sent' THEN N'accessed' ELSE status END, updated_at = SYSUTCDATETIME()
+         WHERE id = @id`,
+        { id: getRow(recipient, 'id'), st: sessionToken, exp: sessionExp.toISOString() }
+      );
+      await query(
+        `UPDATE quick_sign_requests SET last_accessed_at = SYSUTCDATETIME(), first_accessed_at = COALESCE(first_accessed_at, SYSUTCDATETIME()),
+           status = CASE WHEN status = N'sent' THEN N'in_progress' ELSE status END WHERE id = @id`,
+        { id: requestId }
+      );
+      await logEvent(requestId, 'otp_verified', req, null, getRow(recipient, 'id'));
+      return res.json({
+        sessionToken,
+        signingMode: getRow(request, 'signing_mode') || 'on_document',
+        pageCount: getRow(request, 'page_count') || 1,
+        documentMime: getRow(request, 'document_mime'),
+        documentName: getRow(request, 'document_original_name'),
+      });
+    }
+
+    // Legacy single-recipient
+    const row = resolved.request;
     const requestId = getRow(row, 'id');
-    if (await countRecentOtpFailures(requestId) >= MAX_OTP_ATTEMPTS) {
-      return res.status(429).json({ error: 'Too many incorrect PIN attempts. Contact the sender for a new link.' });
-    }
-
+    if (getRow(row, 'status') === 'signed') return res.status(400).json({ error: 'Already signed' });
     const hash = getRow(row, 'otp_hash');
-    const otpExp = getRow(row, 'otp_expires_at');
-    if (!hash) return res.status(400).json({ error: 'Signing is not ready yet. Contact the sender.' });
-    if (otpExp && new Date(otpExp).getTime() < Date.now()) {
-      return res.status(410).json({ error: 'The one-time PIN has expired. Contact the sender.' });
-    }
-
-    const match = await bcrypt.compare(code, hash);
-    if (!match) {
+    if (!hash || !(await bcrypt.compare(code, hash))) {
       await logEvent(requestId, 'otp_failed', req);
-      return res.status(401).json({ error: 'Incorrect PIN. Check the code in your email.' });
+      return res.status(401).json({ error: 'Incorrect PIN' });
     }
-
     const sessionToken = randomBytes(32).toString('hex');
     const sessionExp = new Date(Date.now() + SESSION_TTL_MS);
-    const now = new Date();
-    const firstAccess = getRow(row, 'first_accessed_at');
-
     await query(
-      `UPDATE quick_sign_requests SET
-         signer_session_token = @sessionToken,
-         signer_session_expires_at = @sessionExp,
-         otp_verified_at = @now,
-         first_accessed_at = COALESCE(first_accessed_at, @now),
-         last_accessed_at = @now,
-         status = CASE WHEN status = N'sent' THEN N'accessed' ELSE status END,
-         updated_at = SYSUTCDATETIME()
-       WHERE id = @id`,
-      { id: requestId, sessionToken, sessionExp: sessionExp.toISOString(), now: now.toISOString() }
+      `UPDATE quick_sign_requests SET signer_session_token = @st, signer_session_expires_at = @exp,
+         otp_verified_at = SYSUTCDATETIME(), status = N'accessed', last_accessed_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id: requestId, st: sessionToken, exp: sessionExp.toISOString() }
     );
-
-    await logEvent(requestId, 'otp_verified', req, { first_access: !firstAccess });
-    await logEvent(requestId, 'link_opened', req);
-
-    res.json({
-      sessionToken,
-      sessionExpiresAt: sessionExp.toISOString(),
-      documentMime: getRow(row, 'document_mime'),
-      documentName: getRow(row, 'document_original_name'),
-    });
+    res.json({ sessionToken, signingMode: 'legacy', documentMime: getRow(row, 'document_mime') });
   } catch (err) {
     next(err);
   }
@@ -256,23 +212,61 @@ router.post('/public/:token/verify-otp', async (req, res, next) => {
 
 router.get('/public/:token/document', async (req, res, next) => {
   try {
-    const sessionToken = (req.query.session || req.headers['x-sign-session'] || '').toString().trim();
-    const row = await getRequestByToken(req.params.token);
-    if (!row || !isSessionValid(row, sessionToken)) {
-      return res.status(401).json({ error: 'Session expired. Enter your PIN again.' });
+    const sessionToken = (req.query.session || '').toString().trim();
+    const resolved = await resolveByToken(req.params.token);
+    if (!resolved) return res.status(401).json({ error: 'Invalid session' });
+
+    let rel;
+    let mime;
+    let name;
+    let requestId;
+
+    if (resolved.mode === 'recipient') {
+      const { recipient, request } = resolved;
+      if (!isRecipientSessionValid(recipient, sessionToken)) {
+        return res.status(401).json({ error: 'Session expired. Enter your PIN again.' });
+      }
+      requestId = getRow(request, 'request_id') || getRow(request, 'id');
+      rel = getWorkingDocumentRel(request);
+      mime = getRow(request, 'document_mime');
+      name = getRow(request, 'document_original_name');
+      await logEvent(requestId, 'document_viewed', req, null, getRow(recipient, 'id'));
+    } else {
+      const row = resolved.request;
+      if (!isLegacySessionValid(row, sessionToken)) return res.status(401).json({ error: 'Session expired' });
+      requestId = getRow(row, 'id');
+      rel = getRow(row, 'document_original_path');
+      mime = getRow(row, 'document_mime');
+      name = getRow(row, 'document_original_name');
     }
-    const full = safeResolveStored(getRow(row, 'document_original_path'));
+
+    const full = safeResolveStored(rel);
     if (!full) return res.status(404).json({ error: 'Document not found' });
-
-    await query(
-      `UPDATE quick_sign_requests SET last_accessed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME() WHERE id = @id`,
-      { id: getRow(row, 'id') }
-    );
-    await logEvent(getRow(row, 'id'), 'document_viewed', req);
-
-    res.setHeader('Content-Type', getRow(row, 'document_mime') || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(getRow(row, 'document_original_name') || 'document')}"`);
+    await query(`UPDATE quick_sign_requests SET last_accessed_at = SYSUTCDATETIME() WHERE id = @id`, { id: requestId });
+    res.setHeader('Content-Type', mime || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(name || 'document')}"`);
     fs.createReadStream(full).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/public/:token/placements', async (req, res, next) => {
+  try {
+    const sessionToken = (req.query.session || '').toString().trim();
+    const resolved = await resolveByToken(req.params.token);
+    if (!resolved || resolved.mode !== 'recipient') return res.json({ placements: [] });
+    const { recipient, request } = resolved;
+    if (!isRecipientSessionValid(recipient, sessionToken)) return res.status(401).json({ error: 'Session expired' });
+    const requestId = getRow(request, 'request_id') || getRow(request, 'id');
+    const all = await query(
+      `SELECT p.page_index, p.x_pct, p.y_pct, p.width_pct, p.height_pct, p.placement_type, r.full_name AS signer_name
+       FROM quick_sign_placements p
+       JOIN quick_sign_recipients r ON r.id = p.recipient_id
+       WHERE p.request_id = @id ORDER BY p.created_at`,
+      { id: requestId }
+    );
+    res.json({ placements: all.recordset || [] });
   } catch (err) {
     next(err);
   }
@@ -280,50 +274,70 @@ router.get('/public/:token/document', async (req, res, next) => {
 
 router.post('/public/:token/complete', async (req, res, next) => {
   try {
-    const sessionToken = (req.body?.sessionToken || req.headers['x-sign-session'] || '').toString().trim();
-    const {
-      signatureDataUrl,
-      id_number: idNumber,
-      latitude,
-      longitude,
-      accuracy,
-    } = req.body || {};
-
-    const row = await getRequestByToken(req.params.token);
-    if (!row || !isSessionValid(row, sessionToken)) {
-      return res.status(401).json({ error: 'Session expired. Enter your PIN again.' });
-    }
-    if (getRow(row, 'status') === 'signed') return res.status(400).json({ error: 'Already signed' });
-    if (isLinkExpired(row)) return res.status(410).json({ error: 'Link expired' });
+    const sessionToken = (req.body?.sessionToken || '').toString().trim();
+    const { id_number: idNumber, latitude, longitude, accuracy, signatureDataUrl, placements } = req.body || {};
+    const resolved = await resolveByToken(req.params.token);
+    if (!resolved) return res.status(401).json({ error: 'Invalid session' });
 
     const idStr = String(idNumber || '').trim().replace(/\s/g, '');
-    if (!idStr || idStr.length < 6) return res.status(400).json({ error: 'A valid ID number is required' });
-    if (!signatureDataUrl || !String(signatureDataUrl).startsWith('data:image/')) {
-      return res.status(400).json({ error: 'Signature is required' });
-    }
+    if (idStr.length < 6) return res.status(400).json({ error: 'A valid ID number is required' });
     const lat = Number(latitude);
     const lng = Number(longitude);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return res.status(400).json({ error: 'Location must be enabled to sign. Allow location access and try again.' });
+      return res.status(400).json({ error: 'Location must be enabled to sign' });
     }
+    if (!signatureDataUrl?.startsWith('data:image/')) {
+      return res.status(400).json({ error: 'Draw your signature first' });
+    }
+
+    if (resolved.mode === 'recipient') {
+      const { recipient, request } = resolved;
+      if (!isRecipientSessionValid(recipient, sessionToken)) return res.status(401).json({ error: 'Session expired' });
+      if (getRow(recipient, 'status') === 'signed') return res.status(400).json({ error: 'Already signed' });
+
+      const requestId = getRow(request, 'request_id') || getRow(request, 'id');
+      const tenantId = getRow(request, 'tenant_id');
+      const placementList = Array.isArray(placements) ? placements : [];
+      if (placementList.length === 0) {
+        return res.status(400).json({ error: 'Place at least one signature or initial on the document' });
+      }
+
+      await applySignerPlacements(requestId, getRow(recipient, 'id'), tenantId, signatureDataUrl, placementList, {
+        idNumber: idStr,
+        latitude: lat,
+        longitude: lng,
+        accuracy: Number(accuracy) || null,
+      });
+
+      await logEvent(requestId, 'signed', req, { placements: placementList.length }, getRow(recipient, 'id'));
+      await emailSignedCopy(req, request, getRow(recipient, 'email'), getRow(recipient, 'full_name'));
+
+      return res.json({ ok: true, message: 'Your signature has been applied to the document. A copy was sent to your email.' });
+    }
+
+    // Legacy single-recipient complete
+    const row = resolved.request;
+    if (!isLegacySessionValid(row, sessionToken)) return res.status(401).json({ error: 'Session expired' });
+    if (getRow(row, 'status') === 'signed') return res.status(400).json({ error: 'Already signed' });
 
     const requestId = getRow(row, 'id');
     const tenantId = getRow(row, 'tenant_id');
-    const sigDir = path.join(uploadsRoot, String(tenantId), 'signatures');
-    fs.mkdirSync(sigDir, { recursive: true });
-    const sigFile = `${randomBytes(16).toString('hex')}.png`;
-    const sigFull = path.join(sigDir, sigFile);
-    const b64 = String(signatureDataUrl).replace(/^data:image\/\w+;base64,/, '');
-    await fs.promises.writeFile(sigFull, Buffer.from(b64, 'base64'));
-    const sigRel = path.relative(process.cwd(), sigFull).split(path.sep).join('/');
+    const { full: sigFull, rel: sigRel } = await (async () => {
+      const sigDir = path.join(uploadsRoot, String(tenantId), 'signatures');
+      fs.mkdirSync(sigDir, { recursive: true });
+      const sigFile = `${randomBytes(16).toString('hex')}.png`;
+      const sigFullPath = path.join(sigDir, sigFile);
+      const b64 = String(signatureDataUrl).replace(/^data:image\/\w+;base64,/, '');
+      await fs.promises.writeFile(sigFullPath, Buffer.from(b64, 'base64'));
+      return { full: sigFullPath, rel: path.relative(process.cwd(), sigFullPath).split(path.sep).join('/') };
+    })();
 
     const signedDir = path.join(uploadsRoot, String(tenantId), 'signed');
     fs.mkdirSync(signedDir, { recursive: true });
-    const signedFile = `${randomBytes(16).toString('hex')}.pdf`;
-    const signedFull = path.join(signedDir, signedFile);
+    const signedFull = path.join(signedDir, `${randomBytes(16).toString('hex')}.pdf`);
     const signedRel = path.relative(process.cwd(), signedFull).split(path.sep).join('/');
-
     const signedAt = new Date();
+
     await buildSignedRecordPdf(signedFull, {
       title: getRow(row, 'title'),
       originalFileName: getRow(row, 'document_original_name'),
@@ -338,24 +352,16 @@ router.post('/public/:token/complete', async (req, res, next) => {
     });
 
     await query(
-      `UPDATE quick_sign_requests SET
-         status = N'signed',
-         signed_at = @signedAt,
-         signer_id_number = @idNumber,
-         signer_latitude = @lat,
-         signer_longitude = @lng,
-         signer_location_accuracy = @acc,
-         signer_location_captured_at = @signedAt,
-         signature_image_path = @sigPath,
-         document_signed_path = @signedPath,
-         signer_session_token = NULL,
-         signer_session_expires_at = NULL,
-         updated_at = SYSUTCDATETIME()
+      `UPDATE quick_sign_requests SET status = N'signed', signed_at = @signedAt,
+         signer_id_number = @idNum, signer_latitude = @lat, signer_longitude = @lng,
+         signer_location_accuracy = @acc, signer_location_captured_at = @signedAt,
+         signature_image_path = @sigPath, document_signed_path = @signedPath,
+         signer_session_token = NULL, signer_session_expires_at = NULL, updated_at = SYSUTCDATETIME()
        WHERE id = @id`,
       {
         id: requestId,
         signedAt: signedAt.toISOString(),
-        idNumber: idStr,
+        idNum: idStr,
         lat,
         lng,
         acc: Number(accuracy) || null,
@@ -363,16 +369,14 @@ router.post('/public/:token/complete', async (req, res, next) => {
         signedPath: signedRel,
       }
     );
-
-    await logEvent(requestId, 'signed', req, { latitude: lat, longitude: lng, accuracy: Number(accuracy) || null });
-
-    res.json({ ok: true, message: 'Document signed successfully. The sender has been notified.' });
+    await logEvent(requestId, 'signed', req);
+    return res.json({ ok: true, message: 'Document signed successfully.' });
   } catch (err) {
     next(err);
   }
 });
 
-// --- Authenticated routes ---
+// --- Authenticated ---
 
 const authRouter = Router();
 authRouter.use(requireAuth);
@@ -383,29 +387,17 @@ authRouter.get('/', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     const result = await query(
-      `SELECT r.id, r.title, r.status, r.recipient_email, r.recipient_name, r.recipient_type,
-              r.document_original_name, r.sent_at, r.signed_at, r.first_accessed_at, r.last_accessed_at,
-              r.created_at, u.full_name AS sender_name
-       FROM quick_sign_requests r
+      `SELECT r.*, u.full_name AS sender_name FROM quick_sign_requests r
        LEFT JOIN users u ON u.id = r.created_by_user_id
-       WHERE r.tenant_id = @tenantId
-       ORDER BY r.created_at DESC`,
+       WHERE r.tenant_id = @tenantId ORDER BY r.created_at DESC`,
       { tenantId }
     );
-    res.json({ requests: (result.recordset || []).map(mapRequest) });
-  } catch (err) {
-    next(err);
-  }
-});
-
-authRouter.get('/tenant-users', async (req, res, next) => {
-  try {
-    const tenantId = req.user.tenant_id;
-    const result = await query(
-      `SELECT id, email, full_name FROM users WHERE tenant_id = @tenantId AND status = N'active' ORDER BY full_name`,
-      { tenantId }
-    );
-    res.json({ users: result.recordset || [] });
+    const out = [];
+    for (const row of result.recordset || []) {
+      const recs = await loadRecipients(getRow(row, 'id'));
+      out.push(mapRequest(row, recs));
+    }
+    res.json({ requests: out });
   } catch (err) {
     next(err);
   }
@@ -414,34 +406,40 @@ authRouter.get('/tenant-users', async (req, res, next) => {
 authRouter.get('/:id', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
-    const { id } = req.params;
     const result = await query(
       `SELECT r.*, u.full_name AS sender_name, u.email AS sender_email
-       FROM quick_sign_requests r
-       LEFT JOIN users u ON u.id = r.created_by_user_id
+       FROM quick_sign_requests r LEFT JOIN users u ON u.id = r.created_by_user_id
        WHERE r.id = @id AND r.tenant_id = @tenantId`,
-      { id, tenantId }
+      { id: req.params.id, tenantId }
     );
     const row = result.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
-
+    const recipients = await loadRecipients(req.params.id);
     const events = await query(
-      `SELECT id, event_type, ip_address, user_agent, metadata_json, created_at
-       FROM quick_sign_events WHERE request_id = @id ORDER BY created_at ASC`,
-      { id }
+      `SELECT id, event_type, metadata_json, created_at FROM quick_sign_events WHERE request_id = @id ORDER BY created_at ASC`,
+      { id: req.params.id }
     );
-
-    const detail = mapRequest(row);
-    detail.signer_id_number_full = getRow(row, 'signer_id_number') || null;
-    detail.events = (events.recordset || []).map((e) => ({
-      id: getRow(e, 'id'),
-      event_type: getRow(e, 'event_type'),
-      ip_address: getRow(e, 'ip_address'),
-      created_at: getRow(e, 'created_at'),
-      metadata_json: getRow(e, 'metadata_json'),
-    }));
-
-    res.json({ request: detail });
+    const placements = await query(
+      `SELECT p.*, r.full_name AS signer_name, r.email AS signer_email
+       FROM quick_sign_placements p JOIN quick_sign_recipients r ON r.id = p.recipient_id
+       WHERE p.request_id = @id ORDER BY p.page_index, p.created_at`,
+      { id: req.params.id }
+    );
+    res.json({
+      request: { ...mapRequest(row, recipients), notes: getRow(row, 'notes'), allow_sender_sign: !!getRow(row, 'allow_sender_sign') },
+      recipients: recipients.map((r) => ({
+        id: getRow(r, 'id'),
+        email: getRow(r, 'email'),
+        full_name: getRow(r, 'full_name'),
+        status: getRow(r, 'status'),
+        signed_at: getRow(r, 'signed_at'),
+        sign_order: getRow(r, 'sign_order'),
+        is_sender: !!getRow(r, 'is_sender'),
+        access_token: getRow(r, 'access_token'),
+      })),
+      placements: placements.recordset || [],
+      events: events.recordset || [],
+    });
   } catch (err) {
     next(err);
   }
@@ -450,57 +448,86 @@ authRouter.get('/:id', async (req, res, next) => {
 authRouter.post('/', (req, res, next) => {
   docUpload(req, res, async (uploadErr) => {
     try {
-      if (uploadErr) return res.status(400).json({ error: uploadErr.message || 'Upload failed' });
-      if (!req.file) return res.status(400).json({ error: 'Document file is required' });
-
+      if (uploadErr) return res.status(400).json({ error: uploadErr.message });
+      if (!req.file) return res.status(400).json({ error: 'Document required' });
       const tenantId = req.user.tenant_id;
-      const userId = req.user.id;
-      const {
-        title,
-        notes,
-        recipient_email: recipientEmail,
-        recipient_name: recipientName,
-        recipient_type: recipientType,
-      } = req.body || {};
+      const title = String(req.body?.title || req.file.originalname).trim();
+      const notes = req.body?.notes ? String(req.body.notes).trim() : null;
+      const allowSenderSign = req.body?.allow_sender_sign === 'true' || req.body?.allow_sender_sign === true;
+      const recipientList = parseRecipientsBody(req.body);
+      const mime = (req.file.mimetype || '').toLowerCase();
+      const isPdf = mime === 'application/pdf';
 
-      const titleStr = String(title || req.file.originalname || 'Document').trim();
-      const emailStr = String(recipientEmail || '').trim().toLowerCase();
-      if (!emailStr || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) {
-        return res.status(400).json({ error: 'Valid recipient email is required' });
+      if (recipientList.length === 0) {
+        return res.status(400).json({ error: 'Add at least one signer email' });
+      }
+      if (!isPdf) {
+        return res.status(400).json({ error: 'On-document signing requires a PDF file' });
       }
 
       const rel = path.relative(process.cwd(), req.file.path).split(path.sep).join('/');
+      const pageCount = await getPdfPageCount(req.file.path);
       const accessToken = randomBytes(32).toString('hex');
-      const rType = recipientType === 'internal' ? 'internal' : 'external';
 
       const ins = await query(
         `INSERT INTO quick_sign_requests (
-           tenant_id, title, notes, status, recipient_email, recipient_name, recipient_type,
-           document_original_name, document_original_path, document_mime, access_token, created_by_user_id
-         ) OUTPUT INSERTED.id
-         VALUES (
-           @tenantId, @title, @notes, N'draft', @email, @rname, @rtype,
-           @origName, @path, @mime, @token, @userId
+           tenant_id, title, notes, status, signing_mode, allow_sender_sign, page_count,
+           document_original_name, document_original_path, document_mime, access_token, created_by_user_id,
+           recipient_email, recipient_name
+         ) OUTPUT INSERTED.id VALUES (
+           @tenantId, @title, @notes, N'draft', N'on_document', @allowSender, @pc,
+           @origName, @path, @mime, @token, @userId, @e1, @n1
          )`,
         {
           tenantId,
-          title: titleStr,
-          notes: notes ? String(notes).trim() : null,
-          email: emailStr,
-          rname: recipientName ? String(recipientName).trim() : null,
-          rtype: rType,
+          title,
+          notes,
+          allowSender: allowSenderSign ? 1 : 0,
+          pc: pageCount,
           origName: req.file.originalname,
           path: rel,
           mime: req.file.mimetype,
           token: accessToken,
-          userId,
+          userId: req.user.id,
+          e1: recipientList[0]?.email || '',
+          n1: recipientList[0]?.name || '',
         }
       );
-      const newId = ins.recordset?.[0]?.id ?? ins.recordset?.[0]?.Id;
-      await logEvent(newId, 'created', req, { title: titleStr });
-
-      const get = await query(`SELECT * FROM quick_sign_requests WHERE id = @id`, { id: newId });
-      res.status(201).json({ request: mapRequest(get.recordset?.[0]) });
+      const requestId = getRow(ins.recordset?.[0], 'id');
+      let order = 0;
+      for (const rec of recipientList) {
+        const email = String(rec.email || '').trim().toLowerCase();
+        if (!email) continue;
+        await query(
+          `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, recipient_type, sign_order, access_token, status)
+           VALUES (@requestId, @tenantId, @email, @name, N'external', @ord, @tok, N'pending')`,
+          {
+            requestId,
+            tenantId,
+            email,
+            name: rec.name ? String(rec.name).trim() : null,
+            ord: order++,
+            tok: randomBytes(32).toString('hex'),
+          }
+        );
+      }
+      if (allowSenderSign) {
+        await query(
+          `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, recipient_type, sign_order, access_token, status, is_sender)
+           VALUES (@requestId, @tenantId, @email, @name, N'internal', @ord, @tok, N'pending', 1)`,
+          {
+            requestId,
+            tenantId,
+            email: req.user.email,
+            name: req.user.full_name,
+            ord: order++,
+            tok: randomBytes(32).toString('hex'),
+          }
+        );
+      }
+      await logEvent(requestId, 'created', req, { signers: recipientList.length });
+      const recs = await loadRecipients(requestId);
+      res.status(201).json({ request: mapRequest({ id: requestId, title, status: 'draft', signing_mode: 'on_document' }, recs) });
     } catch (err) {
       next(err);
     }
@@ -511,79 +538,23 @@ authRouter.post('/:id/send', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     const { id } = req.params;
-    const result = await query(
-      `SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`,
-      { id, tenantId }
-    );
-    const row = result.recordset?.[0];
+    const row = (await query(`SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId })).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
-    if (getRow(row, 'status') !== 'draft') return res.status(400).json({ error: 'Only draft requests can be sent' });
+    if (getRow(row, 'status') !== 'draft') return res.status(400).json({ error: 'Only drafts can be sent' });
+    if (!isEmailConfigured()) return res.status(503).json({ error: 'Email not configured' });
 
-    if (!isEmailConfigured()) {
-      return res.status(503).json({ error: 'Email is not configured. Cannot send signing invitation.' });
-    }
-
-    const otp = generateOtp();
-    const otpHash = await bcrypt.hash(otp, BCRYPT_ROUNDS);
-    const otpExp = new Date(Date.now() + OTP_TTL_MS);
+    await ensureWorkingPdf(id, tenantId);
     const linkExp = new Date(Date.now() + LINK_TTL_MS);
-    const signLink = `${appBaseUrl(req)}/quick-sign/${getRow(row, 'access_token')}`;
-
     await query(
-      `UPDATE quick_sign_requests SET
-         status = N'sent',
-         otp_hash = @otpHash,
-         otp_expires_at = @otpExp,
-         link_expires_at = @linkExp,
-         sent_at = SYSUTCDATETIME(),
-         updated_at = SYSUTCDATETIME()
-       WHERE id = @id`,
-      { id, otpHash, otpExp: otpExp.toISOString(), linkExp: linkExp.toISOString() }
+      `UPDATE quick_sign_requests SET status = N'sent', link_expires_at = @exp, sent_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id, exp: linkExp.toISOString() }
     );
-
-    const html = quickSignInviteHtml({
-      recipientName: getRow(row, 'recipient_name'),
-      documentTitle: getRow(row, 'title'),
-      signLink,
-      otp,
-      senderName: req.user.full_name || req.user.email,
-      expiresAt: linkExp,
-    });
-
-    await sendEmail({
-      to: getRow(row, 'recipient_email'),
-      subject: `Sign document: ${getRow(row, 'title')} – Thinkers Quick Sign`,
-      body: html,
-      html: true,
-    });
-
-    await logEvent(id, 'sent', req, { recipient: getRow(row, 'recipient_email') });
-
-    const updated = await query(`SELECT * FROM quick_sign_requests WHERE id = @id`, { id });
-    res.json({ request: mapRequest(updated.recordset?.[0]), message: 'Signing invitation sent' });
-  } catch (err) {
-    next(err);
-  }
-});
-
-authRouter.post('/:id/cancel', async (req, res, next) => {
-  try {
-    const tenantId = req.user.tenant_id;
-    const { id } = req.params;
-    const result = await query(
-      `SELECT status FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`,
-      { id, tenantId }
-    );
-    const row = result.recordset?.[0];
-    if (!row) return res.status(404).json({ error: 'Not found' });
-    if (getRow(row, 'status') === 'signed') return res.status(400).json({ error: 'Cannot cancel a signed request' });
-
-    await query(
-      `UPDATE quick_sign_requests SET status = N'cancelled', updated_at = SYSUTCDATETIME() WHERE id = @id`,
-      { id }
-    );
-    await logEvent(id, 'cancelled', req);
-    res.json({ ok: true });
+    const recipients = await loadRecipients(id);
+    row.link_expires_at = linkExp;
+    row.sender_name = req.user.full_name;
+    await sendRecipientInvites(req, id, row, recipients);
+    await logEvent(id, 'sent', req, { count: recipients.length });
+    res.json({ ok: true, message: 'Invitations sent' });
   } catch (err) {
     next(err);
   }
@@ -592,24 +563,86 @@ authRouter.post('/:id/cancel', async (req, res, next) => {
 authRouter.get('/:id/document', async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
-    const { id } = req.params;
-    const kind = (req.query.kind || 'original').toString();
-    const result = await query(
-      `SELECT document_original_path, document_signed_path, document_original_name, document_mime
+    const kind = (req.query.kind || 'working').toString();
+    const row = (await query(
+      `SELECT document_original_path, document_working_path, document_signed_path, document_original_name, document_mime
        FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`,
-      { id, tenantId }
-    );
-    const row = result.recordset?.[0];
+      { id: req.params.id, tenantId }
+    )).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
-
-    const rel = kind === 'signed' ? getRow(row, 'document_signed_path') : getRow(row, 'document_original_path');
+    let rel = getRow(row, 'document_working_path') || getRow(row, 'document_original_path');
+    if (kind === 'original') rel = getRow(row, 'document_original_path');
+    if (kind === 'signed') rel = getRow(row, 'document_signed_path') || getRow(row, 'document_working_path');
     const full = safeResolveStored(rel);
     if (!full) return res.status(404).json({ error: 'File not found' });
-
-    const name = kind === 'signed' ? `signed-${getRow(row, 'document_original_name') || 'record'}.pdf` : getRow(row, 'document_original_name');
-    res.setHeader('Content-Type', kind === 'signed' ? 'application/pdf' : (getRow(row, 'document_mime') || 'application/octet-stream'));
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(name)}"`);
+    res.setHeader('Content-Type', getRow(row, 'document_mime') || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(getRow(row, 'document_original_name') || 'doc.pdf')}"`);
     fs.createReadStream(full).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.get('/:id/placements', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const all = await query(
+      `SELECT p.page_index, p.x_pct, p.y_pct, p.width_pct, p.height_pct, p.placement_type, r.full_name AS signer_name, r.email
+       FROM quick_sign_placements p JOIN quick_sign_recipients r ON r.id = p.recipient_id
+       WHERE p.request_id = @id AND EXISTS (SELECT 1 FROM quick_sign_requests req WHERE req.id = @id AND req.tenant_id = @tenantId)`,
+      { id: req.params.id, tenantId }
+    );
+    res.json({ placements: all.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post('/:id/sender-sign', async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const { id } = req.params;
+    const { id_number, latitude, longitude, accuracy, signatureDataUrl, placements } = req.body || {};
+    const row = (await query(`SELECT * FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId })).recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (!getRow(row, 'allow_sender_sign')) return res.status(400).json({ error: 'Sender signing not enabled' });
+
+    let senderRec = (await query(
+      `SELECT id FROM quick_sign_recipients WHERE request_id = @id AND is_sender = 1`,
+      { id }
+    )).recordset?.[0];
+    if (!senderRec) {
+      const ins = await query(
+        `INSERT INTO quick_sign_recipients (request_id, tenant_id, email, full_name, access_token, status, is_sender, sign_order)
+         OUTPUT INSERTED.id VALUES (@id, @tenantId, @email, @name, @tok, N'pending', 1, 999)`,
+        { id, tenantId, email: req.user.email, name: req.user.full_name, tok: randomBytes(32).toString('hex') }
+      );
+      senderRec = ins.recordset?.[0];
+    }
+    const recipientId = getRow(senderRec, 'id');
+    const placementList = Array.isArray(placements) ? placements : [];
+    if (placementList.length === 0) return res.status(400).json({ error: 'Place signature on document' });
+
+    await applySignerPlacements(id, recipientId, tenantId, signatureDataUrl, placementList, {
+      idNumber: String(id_number || '').trim(),
+      latitude: Number(latitude),
+      longitude: Number(longitude),
+      accuracy: Number(accuracy) || null,
+    });
+    await logEvent(id, 'sender_signed', req);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.get('/tenant-users', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT id, email, full_name FROM users WHERE tenant_id = @tenantId AND status = N'active' ORDER BY full_name`,
+      { tenantId: req.user.tenant_id }
+    );
+    res.json({ users: result.recordset || [] });
   } catch (err) {
     next(err);
   }
@@ -617,12 +650,10 @@ authRouter.get('/:id/document', async (req, res, next) => {
 
 authRouter.get('/:id/signature-image', async (req, res, next) => {
   try {
-    const tenantId = req.user.tenant_id;
-    const result = await query(
-      `SELECT signature_image_path FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId AND status = N'signed'`,
-      { id: req.params.id, tenantId }
-    );
-    const row = result.recordset?.[0];
+    const row = (await query(
+      `SELECT signature_image_path FROM quick_sign_requests WHERE id = @id AND tenant_id = @tenantId`,
+      { id: req.params.id, tenantId: req.user.tenant_id }
+    )).recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
     const full = safeResolveStored(getRow(row, 'signature_image_path'));
     if (!full) return res.status(404).json({ error: 'Signature not found' });
@@ -633,6 +664,18 @@ authRouter.get('/:id/signature-image', async (req, res, next) => {
   }
 });
 
-router.use(authRouter);
+authRouter.post('/:id/cancel', async (req, res, next) => {
+  try {
+    await query(
+      `UPDATE quick_sign_requests SET status = N'cancelled', updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { id: req.params.id, tenantId: req.user.tenant_id }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
+router.use(authRouter);
 export default router;

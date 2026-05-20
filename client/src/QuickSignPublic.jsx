@@ -2,15 +2,11 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { quickSignPublic } from './api';
 import SignaturePad from './components/SignaturePad.jsx';
+import QuickSignDocumentEditor from './components/QuickSignDocumentEditor.jsx';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 
 const footerClass =
   'text-surface-500 dark:text-surface-400 border-t border-surface-200 dark:border-surface-800 bg-surface-100 dark:bg-surface-950';
-
-function formatDateTime(d) {
-  if (!d) return '—';
-  return new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
 
 export default function QuickSignPublic() {
   const { token } = useParams();
@@ -22,6 +18,10 @@ export default function QuickSignPublic() {
   const [verifying, setVerifying] = useState(false);
   const [sessionToken, setSessionToken] = useState('');
   const [documentUrl, setDocumentUrl] = useState('');
+  const [pageCount, setPageCount] = useState(1);
+  const [signingMode, setSigningMode] = useState('legacy');
+  const [existingPlacements, setExistingPlacements] = useState([]);
+  const [placements, setPlacements] = useState([]);
   const [location, setLocation] = useState(null);
   const [locationError, setLocationError] = useState('');
   const [locationLoading, setLocationLoading] = useState(false);
@@ -80,12 +80,21 @@ export default function QuickSignPublic() {
       .then((data) => {
         setSessionToken(data.sessionToken);
         setDocumentUrl(quickSignPublic.documentUrl(token, data.sessionToken));
+        setPageCount(data.pageCount || meta?.pageCount || 1);
+        setSigningMode(data.signingMode || meta?.signingMode || 'legacy');
         setStep('sign');
         requestLocation();
+        if ((data.signingMode || meta?.signingMode) !== 'legacy') {
+          return quickSignPublic.placements(token, data.sessionToken).then((p) => {
+            setExistingPlacements(p.placements || []);
+          });
+        }
       })
       .catch((e) => setError(e?.message || 'Verification failed'))
       .finally(() => setVerifying(false));
   };
+
+  const onDocument = signingMode === 'on_document';
 
   const handleSubmitSignature = (e) => {
     e.preventDefault();
@@ -96,6 +105,10 @@ export default function QuickSignPublic() {
     if (!location) {
       setError('Location must be enabled before signing.');
       requestLocation();
+      return;
+    }
+    if (onDocument && placements.length === 0) {
+      setError('Click on the document to place at least one signature or initial.');
       return;
     }
     setError('');
@@ -111,15 +124,18 @@ export default function QuickSignPublic() {
     }
     setSubmitting(true);
     setError('');
+    const body = {
+      sessionToken,
+      signatureDataUrl,
+      id_number: id,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      accuracy: location.accuracy,
+    };
+    if (onDocument) body.placements = placements;
+
     quickSignPublic
-      .complete(token, {
-        sessionToken,
-        signatureDataUrl,
-        id_number: id,
-        latitude: location.latitude,
-        longitude: location.longitude,
-        accuracy: location.accuracy,
-      })
+      .complete(token, body)
       .then(() => {
         setDone(true);
         setStep('done');
@@ -153,16 +169,14 @@ export default function QuickSignPublic() {
   return (
     <div className="min-h-screen flex flex-col bg-surface-100 dark:bg-surface-950">
       <header className="border-b border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 px-4 py-4">
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-5xl mx-auto">
           <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">Quick Sign</h1>
-          <p className="text-sm text-surface-600 dark:text-surface-400 mt-0.5">
-            {meta?.title || 'Document signing'}
-          </p>
+          <p className="text-sm text-surface-600 dark:text-surface-400 mt-0.5">{meta?.title || 'Document signing'}</p>
         </div>
       </header>
 
       <main className="flex-1 p-4 md:p-8">
-        <div className="max-w-3xl mx-auto space-y-6">
+        <div className="max-w-5xl mx-auto space-y-6">
           {error ? (
             <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/30 px-4 py-3 text-sm text-red-800 dark:text-red-200">
               {error}
@@ -170,26 +184,23 @@ export default function QuickSignPublic() {
           ) : null}
 
           {step === 'otp' && !meta?.alreadySigned ? (
-            <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm">
+            <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm max-w-lg">
               <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Enter one-time PIN</h2>
               <p className="text-sm text-surface-600 dark:text-surface-400 mt-2">
-                Hello{meta?.recipientName ? ` ${meta.recipientName}` : ''}, check your email for the 6-digit PIN, then enter it below to open the document.
+                Hello{meta?.recipientName ? ` ${meta.recipientName}` : ''}, check your email for the 6-digit PIN.
               </p>
               <form onSubmit={handleVerifyOtp} className="mt-6 space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">One-time PIN</label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={8}
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-                    className="w-full max-w-xs px-4 py-3 text-center text-2xl tracking-[0.3em] font-mono rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-surface-900"
-                    placeholder="000000"
-                    required
-                  />
-                </div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={8}
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                  className="w-full max-w-xs px-4 py-3 text-center text-2xl tracking-[0.3em] font-mono rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
+                  placeholder="000000"
+                  required
+                />
                 <button
                   type="submit"
                   disabled={verifying || otp.length < 4}
@@ -205,89 +216,93 @@ export default function QuickSignPublic() {
             <>
               <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 overflow-hidden shadow-sm">
                 <div className="px-4 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800">
-                  <h2 className="font-medium text-surface-900 dark:text-surface-100">Document preview</h2>
+                  <h2 className="font-medium text-surface-900 dark:text-surface-100">
+                    {onDocument ? 'Place your signature on the document' : 'Document preview'}
+                  </h2>
+                  {onDocument ? (
+                    <p className="text-xs text-surface-500 mt-1">
+                      Click where you want each signature or initial. Use &quot;Initial every page&quot; for initials on all pages.
+                    </p>
+                  ) : null}
                 </div>
-                <div className="min-h-[320px] bg-surface-100 dark:bg-surface-950">
-                  {documentUrl ? (
-                    <iframe title="Document" src={documentUrl} className="w-full h-[min(70vh,520px)] border-0" />
-                  ) : (
-                    <p className="p-8 text-surface-500 text-center">Loading document…</p>
-                  )}
-                </div>
+                {onDocument && documentUrl ? (
+                  <QuickSignDocumentEditor
+                    documentUrl={documentUrl}
+                    pageCount={pageCount}
+                    signaturePreviewUrl={signatureDataUrl}
+                    placements={existingPlacements}
+                    onPlacementsChange={setPlacements}
+                  />
+                ) : documentUrl ? (
+                  <iframe title="Document" src={documentUrl} className="w-full h-[min(70vh,520px)] border-0" />
+                ) : (
+                  <p className="p-8 text-surface-500 text-center">Loading document…</p>
+                )}
               </div>
 
               <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm">
                 <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Location required</h2>
-                <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
-                  Signing requires your device location to be recorded with the signature.
-                </p>
                 {location ? (
-                  <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-300">
+                  <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-300">
                     Location captured ({location.latitude.toFixed(5)}, {location.longitude.toFixed(5)})
-                    {location.accuracy != null ? ` · ±${Math.round(location.accuracy)}m` : ''}
                   </p>
                 ) : (
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      onClick={requestLocation}
-                      disabled={locationLoading}
-                      className="px-4 py-2 rounded-lg bg-surface-800 text-white text-sm font-medium hover:bg-surface-900 disabled:opacity-50"
-                    >
-                      {locationLoading ? 'Getting location…' : 'Enable location'}
-                    </button>
-                    {locationError ? <p className="mt-2 text-sm text-red-600">{locationError}</p> : null}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={requestLocation}
+                    disabled={locationLoading}
+                    className="mt-3 px-4 py-2 rounded-lg bg-surface-800 text-white text-sm"
+                  >
+                    {locationLoading ? 'Getting location…' : 'Enable location'}
+                  </button>
                 )}
+                {locationError ? <p className="mt-2 text-sm text-red-600">{locationError}</p> : null}
               </div>
 
-              <form onSubmit={handleSubmitSignature} className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm">
+              <form
+                onSubmit={handleSubmitSignature}
+                className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm"
+              >
                 <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Draw your signature</h2>
-                <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">Sign with your finger or mouse in the box below.</p>
+                <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
+                  This image is placed where you click on the document{onDocument ? '' : ' (legacy preview mode)'}.
+                </p>
                 <div className="mt-4">
                   <SignaturePad onChange={setSignatureDataUrl} className="max-w-xl" />
                 </div>
                 <button
                   type="submit"
-                  disabled={!location || !signatureDataUrl}
+                  disabled={!location || !signatureDataUrl || (onDocument && placements.length === 0)}
                   className="mt-6 px-6 py-2.5 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50"
                 >
-                  Submit signature
+                  Continue
                 </button>
               </form>
             </>
           ) : null}
 
           {step === 'id' ? (
-            <form onSubmit={handleComplete} className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm">
+            <form
+              onSubmit={handleComplete}
+              className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-6 shadow-sm max-w-lg"
+            >
               <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Confirm ID number</h2>
-              <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
-                Enter your ID number to complete signing. This is stored securely with your signature record.
-              </p>
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">ID number</label>
-                <input
-                  type="text"
-                  value={idNumber}
-                  onChange={(e) => setIdNumber(e.target.value)}
-                  className="w-full max-w-md px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-surface-900"
-                  placeholder="e.g. 8001015009087"
-                  required
-                  autoFocus
-                />
-              </div>
+              <input
+                type="text"
+                value={idNumber}
+                onChange={(e) => setIdNumber(e.target.value)}
+                className="mt-4 w-full px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
+                required
+                autoFocus
+              />
               <div className="mt-6 flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setStep('sign')}
-                  className="px-4 py-2 rounded-lg border border-surface-300 text-surface-700 dark:text-surface-300"
-                >
+                <button type="button" onClick={() => setStep('sign')} className="px-4 py-2 rounded-lg border">
                   Back
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="px-6 py-2.5 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50"
+                  className="px-6 py-2.5 rounded-lg bg-brand-600 text-white font-medium disabled:opacity-50"
                 >
                   {submitting ? 'Completing…' : 'Complete signing'}
                 </button>
@@ -296,10 +311,12 @@ export default function QuickSignPublic() {
           ) : null}
 
           {(step === 'done' || done || meta?.alreadySigned) ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 p-8 text-center">
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 p-8 text-center max-w-lg mx-auto">
               <h2 className="text-xl font-semibold text-emerald-900 dark:text-emerald-100">Signing complete</h2>
               <p className="text-sm text-emerald-800 dark:text-emerald-200 mt-2">
-                Thank you. The sender can review the signed document in their Quick Sign history.
+                {onDocument
+                  ? 'Your signature is on the document. A signed copy was emailed to you.'
+                  : 'Thank you. The sender can review the signed document in Quick Sign history.'}
               </p>
             </div>
           ) : null}

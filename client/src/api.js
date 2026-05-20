@@ -1971,7 +1971,9 @@ export const quickSign = {
     ),
   send: (id) => qs(`/${id}/send`, { method: 'POST' }),
   cancel: (id) => qs(`/${id}/cancel`, { method: 'POST' }),
-  documentUrl: (id, kind = 'original') => `${API}/quick-sign/${id}/document?kind=${encodeURIComponent(kind)}`,
+  senderSign: (id, body) => qs(`/${id}/sender-sign`, { method: 'POST', body }),
+  documentUrl: (id, kind = 'working') => `${API}/quick-sign/${id}/document?kind=${encodeURIComponent(kind)}`,
+  placements: (id) => qs(`/${id}/placements`),
   signatureImageUrl: (id) => `${API}/quick-sign/${id}/signature-image`,
 };
 
@@ -1989,6 +1991,11 @@ export const quickSignPublic = {
     }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))),
   documentUrl: (token, sessionToken) =>
     `${API}/quick-sign/public/${encodeURIComponent(token)}/document?session=${encodeURIComponent(sessionToken)}`,
+  placements: (token, sessionToken) =>
+    fetch(
+      `${API}/quick-sign/public/${encodeURIComponent(token)}/placements?session=${encodeURIComponent(sessionToken)}`,
+      { credentials: 'include' }
+    ).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText))))),
   complete: (token, body) =>
     fetch(`${API}/quick-sign/public/${encodeURIComponent(token)}/complete`, {
       method: 'POST',
