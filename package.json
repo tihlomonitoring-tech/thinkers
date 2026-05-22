@@ -90,6 +90,7 @@
     "db:fleet-app-history": "node scripts/run-fleet-application-history-schema.js",
     "db:user-tenants": "node scripts/run-user-tenants.js",
     "db:reassign-mbuyelo-to-thinkers-dual-home": "node scripts/reassign-mbuyelo-rows-to-thinkers-dual-home.js",
+    "db:migrate-daily-pulse-to-thinkers": "node scripts/migrate-daily-pulse-to-thinkers.js",
     "db:password-reset": "node scripts/run-password-reset-tokens.js",
     "db:users-id-number": "node scripts/run-users-id-number.js",
     "db:users-login-lockout": "node scripts/run-users-login-lockout.js",

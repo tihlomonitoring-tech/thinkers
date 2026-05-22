@@ -25,11 +25,11 @@ function addEvent(b, cat, ev) {
   b[cat].events.push(ev);
 }
 
-/** Latest evaluation per shift report (by created_at). */
-function dedupeEvaluations(rows) {
+/** Latest evaluation per report (by created_at). Keys may be shift_report_id or report_id. */
+function dedupeEvaluations(rows, reportIdKey = 'shift_report_id') {
   const byReport = new Map();
   for (const row of rows) {
-    const rid = String(getRow(row, 'shift_report_id') || '');
+    const rid = String(getRow(row, reportIdKey) || getRow(row, 'shift_report_id') || getRow(row, 'report_id') || '');
     if (!rid) continue;
     const cur = getRow(row, 'created_at');
     const prev = byReport.get(rid);
@@ -38,6 +38,56 @@ function dedupeEvaluations(rows) {
     }
   }
   return [...byReport.values()];
+}
+
+async function fetchStandardEvaluations(params) {
+  const er = await query(
+    `SELECT e.answers, e.created_at, e.shift_report_id, r.created_by_user_id, N'standard' AS report_kind
+     FROM controller_evaluations e
+     INNER JOIN command_centre_shift_reports r ON r.id = e.shift_report_id
+     INNER JOIN users u ON u.id = r.created_by_user_id AND u.tenant_id = @tenantId
+     WHERE e.created_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())`,
+    params
+  );
+  return er.recordset || [];
+}
+
+async function fetchSingleOpsEvaluations(params) {
+  const er = await query(
+    `SELECT e.answers, e.created_at, e.report_id AS shift_report_id, r.created_by_user_id, N'single_ops' AS report_kind
+     FROM command_centre_single_ops_controller_evaluations e
+     INNER JOIN command_centre_single_ops_shift_reports r ON r.id = e.report_id
+     INNER JOIN users u ON u.id = r.created_by_user_id AND u.tenant_id = @tenantId
+     WHERE e.created_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())`,
+    params
+  );
+  return er.recordset || [];
+}
+
+async function fetchStandardReportTiming(params) {
+  const rr = await query(
+    `SELECT r.id, r.created_by_user_id, r.submitted_at, r.shift_start, r.shift_end, r.shift_date, r.report_date, r.status, N'standard' AS report_kind
+     FROM command_centre_shift_reports r
+     INNER JOIN users u ON u.id = r.created_by_user_id AND u.tenant_id = @tenantId
+     WHERE r.submitted_at IS NOT NULL
+       AND r.submitted_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())
+       AND LOWER(LTRIM(RTRIM(ISNULL(r.status, N'')))) <> N'draft'`,
+    params
+  );
+  return rr.recordset || [];
+}
+
+async function fetchSingleOpsReportTiming(params) {
+  const rr = await query(
+    `SELECT r.id, r.created_by_user_id, r.submitted_at, r.shift_start, r.shift_end, r.shift_date, r.report_date, r.status, N'single_ops' AS report_kind
+     FROM command_centre_single_ops_shift_reports r
+     INNER JOIN users u ON u.id = r.created_by_user_id AND u.tenant_id = @tenantId
+     WHERE r.submitted_at IS NOT NULL
+       AND r.submitted_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())
+       AND LOWER(LTRIM(RTRIM(ISNULL(r.status, N'')))) <> N'draft'`,
+    params
+  );
+  return rr.recordset || [];
 }
 
 export async function computeTenantScores(tenantId, windowDays) {
@@ -71,6 +121,35 @@ export async function computeTenantScores(tenantId, windowDays) {
       total: 0,
     });
   });
+
+  let teamLeaderRows = [];
+  try {
+    const tlr = await query(
+      `SELECT DISTINCT u.id, u.full_name, u.email
+       FROM users u
+       INNER JOIN user_page_roles r ON r.user_id = u.id AND r.page_id = N'team_leader_admin'
+       WHERE u.tenant_id = @tenantId`,
+      params
+    );
+    teamLeaderRows = tlr.recordset || [];
+  } catch (_) {
+    teamLeaderRows = [];
+  }
+  const teamLeaderIds = new Set();
+  for (const row of teamLeaderRows) {
+    const id = String(getRow(row, 'id') || '');
+    if (!id) continue;
+    teamLeaderIds.add(id);
+    if (!byUser.has(id)) {
+      byUser.set(id, {
+        userId: id,
+        full_name: getRow(row, 'full_name') || '',
+        email: getRow(row, 'email') || '',
+        breakdown: ensureBreakdown(),
+        total: 0,
+      });
+    }
+  }
 
   let sessions = [];
   try {
@@ -107,21 +186,20 @@ export async function computeTenantScores(tenantId, windowDays) {
     }
   }
 
-  let evalRows = [];
+  const evalCandidates = [];
   try {
-    const er = await query(
-      `SELECT e.answers, e.created_at, e.shift_report_id, r.created_by_user_id
-       FROM controller_evaluations e
-       INNER JOIN command_centre_shift_reports r ON r.id = e.shift_report_id
-       INNER JOIN users u ON u.id = r.created_by_user_id AND u.tenant_id = @tenantId
-       WHERE e.created_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())`,
-      params
-    );
-    evalRows = dedupeEvaluations(er.recordset || []);
+    evalCandidates.push(...(await fetchStandardEvaluations(params)));
   } catch (e) {
     const m = String(e?.message || '').toLowerCase();
     if (!m.includes('controller_evaluations') && !m.includes('invalid object')) throw e;
   }
+  try {
+    evalCandidates.push(...(await fetchSingleOpsEvaluations(params)));
+  } catch (e) {
+    const m = String(e?.message || '').toLowerCase();
+    if (!m.includes('single_ops') && !m.includes('invalid object')) throw e;
+  }
+  const evalRows = dedupeEvaluations(evalCandidates);
 
   for (const row of evalRows) {
     const uid = String(getRow(row, 'created_by_user_id') || '');
@@ -135,6 +213,7 @@ export async function computeTenantScores(tenantId, windowDays) {
         yes: ev.yes,
         total: ev.total,
         report_id: getRow(row, 'shift_report_id'),
+        report_kind: getRow(row, 'report_kind') || 'standard',
         at: getRow(row, 'created_at'),
       });
     }
@@ -190,20 +269,16 @@ export async function computeTenantScores(tenantId, windowDays) {
     }
   }
 
-  let reportRows = [];
+  const reportRows = [];
   try {
-    const rr = await query(
-      `SELECT r.id, r.created_by_user_id, r.submitted_at, r.shift_start, r.shift_end, r.shift_date, r.report_date, r.status
-       FROM command_centre_shift_reports r
-       INNER JOIN users u ON u.id = r.created_by_user_id AND u.tenant_id = @tenantId
-       WHERE r.submitted_at IS NOT NULL
-         AND r.submitted_at >= DATEADD(DAY, -@windowDays, SYSUTCDATETIME())
-         AND LOWER(LTRIM(RTRIM(ISNULL(r.status, N'')))) <> N'draft'`,
-      params
-    );
-    reportRows = rr.recordset || [];
+    reportRows.push(...(await fetchStandardReportTiming(params)));
   } catch (_) {
-    reportRows = [];
+    /* table may not exist on older DBs */
+  }
+  try {
+    reportRows.push(...(await fetchSingleOpsReportTiming(params)));
+  } catch (_) {
+    /* single-ops schema optional until migrated */
   }
 
   for (const row of reportRows) {
@@ -218,6 +293,7 @@ export async function computeTenantScores(tenantId, windowDays) {
         points,
         detail,
         report_id: getRow(row, 'id'),
+        report_kind: getRow(row, 'report_kind') || 'standard',
         submitted_at: sub,
       });
     }
@@ -306,6 +382,76 @@ export async function computeTenantScores(tenantId, windowDays) {
     }
   }
 
+  const questionnaireByLeaderDate = new Map();
+  try {
+    const tq = await query(
+      `SELECT leader_user_id, work_date, created_at
+       FROM team_leader_questionnaires
+       WHERE tenant_id = @tenantId
+         AND work_date >= CAST(DATEADD(DAY, -@windowDays, SYSUTCDATETIME()) AS DATE)`,
+      params
+    );
+    for (const row of tq.recordset || []) {
+      const lid = String(getRow(row, 'leader_user_id') || '');
+      const wd = toYmdFromRow(getRow(row, 'work_date'));
+      if (!lid || !wd) continue;
+      const key = `${lid}:${wd}`;
+      const cur = getRow(row, 'created_at');
+      const prev = questionnaireByLeaderDate.get(key);
+      if (!prev || new Date(cur).getTime() > new Date(prev).getTime()) {
+        questionnaireByLeaderDate.set(key, cur);
+      }
+    }
+  } catch (_) {
+    /* optional table */
+  }
+
+  let leaderScheduleRows = [];
+  try {
+    const sr = await query(
+      `SELECT s.user_id, e.work_date, e.shift_type
+       FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId
+       INNER JOIN user_page_roles r ON r.user_id = s.user_id AND r.page_id = N'team_leader_admin'
+       WHERE CAST(e.work_date AS DATE) >= CAST(DATEADD(DAY, -@windowDays, SYSUTCDATETIME()) AS DATE)`,
+      params
+    );
+    leaderScheduleRows = sr.recordset || [];
+  } catch (_) {
+    leaderScheduleRows = [];
+  }
+
+  const seenPulseShift = new Set();
+  for (const row of leaderScheduleRows) {
+    const uid = String(getRow(row, 'user_id') || '');
+    if (!teamLeaderIds.has(uid)) continue;
+    const wdYmd = toYmdFromRow(getRow(row, 'work_date'));
+    const shiftType = String(getRow(row, 'shift_type') || 'day').toLowerCase() === 'night' ? 'night' : 'day';
+    const dedupeKey = `${uid}:${wdYmd}:${shiftType}`;
+    if (seenPulseShift.has(dedupeKey)) continue;
+    seenPulseShift.add(dedupeKey);
+    const submittedRaw = questionnaireByLeaderDate.get(`${uid}:${wdYmd}`);
+    const submittedMs = submittedRaw ? new Date(submittedRaw).getTime() : NaN;
+    const { points, detail, deadline, shiftEnd } = Sp.teamLeaderPulsePoints({
+      workDateYmd: wdYmd,
+      shiftType,
+      submittedAtMs: submittedMs,
+    });
+    if (points === 0 && detail === 'pending') continue;
+    const b = byUser.get(uid);
+    if (b) {
+      addEvent(b.breakdown, 'dailyPulse', {
+        points,
+        detail,
+        work_date: wdYmd,
+        shift_type: shiftType,
+        submitted_at: submittedRaw || null,
+        shift_end_at: Number.isFinite(shiftEnd) ? new Date(shiftEnd).toISOString() : null,
+        deadline_at: Number.isFinite(deadline) ? new Date(deadline).toISOString() : null,
+      });
+    }
+  }
+
   const people = [];
   for (const [, v] of byUser) {
     v.total = Sp.sumBreakdown(v.breakdown);
@@ -326,12 +472,23 @@ export async function computeTenantScores(tenantId, windowDays) {
       punctuality: { onTime: Sp.SP.PUNCTUALITY_ON, late: Sp.SP.PUNCTUALITY_LATE, graceMinutes: Sp.SP.CLOCK_GRACE_MINUTES },
       evaluation: { good: Sp.SP.EVAL_GOOD, bad: Sp.SP.EVAL_BAD, minYesOf: `${Sp.SP.EVAL_MIN_YES}/${Sp.SP.EVAL_QUESTIONS}` },
       tasks: { onTime: Sp.SP.TASK_ON, lateOrOverdue: Sp.SP.TASK_LATE },
-      reportHandIn: { onTime: Sp.SP.REPORT_ON, late: Sp.SP.REPORT_LATE, by: `Shift end + ${Sp.SP.REPORT_HANDOFF_MINUTES} min (SAST)` },
+      reportHandIn: {
+        onTime: Sp.SP.REPORT_ON,
+        late: Sp.SP.REPORT_LATE,
+        by: `Shift end + ${Sp.SP.REPORT_HANDOFF_MINUTES} min (SAST)`,
+        note: 'Standard and single-operations Command Centre shift reports.',
+      },
       teamProgress: {
         objectiveAchieved: Sp.SP.OBJECTIVE_ACHIEVED,
         ratingNeutral: 3,
         ratingMultiplier: Sp.SP.TEAM_RATING_MULTIPLIER,
         note: 'Achieved measurable objectives and management 1–5 ratings (neutral at 3).',
+      },
+      dailyPulse: {
+        onTime: Sp.SP.TEAM_LEADER_PULSE_ON,
+        missed: Sp.SP.TEAM_LEADER_PULSE_MISSED,
+        withinHoursAfterShiftEnd: Sp.SP.TEAM_LEADER_PULSE_HOURS_AFTER_SHIFT,
+        note: 'Scheduled team leader shifts only: Daily pulse within 12h after shift end (+10), else after deadline (−30).',
       },
     },
   };
@@ -393,6 +550,7 @@ router.get('/command-centre-dashboard', requirePageAccess('command_centre'), asy
             tasks: { points: mine.breakdown.tasks.points, n: mine.breakdown.tasks.events.length },
             reportTiming: { points: mine.breakdown.reportTiming.points, n: mine.breakdown.reportTiming.events.length },
             teamProgress: { points: mine.breakdown.teamProgress?.points || 0, n: mine.breakdown.teamProgress?.events?.length || 0 },
+            dailyPulse: { points: mine.breakdown.dailyPulse?.points || 0, n: mine.breakdown.dailyPulse?.events?.length || 0 },
           }
         : null,
       scoring,
@@ -434,13 +592,14 @@ router.get('/tenant', requirePageAccess('management'), async (req, res, next) =>
     const totals = enriched.map((x) => x.total).sort((a, b) => a - b);
     const median = totals.length ? totals[Math.floor(totals.length / 2)] : 0;
 
-    const componentTotals = { punctuality: 0, evaluation: 0, tasks: 0, reportTiming: 0, teamProgress: 0 };
+    const componentTotals = { punctuality: 0, evaluation: 0, tasks: 0, reportTiming: 0, teamProgress: 0, dailyPulse: 0 };
     for (const p of enriched) {
       componentTotals.punctuality += p.breakdown.punctuality.points;
       componentTotals.evaluation += p.breakdown.evaluation.points;
       componentTotals.tasks += p.breakdown.tasks.points;
       componentTotals.reportTiming += p.breakdown.reportTiming.points;
       componentTotals.teamProgress += p.breakdown.teamProgress?.points || 0;
+      componentTotals.dailyPulse += p.breakdown.dailyPulse?.points || 0;
     }
     const n = Math.max(1, enriched.length);
     const componentAverages = {
@@ -449,6 +608,7 @@ router.get('/tenant', requirePageAccess('management'), async (req, res, next) =>
       tasks: Math.round((componentTotals.tasks / n) * 10) / 10,
       reportTiming: Math.round((componentTotals.reportTiming / n) * 10) / 10,
       teamProgress: Math.round((componentTotals.teamProgress / n) * 10) / 10,
+      dailyPulse: Math.round((componentTotals.dailyPulse / n) * 10) / 10,
     };
 
     res.json({

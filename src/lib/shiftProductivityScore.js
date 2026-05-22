@@ -5,7 +5,8 @@ import { addCalendarDays } from './appTime.js';
  * - Punctuality: on-time clock-in vs scheduled day/night start → +15; late (beyond grace) → -15
  * - Controller evaluation (per approved report evaluated): ≥ threshold Yes → +20; else → -20
  * - Tasks (assignee): completed on/before due date → +30; completed after due or still overdue → -30
- * - Shift report submission by shift-end + 15 min (06:15 / 18:15 SAST anchor) → +50; else → -50
+ * - Shift report submission (standard + single-ops CC reports) by shift-end + 15 min (06:15 / 18:15 SAST) → +50; else → -50
+ * - Team leader Daily pulse on scheduled shift: submitted within 12h after shift end → +10; else after deadline → -30
  *
  * Wall times use fixed SAST offset (+2, no DST) matching server app calendar defaults.
  */
@@ -29,6 +30,10 @@ export const SP = {
   OBJECTIVE_ACHIEVED: 15,
   /** Minutes after nominal shift end (06:00 / 18:00) allowed for report hand-in */
   REPORT_HANDOFF_MINUTES: 15,
+  /** Team leader admin (Daily pulse) due within this many hours after shift end */
+  TEAM_LEADER_PULSE_HOURS_AFTER_SHIFT: 12,
+  TEAM_LEADER_PULSE_ON: 10,
+  TEAM_LEADER_PULSE_MISSED: -30,
 };
 
 /** SAST = UTC+2 (Africa/Johannesburg, no DST) */
@@ -71,6 +76,43 @@ export function inferReportShiftType(row) {
 }
 
 /** Report must be submitted by shift end + REPORT_HANDOFF_MINUTES in SAST */
+/** Nominal shift end in SAST: day → 18:00 same date; night → 06:00 next calendar day */
+export function shiftEndUtcMs(workDateYmd, shiftType) {
+  const anchor = String(workDateYmd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return NaN;
+  const st = String(shiftType || '').toLowerCase();
+  if (st === 'night') {
+    const morningAfter = addCalendarDays(anchor, 1);
+    return zonedWallToUtcMs(morningAfter, 6, 0);
+  }
+  return zonedWallToUtcMs(anchor, 18, 0);
+}
+
+/** Daily pulse must be submitted by shift end + TEAM_LEADER_PULSE_HOURS_AFTER_SHIFT */
+export function teamLeaderPulseDeadlineUtcMs(workDateYmd, shiftType) {
+  const end = shiftEndUtcMs(workDateYmd, shiftType);
+  if (!Number.isFinite(end)) return NaN;
+  return end + SP.TEAM_LEADER_PULSE_HOURS_AFTER_SHIFT * 60 * 60 * 1000;
+}
+
+/**
+ * @param {{ workDateYmd: string, shiftType: string, submittedAtMs?: number, nowMs?: number }} opts
+ */
+export function teamLeaderPulsePoints(opts) {
+  const { workDateYmd, shiftType, submittedAtMs, nowMs = Date.now() } = opts;
+  const deadline = teamLeaderPulseDeadlineUtcMs(workDateYmd, shiftType);
+  const shiftEnd = shiftEndUtcMs(workDateYmd, shiftType);
+  if (!Number.isFinite(deadline)) return { points: 0, detail: 'no_schedule', deadline, shiftEnd };
+  const slack = 60 * 1000;
+  if (Number.isFinite(submittedAtMs) && submittedAtMs <= deadline + slack) {
+    return { points: SP.TEAM_LEADER_PULSE_ON, detail: 'pulse_on_time', deadline, shiftEnd };
+  }
+  if (nowMs >= deadline) {
+    return { points: SP.TEAM_LEADER_PULSE_MISSED, detail: 'pulse_missed', deadline, shiftEnd };
+  }
+  return { points: 0, detail: 'pending', deadline, shiftEnd };
+}
+
 export function reportHandoffDeadlineUtcMs(row) {
   const anchor = String(row?.shift_date || row?.shiftDate || row?.report_date || row?.reportDate || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return NaN;
@@ -145,6 +187,7 @@ export function emptyScoreBreakdown() {
     tasks: { points: 0, events: [] },
     reportTiming: { points: 0, events: [] },
     teamProgress: { points: 0, events: [] },
+    dailyPulse: { points: 0, events: [] },
   };
 }
 
@@ -154,6 +197,7 @@ export function sumBreakdown(b) {
     (b.evaluation?.points || 0) +
     (b.tasks?.points || 0) +
     (b.reportTiming?.points || 0) +
-    (b.teamProgress?.points || 0)
+    (b.teamProgress?.points || 0) +
+    (b.dailyPulse?.points || 0)
   );
 }

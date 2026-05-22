@@ -1,6 +1,21 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { teamGoals } from '../api';
 import InfoHint from './InfoHint.jsx';
+import {
+  parseIndividualChecks,
+  questionnaireReportKey,
+  questionnaireToPayload,
+  generateDailyPulsePdf,
+  generateDailyPulsePackPdf,
+  downloadDailyPulsePdf,
+  safePdfFilename,
+} from '../lib/dailyPulsePdf.js';
+import TeamProductivityDashboardTab from './TeamProductivityDashboardTab.jsx';
+
+const AUDIT_TABS = [
+  { id: 'dashboard', label: 'Team dashboard' },
+  { id: 'audit', label: 'Leader audit' },
+];
 
 function formatDate(d) {
   if (!d) return '—';
@@ -16,20 +31,6 @@ function qField(en, name) {
   if (!en || typeof en !== 'object') return undefined;
   const k = Object.keys(en).find((x) => x && String(x).toLowerCase() === String(name).toLowerCase());
   return k !== undefined ? en[k] : undefined;
-}
-
-function parseIndividualChecks(raw) {
-  const v = qField(raw, 'individual_checks_json') ?? qField(raw, 'individual_checks');
-  if (Array.isArray(v)) return v;
-  if (typeof v === 'string' && v.trim()) {
-    try {
-      const a = JSON.parse(v);
-      return Array.isArray(a) ? a : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
 }
 
 function moraleLabel(v) {
@@ -54,10 +55,169 @@ const QUESTIONNAIRE_RANGES = [
   { value: 'all', label: 'All submissions', param: 'all' },
 ];
 
+function sortQuestionnairesNewestFirst(list) {
+  return [...(list || [])].sort((a, b) => {
+    const da = new Date(qField(a, 'work_date') || 0).getTime();
+    const db = new Date(qField(b, 'work_date') || 0).getTime();
+    return db - da;
+  });
+}
+
+function QuestionnaireCard({ q }) {
+  const checks = parseIndividualChecks(q);
+  const qid = questionnaireReportKey(q);
+  return (
+    <div key={qid} className="rounded-lg border border-surface-200 bg-white p-4 text-sm space-y-3 shadow-sm">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-surface-600 border-b border-surface-100 pb-2">
+        <span>
+          <span className="text-surface-500">Work date: </span>
+          <span className="font-medium text-surface-800">{formatDate(qField(q, 'work_date'))}</span>
+        </span>
+        <span>
+          <span className="text-surface-500">Submitted: </span>
+          <span className="font-medium text-surface-800">{formatDateTime(qField(q, 'created_at'))}</span>
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 text-sm">
+        <div>
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Team morale</span>
+          <p className="text-surface-900 mt-0.5">{moraleLabel(qField(q, 'team_morale'))}</p>
+        </div>
+        <div>
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Delivery on track</span>
+          <p className="text-surface-900 mt-0.5">{onTrackLabel(qField(q, 'delivery_on_track'))}</p>
+        </div>
+      </div>
+      <div>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Top blocker</span>
+        <p className="text-surface-800 mt-0.5 whitespace-pre-wrap break-words">{qField(q, 'top_blocker') || '—'}</p>
+      </div>
+      <div>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">What went well</span>
+        <p className="text-surface-800 mt-0.5 whitespace-pre-wrap break-words">{qField(q, 'team_went_well') || '—'}</p>
+      </div>
+      <div>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Whole-team summary</span>
+        <p className="text-surface-800 mt-0.5 whitespace-pre-wrap break-words">{qField(q, 'team_summary') || '—'}</p>
+      </div>
+      <div>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Individual touchpoints</span>
+        {checks.length === 0 ? (
+          <p className="text-surface-500 mt-1 text-sm">None recorded.</p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {checks.map((row, i) => (
+              <li key={i} className="rounded-lg border border-surface-100 bg-surface-50/80 px-3 py-2 text-sm">
+                <span className="font-medium text-surface-900">{row.member_label || '—'}</span>
+                {row.member_user_id ? (
+                  <span className="block text-[10px] text-surface-500 font-mono mt-0.5">User id: {String(row.member_user_id)}</span>
+                ) : null}
+                <span className="text-surface-500 mx-1">·</span>
+                <span className="capitalize text-surface-700">{row.status === 'concern' ? 'Concern' : 'On track'}</span>
+                {row.note ? <p className="text-xs text-surface-600 mt-1 whitespace-pre-wrap break-words">{row.note}</p> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LeaderDailyPulsePanel({ leader, reportFilter, setReportFilter }) {
+  const sorted = useMemo(() => sortQuestionnairesNewestFirst(leader.questionnaires), [leader.questionnaires]);
+  const filter = reportFilter || (sorted[0] ? questionnaireReportKey(sorted[0]) : 'all');
+
+  const filtered =
+    filter === 'all' ? sorted : sorted.filter((q) => questionnaireReportKey(q) === filter);
+
+  const selectedQ = filter === 'all' ? null : sorted.find((q) => questionnaireReportKey(q) === filter);
+
+  const downloadOne = () => {
+    const q = selectedQ || sorted[0];
+    if (!q) return;
+    const payload = questionnaireToPayload(q, leader);
+    const doc = generateDailyPulsePdf(payload);
+    const wd = String(qField(q, 'work_date') || '').slice(0, 10);
+    downloadDailyPulsePdf(doc, `${safePdfFilename(leader.full_name)}-daily-pulse-${wd}.pdf`);
+  };
+
+  const downloadAll = () => {
+    if (!sorted.length) return;
+    const doc = generateDailyPulsePackPdf({
+      leaderName: leader.full_name || 'Team leader',
+      leaderEmail: leader.email,
+      reports: sorted,
+    });
+    downloadDailyPulsePdf(doc, `${safePdfFilename(leader.full_name)}-daily-pulse-all.pdf`);
+  };
+
+  if (!sorted.length) {
+    return <p className="text-sm text-surface-500">No questionnaires in this period.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end gap-2 p-3 rounded-lg border border-indigo-100 bg-indigo-50/50">
+        <div className="flex-1 min-w-[12rem]">
+          <label className="block text-[10px] font-semibold uppercase tracking-wide text-surface-500 mb-1">
+            Filter by report
+          </label>
+          <select
+            value={filter}
+            onChange={(e) => setReportFilter(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-surface-200 text-sm font-medium text-surface-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+            <option value="all">All reports ({sorted.length})</option>
+            {sorted.map((q) => {
+              const key = questionnaireReportKey(q);
+              const wd = formatDate(qField(q, 'work_date'));
+              const sub = formatDateTime(qField(q, 'created_at'));
+              return (
+                <option key={key} value={key}>
+                  {wd} — submitted {sub}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+        <button
+          type="button"
+          onClick={downloadOne}
+          disabled={!sorted.length || (filter !== 'all' && !selectedQ)}
+          title={filter === 'all' ? 'Downloads the most recent report' : 'Downloads the selected report'}
+          className="px-3 py-2 rounded-lg border border-indigo-200 bg-white text-sm font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-50"
+        >
+          {filter === 'all' ? 'Download latest PDF' : 'Download PDF'}
+        </button>
+        <button
+          type="button"
+          onClick={downloadAll}
+          className="px-3 py-2 rounded-lg bg-indigo-700 text-sm font-semibold text-white hover:bg-indigo-800"
+        >
+          Download all (PDF)
+        </button>
+      </div>
+      <p className="text-xs text-surface-500">
+        {filter === 'all'
+          ? `Showing all ${filtered.length} report(s). Choose a single report to focus the view and download one PDF.`
+          : `Showing 1 of ${sorted.length} report(s).`}
+      </p>
+      <div className={filter === 'all' ? 'space-y-4 max-h-[min(28rem,55vh)] overflow-y-auto pr-1' : ''}>
+        {filtered.map((q) => (
+          <QuestionnaireCard key={questionnaireReportKey(q)} q={q} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function TeamLeaderAuditSection({ onError }) {
+  const [auditTab, setAuditTab] = useState('dashboard');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
+  const [reportFilterByLeader, setReportFilterByLeader] = useState({});
   const [qRange, setQRange] = useState('365');
 
   const load = useCallback(() => {
@@ -73,14 +233,8 @@ export default function TeamLeaderAuditSection({ onError }) {
   }, [onError, qRange]);
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  if (loading) {
-    return (
-      <div className="text-sm text-surface-500 py-12 text-center">Loading team leader audit…</div>
-    );
-  }
+    if (auditTab === 'audit') load();
+  }, [load, auditTab]);
 
   const leaders = data?.leaders || [];
   const qAllTime = data?.questionnaire_all_time === true;
@@ -94,21 +248,50 @@ export default function TeamLeaderAuditSection({ onError }) {
             <h1 className="text-xl font-semibold text-surface-900 tracking-tight">Team leader audit</h1>
             <InfoHint
               title="Team leader audit"
-              text="Everyone with the Team leader admin page role is listed here. Every field they enter on Daily pulse is shown (morale, delivery, blockers, summary, per-person touchpoints, submission time). Objectives match Shift & team objectives. Historical rows may appear for people who submitted before losing page access."
+              text="Team dashboard ranks named teams by composite productivity (sum of member + leader individual scores). Leader audit lists each team leader’s daily pulse submissions, objectives, and member scores. Daily pulse on scheduled shifts: +10 within 12h after shift end, −30 if missed."
             />
           </div>
-          <p className="text-sm text-surface-600 mt-1 max-w-3xl">
-            Questionnaires:{' '}
-            {qAllTime ? (
-              <span className="font-medium text-surface-800">all time</span>
-            ) : (
-              <span className="font-medium text-surface-800">last {qDays ?? '—'} days</span>
-            )}
-            . Productivity scores: last {data?.window_score_days ?? 56} days. Management ratings: last {data?.window_ratings_days ?? 90}{' '}
-            days.
-          </p>
+          {auditTab === 'audit' && !loading && (
+            <p className="text-sm text-surface-600 mt-1 max-w-3xl">
+              Questionnaires:{' '}
+              {qAllTime ? (
+                <span className="font-medium text-surface-800">all time</span>
+              ) : (
+                <span className="font-medium text-surface-800">last {qDays ?? '—'} days</span>
+              )}
+              . Productivity scores: last {data?.window_score_days ?? 56} days. Management ratings: last{' '}
+              {data?.window_ratings_days ?? 90} days.
+            </p>
+          )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+      </div>
+
+      <div className="flex flex-wrap gap-1 p-1 rounded-xl bg-surface-100 border border-surface-200 w-fit">
+        {AUDIT_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setAuditTab(t.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              auditTab === t.id
+                ? 'bg-white text-indigo-800 shadow-sm ring-1 ring-surface-200'
+                : 'text-surface-600 hover:text-surface-900'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {auditTab === 'dashboard' && <TeamProductivityDashboardTab onError={onError} />}
+
+      {auditTab === 'audit' && loading && (
+        <div className="text-sm text-surface-500 py-12 text-center">Loading team leader audit…</div>
+      )}
+
+      {auditTab === 'audit' && !loading && (
+        <>
+      <div className="flex flex-wrap items-center justify-end gap-2 -mt-2">
           <label className="text-xs text-surface-500 whitespace-nowrap">
             Questionnaire history
             <select
@@ -130,7 +313,6 @@ export default function TeamLeaderAuditSection({ onError }) {
           >
             Refresh
           </button>
-        </div>
       </div>
 
       {leaders.length === 0 ? (
@@ -146,7 +328,17 @@ export default function TeamLeaderAuditSection({ onError }) {
               <div key={L.user_id} className="app-glass-card shadow-sm overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => setOpenId(open ? null : L.user_id)}
+                  onClick={() => {
+                    const nextOpen = open ? null : L.user_id;
+                    setOpenId(nextOpen);
+                    if (!open && (L.questionnaires || []).length) {
+                      const latest = sortQuestionnairesNewestFirst(L.questionnaires)[0];
+                      setReportFilterByLeader((prev) => ({
+                        ...prev,
+                        [L.user_id]: prev[L.user_id] ?? (latest ? questionnaireReportKey(latest) : 'all'),
+                      }));
+                    }
+                  }}
                   className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface-50/80"
                 >
                   <div>
@@ -170,93 +362,13 @@ export default function TeamLeaderAuditSection({ onError }) {
                       <h3 className="text-xs font-bold uppercase tracking-wide text-surface-500 mb-2">
                         Daily pulse — full capture
                       </h3>
-                      {(L.questionnaires || []).length === 0 ? (
-                        <p className="text-sm text-surface-500">No questionnaires in this period.</p>
-                      ) : (
-                        <div className="space-y-4 max-h-[min(36rem,70vh)] overflow-y-auto pr-1">
-                          {(L.questionnaires || []).map((q) => {
-                            const checks = parseIndividualChecks(q);
-                            const qid = qField(q, 'id') ?? q.work_date;
-                            return (
-                              <div key={qid} className="rounded-lg border border-surface-200 bg-white p-4 text-sm space-y-3">
-                                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-surface-600 border-b border-surface-100 pb-2">
-                                  <span>
-                                    <span className="text-surface-500">Work date: </span>
-                                    <span className="font-medium text-surface-800">{formatDate(qField(q, 'work_date'))}</span>
-                                  </span>
-                                  <span>
-                                    <span className="text-surface-500">Submitted: </span>
-                                    <span className="font-medium text-surface-800">{formatDateTime(qField(q, 'created_at'))}</span>
-                                  </span>
-                                </div>
-                                <div className="grid gap-2 sm:grid-cols-2 text-sm">
-                                  <div>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Team morale</span>
-                                    <p className="text-surface-900 mt-0.5">{moraleLabel(qField(q, 'team_morale'))}</p>
-                                  </div>
-                                  <div>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">
-                                      Delivery on track
-                                    </span>
-                                    <p className="text-surface-900 mt-0.5">{onTrackLabel(qField(q, 'delivery_on_track'))}</p>
-                                  </div>
-                                </div>
-                                <div>
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">Top blocker</span>
-                                  <p className="text-surface-800 mt-0.5 whitespace-pre-wrap break-words">
-                                    {qField(q, 'top_blocker') || '—'}
-                                  </p>
-                                </div>
-                                <div>
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">What went well</span>
-                                  <p className="text-surface-800 mt-0.5 whitespace-pre-wrap break-words">
-                                    {qField(q, 'team_went_well') || '—'}
-                                  </p>
-                                </div>
-                                <div>
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">
-                                    Whole-team summary
-                                  </span>
-                                  <p className="text-surface-800 mt-0.5 whitespace-pre-wrap break-words">
-                                    {qField(q, 'team_summary') || '—'}
-                                  </p>
-                                </div>
-                                <div>
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-500">
-                                    Individual touchpoints
-                                  </span>
-                                  {checks.length === 0 ? (
-                                    <p className="text-surface-500 mt-1 text-sm">None recorded.</p>
-                                  ) : (
-                                    <ul className="mt-2 space-y-2">
-                                      {checks.map((row, i) => (
-                                        <li
-                                          key={i}
-                                          className="rounded-lg border border-surface-100 bg-surface-50/80 px-3 py-2 text-sm"
-                                        >
-                                          <span className="font-medium text-surface-900">{row.member_label || '—'}</span>
-                                          {row.member_user_id ? (
-                                            <span className="block text-[10px] text-surface-500 font-mono mt-0.5">
-                                              User id: {String(row.member_user_id)}
-                                            </span>
-                                          ) : null}
-                                          <span className="text-surface-500 mx-1">·</span>
-                                          <span className="capitalize text-surface-700">
-                                            {row.status === 'concern' ? 'Concern' : 'On track'}
-                                          </span>
-                                          {row.note ? (
-                                            <p className="text-xs text-surface-600 mt-1 whitespace-pre-wrap break-words">{row.note}</p>
-                                          ) : null}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                      <LeaderDailyPulsePanel
+                        leader={L}
+                        reportFilter={reportFilterByLeader[L.user_id]}
+                        setReportFilter={(key) =>
+                          setReportFilterByLeader((prev) => ({ ...prev, [L.user_id]: key }))
+                        }
+                      />
                     </section>
 
                     <section>
@@ -370,6 +482,7 @@ export default function TeamLeaderAuditSection({ onError }) {
                                       `Tasks ${b.tasks?.points ?? 0}`,
                                       `Reports ${b.reportTiming?.points ?? 0}`,
                                       `Team ${b.teamProgress?.points ?? 0}`,
+                                      `Pulse ${b.dailyPulse?.points ?? 0}`,
                                     ].join(' · ')
                                   : '—';
                                 return (
@@ -438,6 +551,8 @@ export default function TeamLeaderAuditSection({ onError }) {
             );
           })}
         </div>
+      )}
+        </>
       )}
     </div>
   );

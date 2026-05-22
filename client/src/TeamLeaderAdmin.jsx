@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { teamGoals, profileManagement as pm } from './api';
+import { teamGoals, profileManagement as pm, tenants as tenantsApi } from './api';
 import { useAuth } from './AuthContext';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftObjectivesTab from './components/ShiftObjectivesTab.jsx';
@@ -194,6 +194,13 @@ function RecentSubmissionsPanel({ entries }) {
   );
 }
 
+function normTenantName(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, ' ');
+}
+
 function PulsePanel({
   workDate,
   setWorkDate,
@@ -212,6 +219,10 @@ function PulsePanel({
   addCheckRow,
   submit,
   saving,
+  tenantOptions,
+  pulseTenantId,
+  setPulseTenantId,
+  defaultTenantId,
 }) {
   const [formHidden, setFormHidden] = useState(false);
   const [shiftRosterMode, setShiftRosterMode] = useState('auto');
@@ -236,7 +247,7 @@ function PulsePanel({
     setCohortLoading(true);
     setCohortErr('');
     teamGoals
-      .teamLeaderTouchpointRoster(workDate, shiftRosterMode)
+      .teamLeaderTouchpointRoster(workDate, shiftRosterMode, pulseTenantId || undefined)
       .then((d) => {
         if (cancelled) return;
         setCohort(d.members || []);
@@ -253,13 +264,13 @@ function PulsePanel({
     return () => {
       cancelled = true;
     };
-  }, [workDate, shiftRosterMode]);
+  }, [workDate, shiftRosterMode, pulseTenantId]);
 
   const appendScheduledColleagues = () => {
     setRosterMergeBusy(true);
     setCohortErr('');
     teamGoals
-      .teamLeaderTouchpointRoster(workDate, shiftRosterMode)
+      .teamLeaderTouchpointRoster(workDate, shiftRosterMode, pulseTenantId || undefined)
       .then((d) => {
         const roster = d.members || [];
         setCohort(roster);
@@ -314,6 +325,31 @@ function PulsePanel({
           </div>
         ) : (
           <form onSubmit={submit} className="space-y-4 p-4 sm:p-5 pt-4">
+        {tenantOptions.length > 1 && (
+          <div>
+            <label className="block text-xs font-medium text-surface-500 mb-1">Company</label>
+            <select
+              value={pulseTenantId}
+              onChange={(e) => setPulseTenantId(e.target.value)}
+              className={fieldClass}
+            >
+              {tenantOptions.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {t.id === defaultTenantId ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-surface-500 dark:text-surface-400 mt-1">
+              Daily pulse is saved under the selected company. Defaults to Thinkers Afrika when you belong to more than one organisation.
+            </p>
+          </div>
+        )}
+        {tenantOptions.length === 1 && (
+          <p className="text-xs text-surface-500 dark:text-surface-400">
+            Company: <span className="font-medium text-surface-700 dark:text-surface-300">{tenantOptions[0].name}</span>
+          </p>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <label className="block text-xs font-medium text-surface-500 mb-1">Work date</label>
@@ -507,6 +543,8 @@ export default function TeamLeaderAdmin() {
   const [mainTab, setMainTab] = useState('pulse');
   const [entries, setEntries] = useState([]);
   const [tenantUsers, setTenantUsers] = useState([]);
+  const [tenantOptions, setTenantOptions] = useState([]);
+  const [pulseTenantId, setPulseTenantId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -518,9 +556,34 @@ export default function TeamLeaderAdmin() {
   const [teamSummary, setTeamSummary] = useState('');
   const [checks, setChecks] = useState([{ member_user_id: null, member_label: '', status: 'ok', note: '' }]);
 
+  const defaultPulseTenantId = useMemo(() => {
+    const hit = tenantOptions.find((t) => ['thinkers afrika', 'thinkers africa'].includes(normTenantName(t.name)));
+    return hit?.id || tenantOptions[0]?.id || user?.tenant_id || '';
+  }, [tenantOptions, user?.tenant_id]);
+
+  useEffect(() => {
+    const allowed = new Set([...(Array.isArray(user?.tenant_ids) ? user.tenant_ids : []), user?.tenant_id].filter(Boolean));
+    tenantsApi
+      .list()
+      .then((d) => {
+        const all = Array.isArray(d?.tenants) ? d.tenants : [];
+        setTenantOptions(all.filter((t) => allowed.has(t.id)).map((t) => ({ id: t.id, name: t.name || 'Company' })));
+      })
+      .catch(() => setTenantOptions([]));
+  }, [user?.tenant_id, user?.tenant_ids]);
+
+  useEffect(() => {
+    if (!tenantOptions.length) return;
+    setPulseTenantId((cur) => {
+      if (cur && tenantOptions.some((t) => t.id === cur)) return cur;
+      return defaultPulseTenantId || tenantOptions[0]?.id || '';
+    });
+  }, [tenantOptions, defaultPulseTenantId]);
+
   const load = useCallback(() => {
     setLoading(true);
     setError('');
+    const tid = pulseTenantId || defaultPulseTenantId || undefined;
     teamGoals
       .teamLeaderMe()
       .then(async (me) => {
@@ -528,15 +591,16 @@ export default function TeamLeaderAdmin() {
           setEntries([]);
           return;
         }
-        const q = await teamGoals.listMyQuestionnaires().catch(() => ({ entries: [] }));
+        const q = await teamGoals.listMyQuestionnaires(tid ? { tenant_id: tid } : {}).catch(() => ({ entries: [] }));
         setEntries(q.entries || []);
+        if (q.tenant_id && !pulseTenantId) setPulseTenantId(String(q.tenant_id));
       })
       .catch((e) => {
         setError(e?.message || 'Could not load');
         setEntries([]);
       })
       .finally(() => setLoading(false));
-  }, [user?.role]);
+  }, [user?.role, pulseTenantId, defaultPulseTenantId]);
 
   useEffect(() => {
     load();
@@ -568,6 +632,7 @@ export default function TeamLeaderAdmin() {
       });
     try {
       await teamGoals.postQuestionnaire({
+        tenant_id: pulseTenantId || defaultPulseTenantId || undefined,
         work_date: workDate,
         team_morale: teamMorale,
         delivery_on_track: onTrack,
@@ -679,7 +744,7 @@ export default function TeamLeaderAdmin() {
             {mainTab === 'pulse' && (
               <InfoHint
                 title="Daily pulse"
-                text="Submit one questionnaire per work day for your team. Individual touchpoints are optional rows for member-level notes. Past reports are under Recent submissions."
+                text="Submit one questionnaire per work day for your team. If you belong to more than one company, choose the company on the form (defaults to Thinkers Afrika). Individual touchpoints are optional rows for member-level notes. Past reports are under Recent submissions."
               />
             )}
             {mainTab === 'objectives' && (
@@ -722,6 +787,10 @@ export default function TeamLeaderAdmin() {
                 addCheckRow={addCheckRow}
                 submit={submit}
                 saving={saving}
+                tenantOptions={tenantOptions}
+                pulseTenantId={pulseTenantId}
+                setPulseTenantId={setPulseTenantId}
+                defaultTenantId={defaultPulseTenantId}
               />
             )}
             {mainTab === 'submissions' && <RecentSubmissionsPanel entries={entries} />}

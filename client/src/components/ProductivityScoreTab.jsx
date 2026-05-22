@@ -4,10 +4,11 @@ import InfoHint from './InfoHint.jsx';
 
 const CAT_LABELS = {
   punctuality: 'Clock-in punctuality',
-  evaluation: 'Controller evaluations',
+  evaluation: 'Controller evaluations (standard & single-ops)',
   tasks: 'Tasks (on time vs overdue)',
-  reportTiming: 'Shift report hand-in (by 06:15 / 18:15 SAST)',
+  reportTiming: 'Shift report hand-in — standard & single-ops (06:15 / 18:15 SAST)',
   teamProgress: 'Team progress (objectives & management ratings)',
+  dailyPulse: 'Daily pulse (team leader, scheduled shifts)',
 };
 
 export default function ProductivityScoreTab() {
@@ -62,7 +63,7 @@ export default function ProductivityScoreTab() {
             <h2 className="text-lg font-semibold text-surface-900">Productivity score</h2>
             <InfoHint
               title="How your score is built"
-              text="Rolling window on your tenant calendar. Points come from: shift clock-in vs scheduled day (06:00) or night (18:00) start; manager evaluations on shift reports you authored; tasks assigned to you completed on or before due date; shift reports submitted before shift end plus 15 minutes (18:15 day / 06:15 morning after night); measurable objectives marked achieved and management 1–5 team ratings (neutral at 3). Only Command Centre team members are included in the team average."
+              text="Rolling window on your tenant calendar. Points come from: shift clock-in vs scheduled day (06:00) or night (18:00) start; controller evaluations on shift reports you authored (standard Command Centre and single-operations reports); tasks assigned to you completed on or before due date; both report types submitted before shift end plus 15 minutes (18:15 day / 06:15 morning after night); measurable objectives marked achieved and management 1–5 team ratings (neutral at 3). Only Command Centre team members are included in the team average."
             />
           </div>
           <p className="text-sm text-surface-600 mt-1">
@@ -89,7 +90,7 @@ export default function ProductivityScoreTab() {
             </tr>
           </thead>
           <tbody className="divide-y divide-surface-100">
-            {['punctuality', 'evaluation', 'tasks', 'reportTiming', 'teamProgress'].map((id) => {
+            {['punctuality', 'evaluation', 'tasks', 'reportTiming', 'teamProgress', 'dailyPulse'].map((id) => {
               const row = b[id] || { points: 0, events: [] };
               return (
                 <tr key={id}>
@@ -117,10 +118,14 @@ export default function ProductivityScoreTab() {
             Team progress: +{sc.teamProgress?.objectiveAchieved ?? 15} per achieved objective (credited); management ratings use (rating − {sc.teamProgress?.ratingNeutral ?? 3}) ×{' '}
             {sc.teamProgress?.ratingMultiplier ?? 5} (daily/weekly/monthly entries in the window).
           </li>
+          <li>
+            Daily pulse (team leaders on scheduled shifts): +{sc.dailyPulse?.onTime ?? 10} if submitted within{' '}
+            {sc.dailyPulse?.withinHoursAfterShiftEnd ?? 12}h after shift end; {sc.dailyPulse?.missed ?? -30} if missed after that deadline.
+          </li>
         </ul>
       </div>
 
-      {['punctuality', 'evaluation', 'tasks', 'reportTiming', 'teamProgress'].map((id) => {
+      {['punctuality', 'evaluation', 'tasks', 'reportTiming', 'teamProgress', 'dailyPulse'].map((id) => {
         const evs = (b[id] && b[id].events) || [];
         if (!evs.length) return null;
         return (
@@ -135,6 +140,7 @@ export default function ProductivityScoreTab() {
                   {ev.work_date && ` · ${ev.work_date}`}
                   {ev.task_id && ` · task`}
                   {ev.report_id && ` · report`}
+                  {ev.report_kind && ev.report_kind !== 'standard' && ` · ${ev.report_kind}`}
                 </li>
               ))}
               {evs.length > 40 && <li className="text-surface-400">… {evs.length - 40} more</li>}

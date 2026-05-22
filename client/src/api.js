@@ -1620,6 +1620,12 @@ export const teamGoals = {
     const qs = q.toString();
     return tg(`/management/team-leader-audit${qs ? `?${qs}` : ''}`);
   },
+  teamProductivityDashboard: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.score_days != null) q.set('score_days', String(params.score_days));
+    const qs = q.toString();
+    return tg(`/management/team-productivity-dashboard${qs ? `?${qs}` : ''}`);
+  },
   teamScoresSummary: (params = {}) => {
     const q = new URLSearchParams();
     if (params.leader_id) q.set('leader_id', params.leader_id);
@@ -1628,14 +1634,20 @@ export const teamGoals = {
   },
   teamLeaderMe: () => tg('/team-leader/me'),
   /** work_date YYYY-MM-DD; shift_type 'auto' | 'day' | 'night' — colleagues on that shift (excl. leader). */
-  teamLeaderTouchpointRoster: (work_date, shift_type = 'auto') => {
+  teamLeaderTouchpointRoster: (work_date, shift_type = 'auto', tenant_id) => {
     const q = new URLSearchParams();
     q.set('work_date', work_date);
     q.set('shift_type', shift_type || 'auto');
+    if (tenant_id) q.set('tenant_id', String(tenant_id));
     return tg(`/team-leader/touchpoint-roster?${q}`);
   },
   postQuestionnaire: (body) => tg('/team-leader/questionnaire', { method: 'POST', body: JSON.stringify(body) }),
-  listMyQuestionnaires: () => tg('/team-leader/questionnaires'),
+  listMyQuestionnaires: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.tenant_id) q.set('tenant_id', String(params.tenant_id));
+    const qs = q.toString();
+    return tg(`/team-leader/questionnaires${qs ? `?${qs}` : ''}`);
+  },
 };
 
 const pev = (path, options = {}) => request(`/performance-evaluations${path}`, options);
