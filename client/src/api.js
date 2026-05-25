@@ -519,6 +519,87 @@ export const contractor = {
   },
 };
 
+const fm = (path, options = {}) => request(`/fleet-maintenance${path}`, options);
+export const fleetMaintenance = {
+  dashboard: () => fm('/dashboard'),
+  list: (params = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) { if (v != null && v !== '' && v !== 'all') q.set(k, String(v)); }
+    const qs = q.toString();
+    return fm(`/${qs ? `?${qs}` : ''}`);
+  },
+  get: (id) => fm(`/${encodeURIComponent(id)}`),
+  create: (body) => fm('/', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => fm(`/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  remove: (id) => fm(`/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  exportExcelUrl: `${API}/fleet-maintenance/export/excel`,
+  exportPdfUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) { if (v) q.set(k, String(v)); }
+    const qs = q.toString();
+    return `${API}/fleet-maintenance/export/pdf${qs ? `?${qs}` : ''}`;
+  },
+};
+
+const ws = (p, opts = {}) => request(`/workshop${p}`, opts);
+export const workshop = {
+  users: () => ws('/users'),
+  maintenanceQueue: () => ws('/maintenance-queue'),
+  inspections: () => ws('/inspections'),
+  jobCards: {
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) { if (v != null && v !== '' && v !== 'all') q.set(k, String(v)); }
+      const qs = q.toString();
+      return ws(`/job-cards${qs ? `?${qs}` : ''}`);
+    },
+    get: (id) => ws(`/job-cards/${encodeURIComponent(id)}`),
+    create: (body) => ws('/job-cards', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => ws(`/job-cards/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  },
+  items: {
+    add: (cardId, body) => ws(`/job-cards/${encodeURIComponent(cardId)}/items`, { method: 'POST', body: JSON.stringify(body) }),
+    update: (cardId, itemId, body) => ws(`/job-cards/${encodeURIComponent(cardId)}/items/${encodeURIComponent(itemId)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (cardId, itemId) => ws(`/job-cards/${encodeURIComponent(cardId)}/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' }),
+  },
+  progress: {
+    add: (cardId, body) => ws(`/job-cards/${encodeURIComponent(cardId)}/progress`, { method: 'POST', body: JSON.stringify(body) }),
+  },
+  attachments: {
+    upload: (cardId, formData) =>
+      fetch(`${API}/workshop/job-cards/${encodeURIComponent(cardId)}/attachments`, {
+        method: 'POST', body: formData, credentials: 'include',
+      }).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.statusText); return d; }),
+    downloadUrl: (attId) => `${API}/workshop/attachments/${encodeURIComponent(attId)}/download`,
+    remove: (attId) => ws(`/attachments/${encodeURIComponent(attId)}`, { method: 'DELETE' }),
+  },
+  exportPdfUrl: (cardId) => `${API}/workshop/job-cards/${encodeURIComponent(cardId)}/export/pdf`,
+  exportExcelUrl: (cardId) => `${API}/workshop/job-cards/${encodeURIComponent(cardId)}/export/excel`,
+  templateExcelUrl: `${API}/workshop/templates/work-order-excel`,
+  templatePdfUrl: `${API}/workshop/templates/work-order-pdf`,
+};
+
+const ti = (p, opts = {}) => request(`/truck-inspection${p}`, opts);
+export const truckInspection = {
+  checklist: () => ti('/checklist'),
+  users: () => ti('/users'),
+  list: (params = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) { if (v != null && v !== '' && v !== 'all') q.set(k, String(v)); }
+    const qs = q.toString();
+    return ti(`/${qs ? `?${qs}` : ''}`);
+  },
+  get: (id) => ti(`/${encodeURIComponent(id)}`),
+  create: (body) => ti('/', { method: 'POST', body: JSON.stringify(body) }),
+  uploadAttachments: (inspId, formData) =>
+    fetch(`${API}/truck-inspection/${encodeURIComponent(inspId)}/attachments`, {
+      method: 'POST', body: formData, credentials: 'include',
+    }).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.statusText); return d; }),
+  attachmentDownloadUrl: (attId) => `${API}/truck-inspection/attachments/${encodeURIComponent(attId)}/download`,
+  removeAttachment: (attId) => ti(`/attachments/${encodeURIComponent(attId)}`, { method: 'DELETE' }),
+  exportPdfUrl: (id) => `${API}/truck-inspection/${encodeURIComponent(id)}/export/pdf`,
+};
+
 export const commandCentre = {
   myTabs: () => request('/command-centre/my-tabs'),
   permissions: () => request('/command-centre/permissions'),

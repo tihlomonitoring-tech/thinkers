@@ -8,7 +8,7 @@ CREATE TABLE quick_sign_requests (
   title NVARCHAR(500) NOT NULL,
   notes NVARCHAR(MAX) NULL,
   status NVARCHAR(30) NOT NULL DEFAULT N'draft',
-  recipient_email NVARCHAR(320) NOT NULL,
+  recipient_email NVARCHAR(320) NULL,
   recipient_name NVARCHAR(300) NULL,
   recipient_type NVARCHAR(20) NOT NULL DEFAULT N'external',
   document_original_name NVARCHAR(500) NOT NULL,

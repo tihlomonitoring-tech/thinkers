@@ -169,9 +169,13 @@ router.post('/public/:token/verify-otp', async (req, res, next) => {
         return res.status(429).json({ error: 'Too many incorrect PIN attempts.' });
       }
       const hash = getRow(recipient, 'otp_hash');
-      if (!hash || !(await bcrypt.compare(code, hash))) {
+      if (!hash) {
+        await logEvent(requestId, 'otp_failed', req, { reason: 'no_otp_stored' }, getRow(recipient, 'id'));
+        return res.status(401).json({ error: 'No PIN was generated for this recipient. Ask the sender to resend the invitation.' });
+      }
+      if (!(await bcrypt.compare(code, hash))) {
         await logEvent(requestId, 'otp_failed', req, null, getRow(recipient, 'id'));
-        return res.status(401).json({ error: 'Incorrect PIN' });
+        return res.status(401).json({ error: 'Incorrect PIN. Check your email for the 6-digit code.' });
       }
       const sessionToken = randomBytes(32).toString('hex');
       const sessionExp = new Date(Date.now() + SESSION_TTL_MS);

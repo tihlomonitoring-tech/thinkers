@@ -66,7 +66,12 @@ export async function resolveByToken(token) {
   if (!t) return null;
 
   const rec = await qsQuery(
-    `SELECT r.*, req.id AS request_id, req.tenant_id, req.title, req.notes, req.status AS request_status,
+    `SELECT r.id AS recipient_id, r.email AS recipient_email, r.full_name AS recipient_full_name,
+            r.recipient_type, r.sign_order, r.access_token, r.otp_hash, r.otp_expires_at,
+            r.signer_session_token, r.signer_session_expires_at, r.status AS recipient_status,
+            r.signed_at, r.signer_id_number, r.signer_latitude, r.signer_longitude,
+            r.signer_location_accuracy, r.signer_location_captured_at, r.is_sender,
+            req.id AS request_id, req.tenant_id, req.title, req.notes, req.status AS request_status,
             req.document_original_name, req.document_original_path, req.document_working_path, req.document_signed_path,
             req.document_mime, req.signing_mode, req.allow_sender_sign, req.page_count, req.link_expires_at,
             req.created_by_user_id, u.full_name AS sender_name, u.email AS sender_email
@@ -77,7 +82,49 @@ export async function resolveByToken(token) {
     { token: t }
   );
   if (rec.recordset?.[0]) {
-    return { mode: 'recipient', recipient: rec.recordset[0], request: rec.recordset[0] };
+    const row = rec.recordset[0];
+    const recipient = {
+      id: row.recipient_id,
+      email: row.recipient_email,
+      full_name: row.recipient_full_name,
+      recipient_type: row.recipient_type,
+      sign_order: row.sign_order,
+      access_token: row.access_token,
+      otp_hash: row.otp_hash,
+      otp_expires_at: row.otp_expires_at,
+      signer_session_token: row.signer_session_token,
+      signer_session_expires_at: row.signer_session_expires_at,
+      status: row.recipient_status,
+      signed_at: row.signed_at,
+      signer_id_number: row.signer_id_number,
+      signer_latitude: row.signer_latitude,
+      signer_longitude: row.signer_longitude,
+      signer_location_accuracy: row.signer_location_accuracy,
+      signer_location_captured_at: row.signer_location_captured_at,
+      is_sender: row.is_sender,
+    };
+    const request = {
+      id: row.request_id,
+      request_id: row.request_id,
+      tenant_id: row.tenant_id,
+      title: row.title,
+      notes: row.notes,
+      status: row.request_status,
+      request_status: row.request_status,
+      document_original_name: row.document_original_name,
+      document_original_path: row.document_original_path,
+      document_working_path: row.document_working_path,
+      document_signed_path: row.document_signed_path,
+      document_mime: row.document_mime,
+      signing_mode: row.signing_mode,
+      allow_sender_sign: row.allow_sender_sign,
+      page_count: row.page_count,
+      link_expires_at: row.link_expires_at,
+      created_by_user_id: row.created_by_user_id,
+      sender_name: row.sender_name,
+      sender_email: row.sender_email,
+    };
+    return { mode: 'recipient', recipient, request };
   }
 
   const leg = await qsQuery(
@@ -308,32 +355,52 @@ export async function emailSignedCopy(req, requestRow, recipientEmail, recipient
 }
 
 export async function sendRecipientInvites(req, requestId, requestRow, recipients) {
-  if (!isEmailConfigured()) return;
+  if (!isEmailConfigured()) {
+    console.warn('[quick-sign] Email not configured — OTP invitations cannot be sent.');
+    throw new Error('Email service is not configured. Cannot send signing invitations.');
+  }
   const linkExp = getRow(requestRow, 'link_expires_at');
+  const errors = [];
   for (const rec of recipients) {
     if (getRow(rec, 'is_sender')) continue;
-    const otp = generateOtp();
-    const otpHash = await bcrypt.hash(otp, BCRYPT_ROUNDS);
-    const otpExp = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await qsQuery(
-      `UPDATE quick_sign_recipients SET otp_hash = @hash, otp_expires_at = @exp, status = N'sent', updated_at = SYSUTCDATETIME() WHERE id = @id`,
-      { id: getRow(rec, 'id'), hash: otpHash, exp: otpExp.toISOString() }
-    );
-    const signLink = `${appBaseUrl(req)}/quick-sign/${getRow(rec, 'access_token')}`;
-    const html = quickSignInviteHtml({
-      recipientName: getRow(rec, 'full_name'),
-      documentTitle: getRow(requestRow, 'title'),
-      signLink,
-      otp,
-      senderName: getRow(requestRow, 'sender_name') || req.user?.full_name,
-      expiresAt: linkExp,
-    });
-    await sendEmail({
-      to: getRow(rec, 'email'),
-      subject: `Sign document: ${getRow(requestRow, 'title')} – Thinkers Quick Sign`,
-      body: html,
-      html: true,
-    }).catch((e) => console.error('[quick-sign] invite email:', e?.message));
+    const recipientId = getRow(rec, 'id');
+    const recipientEmail = getRow(rec, 'email');
+    if (!recipientEmail) { errors.push('Missing email for a recipient'); continue; }
+    try {
+      const otp = generateOtp();
+      const otpHash = await bcrypt.hash(otp, BCRYPT_ROUNDS);
+      const otpExp = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await qsQuery(
+        `UPDATE quick_sign_recipients SET otp_hash = @hash, otp_expires_at = @exp, status = N'sent', updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id: recipientId, hash: otpHash, exp: otpExp.toISOString() }
+      );
+      const verify = await qsQuery(`SELECT otp_hash FROM quick_sign_recipients WHERE id = @id`, { id: recipientId });
+      if (!verify.recordset?.[0]?.otp_hash) {
+        errors.push(`OTP storage failed for ${recipientEmail}`);
+        continue;
+      }
+      const signLink = `${appBaseUrl(req)}/quick-sign/${getRow(rec, 'access_token')}`;
+      const html = quickSignInviteHtml({
+        recipientName: getRow(rec, 'full_name'),
+        documentTitle: getRow(requestRow, 'title'),
+        signLink,
+        otp,
+        senderName: getRow(requestRow, 'sender_name') || req.user?.full_name,
+        expiresAt: linkExp,
+      });
+      await sendEmail({
+        to: recipientEmail,
+        subject: `Sign document: ${getRow(requestRow, 'title')} – Thinkers Quick Sign`,
+        body: html,
+        html: true,
+      });
+    } catch (e) {
+      console.error(`[quick-sign] invite to ${recipientEmail}:`, e?.message);
+      errors.push(`Failed to send to ${recipientEmail}: ${e?.message}`);
+    }
+  }
+  if (errors.length > 0) {
+    console.warn('[quick-sign] invite errors:', errors);
   }
 }
 

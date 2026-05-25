@@ -196,9 +196,14 @@ export default function QuickSignPublic() {
                   autoComplete="one-time-code"
                   maxLength={8}
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setOtp(e.target.value.replace(/[^0-9]/g, ''))}
+                  onPaste={(e) => {
+                    const text = (e.clipboardData?.getData('text') || '').replace(/[^0-9]/g, '').slice(0, 6);
+                    if (text) { e.preventDefault(); setOtp(text); }
+                  }}
                   className="w-full max-w-xs px-4 py-3 text-center text-2xl tracking-[0.3em] font-mono rounded-lg border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800"
                   placeholder="000000"
+                  autoFocus
                   required
                 />
                 <button
