@@ -3,7 +3,7 @@ import { todayYmd, toYmdFromDbOrString } from './lib/appTime.js';
 import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
-import { accounting as accountingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
+import { accounting as accountingApi, expenseManagement as emApi, tabAccess as tabAccessApi, users as usersApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from './api';
 import { getApiBase } from './lib/apiBase.js';
 import { buildAccountingPdfFilename, buildCustomerStatementPdfFilename } from './lib/accountingDocumentPdfFilename.js';
 import InfoHint from './components/InfoHint.jsx';
@@ -22,6 +22,8 @@ const NAV_SECTIONS = [
       { id: 'purchase-orders', label: 'Purchase orders', icon: 'document' },
       { id: 'statements', label: 'Customer statements & other statements', icon: 'statement' },
       { id: 'library', label: 'Library', icon: 'folder' },
+      { id: 'department-budget', label: 'Department budget', icon: 'statement' },
+      { id: 'expense-management', label: 'Expense management', icon: 'statement' },
     ],
   },
 ];
@@ -3609,11 +3611,1856 @@ function LibraryTab() {
   );
 }
 
+const BUDGET_STATUS_STYLES = {
+  draft: 'bg-surface-100 text-surface-700',
+  pending: 'bg-amber-100 text-amber-800',
+  approved: 'bg-blue-100 text-blue-800',
+  active: 'bg-emerald-100 text-emerald-800',
+  closed: 'bg-surface-200 text-surface-600',
+  cancelled: 'bg-red-100 text-red-800',
+};
+
+function utilBarColor(pct) {
+  if (pct >= 90) return 'bg-red-500';
+  if (pct >= 70) return 'bg-amber-500';
+  return 'bg-emerald-500';
+}
+
+function BudgetUtilBar({ spent, total }) {
+  const pct = total > 0 ? Math.min((spent / total) * 100, 100) : 0;
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-2 rounded-full bg-surface-200 overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${utilBarColor(pct)}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-surface-600 tabular-nums w-12 text-right">{pct.toFixed(0)}%</span>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   EXPENSE MANAGEMENT TAB
+   ═══════════════════════════════════════════════════════════════════ */
+
+const ENTRY_TYPES = ['expense', 'income', 'refund', 'adjustment', 'reimbursement'];
+const STATUSES = ['draft', 'pending', 'approved', 'rejected', 'paid', 'voided'];
+const PAYMENT_METHODS = ['cash', 'card', 'eft', 'cheque', 'petty_cash', 'company_card', 'reimbursement', 'other'];
+
+const STATUS_STYLES = {
+  draft: 'bg-surface-100 text-surface-700',
+  pending: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+  approved: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+  rejected: 'bg-red-50 text-red-700 ring-1 ring-red-200',
+  paid: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+  voided: 'bg-surface-200 text-surface-500 line-through',
+};
+
+function ExpenseManagementTab() {
+  const [subTab, setSubTab] = useState('dashboard');
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [categories, setCategories] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [budgets, setBudgets] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [selectedEntry, setSelectedEntry] = useState(null);
+  const [detailEntry, setDetailEntry] = useState(null);
+  const [detailAttachments, setDetailAttachments] = useState([]);
+
+  // Filters
+  const [fFrom, setFFrom] = useState('');
+  const [fTo, setFTo] = useState('');
+  const [fCategory, setFCategory] = useState('');
+  const [fDept, setFDept] = useState('');
+  const [fStatus, setFStatus] = useState('');
+  const [fType, setFType] = useState('');
+  const [fBudgeted, setFBudgeted] = useState('');
+  const [fSearch, setFSearch] = useState('');
+
+  // Create/edit form
+  const emptyForm = {
+    entry_date: '', category_id: '', department_name: '', budget_id: '', budget_category_id: '', budget_line_item_id: '',
+    is_budgeted: false, entry_type: 'expense', description: '', amount: '', tax_amount: '', currency: 'ZAR',
+    payment_method: '', reference_number: '', vendor_supplier: '', receipt_number: '', notes: '', tags: '',
+    is_recurring: false, recurring_frequency: '',
+  };
+  const [form, setForm] = useState({ ...emptyForm });
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+
+  // Category management
+  const [catForm, setCatForm] = useState({ name: '', code: '', description: '', category_type: 'expense', parent_id: '' });
+  const [catSaving, setCatSaving] = useState(false);
+  const [editingCatId, setEditingCatId] = useState(null);
+
+  // Budget item requests
+  const [budgetRequests, setBudgetRequests] = useState([]);
+  const [brForm, setBrForm] = useState({ budget_id: '', department_name: '', item_name: '', description: '', estimated_cost: '', quantity: 1, priority: 'medium', category_id: '', justification: '' });
+  const [brSaving, setBrSaving] = useState(false);
+
+  // Budget detail for linking
+  const [selectedBudgetCategories, setSelectedBudgetCategories] = useState([]);
+  const [selectedBudgetLineItems, setSelectedBudgetLineItems] = useState([]);
+
+  const loadEntries = useCallback(() => {
+    setLoading(true);
+    const params = {};
+    if (fFrom) params.from = fFrom;
+    if (fTo) params.to = fTo;
+    if (fCategory) params.category_id = fCategory;
+    if (fDept) params.department = fDept;
+    if (fStatus) params.status = fStatus;
+    if (fType) params.entry_type = fType;
+    if (fBudgeted) params.is_budgeted = fBudgeted;
+    if (fSearch) params.search = fSearch;
+    emApi.entries.list(params)
+      .then((d) => setEntries(d.entries || []))
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, [fFrom, fTo, fCategory, fDept, fStatus, fType, fBudgeted, fSearch]);
+
+  const loadMeta = useCallback(() => {
+    emApi.categories.list().then((d) => setCategories(d.categories || [])).catch(() => {});
+    emApi.departments().then((d) => setDepartments(d.departments || [])).catch(() => {});
+    emApi.budgetsForLinking().then((d) => setBudgets(d.budgets || [])).catch(() => {});
+    emApi.summary({ from: fFrom || undefined, to: fTo || undefined }).then(setSummary).catch(() => {});
+  }, [fFrom, fTo]);
+
+  const loadBudgetRequests = useCallback(() => {
+    emApi.budgetRequests.list({}).then((d) => setBudgetRequests(d.requests || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => { loadEntries(); }, [loadEntries]);
+  useEffect(() => { loadMeta(); loadBudgetRequests(); }, [loadMeta, loadBudgetRequests]);
+
+  const loadEntryDetail = (id) => {
+    emApi.entries.get(id).then((d) => {
+      setDetailEntry(d.entry || null);
+      setDetailAttachments(d.attachments || []);
+    }).catch(() => {});
+  };
+
+  const openEntry = (entry) => {
+    setSelectedEntry(entry);
+    setSubTab('entry-detail');
+    loadEntryDetail(entry.id);
+  };
+
+  const handleBudgetChange = async (budgetId) => {
+    setForm((f) => ({ ...f, budget_id: budgetId, budget_category_id: '', budget_line_item_id: '', is_budgeted: !!budgetId }));
+    if (budgetId) {
+      try {
+        const det = await accountingApi.budgets.get(budgetId);
+        setSelectedBudgetCategories(det.categories || []);
+        setSelectedBudgetLineItems(det.lineItems || []);
+        const bgt = det.budget;
+        if (bgt?.department_name) setForm((f) => ({ ...f, department_name: bgt.department_name }));
+      } catch { setSelectedBudgetCategories([]); setSelectedBudgetLineItems([]); }
+    } else {
+      setSelectedBudgetCategories([]);
+      setSelectedBudgetLineItems([]);
+    }
+  };
+
+  /* ── CRUD ── */
+  const handleSaveEntry = (e) => {
+    e.preventDefault();
+    setSaving(true);
+    const body = { ...form, amount: Number(form.amount) || 0, tax_amount: Number(form.tax_amount) || 0 };
+    const promise = editingId ? emApi.entries.update(editingId, body) : emApi.entries.create(body);
+    promise
+      .then(() => { setForm({ ...emptyForm }); setEditingId(null); setSubTab('journal'); loadEntries(); loadMeta(); })
+      .catch(() => {})
+      .finally(() => setSaving(false));
+  };
+
+  const editEntry = (entry) => {
+    setEditingId(entry.id);
+    setForm({
+      entry_date: String(entry.entry_date || '').slice(0, 10), category_id: entry.category_id || '', department_name: entry.department_name || '',
+      budget_id: entry.budget_id || '', budget_category_id: entry.budget_category_id || '', budget_line_item_id: entry.budget_line_item_id || '',
+      is_budgeted: !!entry.is_budgeted, entry_type: entry.entry_type || 'expense', description: entry.description || '',
+      amount: entry.amount ?? '', tax_amount: entry.tax_amount ?? '', currency: entry.currency || 'ZAR',
+      payment_method: entry.payment_method || '', reference_number: entry.reference_number || '',
+      vendor_supplier: entry.vendor_supplier || '', receipt_number: entry.receipt_number || '',
+      notes: entry.notes || '', tags: entry.tags || '', is_recurring: !!entry.is_recurring, recurring_frequency: entry.recurring_frequency || '',
+    });
+    if (entry.budget_id) handleBudgetChange(entry.budget_id);
+    setSubTab('record');
+  };
+
+  const deleteEntry = (id) => {
+    if (!window.confirm('Delete this entry?')) return;
+    emApi.entries.remove(id).then(() => { loadEntries(); loadMeta(); }).catch(() => {});
+  };
+
+  const updateEntryStatus = (id, status) => {
+    emApi.entries.update(id, { status }).then(() => { loadEntries(); loadMeta(); if (detailEntry?.id === id) loadEntryDetail(id); }).catch(() => {});
+  };
+
+  /* ── Categories ── */
+  const handleSaveCat = (e) => {
+    e.preventDefault();
+    setCatSaving(true);
+    const promise = editingCatId ? emApi.categories.update(editingCatId, catForm) : emApi.categories.create(catForm);
+    promise
+      .then(() => { setCatForm({ name: '', code: '', description: '', category_type: 'expense', parent_id: '' }); setEditingCatId(null); loadMeta(); })
+      .catch(() => {})
+      .finally(() => setCatSaving(false));
+  };
+
+  const editCat = (cat) => {
+    setEditingCatId(cat.id);
+    setCatForm({ name: cat.name || '', code: cat.code || '', description: cat.description || '', category_type: cat.category_type || 'expense', parent_id: cat.parent_id || '' });
+  };
+
+  const deleteCat = (id) => {
+    if (!window.confirm('Delete this category?')) return;
+    emApi.categories.remove(id).then(() => loadMeta()).catch(() => {});
+  };
+
+  /* ── Budget item requests ── */
+  const handleSaveBr = (e) => {
+    e.preventDefault();
+    setBrSaving(true);
+    emApi.budgetRequests.create({ ...brForm, estimated_cost: Number(brForm.estimated_cost) || 0, quantity: Number(brForm.quantity) || 1 })
+      .then(() => { setBrForm({ budget_id: '', department_name: '', item_name: '', description: '', estimated_cost: '', quantity: 1, priority: 'medium', category_id: '', justification: '' }); loadBudgetRequests(); })
+      .catch(() => {})
+      .finally(() => setBrSaving(false));
+  };
+
+  const updateBrStatus = (id, status) => {
+    emApi.budgetRequests.update(id, { status }).then(() => loadBudgetRequests()).catch(() => {});
+  };
+
+  const deleteBr = (id) => {
+    if (!window.confirm('Delete this request?')) return;
+    emApi.budgetRequests.remove(id).then(() => loadBudgetRequests()).catch(() => {});
+  };
+
+  /* ── Attachments ── */
+  const handleUploadAttachments = async (entryId, files) => {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    try {
+      await emApi.entries.uploadAttachments(entryId, fd);
+      loadEntryDetail(entryId);
+    } catch {}
+  };
+
+  const handleDeleteAttachment = async (attId) => {
+    if (!window.confirm('Remove this attachment?')) return;
+    try {
+      await emApi.entries.removeAttachment(attId);
+      if (detailEntry) loadEntryDetail(detailEntry.id);
+    } catch {}
+  };
+
+  /* ── Export ── */
+  const exportParams = useMemo(() => {
+    const p = {};
+    if (fFrom) p.from = fFrom;
+    if (fTo) p.to = fTo;
+    if (fCategory) p.category_id = fCategory;
+    if (fDept) p.department = fDept;
+    if (fStatus) p.status = fStatus;
+    return p;
+  }, [fFrom, fTo, fCategory, fDept, fStatus]);
+
+  /* ── Summary ── */
+  const totals = summary?.totals || {};
+  const byCategory = summary?.byCategory || [];
+  const byMonth = summary?.byMonth || [];
+  const byDepartment = summary?.byDepartment || [];
+  const maxCatVal = Math.max(...byCategory.map((c) => Number(c.total) || 0), 1);
+  const maxMonthVal = Math.max(...byMonth.map((m) => Math.max(Number(m.expenses) || 0, Number(m.income) || 0)), 1);
+
+  const activeCategories = categories.filter((c) => c.is_active !== false);
+
+  const subTabs = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'journal', label: 'Journal' },
+    { id: 'record', label: editingId ? 'Edit entry' : 'Record entry' },
+    { id: 'categories', label: 'Categories' },
+    { id: 'budget-requests', label: 'Budget item requests' },
+    ...(selectedEntry ? [{ id: 'entry-detail', label: `Entry: ${selectedEntry.entry_number || '…'}` }] : []),
+  ];
+
+  const fmtDate = (d) => d ? String(d).slice(0, 10) : '—';
+  const fmtZar = (v) => {
+    const n = Number(v);
+    if (isNaN(n)) return 'R 0.00';
+    return 'R ' + n.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const monthName = (m) => ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m] || m;
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold text-surface-900">Expense management</h2>
+
+      {/* Sub-tab bar */}
+      <div className="flex items-center gap-1 border-b border-surface-200 overflow-x-auto">
+        {subTabs.map((t) => (
+          <button key={t.id} type="button" onClick={() => setSubTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${subTab === t.id ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-500 hover:text-surface-700 hover:border-surface-300'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══════════════ DASHBOARD ═══════════════ */}
+      {subTab === 'dashboard' && (
+        <div className="space-y-6">
+          {/* Summary cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {[
+              { label: 'Total entries', value: totals.total_entries || 0, isCurrency: false, color: 'text-surface-900' },
+              { label: 'Total expenses', value: totals.total_expenses || 0, isCurrency: true, color: 'text-red-700' },
+              { label: 'Total income', value: totals.total_income || 0, isCurrency: true, color: 'text-emerald-700' },
+              { label: 'Budgeted spend', value: totals.budgeted_total || 0, isCurrency: true, color: 'text-blue-700' },
+              { label: 'Unbudgeted spend', value: totals.unbudgeted_total || 0, isCurrency: true, color: 'text-amber-700' },
+            ].map((c) => (
+              <div key={c.label} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{c.label}</p>
+                <p className={`text-xl font-semibold mt-1 tabular-nums ${c.color}`}>{c.isCurrency ? fmtZar(c.value) : c.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Category breakdown */}
+          {byCategory.length > 0 && (
+            <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold text-surface-900 mb-3">Spend by category</h3>
+              <div className="space-y-2">
+                {byCategory.map((c, i) => (
+                  <div key={i} className="flex items-center gap-3">
+                    <span className="text-xs text-surface-600 w-28 truncate">{c.category_name || 'Uncategorised'}</span>
+                    <div className="flex-1 h-5 bg-surface-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${Math.round((Number(c.total) / maxCatVal) * 100)}%` }} />
+                    </div>
+                    <span className="text-xs font-medium tabular-nums text-surface-700 w-24 text-right">{fmtZar(c.total)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Monthly spend chart */}
+          {byMonth.length > 0 && (
+            <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold text-surface-900 mb-3">Monthly overview</h3>
+              <div className="flex items-end gap-2 h-40">
+                {byMonth.map((m, i) => (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div className="w-full flex gap-0.5 items-end" style={{ height: '120px' }}>
+                      <div className="flex-1 bg-red-400 rounded-t" style={{ height: `${Math.round((Number(m.expenses) / maxMonthVal) * 120)}px` }} title={`Expenses: ${fmtZar(m.expenses)}`} />
+                      <div className="flex-1 bg-emerald-400 rounded-t" style={{ height: `${Math.round((Number(m.income) / maxMonthVal) * 120)}px` }} title={`Income: ${fmtZar(m.income)}`} />
+                    </div>
+                    <span className="text-[10px] text-surface-500">{monthName(m.month)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center gap-4 mt-2 text-xs text-surface-500">
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-400" /> Expenses</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-400" /> Income</span>
+              </div>
+            </div>
+          )}
+
+          {/* Department breakdown */}
+          {byDepartment.length > 0 && (
+            <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold text-surface-900 mb-3">Spend by department</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-100">
+                    <th className="py-2 pr-4">Department</th><th className="py-2 pr-4 text-right">Entries</th><th className="py-2 text-right">Total</th>
+                  </tr></thead>
+                  <tbody>
+                    {byDepartment.map((d, i) => (
+                      <tr key={i} className="border-b border-surface-50 hover:bg-surface-50">
+                        <td className="py-2 pr-4">{d.department}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums">{d.count}</td>
+                        <td className="py-2 text-right tabular-nums font-medium">{fmtZar(d.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════ JOURNAL ═══════════════ */}
+      {subTab === 'journal' && (
+        <div className="space-y-4">
+          {/* Filters */}
+          <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">From</label>
+                <input type="date" value={fFrom} onChange={(e) => setFFrom(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">To</label>
+                <input type="date" value={fTo} onChange={(e) => setFTo(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Category</label>
+                <select value={fCategory} onChange={(e) => setFCategory(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm">
+                  <option value="">All categories</option>
+                  {activeCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Department</label>
+                <select value={fDept} onChange={(e) => setFDept(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm">
+                  <option value="">All departments</option>
+                  {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Status</label>
+                <select value={fStatus} onChange={(e) => setFStatus(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm">
+                  <option value="">All statuses</option>
+                  {STATUSES.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Type</label>
+                <select value={fType} onChange={(e) => setFType(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm">
+                  <option value="">All types</option>
+                  {ENTRY_TYPES.map((t) => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Budgeted</label>
+                <select value={fBudgeted} onChange={(e) => setFBudgeted(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm">
+                  <option value="">All</option>
+                  <option value="1">Budgeted</option>
+                  <option value="0">Unbudgeted</option>
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-surface-500 mb-1">Search</label>
+                <input type="text" value={fSearch} onChange={(e) => setFSearch(e.target.value)} placeholder="Description, vendor, reference..." className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <button type="button" onClick={() => { setFFrom(''); setFTo(''); setFCategory(''); setFDept(''); setFStatus(''); setFType(''); setFBudgeted(''); setFSearch(''); }}
+                className="text-xs text-brand-600 hover:underline">Clear filters</button>
+              <div className="flex-1" />
+              <a href={emApi.entries.exportPdf(exportParams)} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-red-200 bg-red-50 text-red-700 rounded-lg text-xs font-medium hover:bg-red-100 transition-colors">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                Export PDF
+              </a>
+              <a href={emApi.entries.exportExcel(exportParams)} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-emerald-200 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-medium hover:bg-emerald-100 transition-colors">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                Export Excel
+              </a>
+            </div>
+          </div>
+
+          {/* Entries table */}
+          {loading ? (
+            <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" /></div>
+          ) : entries.length === 0 ? (
+            <div className="text-center py-12 text-surface-500">
+              <p className="text-lg font-medium">No entries found</p>
+              <p className="text-sm mt-1">Record an expense or adjust your filters</p>
+              <button type="button" onClick={() => setSubTab('record')} className="mt-4 px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700">Record entry</button>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-200 bg-surface-50">
+                  <th className="px-4 py-2.5">Date</th>
+                  <th className="px-4 py-2.5">Entry #</th>
+                  <th className="px-4 py-2.5">Type</th>
+                  <th className="px-4 py-2.5">Description</th>
+                  <th className="px-4 py-2.5">Category</th>
+                  <th className="px-4 py-2.5">Department</th>
+                  <th className="px-4 py-2.5 text-right">Amount</th>
+                  <th className="px-4 py-2.5">Budgeted</th>
+                  <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">Actions</th>
+                </tr></thead>
+                <tbody>
+                  {entries.map((e) => (
+                    <tr key={e.id} className="border-b border-surface-50 hover:bg-surface-50 cursor-pointer" onClick={() => openEntry(e)}>
+                      <td className="px-4 py-2.5 tabular-nums">{fmtDate(e.entry_date)}</td>
+                      <td className="px-4 py-2.5 font-mono text-xs text-brand-600">{e.entry_number}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${e.entry_type === 'income' ? 'bg-emerald-50 text-emerald-700' : e.entry_type === 'refund' ? 'bg-blue-50 text-blue-700' : 'bg-red-50 text-red-700'}`}>
+                          {e.entry_type}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 max-w-[200px] truncate">{e.description}</td>
+                      <td className="px-4 py-2.5 text-surface-600">{e.category_name || '—'}</td>
+                      <td className="px-4 py-2.5 text-surface-600">{e.department_name || '—'}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(e.total_amount || e.amount)}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${e.is_budgeted ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                          {e.is_budgeted ? 'Yes' : 'No'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[e.status] || 'bg-surface-100 text-surface-700'}`}>{e.status}</span>
+                      </td>
+                      <td className="px-4 py-2.5" onClick={(ev) => ev.stopPropagation()}>
+                        <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => editEntry(e)} className="text-brand-600 hover:underline text-xs">Edit</button>
+                          <button type="button" onClick={() => deleteEntry(e.id)} className="text-red-600 hover:underline text-xs ml-2">Del</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════ RECORD ENTRY ═══════════════ */}
+      {subTab === 'record' && (
+        <form onSubmit={handleSaveEntry} className="space-y-5">
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <h3 className="text-sm font-semibold text-surface-900">{editingId ? 'Edit expense entry' : 'Record new entry'}</h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Entry date *</label>
+                <input type="date" required value={form.entry_date} onChange={(e) => setForm((f) => ({ ...f, entry_date: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Entry type *</label>
+                <select value={form.entry_type} onChange={(e) => setForm((f) => ({ ...f, entry_type: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  {ENTRY_TYPES.map((t) => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
+                <select value={form.category_id} onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Select category</option>
+                  {activeCategories.map((c) => <option key={c.id} value={c.id}>{c.code ? `${c.code} - ` : ''}{c.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-surface-600 mb-1">Description *</label>
+              <textarea required value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Amount (ZAR) *</label>
+                <input type="number" step="0.01" required value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Tax amount</label>
+                <input type="number" step="0.01" value={form.tax_amount} onChange={(e) => setForm((f) => ({ ...f, tax_amount: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Payment method</label>
+                <select value={form.payment_method} onChange={(e) => setForm((f) => ({ ...f, payment_method: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Select method</option>
+                  {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m.replace(/_/g, ' ')}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Vendor / Supplier</label>
+                <input type="text" value={form.vendor_supplier} onChange={(e) => setForm((f) => ({ ...f, vendor_supplier: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Reference number</label>
+                <input type="text" value={form.reference_number} onChange={(e) => setForm((f) => ({ ...f, reference_number: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Receipt number</label>
+                <input type="text" value={form.receipt_number} onChange={(e) => setForm((f) => ({ ...f, receipt_number: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Department</label>
+                <select value={form.department_name} onChange={(e) => setForm((f) => ({ ...f, department_name: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Select department</option>
+                  {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* Budget linking */}
+            <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+              <h4 className="text-xs font-semibold text-blue-800 uppercase tracking-wider">Budget linking</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Link to budget</label>
+                  <select value={form.budget_id} onChange={(e) => handleBudgetChange(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                    <option value="">No budget (unbudgeted)</option>
+                    {budgets.map((b) => <option key={b.id} value={b.id}>{b.department_name} — {b.fiscal_year} ({fmtZar(b.total_budget)})</option>)}
+                  </select>
+                </div>
+                {form.budget_id && selectedBudgetCategories.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Budget category</label>
+                    <select value={form.budget_category_id} onChange={(e) => setForm((f) => ({ ...f, budget_category_id: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                      <option value="">Select category</option>
+                      {selectedBudgetCategories.map((c) => <option key={c.id} value={c.id}>{c.category_name}</option>)}
+                    </select>
+                  </div>
+                )}
+                {form.budget_id && selectedBudgetLineItems.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Budget line item</label>
+                    <select value={form.budget_line_item_id} onChange={(e) => setForm((f) => ({ ...f, budget_line_item_id: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                      <option value="">Select line item</option>
+                      {selectedBudgetLineItems.filter((l) => !form.budget_category_id || l.category_id === form.budget_category_id).map((l) => <option key={l.id} value={l.id}>{l.description} ({fmtZar(l.estimated_amount)})</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+              {!form.budget_id && (
+                <label className="flex items-center gap-2 text-xs text-amber-700">
+                  <input type="checkbox" checked={!form.is_budgeted} disabled className="rounded border-surface-300" />
+                  This expense is not budgeted for
+                </label>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-surface-600 mb-1">Notes</label>
+              <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Tags (comma-separated)</label>
+                <input type="text" value={form.tags} onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))} placeholder="e.g. fuel, maintenance, payroll" className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div className="flex items-end gap-4">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.is_recurring} onChange={(e) => setForm((f) => ({ ...f, is_recurring: e.target.checked }))} className="rounded border-surface-300" />
+                  Recurring
+                </label>
+                {form.is_recurring && (
+                  <select value={form.recurring_frequency} onChange={(e) => setForm((f) => ({ ...f, recurring_frequency: e.target.value }))} className="border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                    <option value="">Frequency</option>
+                    {['weekly', 'bi_weekly', 'monthly', 'quarterly', 'annually'].map((f) => <option key={f} value={f}>{f.replace(/_/g, ' ')}</option>)}
+                  </select>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button type="submit" disabled={saving} className="px-5 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                {saving ? 'Saving...' : editingId ? 'Update entry' : 'Record entry'}
+              </button>
+              {editingId && (
+                <button type="button" onClick={() => { setEditingId(null); setForm({ ...emptyForm }); }} className="px-4 py-2 border border-surface-300 rounded-lg text-sm text-surface-700 hover:bg-surface-50">Cancel</button>
+              )}
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* ═══════════════ CATEGORIES ═══════════════ */}
+      {subTab === 'categories' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <h3 className="text-sm font-semibold text-surface-900">{editingCatId ? 'Edit category' : 'Create category'}</h3>
+            <form onSubmit={handleSaveCat} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Name *</label>
+                <input type="text" required value={catForm.name} onChange={(e) => setCatForm((f) => ({ ...f, name: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Code</label>
+                <input type="text" value={catForm.code} onChange={(e) => setCatForm((f) => ({ ...f, code: e.target.value }))} placeholder="e.g. FUE, TRV" className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Type</label>
+                <select value={catForm.category_type} onChange={(e) => setCatForm((f) => ({ ...f, category_type: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  {['expense', 'income', 'overhead', 'capital', 'operational', 'payroll', 'travel', 'utilities', 'maintenance', 'other'].map((t) => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Parent category</label>
+                <select value={catForm.parent_id} onChange={(e) => setCatForm((f) => ({ ...f, parent_id: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">None (top-level)</option>
+                  {activeCategories.filter((c) => c.id !== editingCatId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-surface-600 mb-1">Description</label>
+                <input type="text" value={catForm.description} onChange={(e) => setCatForm((f) => ({ ...f, description: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div className="flex items-end gap-2">
+                <button type="submit" disabled={catSaving} className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                  {catSaving ? 'Saving...' : editingCatId ? 'Update' : 'Create'}
+                </button>
+                {editingCatId && (
+                  <button type="button" onClick={() => { setEditingCatId(null); setCatForm({ name: '', code: '', description: '', category_type: 'expense', parent_id: '' }); }} className="px-3 py-2 border border-surface-300 rounded-lg text-sm text-surface-700 hover:bg-surface-50">Cancel</button>
+                )}
+              </div>
+            </form>
+          </div>
+
+          <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-200 bg-surface-50">
+                <th className="px-4 py-2.5">Code</th>
+                <th className="px-4 py-2.5">Name</th>
+                <th className="px-4 py-2.5">Type</th>
+                <th className="px-4 py-2.5">Parent</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Actions</th>
+              </tr></thead>
+              <tbody>
+                {categories.length === 0 ? (
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-500">No categories yet</td></tr>
+                ) : categories.map((c) => (
+                  <tr key={c.id} className="border-b border-surface-50 hover:bg-surface-50">
+                    <td className="px-4 py-2.5 font-mono text-xs text-brand-600">{c.code || '—'}</td>
+                    <td className="px-4 py-2.5 font-medium">{c.name}</td>
+                    <td className="px-4 py-2.5 text-surface-600">{c.category_type}</td>
+                    <td className="px-4 py-2.5 text-surface-600">{c.parent_name || '—'}</td>
+                    <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs ${c.is_active !== false ? 'bg-emerald-50 text-emerald-700' : 'bg-surface-100 text-surface-500'}`}>{c.is_active !== false ? 'Active' : 'Inactive'}</span></td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => editCat(c)} className="text-brand-600 hover:underline text-xs">Edit</button>
+                        <button type="button" onClick={() => deleteCat(c.id)} className="text-red-600 hover:underline text-xs">Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════ BUDGET ITEM REQUESTS ═══════════════ */}
+      {subTab === 'budget-requests' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <h3 className="text-sm font-semibold text-surface-900">Request budget item</h3>
+            <p className="text-xs text-surface-500">Submit items you need budgeted for your department. Approved items can be linked to a budget.</p>
+            <form onSubmit={handleSaveBr} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Item name *</label>
+                <input type="text" required value={brForm.item_name} onChange={(e) => setBrForm((f) => ({ ...f, item_name: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Department *</label>
+                <select required value={brForm.department_name} onChange={(e) => setBrForm((f) => ({ ...f, department_name: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Select department</option>
+                  {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Budget</label>
+                <select value={brForm.budget_id} onChange={(e) => setBrForm((f) => ({ ...f, budget_id: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">No linked budget</option>
+                  {budgets.map((b) => <option key={b.id} value={b.id}>{b.department_name} — {b.fiscal_year}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Estimated cost</label>
+                <input type="number" step="0.01" value={brForm.estimated_cost} onChange={(e) => setBrForm((f) => ({ ...f, estimated_cost: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Quantity</label>
+                <input type="number" min="1" value={brForm.quantity} onChange={(e) => setBrForm((f) => ({ ...f, quantity: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Priority</label>
+                <select value={brForm.priority} onChange={(e) => setBrForm((f) => ({ ...f, priority: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  {['low', 'medium', 'high', 'critical'].map((p) => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
+                <select value={brForm.category_id} onChange={(e) => setBrForm((f) => ({ ...f, category_id: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Select category</option>
+                  {activeCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-surface-600 mb-1">Description / Justification</label>
+                <textarea value={brForm.justification} onChange={(e) => setBrForm((f) => ({ ...f, justification: e.target.value }))} rows={2} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div className="flex items-end">
+                <button type="submit" disabled={brSaving} className="px-5 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                  {brSaving ? 'Submitting...' : 'Submit request'}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-200 bg-surface-50">
+                <th className="px-4 py-2.5">Item</th>
+                <th className="px-4 py-2.5">Department</th>
+                <th className="px-4 py-2.5">Category</th>
+                <th className="px-4 py-2.5 text-right">Est. Cost</th>
+                <th className="px-4 py-2.5 text-right">Qty</th>
+                <th className="px-4 py-2.5 text-right">Total</th>
+                <th className="px-4 py-2.5">Priority</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Requested by</th>
+                <th className="px-4 py-2.5">Actions</th>
+              </tr></thead>
+              <tbody>
+                {budgetRequests.length === 0 ? (
+                  <tr><td colSpan={10} className="px-4 py-8 text-center text-surface-500">No budget item requests yet</td></tr>
+                ) : budgetRequests.map((r) => (
+                  <tr key={r.id} className="border-b border-surface-50 hover:bg-surface-50">
+                    <td className="px-4 py-2.5 font-medium">{r.item_name}</td>
+                    <td className="px-4 py-2.5 text-surface-600">{r.department_name}</td>
+                    <td className="px-4 py-2.5 text-surface-600">{r.category_name || '—'}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{fmtZar(r.estimated_cost)}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{r.quantity}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(r.total_cost)}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${r.priority === 'critical' ? 'bg-red-50 text-red-700' : r.priority === 'high' ? 'bg-amber-50 text-amber-700' : r.priority === 'medium' ? 'bg-blue-50 text-blue-700' : 'bg-surface-100 text-surface-600'}`}>
+                        {r.priority}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${r.status === 'approved' ? 'bg-emerald-50 text-emerald-700' : r.status === 'rejected' ? 'bg-red-50 text-red-700' : r.status === 'purchased' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                        {r.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-surface-600">{r.requested_by_name || '—'}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {r.status === 'pending' && (
+                          <>
+                            <button type="button" onClick={() => updateBrStatus(r.id, 'approved')} className="text-emerald-600 hover:underline text-xs">Approve</button>
+                            <button type="button" onClick={() => updateBrStatus(r.id, 'rejected')} className="text-red-600 hover:underline text-xs">Reject</button>
+                          </>
+                        )}
+                        {r.status === 'approved' && (
+                          <button type="button" onClick={() => updateBrStatus(r.id, 'purchased')} className="text-blue-600 hover:underline text-xs">Purchased</button>
+                        )}
+                        <button type="button" onClick={() => deleteBr(r.id)} className="text-red-600 hover:underline text-xs">Del</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════ ENTRY DETAIL ═══════════════ */}
+      {subTab === 'entry-detail' && detailEntry && (
+        <div className="space-y-4">
+          <button type="button" onClick={() => { setSubTab('journal'); setSelectedEntry(null); setDetailEntry(null); }} className="text-sm text-brand-600 hover:underline flex items-center gap-1">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+            Back to journal
+          </button>
+
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <div className="flex items-start justify-between flex-wrap gap-2">
+              <div>
+                <h3 className="text-lg font-semibold text-surface-900">{detailEntry.entry_number}</h3>
+                <p className="text-sm text-surface-500">{fmtDate(detailEntry.entry_date)}</p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`px-3 py-1 rounded-full text-sm font-medium ${STATUS_STYLES[detailEntry.status] || ''}`}>{detailEntry.status}</span>
+                {detailEntry.status === 'draft' && <button type="button" onClick={() => updateEntryStatus(detailEntry.id, 'pending')} className="px-3 py-1 text-xs rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200">Submit</button>}
+                {detailEntry.status === 'pending' && <button type="button" onClick={() => updateEntryStatus(detailEntry.id, 'approved')} className="px-3 py-1 text-xs rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200">Approve</button>}
+                {detailEntry.status === 'pending' && <button type="button" onClick={() => { const reason = prompt('Rejection reason:'); if (reason) emApi.entries.update(detailEntry.id, { status: 'rejected', rejection_reason: reason }).then(() => { loadEntries(); loadEntryDetail(detailEntry.id); }); }} className="px-3 py-1 text-xs rounded-lg bg-red-100 text-red-700 hover:bg-red-200">Reject</button>}
+                {detailEntry.status === 'approved' && <button type="button" onClick={() => updateEntryStatus(detailEntry.id, 'paid')} className="px-3 py-1 text-xs rounded-lg bg-blue-100 text-blue-700 hover:bg-blue-200">Mark paid</button>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 text-sm">
+              <div><p className="text-xs text-surface-500">Type</p><p className="font-medium">{detailEntry.entry_type}</p></div>
+              <div><p className="text-xs text-surface-500">Category</p><p className="font-medium">{detailEntry.category_name || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Department</p><p className="font-medium">{detailEntry.department_name || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Amount</p><p className="font-medium tabular-nums">{fmtZar(detailEntry.amount)}</p></div>
+              <div><p className="text-xs text-surface-500">Tax</p><p className="font-medium tabular-nums">{fmtZar(detailEntry.tax_amount)}</p></div>
+              <div><p className="text-xs text-surface-500">Total</p><p className="font-semibold tabular-nums text-brand-700">{fmtZar(detailEntry.total_amount || detailEntry.amount)}</p></div>
+              <div><p className="text-xs text-surface-500">Payment method</p><p className="font-medium">{(detailEntry.payment_method || '—').replace(/_/g, ' ')}</p></div>
+              <div><p className="text-xs text-surface-500">Vendor</p><p className="font-medium">{detailEntry.vendor_supplier || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Reference #</p><p className="font-medium">{detailEntry.reference_number || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Receipt #</p><p className="font-medium">{detailEntry.receipt_number || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Budgeted</p><p className="font-medium">{detailEntry.is_budgeted ? 'Yes' : 'No'}</p></div>
+              <div><p className="text-xs text-surface-500">Recorded by</p><p className="font-medium">{detailEntry.recorded_by_name || '—'}</p></div>
+            </div>
+
+            {detailEntry.description && (
+              <div><p className="text-xs text-surface-500 mb-1">Description</p><p className="text-sm text-surface-700 whitespace-pre-wrap">{detailEntry.description}</p></div>
+            )}
+            {detailEntry.notes && (
+              <div><p className="text-xs text-surface-500 mb-1">Notes</p><p className="text-sm text-surface-700 whitespace-pre-wrap">{detailEntry.notes}</p></div>
+            )}
+            {detailEntry.tags && (
+              <div>
+                <p className="text-xs text-surface-500 mb-1">Tags</p>
+                <div className="flex flex-wrap gap-1">{detailEntry.tags.split(',').map((t, i) => <span key={i} className="px-2 py-0.5 bg-surface-100 rounded-full text-xs text-surface-600">{t.trim()}</span>)}</div>
+              </div>
+            )}
+            {detailEntry.rejection_reason && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg"><p className="text-xs text-red-700 font-medium">Rejection reason:</p><p className="text-sm text-red-600">{detailEntry.rejection_reason}</p></div>
+            )}
+          </div>
+
+          {/* Attachments */}
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-3">
+            <h4 className="text-sm font-semibold text-surface-900">Attachments</h4>
+            {detailAttachments.length > 0 ? (
+              <div className="space-y-2">
+                {detailAttachments.map((a) => (
+                  <div key={a.id} className="flex items-center gap-3 p-2 bg-surface-50 rounded-lg">
+                    <svg className="w-5 h-5 text-surface-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                    <span className="text-sm text-surface-700 flex-1 truncate">{a.file_name}</span>
+                    <button type="button" onClick={() => handleDeleteAttachment(a.id)} className="text-xs text-red-600 hover:underline">Remove</button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="text-sm text-surface-500">No attachments</p>}
+            <div>
+              <label className="inline-flex items-center gap-2 px-3 py-2 border border-surface-300 rounded-lg text-sm text-surface-700 hover:bg-surface-50 cursor-pointer">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                Upload files
+                <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) handleUploadAttachments(detailEntry.id, e.target.files); e.target.value = ''; }} />
+              </label>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => editEntry(detailEntry)} className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700">Edit entry</button>
+            <button type="button" onClick={() => deleteEntry(detailEntry.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">Delete</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ManagePageTabAccess({ pageKey, pageLabel, allTabIds, tabLabels, permissions, setPermissions, users, setUsers }) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(null);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([tabAccessApi.permissions(pageKey), usersApi.list({ limit: 200 })])
+      .then(([permRes, usersRes]) => {
+        setPermissions(permRes.permissions || []);
+        setUsers(usersRes.users || []);
+      })
+      .catch(() => setPermissions([]))
+      .finally(() => setLoading(false));
+  }, [pageKey]);
+
+  const handleGrant = (userId, tabId) => {
+    setSaving(`${userId}-${tabId}`);
+    tabAccessApi.grant(pageKey, userId, tabId)
+      .then(() => {
+        setPermissions((prev) => {
+          const existing = prev.find((p) => p.user_id === userId);
+          if (existing) return prev.map((p) => p.user_id === userId ? { ...p, tabs: [...(p.tabs || []), tabId] } : p);
+          const u = (users || []).find((u) => u.id === userId);
+          return [...prev, { user_id: userId, full_name: u?.full_name || '', email: u?.email || '', tabs: [tabId] }];
+        });
+      })
+      .finally(() => setSaving(null));
+  };
+
+  const handleRevoke = (userId, tabId) => {
+    setSaving(`${userId}-${tabId}`);
+    tabAccessApi.revoke(pageKey, userId, tabId)
+      .then(() => {
+        setPermissions((prev) => prev.map((p) => p.user_id === userId ? { ...p, tabs: (p.tabs || []).filter((t) => t !== tabId) } : p));
+      })
+      .finally(() => setSaving(null));
+  };
+
+  const handleGrantAll = (userId) => {
+    setSaving(`${userId}-all`);
+    tabAccessApi.bulkSet(pageKey, userId, allTabIds)
+      .then(() => {
+        setPermissions((prev) => {
+          const existing = prev.find((p) => p.user_id === userId);
+          if (existing) return prev.map((p) => p.user_id === userId ? { ...p, tabs: [...allTabIds] } : p);
+          const u = (users || []).find((u) => u.id === userId);
+          return [...prev, { user_id: userId, full_name: u?.full_name || '', email: u?.email || '', tabs: [...allTabIds] }];
+        });
+      })
+      .finally(() => setSaving(null));
+  };
+
+  const handleRevokeAll = (userId) => {
+    setSaving(`${userId}-all`);
+    tabAccessApi.bulkSet(pageKey, userId, [])
+      .then(() => {
+        setPermissions((prev) => prev.map((p) => p.user_id === userId ? { ...p, tabs: [] } : p));
+      })
+      .finally(() => setSaving(null));
+  };
+
+  if (loading) return <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" /></div>;
+
+  const permByUser = (permissions || []).reduce((acc, p) => { acc[p.user_id] = p; return acc; }, {});
+  const filtered = search
+    ? (users || []).filter((u) => (u.full_name || '').toLowerCase().includes(search.toLowerCase()) || (u.email || '').toLowerCase().includes(search.toLowerCase()))
+    : (users || []);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-surface-900">Manage tab access</h2>
+        <p className="text-sm text-surface-500 mt-1">Control which tabs each user can see on the <strong>{pageLabel}</strong> page. Only super admins can manage this.</p>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search users..." className="border border-surface-300 rounded-lg px-3 py-2 text-sm w-64" />
+        <span className="text-xs text-surface-500">{filtered.length} user{filtered.length !== 1 ? 's' : ''}</span>
+      </div>
+
+      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-surface-200 bg-surface-50">
+                <th className="px-4 py-3 text-left font-medium text-surface-700 sticky left-0 bg-surface-50 z-10 min-w-[180px]">User</th>
+                <th className="px-3 py-3 text-center font-medium text-surface-700 whitespace-nowrap min-w-[80px]">All</th>
+                {allTabIds.map((tabId) => (
+                  <th key={tabId} className="px-3 py-3 text-center font-medium text-surface-600 whitespace-nowrap text-xs">
+                    {(tabLabels[tabId] || tabId).length > 16 ? (tabLabels[tabId] || tabId).slice(0, 14) + '…' : (tabLabels[tabId] || tabId)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((u) => {
+                const grants = permByUser[u.id]?.tabs || [];
+                const allGranted = allTabIds.every((t) => grants.includes(t));
+                const noneGranted = grants.length === 0;
+                return (
+                  <tr key={u.id} className="border-b border-surface-100 hover:bg-surface-50/50">
+                    <td className="px-4 py-2.5 sticky left-0 bg-white z-10">
+                      <span className="font-medium text-surface-900 block">{u.full_name || u.email}</span>
+                      <span className="text-surface-400 text-xs block">{u.email}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center">
+                      {allGranted ? (
+                        <button type="button" onClick={() => handleRevokeAll(u.id)} disabled={saving?.startsWith(u.id)} className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50">Revoke all</button>
+                      ) : (
+                        <button type="button" onClick={() => handleGrantAll(u.id)} disabled={saving?.startsWith(u.id)} className="text-[10px] px-2 py-1 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50">Grant all</button>
+                      )}
+                    </td>
+                    {allTabIds.map((tabId) => {
+                      const has = grants.includes(tabId);
+                      const key = `${u.id}-${tabId}`;
+                      return (
+                        <td key={key} className="px-3 py-2.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => has ? handleRevoke(u.id, tabId) : handleGrant(u.id, tabId)}
+                            disabled={saving === key || saving === `${u.id}-all`}
+                            className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors mx-auto ${
+                              has
+                                ? 'bg-brand-500 text-white hover:bg-brand-600'
+                                : 'bg-surface-100 text-surface-400 hover:bg-surface-200'
+                            } disabled:opacity-50`}
+                            title={has ? `Revoke ${tabLabels[tabId] || tabId}` : `Grant ${tabLabels[tabId] || tabId}`}
+                          >
+                            {saving === key ? (
+                              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                            ) : has ? (
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                            ) : null}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {filtered.length === 0 && <p className="p-6 text-center text-surface-500 text-sm">No users found.</p>}
+      </div>
+
+      <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
+        <p className="text-xs text-amber-800"><strong>Note:</strong> Users with no specific grants will see all tabs by default. Once you grant at least one tab to a user, they will only see the tabs you have granted. Super admins always have access to all tabs.</p>
+      </div>
+    </div>
+  );
+}
+
+function DepartmentBudgetTab() {
+  const [subTab, setSubTab] = useState('dashboard');
+  const [budgets, setBudgets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [summaryData, setSummaryData] = useState(null);
+
+  // filters
+  const [filterYear, setFilterYear] = useState('');
+  const [filterDept, setFilterDept] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+
+  // create form
+  const emptyForm = { department_name: '', fiscal_year: new Date().getFullYear(), fiscal_period: 'annual', period_start: '', period_end: '', total_budget: '', currency: 'ZAR', notes: '' };
+  const [createForm, setCreateForm] = useState({ ...emptyForm });
+  const [creating, setCreating] = useState(false);
+
+  // category form
+  const [catForm, setCatForm] = useState({ category_name: '', allocated_amount: '', notes: '' });
+  const [catSaving, setCatSaving] = useState(false);
+  const [editingCatId, setEditingCatId] = useState(null);
+
+  // line item form
+  const [liForm, setLiForm] = useState({ category_id: '', description: '', estimated_amount: '', actual_amount: '', vendor: '', month: '', quarter: '', notes: '' });
+  const [liSaving, setLiSaving] = useState(false);
+  const [editingLiId, setEditingLiId] = useState(null);
+
+  // transaction form
+  const [txForm, setTxForm] = useState({ category_id: '', line_item_id: '', transaction_date: '', amount: '', transaction_type: 'expense', reference: '', description: '' });
+  const [txSaving, setTxSaving] = useState(false);
+
+  const loadBudgets = useCallback(() => {
+    setLoading(true);
+    const params = {};
+    if (filterYear) params.year = filterYear;
+    if (filterDept) params.department = filterDept;
+    if (filterStatus) params.status = filterStatus;
+    accountingApi.budgets.list(params)
+      .then((d) => setBudgets(d.budgets || []))
+      .catch(() => setBudgets([]))
+      .finally(() => setLoading(false));
+  }, [filterYear, filterDept, filterStatus]);
+
+  useEffect(() => { loadBudgets(); }, [loadBudgets]);
+
+  const loadDetail = useCallback((id) => {
+    setDetailLoading(true);
+    Promise.all([accountingApi.budgets.get(id), accountingApi.budgets.summary(id)])
+      .then(([det, sum]) => {
+        setDetail(det);
+        setSummaryData(sum);
+      })
+      .catch(() => { setDetail(null); setSummaryData(null); })
+      .finally(() => setDetailLoading(false));
+  }, []);
+
+  const openBudget = (id) => {
+    setSelectedId(id);
+    setSubTab('detail');
+    loadDetail(id);
+  };
+
+  // summary cards
+  const totalBudget = budgets.reduce((s, b) => s + Number(b.total_budget || 0), 0);
+  const totalAllocated = budgets.reduce((s, b) => s + Number(b.total_allocated || 0), 0);
+  const totalSpent = budgets.reduce((s, b) => s + Number(b.total_spent || 0), 0);
+  const totalRemaining = totalBudget - totalSpent;
+
+  const uniqueYears = [...new Set(budgets.map((b) => b.fiscal_year))].sort((a, b) => b - a);
+  const uniqueDepts = [...new Set(budgets.map((b) => b.department_name).filter(Boolean))].sort();
+
+  /* ── Create budget ── */
+  const handleCreate = (e) => {
+    e.preventDefault();
+    setCreating(true);
+    accountingApi.budgets.create({ ...createForm, total_budget: Number(createForm.total_budget) || 0 })
+      .then(() => {
+        setCreateForm({ ...emptyForm });
+        setSubTab('dashboard');
+        loadBudgets();
+      })
+      .catch(() => {})
+      .finally(() => setCreating(false));
+  };
+
+  /* ── Status actions ── */
+  const updateStatus = (status) => {
+    if (!selectedId) return;
+    accountingApi.budgets.update(selectedId, { status })
+      .then(() => { loadDetail(selectedId); loadBudgets(); })
+      .catch(() => {});
+  };
+
+  /* ── Categories ── */
+  const handleSaveCat = (e) => {
+    e.preventDefault();
+    setCatSaving(true);
+    const body = { ...catForm, allocated_amount: Number(catForm.allocated_amount) || 0 };
+    const promise = editingCatId
+      ? accountingApi.budgets.updateCategory(editingCatId, body)
+      : accountingApi.budgets.addCategory(selectedId, body);
+    promise
+      .then(() => { setCatForm({ category_name: '', allocated_amount: '', notes: '' }); setEditingCatId(null); loadDetail(selectedId); })
+      .catch(() => {})
+      .finally(() => setCatSaving(false));
+  };
+
+  const editCat = (cat) => {
+    setEditingCatId(cat.id);
+    setCatForm({ category_name: cat.category_name || '', allocated_amount: cat.allocated_amount ?? '', notes: cat.notes || '' });
+  };
+
+  const deleteCat = (id) => {
+    if (!window.confirm('Delete this category?')) return;
+    accountingApi.budgets.removeCategory(id)
+      .then(() => loadDetail(selectedId))
+      .catch(() => {});
+  };
+
+  /* ── Line items ── */
+  const handleSaveLi = (e) => {
+    e.preventDefault();
+    setLiSaving(true);
+    const body = { ...liForm, estimated_amount: Number(liForm.estimated_amount) || 0, actual_amount: Number(liForm.actual_amount) || 0 };
+    const promise = editingLiId
+      ? accountingApi.budgets.updateLineItem(editingLiId, body)
+      : accountingApi.budgets.addLineItem(selectedId, body);
+    promise
+      .then(() => { setLiForm({ category_id: '', description: '', estimated_amount: '', actual_amount: '', vendor: '', month: '', quarter: '', notes: '' }); setEditingLiId(null); loadDetail(selectedId); })
+      .catch(() => {})
+      .finally(() => setLiSaving(false));
+  };
+
+  const editLi = (li) => {
+    setEditingLiId(li.id);
+    setLiForm({ category_id: li.category_id || '', description: li.description || '', estimated_amount: li.estimated_amount ?? '', actual_amount: li.actual_amount ?? '', vendor: li.vendor || '', month: li.month || '', quarter: li.quarter || '', notes: li.notes || '' });
+  };
+
+  const deleteLi = (id) => {
+    if (!window.confirm('Delete this line item?')) return;
+    accountingApi.budgets.removeLineItem(id)
+      .then(() => loadDetail(selectedId))
+      .catch(() => {});
+  };
+
+  /* ── Transactions ── */
+  const handleSaveTx = (e) => {
+    e.preventDefault();
+    setTxSaving(true);
+    accountingApi.budgets.addTransaction(selectedId, { ...txForm, amount: Number(txForm.amount) || 0 })
+      .then(() => { setTxForm({ category_id: '', line_item_id: '', transaction_date: '', amount: '', transaction_type: 'expense', reference: '', description: '' }); loadDetail(selectedId); })
+      .catch(() => {})
+      .finally(() => setTxSaving(false));
+  };
+
+  const deleteTx = (id) => {
+    if (!window.confirm('Delete this transaction?')) return;
+    accountingApi.budgets.removeTransaction(id)
+      .then(() => loadDetail(selectedId))
+      .catch(() => {});
+  };
+
+  /* ── Detail helpers ── */
+  const categories = detail?.categories || [];
+  const lineItems = detail?.lineItems || [];
+  const transactions = detail?.transactions || [];
+  const budget = detail?.budget || {};
+  const bTotal = Number(budget.total_budget || 0);
+  const bAllocated = categories.reduce((s, c) => s + Number(c.allocated_amount || 0), 0);
+  const bSpent = transactions.reduce((s, t) => s + (t.transaction_type === 'expense' ? Number(t.amount || 0) : 0), 0);
+  const catSummary = summaryData?.categories || [];
+  const monthlySpend = summaryData?.monthlySpend || [];
+
+  const subTabs = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'create', label: 'Create budget' },
+    ...(selectedId ? [{ id: 'detail', label: `Budget: ${budget.department_name || '…'}` }] : []),
+  ];
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold text-surface-900">Department budget</h2>
+
+      {/* Sub-tab bar */}
+      <div className="flex items-center gap-1 border-b border-surface-200 overflow-x-auto">
+        {subTabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setSubTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+              subTab === t.id
+                ? 'border-brand-600 text-brand-700'
+                : 'border-transparent text-surface-500 hover:text-surface-700 hover:border-surface-300'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══════════════ DASHBOARD ═══════════════ */}
+      {subTab === 'dashboard' && (
+        <div className="space-y-5">
+          {/* Summary cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+              { label: 'Total budget', value: totalBudget, color: 'text-surface-900' },
+              { label: 'Total allocated', value: totalAllocated, color: 'text-blue-700' },
+              { label: 'Total spent', value: totalSpent, color: 'text-amber-700' },
+              { label: 'Remaining', value: totalRemaining, color: totalRemaining < 0 ? 'text-red-700' : 'text-emerald-700' },
+            ].map((c) => (
+              <div key={c.label} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+                <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{c.label}</p>
+                <p className={`text-xl font-semibold mt-1 tabular-nums ${c.color}`}>{formatZarDisplay(c.value)}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Filters */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs font-medium text-surface-600 mb-1">Year</label>
+              <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm text-surface-900">
+                <option value="">All years</option>
+                {uniqueYears.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-600 mb-1">Department</label>
+              <select value={filterDept} onChange={(e) => setFilterDept(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm text-surface-900">
+                <option value="">All departments</option>
+                {uniqueDepts.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-surface-600 mb-1">Status</label>
+              <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm text-surface-900">
+                <option value="">All statuses</option>
+                {['draft', 'pending', 'approved', 'active', 'closed', 'cancelled'].map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Budget list */}
+          {loading ? (
+            <div className="text-surface-500">Loading…</div>
+          ) : budgets.length === 0 ? (
+            <div className="rounded-lg border border-surface-200 bg-surface-50 p-8 text-center text-surface-500">
+              No budgets found. Create your first department budget to get started.
+            </div>
+          ) : (
+            <div className="border border-surface-200 rounded-lg bg-white shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-surface-50 border-b border-surface-200 text-left">
+                      <th className="px-4 py-3 font-medium text-surface-600">Department</th>
+                      <th className="px-4 py-3 font-medium text-surface-600">Year</th>
+                      <th className="px-4 py-3 font-medium text-surface-600">Period</th>
+                      <th className="px-4 py-3 font-medium text-surface-600 text-right">Budget</th>
+                      <th className="px-4 py-3 font-medium text-surface-600 text-right">Spent</th>
+                      <th className="px-4 py-3 font-medium text-surface-600 w-36">Utilisation</th>
+                      <th className="px-4 py-3 font-medium text-surface-600">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-100">
+                    {budgets.map((b) => {
+                      const spent = Number(b.total_spent || 0);
+                      const tot = Number(b.total_budget || 0);
+                      return (
+                        <tr
+                          key={b.id}
+                          onClick={() => openBudget(b.id)}
+                          className="hover:bg-surface-50 cursor-pointer transition-colors"
+                        >
+                          <td className="px-4 py-3 font-medium text-surface-900">{b.department_name}</td>
+                          <td className="px-4 py-3 text-surface-700">{b.fiscal_year}</td>
+                          <td className="px-4 py-3 text-surface-600 capitalize">{b.fiscal_period}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-surface-900">{formatZarDisplay(tot)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums text-surface-700">{formatZarDisplay(spent)}</td>
+                          <td className="px-4 py-3"><BudgetUtilBar spent={spent} total={tot} /></td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${BUDGET_STATUS_STYLES[b.status] || BUDGET_STATUS_STYLES.draft}`}>
+                              {b.status || 'draft'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════ CREATE ═══════════════ */}
+      {subTab === 'create' && (
+        <form onSubmit={handleCreate} className="max-w-2xl space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Department name</label>
+            <input value={createForm.department_name} onChange={(e) => setCreateForm((f) => ({ ...f, department_name: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" placeholder="e.g. Engineering" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Fiscal year</label>
+              <input type="number" value={createForm.fiscal_year} onChange={(e) => setCreateForm((f) => ({ ...f, fiscal_year: Number(e.target.value) }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Fiscal period</label>
+              <select value={createForm.fiscal_period} onChange={(e) => setCreateForm((f) => ({ ...f, fiscal_period: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900">
+                <option value="annual">Annual</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Period start</label>
+              <input type="date" value={createForm.period_start} onChange={(e) => setCreateForm((f) => ({ ...f, period_start: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">Period end</label>
+              <input type="date" value={createForm.period_end} onChange={(e) => setCreateForm((f) => ({ ...f, period_end: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Total budget (ZAR)</label>
+            <input type="number" step="0.01" min="0" value={createForm.total_budget} onChange={(e) => setCreateForm((f) => ({ ...f, total_budget: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" placeholder="0.00" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-surface-700 mb-1">Notes</label>
+            <textarea value={createForm.notes} onChange={(e) => setCreateForm((f) => ({ ...f, notes: e.target.value }))} rows={3} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900" placeholder="Optional notes…" />
+          </div>
+          <button type="submit" disabled={creating} className="px-4 py-2 rounded-lg bg-brand-600 text-white font-medium hover:bg-brand-700 disabled:opacity-50">
+            {creating ? 'Creating…' : 'Create budget'}
+          </button>
+        </form>
+      )}
+
+      {/* ═══════════════ DETAIL ═══════════════ */}
+      {subTab === 'detail' && (
+        <div className="space-y-6">
+          {detailLoading ? (
+            <div className="text-surface-500">Loading budget…</div>
+          ) : !detail ? (
+            <div className="text-surface-500">Budget not found.</div>
+          ) : (
+            <>
+              {/* Header */}
+              <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-base font-semibold text-surface-900">{budget.department_name}</h3>
+                    <p className="text-sm text-surface-600 mt-0.5">
+                      FY {budget.fiscal_year} · {budget.fiscal_period} · {formatDate(budget.period_start)} – {formatDate(budget.period_end)}
+                    </p>
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize mt-2 ${BUDGET_STATUS_STYLES[budget.status] || BUDGET_STATUS_STYLES.draft}`}>
+                      {budget.status || 'draft'}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-surface-500 uppercase tracking-wider">Total budget</p>
+                    <p className="text-xl font-semibold text-surface-900 tabular-nums">{formatZarDisplay(bTotal)}</p>
+                  </div>
+                </div>
+
+                {/* Summary row */}
+                <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-surface-100">
+                  <div>
+                    <p className="text-xs text-surface-500">Allocated</p>
+                    <p className="text-sm font-semibold text-blue-700 tabular-nums">{formatZarDisplay(bAllocated)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-surface-500">Spent</p>
+                    <p className="text-sm font-semibold text-amber-700 tabular-nums">{formatZarDisplay(bSpent)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-surface-500">Remaining</p>
+                    <p className={`text-sm font-semibold tabular-nums ${bTotal - bSpent < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatZarDisplay(bTotal - bSpent)}</p>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <BudgetUtilBar spent={bSpent} total={bTotal} />
+                </div>
+
+                {/* Status actions */}
+                <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-surface-100">
+                  {budget.status === 'draft' && (
+                    <button type="button" onClick={() => updateStatus('pending')} className="px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-800 text-sm font-medium hover:bg-amber-100">
+                      Submit for approval
+                    </button>
+                  )}
+                  {budget.status === 'pending' && (
+                    <button type="button" onClick={() => updateStatus('approved')} className="px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-300 text-blue-800 text-sm font-medium hover:bg-blue-100">
+                      Approve
+                    </button>
+                  )}
+                  {budget.status === 'approved' && (
+                    <button type="button" onClick={() => updateStatus('active')} className="px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-800 text-sm font-medium hover:bg-emerald-100">
+                      Activate
+                    </button>
+                  )}
+                  {['draft', 'pending', 'approved', 'active'].includes(budget.status) && (
+                    <button type="button" onClick={() => updateStatus('closed')} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm font-medium hover:bg-surface-50">
+                      Close
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { if (window.confirm('Delete this budget?')) accountingApi.budgets.remove(selectedId).then(() => { setSelectedId(null); setDetail(null); setSubTab('dashboard'); loadBudgets(); }); }}
+                    className="px-3 py-1.5 rounded-lg border border-red-300 text-red-700 text-sm font-medium hover:bg-red-50"
+                  >
+                    Delete budget
+                  </button>
+                </div>
+              </div>
+
+              {/* ── Categories ── */}
+              <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                <div className="px-5 py-3 bg-surface-50 border-b border-surface-200">
+                  <h4 className="text-sm font-semibold text-surface-800">Categories</h4>
+                </div>
+                <div className="p-5 space-y-4">
+                  <form onSubmit={handleSaveCat} className="flex flex-wrap items-end gap-3">
+                    <div className="flex-1 min-w-[160px]">
+                      <label className="block text-xs font-medium text-surface-600 mb-1">Category name</label>
+                      <input value={catForm.category_name} onChange={(e) => setCatForm((f) => ({ ...f, category_name: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="e.g. Software licences" />
+                    </div>
+                    <div className="w-40">
+                      <label className="block text-xs font-medium text-surface-600 mb-1">Allocated (ZAR)</label>
+                      <input type="number" step="0.01" min="0" value={catForm.allocated_amount} onChange={(e) => setCatForm((f) => ({ ...f, allocated_amount: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="0.00" />
+                    </div>
+                    <button type="submit" disabled={catSaving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                      {catSaving ? 'Saving…' : editingCatId ? 'Update' : 'Add'}
+                    </button>
+                    {editingCatId && (
+                      <button type="button" onClick={() => { setEditingCatId(null); setCatForm({ category_name: '', allocated_amount: '', notes: '' }); }} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">
+                        Cancel
+                      </button>
+                    )}
+                  </form>
+
+                  {/* Allocated vs total */}
+                  <div className="flex items-center gap-2 text-xs text-surface-600">
+                    <span>Allocated: {formatZarDisplay(bAllocated)} / {formatZarDisplay(bTotal)}</span>
+                    {bAllocated > bTotal && <span className="text-red-600 font-medium">Over-allocated!</span>}
+                  </div>
+
+                  {categories.length > 0 && (
+                    <div className="border border-surface-200 rounded-lg divide-y divide-surface-100 overflow-hidden">
+                      {categories.map((c) => (
+                        <div key={c.id} className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-surface-50">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-surface-900">{c.category_name}</p>
+                            <p className="text-xs text-surface-500 tabular-nums">{formatZarDisplay(Number(c.allocated_amount || 0))}</p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button type="button" onClick={() => editCat(c)} className="text-brand-600 hover:text-brand-700 text-sm font-medium">Edit</button>
+                            <button type="button" onClick={() => deleteCat(c.id)} className="text-red-600 hover:text-red-700 text-sm font-medium">Delete</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Line items ── */}
+              <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                <div className="px-5 py-3 bg-surface-50 border-b border-surface-200">
+                  <h4 className="text-sm font-semibold text-surface-800">Line items</h4>
+                </div>
+                <div className="p-5 space-y-4">
+                  <form onSubmit={handleSaveLi} className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
+                        <select value={liForm.category_id} onChange={(e) => setLiForm((f) => ({ ...f, category_id: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
+                          <option value="">Select category</option>
+                          {categories.map((c) => <option key={c.id} value={c.id}>{c.category_name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Description</label>
+                        <input value={liForm.description} onChange={(e) => setLiForm((f) => ({ ...f, description: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="Description" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Vendor</label>
+                        <input value={liForm.vendor} onChange={(e) => setLiForm((f) => ({ ...f, vendor: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="Vendor" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Estimated (ZAR)</label>
+                        <input type="number" step="0.01" min="0" value={liForm.estimated_amount} onChange={(e) => setLiForm((f) => ({ ...f, estimated_amount: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="0.00" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Actual (ZAR)</label>
+                        <input type="number" step="0.01" min="0" value={liForm.actual_amount} onChange={(e) => setLiForm((f) => ({ ...f, actual_amount: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="0.00" />
+                      </div>
+                      <div className="flex items-end">
+                        <button type="submit" disabled={liSaving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                          {liSaving ? 'Saving…' : editingLiId ? 'Update' : 'Add line item'}
+                        </button>
+                        {editingLiId && (
+                          <button type="button" onClick={() => { setEditingLiId(null); setLiForm({ category_id: '', description: '', estimated_amount: '', actual_amount: '', vendor: '', month: '', quarter: '', notes: '' }); }} className="ml-2 px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </form>
+
+                  {lineItems.length > 0 && (
+                    <div className="border border-surface-200 rounded-lg overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-surface-50 border-b border-surface-200 text-left">
+                              <th className="px-4 py-2 font-medium text-surface-600">Description</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Category</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Vendor</th>
+                              <th className="px-4 py-2 font-medium text-surface-600 text-right">Estimated</th>
+                              <th className="px-4 py-2 font-medium text-surface-600 text-right">Actual</th>
+                              <th className="px-4 py-2 font-medium text-surface-600 text-right">Variance</th>
+                              <th className="px-4 py-2 font-medium text-surface-600 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-surface-100">
+                            {lineItems.map((li) => {
+                              const est = Number(li.estimated_amount || 0);
+                              const act = Number(li.actual_amount || 0);
+                              const variance = est - act;
+                              const catName = categories.find((c) => c.id === li.category_id)?.category_name || '—';
+                              return (
+                                <tr key={li.id} className="hover:bg-surface-50">
+                                  <td className="px-4 py-2 text-surface-900">{li.description}</td>
+                                  <td className="px-4 py-2 text-surface-600">{catName}</td>
+                                  <td className="px-4 py-2 text-surface-600">{li.vendor || '—'}</td>
+                                  <td className="px-4 py-2 text-right tabular-nums text-surface-700">{formatZarDisplay(est)}</td>
+                                  <td className="px-4 py-2 text-right tabular-nums text-surface-700">{formatZarDisplay(act)}</td>
+                                  <td className={`px-4 py-2 text-right tabular-nums font-medium ${variance < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatZarDisplay(variance)}</td>
+                                  <td className="px-4 py-2 text-right">
+                                    <button type="button" onClick={() => editLi(li)} className="text-brand-600 hover:text-brand-700 text-sm font-medium mr-2">Edit</button>
+                                    <button type="button" onClick={() => deleteLi(li.id)} className="text-red-600 hover:text-red-700 text-sm font-medium">Delete</button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Transactions ── */}
+              <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                <div className="px-5 py-3 bg-surface-50 border-b border-surface-200">
+                  <h4 className="text-sm font-semibold text-surface-800">Transactions</h4>
+                </div>
+                <div className="p-5 space-y-4">
+                  <form onSubmit={handleSaveTx} className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Date</label>
+                        <input type="date" value={txForm.transaction_date} onChange={(e) => setTxForm((f) => ({ ...f, transaction_date: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Amount (ZAR)</label>
+                        <input type="number" step="0.01" min="0" value={txForm.amount} onChange={(e) => setTxForm((f) => ({ ...f, amount: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="0.00" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Type</label>
+                        <select value={txForm.transaction_type} onChange={(e) => setTxForm((f) => ({ ...f, transaction_type: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
+                          <option value="expense">Expense</option>
+                          <option value="income">Income</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
+                        <select value={txForm.category_id} onChange={(e) => setTxForm((f) => ({ ...f, category_id: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
+                          <option value="">Select category</option>
+                          {categories.map((c) => <option key={c.id} value={c.id}>{c.category_name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Reference</label>
+                        <input value={txForm.reference} onChange={(e) => setTxForm((f) => ({ ...f, reference: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="INV-001" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Description</label>
+                        <input value={txForm.description} onChange={(e) => setTxForm((f) => ({ ...f, description: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="Description" />
+                      </div>
+                    </div>
+                    <button type="submit" disabled={txSaving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                      {txSaving ? 'Recording…' : 'Record transaction'}
+                    </button>
+                  </form>
+
+                  {transactions.length > 0 && (
+                    <div className="border border-surface-200 rounded-lg overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-surface-50 border-b border-surface-200 text-left">
+                              <th className="px-4 py-2 font-medium text-surface-600">Date</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Type</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Reference</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Description</th>
+                              <th className="px-4 py-2 font-medium text-surface-600 text-right">Amount</th>
+                              <th className="px-4 py-2 font-medium text-surface-600 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-surface-100">
+                            {transactions.map((tx) => (
+                              <tr key={tx.id} className="hover:bg-surface-50">
+                                <td className="px-4 py-2 text-surface-700">{formatDate(tx.transaction_date)}</td>
+                                <td className="px-4 py-2">
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${tx.transaction_type === 'expense' ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                                    {tx.transaction_type}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-2 text-surface-600">{tx.reference || '—'}</td>
+                                <td className="px-4 py-2 text-surface-600">{tx.description || '—'}</td>
+                                <td className="px-4 py-2 text-right tabular-nums text-surface-900">{formatZarDisplay(Number(tx.amount || 0))}</td>
+                                <td className="px-4 py-2 text-right">
+                                  <button type="button" onClick={() => deleteTx(tx.id)} className="text-red-600 hover:text-red-700 text-sm font-medium">Delete</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Summary panel ── */}
+              <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+                <div className="px-5 py-3 bg-surface-50 border-b border-surface-200">
+                  <h4 className="text-sm font-semibold text-surface-800">Budget summary</h4>
+                </div>
+                <div className="p-5 space-y-6">
+                  {/* Category breakdown */}
+                  {catSummary.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-3">Category breakdown</p>
+                      <div className="space-y-3">
+                        {catSummary.map((cs) => {
+                          const alloc = Number(cs.allocated_amount || 0);
+                          const spent = Number(cs.total_spent || 0);
+                          const pct = alloc > 0 ? Math.min((spent / alloc) * 100, 100) : 0;
+                          return (
+                            <div key={cs.id || cs.category_name}>
+                              <div className="flex justify-between text-sm mb-1">
+                                <span className="text-surface-800 font-medium">{cs.category_name}</span>
+                                <span className="text-surface-600 tabular-nums">{formatZarDisplay(spent)} / {formatZarDisplay(alloc)}</span>
+                              </div>
+                              <div className="h-2 rounded-full bg-surface-200 overflow-hidden">
+                                <div className={`h-full rounded-full transition-all ${utilBarColor(pct)}`} style={{ width: `${pct}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Monthly spend */}
+                  {monthlySpend.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-3">Monthly spend</p>
+                      <div className="flex items-end gap-1 h-32">
+                        {(() => {
+                          const maxVal = Math.max(...monthlySpend.map((m) => Number(m.total || 0)), 1);
+                          return monthlySpend.map((m) => {
+                            const val = Number(m.total || 0);
+                            const h = Math.max((val / maxVal) * 100, 2);
+                            return (
+                              <div key={m.month} className="flex-1 flex flex-col items-center gap-1">
+                                <span className="text-[10px] text-surface-500 tabular-nums">{formatZarDisplay(val)}</span>
+                                <div className="w-full rounded-t bg-brand-500" style={{ height: `${h}%` }} />
+                                <span className="text-[10px] text-surface-500">{m.month}</span>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Overall utilisation */}
+                  <div className="pt-2 border-t border-surface-100">
+                    <div className="flex justify-between text-sm mb-2">
+                      <span className="text-surface-700 font-medium">Overall utilisation</span>
+                      <span className={`font-semibold tabular-nums ${bTotal > 0 && (bSpent / bTotal) * 100 >= 90 ? 'text-red-700' : bTotal > 0 && (bSpent / bTotal) * 100 >= 70 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                        {bTotal > 0 ? ((bSpent / bTotal) * 100).toFixed(1) : '0.0'}%
+                      </span>
+                    </div>
+                    <BudgetUtilBar spent={bSpent} total={bTotal} />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AccountingManagement() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('accounting-mgmt');
   const [activeTab, setActiveTab] = useState(NAV_SECTIONS[0].items[0].id);
+  const isSuperAdmin = user?.role === 'super_admin';
+  const [allowedTabs, setAllowedTabs] = useState([]);
+  const [tabAccessLoading, setTabAccessLoading] = useState(true);
+  const [permissions, setPermissions] = useState([]);
+  const [tabAccessUsers, setTabAccessUsers] = useState([]);
+
+  useEffect(() => {
+    tabAccessApi.myTabs('accounting')
+      .then((d) => setAllowedTabs(d.tabs || []))
+      .catch(() => setAllowedTabs([]))
+      .finally(() => setTabAccessLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (allowedTabs.length > 0 && activeTab !== 'manage-tab-access' && !allowedTabs.includes(activeTab)) {
+      setActiveTab(allowedTabs[0]);
+    }
+  }, [allowedTabs]);
+
   useAutoHideNavAfterTabChange(activeTab);
+
+  const filteredNavSections = NAV_SECTIONS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => allowedTabs.includes(item.id)),
+  })).filter((g) => g.items.length > 0);
+
+  const allNavItems = [
+    ...filteredNavSections.flatMap((g) => g.items),
+    ...(isSuperAdmin ? [{ id: 'manage-tab-access', label: 'Manage tab access', icon: 'settings' }] : []),
+  ];
 
   return (
     <div className="flex gap-0 w-full min-h-0 -m-4 sm:-m-6">
@@ -3642,7 +5489,7 @@ export default function AccountingManagement() {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto py-2 w-72">
-          {NAV_SECTIONS.map((group) => (
+          {[...filteredNavSections, ...(isSuperAdmin ? [{ section: 'Admin', items: [{ id: 'manage-tab-access', label: 'Manage tab access', icon: 'settings' }] }] : [])].map((group) => (
             <div key={group.section} className="mb-4">
               <p className="px-4 py-1.5 text-xs font-medium text-surface-400 uppercase tracking-wider">
                 {group.section}
@@ -3695,6 +5542,20 @@ export default function AccountingManagement() {
           {activeTab === 'purchase-orders' && <PurchaseOrdersTab />}
           {activeTab === 'statements' && <StatementsTab />}
           {activeTab === 'library' && <LibraryTab />}
+          {activeTab === 'department-budget' && <DepartmentBudgetTab />}
+          {activeTab === 'expense-management' && <ExpenseManagementTab />}
+          {activeTab === 'manage-tab-access' && isSuperAdmin && (
+            <ManagePageTabAccess
+              pageKey="accounting"
+              pageLabel="Accounting management"
+              allTabIds={NAV_SECTIONS.flatMap((g) => g.items.map((i) => i.id))}
+              tabLabels={Object.fromEntries(NAV_SECTIONS.flatMap((g) => g.items.map((i) => [i.id, i.label])))}
+              permissions={permissions}
+              setPermissions={setPermissions}
+              users={tabAccessUsers}
+              setUsers={setTabAccessUsers}
+            />
+          )}
           {activeTab === 'documentation' && <DocumentationTab />}
         </div>
       </div>

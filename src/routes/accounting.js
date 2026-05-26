@@ -2794,4 +2794,229 @@ router.get('/library/:filename', (req, res, next) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════
+//  DEPARTMENT BUDGETS
+// ════════════════════════════════════════════════════════════════════
+
+router.get('/budgets', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant' });
+    let sql = `SELECT b.*, u.full_name AS created_by_name, au.full_name AS approved_by_name,
+                (SELECT ISNULL(SUM(bc.allocated_amount), 0) FROM budget_categories bc WHERE bc.budget_id = b.id) AS allocated_total,
+                (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt WHERE bt.budget_id = b.id AND bt.transaction_type = N'expense') AS spent_total
+               FROM department_budgets b
+               LEFT JOIN users u ON u.id = b.created_by_user_id
+               LEFT JOIN users au ON au.id = b.approved_by_user_id
+               WHERE b.tenant_id = @tid`;
+    const params = { tid };
+    if (req.query.year) { sql += ` AND b.fiscal_year = @year`; params.year = Number(req.query.year); }
+    if (req.query.department) { sql += ` AND b.department_name = @dept`; params.dept = req.query.department; }
+    if (req.query.status && req.query.status !== 'all') { sql += ` AND b.[status] = @status`; params.status = req.query.status; }
+    sql += ` ORDER BY b.fiscal_year DESC, b.department_name`;
+    const r = await query(sql, params);
+    res.json({ budgets: r.recordset || [] });
+  } catch (err) { next(err); }
+});
+
+router.get('/budgets/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    const r = await query(
+      `SELECT b.*, u.full_name AS created_by_name, au.full_name AS approved_by_name
+       FROM department_budgets b
+       LEFT JOIN users u ON u.id = b.created_by_user_id
+       LEFT JOIN users au ON au.id = b.approved_by_user_id
+       WHERE b.id = @id AND b.tenant_id = @tid`,
+      { id: req.params.id, tid }
+    );
+    const budget = r.recordset?.[0];
+    if (!budget) return res.status(404).json({ error: 'Budget not found' });
+    const cats = await query(`SELECT * FROM budget_categories WHERE budget_id = @id ORDER BY sort_order, category_name`, { id: req.params.id });
+    const items = await query(`SELECT li.*, bc.category_name FROM budget_line_items li LEFT JOIN budget_categories bc ON bc.id = li.category_id WHERE li.budget_id = @id ORDER BY bc.sort_order, li.description`, { id: req.params.id });
+    const txns = await query(`SELECT t.*, u.full_name AS recorded_by_name, bc.category_name FROM budget_transactions t LEFT JOIN users u ON u.id = t.recorded_by_user_id LEFT JOIN budget_categories bc ON bc.id = t.category_id WHERE t.budget_id = @id ORDER BY t.transaction_date DESC`, { id: req.params.id });
+    res.json({ budget, categories: cats.recordset || [], lineItems: items.recordset || [], transactions: txns.recordset || [] });
+  } catch (err) { next(err); }
+});
+
+router.post('/budgets', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant' });
+    const b = req.body || {};
+    if (!b.department_name || !b.fiscal_year || !b.period_start || !b.period_end) {
+      return res.status(400).json({ error: 'department_name, fiscal_year, period_start, and period_end are required' });
+    }
+    const r = await query(
+      `INSERT INTO department_budgets (tenant_id, department_name, fiscal_year, fiscal_period, period_start, period_end, total_budget, currency, [status], notes, created_by_user_id)
+       OUTPUT INSERTED.*
+       VALUES (@tid, @dept, @year, @period, @start, @end, @total, @currency, @status, @notes, @createdBy)`,
+      {
+        tid,
+        dept: b.department_name,
+        year: Number(b.fiscal_year),
+        period: ['annual', 'quarterly', 'monthly'].includes(b.fiscal_period) ? b.fiscal_period : 'annual',
+        start: b.period_start,
+        end: b.period_end,
+        total: Number(b.total_budget) || 0,
+        currency: b.currency || 'ZAR',
+        status: 'draft',
+        notes: b.notes || null,
+        createdBy: req.user.id,
+      }
+    );
+    res.status(201).json({ budget: r.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.patch('/budgets/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    const b = req.body || {};
+    const sets = [];
+    const params = { id: req.params.id, tid };
+    const allowed = ['department_name', 'fiscal_year', 'fiscal_period', 'period_start', 'period_end', 'total_budget', 'currency', 'status', 'notes'];
+    for (const k of allowed) {
+      if (b[k] !== undefined) {
+        const pk = k.replace(/[^a-zA-Z0-9_]/g, '');
+        params[pk] = b[k];
+        sets.push(`[${k}] = @${pk}`);
+      }
+    }
+    if (b.status === 'approved') {
+      sets.push(`approved_by_user_id = @approvedBy`);
+      sets.push(`approved_at = SYSUTCDATETIME()`);
+      params.approvedBy = req.user.id;
+    }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    sets.push(`updated_at = SYSUTCDATETIME()`);
+    await query(`UPDATE department_budgets SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @tid`, params);
+    const updated = await query(`SELECT * FROM department_budgets WHERE id = @id`, { id: req.params.id });
+    res.json({ budget: updated.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.delete('/budgets/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    await query(`DELETE FROM department_budgets WHERE id = @id AND tenant_id = @tid`, { id: req.params.id, tid });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Budget categories
+router.post('/budgets/:budgetId/categories', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    if (!b.category_name) return res.status(400).json({ error: 'category_name is required' });
+    const r = await query(
+      `INSERT INTO budget_categories (budget_id, category_name, allocated_amount, sort_order, notes) OUTPUT INSERTED.* VALUES (@bid, @name, @amount, @sort, @notes)`,
+      { bid: req.params.budgetId, name: b.category_name, amount: Number(b.allocated_amount) || 0, sort: Number(b.sort_order) || 0, notes: b.notes || null }
+    );
+    res.status(201).json({ category: r.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.patch('/budgets/categories/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const sets = [];
+    const params = { id: req.params.id };
+    for (const k of ['category_name', 'allocated_amount', 'sort_order', 'notes']) {
+      if (b[k] !== undefined) { params[k] = b[k]; sets.push(`[${k}] = @${k}`); }
+    }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    await query(`UPDATE budget_categories SET ${sets.join(', ')} WHERE id = @id`, params);
+    const updated = await query(`SELECT * FROM budget_categories WHERE id = @id`, { id: req.params.id });
+    res.json({ category: updated.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.delete('/budgets/categories/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    await query(`DELETE FROM budget_categories WHERE id = @id`, { id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Budget line items
+router.post('/budgets/:budgetId/line-items', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    if (!b.description) return res.status(400).json({ error: 'description is required' });
+    const r = await query(
+      `INSERT INTO budget_line_items (budget_id, category_id, description, estimated_amount, actual_amount, vendor, [month], quarter, notes) OUTPUT INSERTED.* VALUES (@bid, @catId, @desc, @est, @actual, @vendor, @month, @quarter, @notes)`,
+      { bid: req.params.budgetId, catId: b.category_id || null, desc: b.description, est: Number(b.estimated_amount) || 0, actual: Number(b.actual_amount) || 0, vendor: b.vendor || null, month: b.month != null ? Number(b.month) : null, quarter: b.quarter != null ? Number(b.quarter) : null, notes: b.notes || null }
+    );
+    res.status(201).json({ lineItem: r.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.patch('/budgets/line-items/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const sets = [];
+    const params = { id: req.params.id };
+    for (const k of ['category_id', 'description', 'estimated_amount', 'actual_amount', 'vendor', 'month', 'quarter', 'notes']) {
+      if (b[k] !== undefined) { params[k] = b[k]; sets.push(`[${k}] = @${k}`); }
+    }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    sets.push(`updated_at = SYSUTCDATETIME()`);
+    await query(`UPDATE budget_line_items SET ${sets.join(', ')} WHERE id = @id`, params);
+    const updated = await query(`SELECT * FROM budget_line_items WHERE id = @id`, { id: req.params.id });
+    res.json({ lineItem: updated.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.delete('/budgets/line-items/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    await query(`DELETE FROM budget_line_items WHERE id = @id`, { id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Budget transactions
+router.post('/budgets/:budgetId/transactions', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    if (!b.amount || !b.transaction_date) return res.status(400).json({ error: 'amount and transaction_date are required' });
+    const r = await query(
+      `INSERT INTO budget_transactions (budget_id, category_id, line_item_id, transaction_date, amount, transaction_type, reference, description, recorded_by_user_id) OUTPUT INSERTED.* VALUES (@bid, @catId, @liId, @date, @amount, @type, @ref, @desc, @recordedBy)`,
+      { bid: req.params.budgetId, catId: b.category_id || null, liId: b.line_item_id || null, date: b.transaction_date, amount: Number(b.amount), type: ['expense', 'income', 'adjustment', 'transfer'].includes(b.transaction_type) ? b.transaction_type : 'expense', ref: b.reference || null, desc: b.description || null, recordedBy: req.user.id }
+    );
+    res.status(201).json({ transaction: r.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
+router.delete('/budgets/transactions/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    await query(`DELETE FROM budget_transactions WHERE id = @id`, { id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Budget summary/report
+router.get('/budgets/:id/summary', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    const budget = await query(`SELECT * FROM department_budgets WHERE id = @id AND tenant_id = @tid`, { id: req.params.id, tid });
+    if (!budget.recordset?.[0]) return res.status(404).json({ error: 'Budget not found' });
+    const cats = await query(
+      `SELECT bc.id, bc.category_name, bc.allocated_amount,
+              ISNULL((SELECT SUM(li.estimated_amount) FROM budget_line_items li WHERE li.category_id = bc.id), 0) AS estimated_total,
+              ISNULL((SELECT SUM(li.actual_amount) FROM budget_line_items li WHERE li.category_id = bc.id), 0) AS actual_total,
+              ISNULL((SELECT SUM(bt.amount) FROM budget_transactions bt WHERE bt.category_id = bc.id AND bt.transaction_type = N'expense'), 0) AS spent_total
+       FROM budget_categories bc WHERE bc.budget_id = @id ORDER BY bc.sort_order, bc.category_name`,
+      { id: req.params.id }
+    );
+    const monthlySpend = await query(
+      `SELECT MONTH(t.transaction_date) AS [month], SUM(t.amount) AS total
+       FROM budget_transactions t WHERE t.budget_id = @id AND t.transaction_type = N'expense'
+       GROUP BY MONTH(t.transaction_date) ORDER BY [month]`,
+      { id: req.params.id }
+    );
+    res.json({ budget: budget.recordset[0], categories: cats.recordset || [], monthlySpend: monthlySpend.recordset || [] });
+  } catch (err) { next(err); }
+});
+
 export default router;

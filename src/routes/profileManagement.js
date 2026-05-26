@@ -17,7 +17,7 @@ import {
   shiftSwapPeerDeclinedHtml,
   shiftSwapManagementDeclinedHtml,
 } from '../lib/emailTemplates.js';
-import { getManagementEmailsForTenant } from '../lib/emailRecipients.js';
+import { getManagementEmailsForTenant, getManagementEmailsForTenantAndTab } from '../lib/emailRecipients.js';
 import {
   getAppTimeZone,
   toYmdInAppZone,
@@ -810,7 +810,7 @@ router.patch('/shift-swaps/:id/peer', requirePageAccess('profile'), async (req, 
       const swap = mapSwapRow(full.recordset[0]);
       const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
       if (approve === true) {
-        const managementEmails = await getManagementEmailsForTenant(query, tenantId);
+        const managementEmails = await getManagementEmailsForTenantAndTab(query, tenantId, 'shift-swaps');
         if (managementEmails.length > 0) {
           const html = shiftSwapPendingManagementHtml({
             requesterName: swap?.requester_name,
@@ -1290,7 +1290,7 @@ router.post('/leave/applications', requirePageAccess('profile'), async (req, res
     );
     const row = ins.recordset[0];
     if (isEmailConfigured()) {
-      const managementEmails = await getManagementEmailsForTenant(query, tenantId);
+      const managementEmails = await getManagementEmailsForTenantAndTab(query, tenantId, 'leave');
       const applicantName = req.user.full_name || req.user.email || 'An employee';
       const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
       const html = leaveAppliedHtml({

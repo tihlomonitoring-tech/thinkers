@@ -65,10 +65,12 @@ function wrapNetworkError(err) {
 
 async function request(path, options = {}) {
   let res;
+  const headers = options.rawBody ? { ...options.headers } : { 'Content-Type': 'application/json', ...options.headers };
   try {
+    const { rawBody: _rb, ...rest } = options;
     res = await fetch(`${API}${path}`, {
-      ...options,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      ...rest,
+      headers,
       credentials: 'include',
     });
   } catch (err) {
@@ -1974,6 +1976,25 @@ export const accounting = {
         .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
     },
   },
+  budgets: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/budgets${q ? `?${q}` : ''}`);
+    },
+    get: (id) => acc(`/budgets/${id}`),
+    create: (body) => acc('/budgets', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/budgets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => acc(`/budgets/${id}`, { method: 'DELETE' }),
+    summary: (id) => acc(`/budgets/${id}/summary`),
+    addCategory: (budgetId, body) => acc(`/budgets/${budgetId}/categories`, { method: 'POST', body: JSON.stringify(body) }),
+    updateCategory: (id, body) => acc(`/budgets/categories/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    removeCategory: (id) => acc(`/budgets/categories/${id}`, { method: 'DELETE' }),
+    addLineItem: (budgetId, body) => acc(`/budgets/${budgetId}/line-items`, { method: 'POST', body: JSON.stringify(body) }),
+    updateLineItem: (id, body) => acc(`/budgets/line-items/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    removeLineItem: (id) => acc(`/budgets/line-items/${id}`, { method: 'DELETE' }),
+    addTransaction: (budgetId, body) => acc(`/budgets/${budgetId}/transactions`, { method: 'POST', body: JSON.stringify(body) }),
+    removeTransaction: (id) => acc(`/budgets/transactions/${id}`, { method: 'DELETE' }),
+  },
 };
 
 function trk(path, options = {}) {
@@ -2068,6 +2089,156 @@ export const quickSign = {
   documentUrl: (id, kind = 'working') => `${API}/quick-sign/${id}/document?kind=${encodeURIComponent(kind)}`,
   placements: (id) => qs(`/${id}/placements`),
   signatureImageUrl: (id) => `${API}/quick-sign/${id}/signature-image`,
+};
+
+// ─── Operator management ──────────────────────────────────────────
+const om = (path, options = {}) => request(`/operator-management${path}`, options);
+
+export const operatorManagement = {
+  schedules: {
+    list: (userId, from, to) => {
+      const p = new URLSearchParams();
+      if (userId) p.set('user_id', userId);
+      if (from) p.set('from', from);
+      if (to) p.set('to', to);
+      return om(`/schedules?${p}`);
+    },
+    listAll: (params = {}) => {
+      const p = new URLSearchParams();
+      if (params.user_id) p.set('user_id', params.user_id);
+      if (params.from) p.set('from', params.from);
+      if (params.to) p.set('to', params.to);
+      return om(`/schedules/all?${p}`);
+    },
+    create: (body) => om('/schedules', { method: 'POST', body: JSON.stringify(body) }),
+    bulkCreate: (entries) => om('/schedules/bulk', { method: 'POST', body: JSON.stringify({ entries }) }),
+    remove: (id) => om(`/schedules/${id}`, { method: 'DELETE' }),
+  },
+  deliveries: {
+    list: (userId, from, to) => {
+      const p = new URLSearchParams();
+      if (userId) p.set('user_id', userId);
+      if (from) p.set('from', from);
+      if (to) p.set('to', to);
+      return om(`/deliveries?${p}`);
+    },
+    listAll: (params = {}) => {
+      const p = new URLSearchParams();
+      if (params.user_id) p.set('user_id', params.user_id);
+      if (params.from) p.set('from', params.from);
+      if (params.to) p.set('to', params.to);
+      return om(`/deliveries/all?${p}`);
+    },
+    create: (body) => om('/deliveries', { method: 'POST', body: JSON.stringify(body) }),
+    remove: (id) => om(`/deliveries/${id}`, { method: 'DELETE' }),
+  },
+  productivity: {
+    get: (userId, days, from, to) => {
+      const p = new URLSearchParams();
+      if (userId) p.set('user_id', userId);
+      if (days) p.set('days', days);
+      if (from) p.set('from', from);
+      if (to) p.set('to', to);
+      return om(`/productivity?${p}`);
+    },
+    team: (days) => om(`/productivity/team${days ? `?days=${days}` : ''}`),
+  },
+  wages: {
+    config: (userId) => om(`/wages/config${userId ? `?user_id=${userId}` : ''}`),
+    configAll: () => om('/wages/config/all'),
+    createConfig: (body) => om('/wages/config', { method: 'POST', body: JSON.stringify(body) }),
+    payRecords: (userId) => om(`/wages/pay-records${userId ? `?user_id=${userId}` : ''}`),
+    payRecordsAll: (params = {}) => {
+      const p = new URLSearchParams();
+      if (params.user_id) p.set('user_id', params.user_id);
+      if (params.status) p.set('status', params.status);
+      return om(`/wages/pay-records/all?${p}`);
+    },
+    createPayRecord: (body) => om('/wages/pay-records', { method: 'POST', body: JSON.stringify(body) }),
+    updatePayRecord: (id, body) => om(`/wages/pay-records/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  },
+  users: () => om('/users'),
+};
+
+// ─── Expense Management ──────────────────────────────────────────
+const em = (path, options = {}) => request(`/expense-management${path}`, options);
+
+export const expenseManagement = {
+  categories: {
+    list: () => em('/categories'),
+    create: (body) => em('/categories', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => em(`/categories/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => em(`/categories/${id}`, { method: 'DELETE' }),
+  },
+  entries: {
+    list: (params = {}) => {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+      return em(`/entries?${p}`);
+    },
+    get: (id) => em(`/entries/${id}`),
+    create: (body) => em('/entries', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => em(`/entries/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => em(`/entries/${id}`, { method: 'DELETE' }),
+    uploadAttachments: (id, formData) => em(`/entries/${id}/attachments`, { method: 'POST', body: formData, rawBody: true }),
+    removeAttachment: (id) => em(`/attachments/${id}`, { method: 'DELETE' }),
+    exportPdf: (params = {}) => {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+      return `${API}/expense-management/entries/export/pdf?${p}`;
+    },
+    exportExcel: (params = {}) => {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+      return `${API}/expense-management/entries/export/excel?${p}`;
+    },
+  },
+  budgetRequests: {
+    list: (params = {}) => {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+      return em(`/budget-requests?${p}`);
+    },
+    create: (body) => em('/budget-requests', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => em(`/budget-requests/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => em(`/budget-requests/${id}`, { method: 'DELETE' }),
+  },
+  summary: (params = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+    return em(`/summary?${p}`);
+  },
+  departments: () => em('/departments'),
+  budgetsForLinking: () => em('/budgets-for-linking'),
+};
+
+// ─── Claims & Reimbursements ─────────────────────────────────────
+const clm = (path, options = {}) => request(`/claims${path}`, options);
+
+export const claims = {
+  myClaims: () => clm('/my-claims'),
+  all: (params = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+    return clm(`/all?${p}`);
+  },
+  get: (id) => clm(`/${id}`),
+  create: (body) => clm('/', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => clm(`/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  review: (id, body) => clm(`/${id}/review`, { method: 'POST', body: JSON.stringify(body) }),
+  cancel: (id) => clm(`/${id}/cancel`, { method: 'POST' }),
+  uploadAttachments: (id, formData) => clm(`/${id}/attachments`, { method: 'POST', body: formData, rawBody: true }),
+  removeAttachment: (id) => clm(`/attachments/${id}`, { method: 'DELETE' }),
+  summary: () => clm('/stats/summary'),
+};
+
+// ─── Tab Access ──────────────────────────────────────────────────
+export const tabAccess = {
+  myTabs: (pageKey) => request(`/tab-access/my-tabs/${pageKey}`),
+  permissions: (pageKey) => request(`/tab-access/permissions/${pageKey}`),
+  grant: (pageKey, userId, tabId) => request(`/tab-access/permissions/${pageKey}`, { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
+  revoke: (pageKey, userId, tabId) => request(`/tab-access/permissions/${pageKey}?user_id=${userId}&tab_id=${tabId}`, { method: 'DELETE' }),
+  bulkSet: (pageKey, userId, tabIds) => request(`/tab-access/permissions/${pageKey}/bulk`, { method: 'POST', body: JSON.stringify({ user_id: userId, tab_ids: tabIds }) }),
 };
 
 export const quickSignPublic = {

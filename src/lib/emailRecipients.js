@@ -395,6 +395,38 @@ export async function getManagementEmailsForTenant(query, tenantId) {
   return Array.from(emails);
 }
 
+/** Management users' emails for a tenant, filtered by tab access grant.
+ *  Only returns users who have access to the specified tab on the Management page.
+ *  If a user has no tab_access_grants rows at all, they see all tabs (default) and get notified. */
+export async function getManagementEmailsForTenantAndTab(query, tenantId, tabId) {
+  if (!tenantId || !tabId) return getManagementEmailsForTenant(query, tenantId);
+  const emails = new Set();
+  try {
+    const result = await query(
+      `SELECT DISTINCT u.email
+       FROM user_page_roles r
+       INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id = N'management'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         AND (
+           u.role = N'super_admin'
+           OR NOT EXISTS (SELECT 1 FROM tab_access_grants g2 WHERE g2.user_id = u.id AND g2.page_key = N'management')
+           OR EXISTS (SELECT 1 FROM tab_access_grants g WHERE g.user_id = u.id AND g.page_key = N'management' AND g.tab_id = @tabId)
+         )`,
+      { tenantId, tabId }
+    );
+    for (const row of result.recordset || []) {
+      const e = (row.email || '').trim();
+      if (e && e.includes('@')) emails.add(e);
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getManagementEmailsForTenantAndTab:', err?.message || err);
+    return getManagementEmailsForTenant(query, tenantId);
+  }
+  return Array.from(emails);
+}
+
 /** Users with Access Management page (for truck enrollment notifications). */
 export async function getAccessManagementEmails(query) {
   const emails = new Set();

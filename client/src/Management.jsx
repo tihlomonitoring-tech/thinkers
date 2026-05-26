@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
-import { profileManagement as pm, shiftClock, companyLibrary as lib, tenants as tenantsApi } from './api';
+import { profileManagement as pm, shiftClock, companyLibrary as lib, tenants as tenantsApi, tabAccess as tabAccessApi, users as usersApi, claims as claimsApi } from './api';
 import TeamLeaderAuditSection from './components/TeamLeaderAuditSection.jsx';
 import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
@@ -37,6 +37,7 @@ const SECTIONS = [
   { id: 'pip', label: 'Performance improvement' },
   { id: 'growth', label: 'Employee growth' },
   { id: 'company_library_policy', label: 'Company library (hours)' },
+  { id: 'claims', label: 'Claims & reimbursements' },
 ];
 
 function formatDate(d) {
@@ -204,6 +205,313 @@ function ShiftSwapsManagementSection({ requests, onRefresh, onError }) {
   );
 }
 
+function ManagePageTabAccess({ pageKey, pageLabel, allTabIds, tabLabels, permissions, setPermissions, users, setUsers }) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(null);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([tabAccessApi.permissions(pageKey), usersApi.list({ limit: 200 })])
+      .then(([permRes, usersRes]) => {
+        setPermissions(permRes.permissions || []);
+        setUsers(usersRes.users || []);
+      })
+      .catch(() => setPermissions([]))
+      .finally(() => setLoading(false));
+  }, [pageKey]);
+
+  const handleGrant = (userId, tabId) => {
+    setSaving(`${userId}-${tabId}`);
+    tabAccessApi.grant(pageKey, userId, tabId)
+      .then(() => {
+        setPermissions((prev) => {
+          const existing = prev.find((p) => p.user_id === userId);
+          if (existing) return prev.map((p) => p.user_id === userId ? { ...p, tabs: [...(p.tabs || []), tabId] } : p);
+          const u = (users || []).find((u) => u.id === userId);
+          return [...prev, { user_id: userId, full_name: u?.full_name || '', email: u?.email || '', tabs: [tabId] }];
+        });
+      })
+      .finally(() => setSaving(null));
+  };
+
+  const handleRevoke = (userId, tabId) => {
+    setSaving(`${userId}-${tabId}`);
+    tabAccessApi.revoke(pageKey, userId, tabId)
+      .then(() => {
+        setPermissions((prev) => prev.map((p) => p.user_id === userId ? { ...p, tabs: (p.tabs || []).filter((t) => t !== tabId) } : p));
+      })
+      .finally(() => setSaving(null));
+  };
+
+  const handleGrantAll = (userId) => {
+    setSaving(`${userId}-all`);
+    tabAccessApi.bulkSet(pageKey, userId, allTabIds)
+      .then(() => {
+        setPermissions((prev) => {
+          const existing = prev.find((p) => p.user_id === userId);
+          if (existing) return prev.map((p) => p.user_id === userId ? { ...p, tabs: [...allTabIds] } : p);
+          const u = (users || []).find((u) => u.id === userId);
+          return [...prev, { user_id: userId, full_name: u?.full_name || '', email: u?.email || '', tabs: [...allTabIds] }];
+        });
+      })
+      .finally(() => setSaving(null));
+  };
+
+  const handleRevokeAll = (userId) => {
+    setSaving(`${userId}-all`);
+    tabAccessApi.bulkSet(pageKey, userId, [])
+      .then(() => {
+        setPermissions((prev) => prev.map((p) => p.user_id === userId ? { ...p, tabs: [] } : p));
+      })
+      .finally(() => setSaving(null));
+  };
+
+  if (loading) return <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" /></div>;
+
+  const permByUser = (permissions || []).reduce((acc, p) => { acc[p.user_id] = p; return acc; }, {});
+  const filtered = search
+    ? (users || []).filter((u) => (u.full_name || '').toLowerCase().includes(search.toLowerCase()) || (u.email || '').toLowerCase().includes(search.toLowerCase()))
+    : (users || []);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-surface-900">Manage tab access</h2>
+        <p className="text-sm text-surface-500 mt-1">Control which tabs each user can see on the <strong>{pageLabel}</strong> page. Only super admins can manage this.</p>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search users..." className="border border-surface-300 rounded-lg px-3 py-2 text-sm w-64" />
+        <span className="text-xs text-surface-500">{filtered.length} user{filtered.length !== 1 ? 's' : ''}</span>
+      </div>
+
+      <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-surface-200 bg-surface-50">
+                <th className="px-4 py-3 text-left font-medium text-surface-700 sticky left-0 bg-surface-50 z-10 min-w-[180px]">User</th>
+                <th className="px-3 py-3 text-center font-medium text-surface-700 whitespace-nowrap min-w-[80px]">All</th>
+                {allTabIds.map((tabId) => (
+                  <th key={tabId} className="px-3 py-3 text-center font-medium text-surface-600 whitespace-nowrap text-xs">
+                    {(tabLabels[tabId] || tabId).length > 16 ? (tabLabels[tabId] || tabId).slice(0, 14) + '…' : (tabLabels[tabId] || tabId)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((u) => {
+                const grants = permByUser[u.id]?.tabs || [];
+                const allGranted = allTabIds.every((t) => grants.includes(t));
+                return (
+                  <tr key={u.id} className="border-b border-surface-100 hover:bg-surface-50/50">
+                    <td className="px-4 py-2.5 sticky left-0 bg-white z-10">
+                      <span className="font-medium text-surface-900 block">{u.full_name || u.email}</span>
+                      <span className="text-surface-400 text-xs block">{u.email}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center">
+                      {allGranted ? (
+                        <button type="button" onClick={() => handleRevokeAll(u.id)} disabled={saving?.startsWith(u.id)} className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50">Revoke all</button>
+                      ) : (
+                        <button type="button" onClick={() => handleGrantAll(u.id)} disabled={saving?.startsWith(u.id)} className="text-[10px] px-2 py-1 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50">Grant all</button>
+                      )}
+                    </td>
+                    {allTabIds.map((tabId) => {
+                      const has = grants.includes(tabId);
+                      const key = `${u.id}-${tabId}`;
+                      return (
+                        <td key={key} className="px-3 py-2.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => has ? handleRevoke(u.id, tabId) : handleGrant(u.id, tabId)}
+                            disabled={saving === key || saving === `${u.id}-all`}
+                            className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors mx-auto ${has ? 'bg-brand-500 text-white hover:bg-brand-600' : 'bg-surface-100 text-surface-400 hover:bg-surface-200'} disabled:opacity-50`}
+                            title={has ? `Revoke ${tabLabels[tabId] || tabId}` : `Grant ${tabLabels[tabId] || tabId}`}
+                          >
+                            {saving === key ? (
+                              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                            ) : has ? (
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                            ) : null}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {filtered.length === 0 && <p className="p-6 text-center text-surface-500 text-sm">No users found.</p>}
+      </div>
+
+      <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
+        <p className="text-xs text-amber-800"><strong>Note:</strong> Users with no specific grants will see all tabs by default. Once you grant at least one tab to a user, they will only see the tabs you have granted. Super admins always have access to all tabs.</p>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════ CLAIMS MANAGEMENT SECTION ═══════════════ */
+
+const CLAIM_TYPES_MAP = { fuel: 'Fuel', travel: 'Travel expense', accommodation: 'Accommodation', meals: 'Meals', equipment: 'Equipment', tools: 'Tools', training: 'Training', communication: 'Communication', service: 'Service rendered', other: 'Other' };
+const CLAIM_STATUS_STYLES = { draft: 'bg-surface-100 text-surface-700', pending: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200', approved: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200', declined: 'bg-red-50 text-red-700 ring-1 ring-red-200', paid: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200', cancelled: 'bg-surface-200 text-surface-500' };
+
+function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) {
+  const [view, setView] = useState('dashboard');
+  const [filterStatus, setFilterStatus] = useState('pending');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [detailClaim, setDetailClaim] = useState(null);
+  const [detailAttachments, setDetailAttachments] = useState([]);
+  const [reviewNotes, setReviewNotes] = useState('');
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [reviewing, setReviewing] = useState(false);
+
+  const fmtZar = (v) => { const n = Number(v); return isNaN(n) ? 'R 0.00' : 'R ' + n.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  const fmtDate = (d) => d ? String(d).slice(0, 10) : '—';
+
+  const filtered = claims.filter((c) => {
+    if (filterStatus !== 'all' && c.status !== filterStatus) return false;
+    if (filterSearch) { const q = filterSearch.toLowerCase(); return (c.reference_number || '').toLowerCase().includes(q) || (c.claimant_name || '').toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q); }
+    return true;
+  });
+
+  const openDetail = (claim) => {
+    setView('detail');
+    setReviewNotes('');
+    setRejectionReason('');
+    claimsApi.get(claim.id).then((d) => { setDetailClaim(d.claim); setDetailAttachments(d.attachments || []); }).catch(() => {});
+  };
+
+  const handleReview = async (action) => {
+    if (action === 'decline' && !rejectionReason.trim()) { alert('Please provide a reason for declining.'); return; }
+    setReviewing(true);
+    try {
+      await claimsApi.review(detailClaim.id, { action, review_notes: reviewNotes, rejection_reason: rejectionReason });
+      setView('dashboard');
+      setDetailClaim(null);
+      onRefresh();
+    } catch (err) { alert(err?.message || 'Review failed'); }
+    finally { setReviewing(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-lg font-semibold text-surface-900">Claims & reimbursements</h2>
+        {view !== 'dashboard' && <button type="button" onClick={() => { setView('dashboard'); setDetailClaim(null); }} className="text-sm text-brand-600 hover:underline">Back to dashboard</button>}
+      </div>
+
+      {/* DASHBOARD */}
+      {view === 'dashboard' && (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-200"><p className="text-xs text-amber-600 font-medium">Pending</p><p className="text-2xl font-bold text-amber-800 tabular-nums">{summary.pending_count || 0}</p><p className="text-xs text-amber-600">{fmtZar(summary.pending_amount)}</p></div>
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200"><p className="text-xs text-emerald-600 font-medium">Approved</p><p className="text-2xl font-bold text-emerald-800 tabular-nums">{summary.approved_count || 0}</p><p className="text-xs text-emerald-600">{fmtZar(summary.approved_amount)}</p></div>
+            <div className="p-4 rounded-xl bg-red-50 border border-red-200"><p className="text-xs text-red-600 font-medium">Declined</p><p className="text-2xl font-bold text-red-800 tabular-nums">{summary.declined_count || 0}</p></div>
+            <div className="p-4 rounded-xl bg-surface-50 border border-surface-200"><p className="text-xs text-surface-600 font-medium">Total</p><p className="text-2xl font-bold text-surface-800 tabular-nums">{summary.total || 0}</p></div>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="border border-surface-300 rounded-lg px-3 py-2 text-sm">
+              <option value="all">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="declined">Declined</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option>
+            </select>
+            <input type="text" placeholder="Search ref, name, description..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className="border border-surface-300 rounded-lg px-3 py-2 text-sm w-60" />
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" /></div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-12 text-surface-500"><p className="text-base font-medium">No claims match your filters</p></div>
+          ) : (
+            <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-200 bg-surface-50">
+                  <th className="px-4 py-2.5">Ref</th><th className="px-4 py-2.5">Claimant</th><th className="px-4 py-2.5">Date</th><th className="px-4 py-2.5">Type</th><th className="px-4 py-2.5">Description</th><th className="px-4 py-2.5 text-right">Amount</th><th className="px-4 py-2.5">Status</th>
+                </tr></thead>
+                <tbody>{filtered.map((c) => (
+                  <tr key={c.id} className="border-b border-surface-50 hover:bg-surface-50 cursor-pointer" onClick={() => openDetail(c)}>
+                    <td className="px-4 py-2.5 font-mono text-xs text-brand-600 font-medium">{c.reference_number}</td>
+                    <td className="px-4 py-2.5 font-medium">{c.claimant_name || '—'}</td>
+                    <td className="px-4 py-2.5 tabular-nums">{fmtDate(c.claim_date)}</td>
+                    <td className="px-4 py-2.5">{CLAIM_TYPES_MAP[c.claim_type] || c.claim_type}</td>
+                    <td className="px-4 py-2.5 max-w-[200px] truncate">{c.description}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(c.amount)}</td>
+                    <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${CLAIM_STATUS_STYLES[c.status] || ''}`}>{c.status}</span></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* DETAIL & REVIEW */}
+      {view === 'detail' && detailClaim && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <div className="flex items-start justify-between flex-wrap gap-2">
+              <div><h3 className="text-lg font-semibold text-surface-900">{detailClaim.reference_number}</h3><p className="text-sm text-surface-500">{fmtDate(detailClaim.claim_date)} — {CLAIM_TYPES_MAP[detailClaim.claim_type] || detailClaim.claim_type}</p></div>
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${CLAIM_STATUS_STYLES[detailClaim.status] || ''}`}>{detailClaim.status}</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 text-sm">
+              <div><p className="text-xs text-surface-500">Claimant</p><p className="font-semibold">{detailClaim.claimant_name || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Amount</p><p className="font-semibold tabular-nums text-brand-700">{fmtZar(detailClaim.amount)}</p></div>
+              <div><p className="text-xs text-surface-500">Department</p><p className="font-medium">{detailClaim.department_name || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Category</p><p className="font-medium">{detailClaim.category || '—'}</p></div>
+              {detailClaim.km_travelled && <div><p className="text-xs text-surface-500">KM Travelled</p><p className="font-medium">{detailClaim.km_travelled} km</p></div>}
+              {detailClaim.start_location && <div><p className="text-xs text-surface-500">From</p><p className="font-medium">{detailClaim.start_location}</p></div>}
+              {detailClaim.end_location && <div><p className="text-xs text-surface-500">To</p><p className="font-medium">{detailClaim.end_location}</p></div>}
+              {detailClaim.vehicle_registration && <div><p className="text-xs text-surface-500">Vehicle</p><p className="font-medium">{detailClaim.vehicle_registration}</p></div>}
+              {detailClaim.service_rendered && <div><p className="text-xs text-surface-500">Service</p><p className="font-medium">{detailClaim.service_rendered}</p></div>}
+              {detailClaim.hours_spent && <div><p className="text-xs text-surface-500">Hours</p><p className="font-medium">{detailClaim.hours_spent}h</p></div>}
+              {detailClaim.bank_name && <div><p className="text-xs text-surface-500">Bank</p><p className="font-medium">{detailClaim.bank_name}</p></div>}
+              {detailClaim.account_holder && <div><p className="text-xs text-surface-500">Account holder</p><p className="font-medium">{detailClaim.account_holder}</p></div>}
+              {detailClaim.account_number && <div><p className="text-xs text-surface-500">Account #</p><p className="font-medium">{detailClaim.account_number}</p></div>}
+              {detailClaim.reviewed_by_name && <div><p className="text-xs text-surface-500">Reviewed by</p><p className="font-medium">{detailClaim.reviewed_by_name}</p></div>}
+              {detailClaim.reviewed_at && <div><p className="text-xs text-surface-500">Reviewed at</p><p className="font-medium tabular-nums">{new Date(detailClaim.reviewed_at).toLocaleString()}</p></div>}
+            </div>
+            {detailClaim.description && <div><p className="text-xs text-surface-500 mb-1">Description</p><p className="text-sm whitespace-pre-wrap">{detailClaim.description}</p></div>}
+            {detailClaim.review_notes && <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg"><p className="text-xs text-blue-700 font-medium">Review notes:</p><p className="text-sm text-blue-600">{detailClaim.review_notes}</p></div>}
+            {detailClaim.rejection_reason && <div className="p-3 bg-red-50 border border-red-200 rounded-lg"><p className="text-xs text-red-700 font-medium">Rejection reason:</p><p className="text-sm text-red-600">{detailClaim.rejection_reason}</p></div>}
+          </div>
+
+          {/* Attachments */}
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-3">
+            <h4 className="text-sm font-semibold text-surface-900">Attachments</h4>
+            {detailAttachments.length > 0 ? <div className="space-y-2">{detailAttachments.map((a) => (<div key={a.id} className="flex items-center gap-3 p-2 bg-surface-50 rounded-lg"><span className="text-sm text-surface-700 flex-1 truncate">{a.file_name}</span></div>))}</div> : <p className="text-sm text-surface-500">No attachments</p>}
+          </div>
+
+          {/* Review panel */}
+          {detailClaim.status === 'pending' && (
+            <div className="rounded-xl border border-brand-200 bg-brand-50/30 p-5 space-y-4">
+              <h4 className="text-sm font-semibold text-surface-900">Review this claim</h4>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Review notes (optional)</label>
+                <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} rows={2} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" placeholder="Add any notes about this review..." />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Rejection reason (required if declining)</label>
+                <textarea value={rejectionReason} onChange={(e) => setRejectionReason(e.target.value)} rows={2} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" placeholder="Reason for declining..." />
+              </div>
+              <div className="flex items-center gap-3">
+                <button type="button" disabled={reviewing} onClick={() => handleReview('approve')} className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50">
+                  {reviewing ? 'Processing...' : 'Approve'}
+                </button>
+                <button type="button" disabled={reviewing} onClick={() => handleReview('decline')} className="px-5 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
+                  {reviewing ? 'Processing...' : 'Decline'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Management() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('management');
@@ -227,6 +535,27 @@ export default function Management() {
   const [shiftSwapRequests, setShiftSwapRequests] = useState([]);
   const [shiftMgmtSessions, setShiftMgmtSessions] = useState([]);
   const [error, setError] = useState('');
+  const [allClaims, setAllClaims] = useState([]);
+  const [claimsLoading, setClaimsLoading] = useState(false);
+  const [claimsSummary, setClaimsSummary] = useState({});
+  const isSuperAdmin = user?.role === 'super_admin';
+  const [allowedTabs, setAllowedTabs] = useState([]);
+  const [tabAccessLoading, setTabAccessLoading] = useState(true);
+  const [permissions, setPermissions] = useState([]);
+  const [tabAccessUsers, setTabAccessUsers] = useState([]);
+
+  useEffect(() => {
+    tabAccessApi.myTabs('management')
+      .then((d) => setAllowedTabs(d.tabs || []))
+      .catch(() => setAllowedTabs([]))
+      .finally(() => setTabAccessLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (allowedTabs.length > 0 && activeSection !== 'manage-tab-access' && !allowedTabs.includes(activeSection)) {
+      setActiveSection(allowedTabs[0]);
+    }
+  }, [allowedTabs]);
 
   const load = useCallback(() => {
     pm.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
@@ -296,6 +625,16 @@ export default function Management() {
     }
   }, [activeSection]);
 
+  const loadClaims = useCallback(() => {
+    setClaimsLoading(true);
+    Promise.all([claimsApi.all(), claimsApi.summary()])
+      .then(([d, s]) => { setAllClaims(d.claims || []); setClaimsSummary(s.summary || {}); })
+      .catch(() => {})
+      .finally(() => setClaimsLoading(false));
+  }, []);
+
+  useEffect(() => { if (activeSection === 'claims') loadClaims(); }, [activeSection, loadClaims]);
+
   useAutoHideNavAfterTabChange(activeSection);
 
   return (
@@ -316,7 +655,7 @@ export default function Management() {
           </button>
         </div>
         <ul className="flex-1 overflow-y-auto py-2 min-h-0 w-72">
-          {SECTIONS.filter((sec) => sec.id !== 'company_library_policy' || user?.role === 'super_admin').map((sec) => (
+          {[...SECTIONS.filter((sec) => allowedTabs.includes(sec.id)).filter((sec) => sec.id !== 'company_library_policy' || isSuperAdmin), ...(isSuperAdmin ? [{ id: 'manage-tab-access', label: 'Manage tab access' }] : [])].map((sec) => (
             <li key={sec.id}>
               <button
                 type="button"
@@ -579,6 +918,24 @@ export default function Management() {
           {activeSection === 'company_library_policy' && user?.role === 'super_admin' && (
             <CompanyLibraryPolicySection user={user} onError={setError} />
           )}
+
+          {activeSection === 'claims' && (
+            <ClaimsManagementSection claims={allClaims} loading={claimsLoading} summary={claimsSummary} onRefresh={loadClaims} user={user} />
+          )}
+
+          {activeSection === 'manage-tab-access' && isSuperAdmin && (
+            <ManagePageTabAccess
+              pageKey="management"
+              pageLabel="Management"
+              allTabIds={SECTIONS.map((s) => s.id)}
+              tabLabels={Object.fromEntries(SECTIONS.map((s) => [s.id, s.label]))}
+              permissions={permissions}
+              setPermissions={setPermissions}
+              users={tabAccessUsers}
+              setUsers={setTabAccessUsers}
+            />
+          )}
+
         </div>
       </div>
     </div>

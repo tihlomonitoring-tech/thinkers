@@ -35,6 +35,10 @@ import caseManagementRoutes from './src/routes/caseManagement.js';
 import aiRoutes from './src/routes/ai.js';
 import companyLibraryRoutes, { runCompanyLibraryExpiryReminders } from './src/routes/companyLibrary.js';
 import quickSignRoutes from './src/routes/quickSign.js';
+import operatorManagementRoutes from './src/routes/operatorManagement.js';
+import expenseManagementRoutes from './src/routes/expenseManagement.js';
+import tabAccessRoutes from './src/routes/tabAccess.js';
+import claimsRoutes from './src/routes/claims.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -152,6 +156,9 @@ app.use('/api/action-plans', actionPlansRoutes);
 app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
+app.use('/api/expense-management', expenseManagementRoutes);
+app.use('/api/tab-access', tabAccessRoutes);
+app.use('/api/claims', claimsRoutes);
 app.use('/api/fuel-supply', fuelSupplyRoutes);
 app.use('/api/fuel-data', fuelDataRoutes);
 app.use('/api/fuel-customer-portal', fuelCustomerPortalRoutes);
@@ -162,6 +169,7 @@ app.use('/api/case-management', caseManagementRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/company-library', companyLibraryRoutes);
 app.use('/api/quick-sign', quickSignRoutes);
+app.use('/api/operator-management', operatorManagementRoutes);
 
 // Unmatched /api/* — Express default 404 is often non-JSON, so the client showed a bare "Not Found".
 app.use('/api', (req, res) => {

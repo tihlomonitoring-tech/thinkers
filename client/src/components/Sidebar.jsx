@@ -199,6 +199,22 @@ function IconLogout({ className }) {
   );
 }
 
+function IconOperatorProfile({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    </svg>
+  );
+}
+
+function IconOperatorManagement({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+    </svg>
+  );
+}
+
 const navSections = [
   {
     label: 'My profile & HR',
@@ -208,6 +224,8 @@ const navSections = [
       { to: '/performance-evaluations', label: 'Performance evaluations', icon: IconEvaluations, shortcut: '', pageId: 'performance_evaluations' },
       { to: '/auditor', label: 'Auditor', icon: IconAuditor, shortcut: '', pageId: 'auditor' },
       { to: '/management', label: 'Management', icon: IconManagement, shortcut: '⌘M', pageId: 'management' },
+      { to: '/operator-profile', label: 'Operator profile', icon: IconOperatorProfile, shortcut: '', pageId: 'operator_profile' },
+      { to: '/operator-management', label: 'Operator management', icon: IconOperatorManagement, shortcut: '', pageId: 'operator_management' },
     ],
   },
   {

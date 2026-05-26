@@ -28,6 +28,8 @@ import Auditor from './Auditor';
 import CompanyLibrary from './CompanyLibrary';
 import QuickSign from './QuickSign';
 import QuickSignPublic from './QuickSignPublic';
+import OperatorProfile from './OperatorProfile';
+import OperatorManagement from './OperatorManagement';
 import JobApplication from './JobApplication';
 import NoAccess from './NoAccess';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
@@ -113,6 +115,8 @@ function AppRoutes() {
         <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />
         <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />
         <Route path="quick-sign" element={<PageGate pathKey="/quick-sign"><QuickSign /></PageGate>} />
+        <Route path="operator-profile" element={<PageGate pathKey="/operator-profile"><OperatorProfile /></PageGate>} />
+        <Route path="operator-management" element={<PageGate pathKey="/operator-management"><OperatorManagement /></PageGate>} />
         <Route path="no-access" element={<NoAccess />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

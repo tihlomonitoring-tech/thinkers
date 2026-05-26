@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi } from './api';
+import { profileManagement as pm, downloadAttachmentWithAuth, tasks as tasksApi, claims as claimsApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import {
@@ -48,6 +48,7 @@ const TABS = [
   { id: 'queries', label: 'Queries' },
   { id: 'growth', label: 'Growth' },
   { id: 'evaluation_results', label: 'Colleagues evaluation results' },
+  { id: 'claims', label: 'Claims & reimbursements' },
   { id: 'system_settings', label: 'System settings' },
 ];
 
@@ -104,6 +105,361 @@ function isoDate(d) {
   return toYmdFromDbOrString(d);
 }
 
+const CLAIM_TYPES = [
+  { id: 'fuel', label: 'Fuel' },
+  { id: 'travel', label: 'Travel expense' },
+  { id: 'accommodation', label: 'Accommodation' },
+  { id: 'meals', label: 'Meals' },
+  { id: 'equipment', label: 'Equipment' },
+  { id: 'tools', label: 'Tools' },
+  { id: 'training', label: 'Training' },
+  { id: 'communication', label: 'Communication' },
+  { id: 'service', label: 'Service rendered' },
+  { id: 'other', label: 'Other' },
+];
+
+const CLAIM_STATUS_STYLES = {
+  draft: 'bg-surface-100 text-surface-700',
+  pending: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+  approved: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+  declined: 'bg-red-50 text-red-700 ring-1 ring-red-200',
+  paid: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+  cancelled: 'bg-surface-200 text-surface-500',
+};
+
+function ClaimsTab({ claims, loading, onRefresh, user }) {
+  const [view, setView] = useState('list');
+  const [saving, setSaving] = useState(false);
+  const [selectedClaim, setSelectedClaim] = useState(null);
+  const [detailClaim, setDetailClaim] = useState(null);
+  const [detailAttachments, setDetailAttachments] = useState([]);
+
+  const emptyForm = {
+    claim_date: new Date().toISOString().slice(0, 10), claim_type: 'fuel', category: '', department_name: '',
+    description: '', amount: '', km_travelled: '', start_location: '', end_location: '',
+    vehicle_registration: '', rate_per_km: '4.64', service_rendered: '', hours_spent: '', hourly_rate: '',
+    bank_name: '', account_holder: user?.full_name || '', account_number: '', branch_code: '', account_type: 'savings',
+    declaration_accepted: false,
+  };
+  const [form, setForm] = useState({ ...emptyForm });
+
+  const fmtZar = (v) => { const n = Number(v); return isNaN(n) ? 'R 0.00' : 'R ' + n.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  const fmtDate = (d) => d ? String(d).slice(0, 10) : '—';
+
+  useEffect(() => {
+    if (form.claim_type === 'travel' && form.km_travelled && form.rate_per_km) {
+      const calc = (Number(form.km_travelled) * Number(form.rate_per_km)).toFixed(2);
+      if (calc !== form.amount) setForm((f) => ({ ...f, amount: calc }));
+    }
+  }, [form.km_travelled, form.rate_per_km, form.claim_type]);
+
+  useEffect(() => {
+    if (form.claim_type === 'service' && form.hours_spent && form.hourly_rate) {
+      const calc = (Number(form.hours_spent) * Number(form.hourly_rate)).toFixed(2);
+      if (calc !== form.amount) setForm((f) => ({ ...f, amount: calc }));
+    }
+  }, [form.hours_spent, form.hourly_rate, form.claim_type]);
+
+  const openDetail = (claim) => {
+    setSelectedClaim(claim);
+    setView('detail');
+    claimsApi.get(claim.id).then((d) => { setDetailClaim(d.claim); setDetailAttachments(d.attachments || []); }).catch(() => {});
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!form.declaration_accepted) { alert('Please accept the declaration before submitting.'); return; }
+    setSaving(true);
+    try {
+      await claimsApi.create(form);
+      setForm({ ...emptyForm });
+      setView('list');
+      onRefresh();
+    } catch (err) { alert(err?.message || 'Failed to submit claim'); }
+    finally { setSaving(false); }
+  };
+
+  const handleCancel = async (id) => {
+    if (!window.confirm('Cancel this claim?')) return;
+    try { await claimsApi.cancel(id); onRefresh(); if (view === 'detail') setView('list'); } catch {}
+  };
+
+  const handleUpload = async (claimId, files) => {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    try { await claimsApi.uploadAttachments(claimId, fd); claimsApi.get(claimId).then((d) => setDetailAttachments(d.attachments || [])); } catch {}
+  };
+
+  const handleDeleteAttachment = async (attId) => {
+    if (!window.confirm('Remove this attachment?')) return;
+    try { await claimsApi.removeAttachment(attId); if (detailClaim) claimsApi.get(detailClaim.id).then((d) => setDetailAttachments(d.attachments || [])); } catch {}
+  };
+
+  const declarationText = 'I declare that the information provided in this claim is true and accurate to the best of my knowledge. I understand that submitting false claims may result in disciplinary action. All expenses were incurred for legitimate business purposes.';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-lg font-semibold text-surface-900">Claims & reimbursements</h2>
+        {view === 'list' && (
+          <button type="button" onClick={() => setView('new')} className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700">New claim</button>
+        )}
+        {(view === 'new' || view === 'detail') && (
+          <button type="button" onClick={() => { setView('list'); setSelectedClaim(null); }} className="text-sm text-brand-600 hover:underline flex items-center gap-1">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+            Back to claims
+          </button>
+        )}
+      </div>
+
+      {/* ═══════════════ LIST ═══════════════ */}
+      {view === 'list' && (
+        loading ? (
+          <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" /></div>
+        ) : claims.length === 0 ? (
+          <div className="text-center py-12 text-surface-500">
+            <p className="text-lg font-medium">No claims yet</p>
+            <p className="text-sm mt-1">Submit your first claim for reimbursement</p>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-200 bg-surface-50">
+                <th className="px-4 py-2.5">Ref #</th>
+                <th className="px-4 py-2.5">Date</th>
+                <th className="px-4 py-2.5">Type</th>
+                <th className="px-4 py-2.5">Description</th>
+                <th className="px-4 py-2.5 text-right">Amount</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Actions</th>
+              </tr></thead>
+              <tbody>
+                {claims.map((c) => (
+                  <tr key={c.id} className="border-b border-surface-50 hover:bg-surface-50 cursor-pointer" onClick={() => openDetail(c)}>
+                    <td className="px-4 py-2.5 font-mono text-xs text-brand-600 font-medium">{c.reference_number}</td>
+                    <td className="px-4 py-2.5 tabular-nums">{fmtDate(c.claim_date)}</td>
+                    <td className="px-4 py-2.5">{CLAIM_TYPES.find((t) => t.id === c.claim_type)?.label || c.claim_type}</td>
+                    <td className="px-4 py-2.5 max-w-[200px] truncate">{c.description}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(c.amount)}</td>
+                    <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${CLAIM_STATUS_STYLES[c.status] || ''}`}>{c.status}</span></td>
+                    <td className="px-4 py-2.5" onClick={(ev) => ev.stopPropagation()}>
+                      {(c.status === 'pending' || c.status === 'draft') && <button type="button" onClick={() => handleCancel(c.id)} className="text-red-600 hover:underline text-xs">Cancel</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+
+      {/* ═══════════════ NEW CLAIM FORM ═══════════════ */}
+      {view === 'new' && (
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <h3 className="text-sm font-semibold text-surface-900">Submit new claim</h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Claim date *</label>
+                <input type="date" required value={form.claim_date} onChange={(e) => setForm((f) => ({ ...f, claim_date: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Claim type *</label>
+                <select required value={form.claim_type} onChange={(e) => setForm((f) => ({ ...f, claim_type: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                  {CLAIM_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Department</label>
+                <input type="text" value={form.department_name} onChange={(e) => setForm((f) => ({ ...f, department_name: e.target.value }))} placeholder="e.g. Operations" className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-surface-600 mb-1">Description *</label>
+              <textarea required value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="Describe the expense or service..." className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+
+            {/* Travel / KM fields */}
+            {(form.claim_type === 'travel' || form.claim_type === 'fuel') && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+                <h4 className="text-xs font-semibold text-blue-800 uppercase tracking-wider">Travel details</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Start location</label>
+                    <input type="text" value={form.start_location} onChange={(e) => setForm((f) => ({ ...f, start_location: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">End location</label>
+                    <input type="text" value={form.end_location} onChange={(e) => setForm((f) => ({ ...f, end_location: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Vehicle registration</label>
+                    <input type="text" value={form.vehicle_registration} onChange={(e) => setForm((f) => ({ ...f, vehicle_registration: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                  {form.claim_type === 'travel' && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">KM travelled</label>
+                        <input type="number" step="0.1" value={form.km_travelled} onChange={(e) => setForm((f) => ({ ...f, km_travelled: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Rate per KM (R)</label>
+                        <input type="number" step="0.01" value={form.rate_per_km} onChange={(e) => setForm((f) => ({ ...f, rate_per_km: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Service fields */}
+            {form.claim_type === 'service' && (
+              <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-4 space-y-3">
+                <h4 className="text-xs font-semibold text-purple-800 uppercase tracking-wider">Service details</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Service rendered</label>
+                    <input type="text" value={form.service_rendered} onChange={(e) => setForm((f) => ({ ...f, service_rendered: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Hours spent</label>
+                    <input type="number" step="0.5" value={form.hours_spent} onChange={(e) => setForm((f) => ({ ...f, hours_spent: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Hourly rate (R)</label>
+                    <input type="number" step="0.01" value={form.hourly_rate} onChange={(e) => setForm((f) => ({ ...f, hourly_rate: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Amount */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Total amount (ZAR) *</label>
+                <input type="number" step="0.01" required value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm font-semibold text-lg" />
+                {(form.claim_type === 'travel' && form.km_travelled && form.rate_per_km) && <p className="text-xs text-surface-500 mt-1">Auto-calculated: {form.km_travelled} km × R{form.rate_per_km}/km</p>}
+                {(form.claim_type === 'service' && form.hours_spent && form.hourly_rate) && <p className="text-xs text-surface-500 mt-1">Auto-calculated: {form.hours_spent}h × R{form.hourly_rate}/h</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
+                <input type="text" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} placeholder="e.g. Site visit, Client meeting" className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+            </div>
+
+            {/* Banking details */}
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 space-y-3">
+              <h4 className="text-xs font-semibold text-emerald-800 uppercase tracking-wider">Banking details</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Account holder</label>
+                  <input type="text" value={form.account_holder} onChange={(e) => setForm((f) => ({ ...f, account_holder: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Bank name</label>
+                  <input type="text" value={form.bank_name} onChange={(e) => setForm((f) => ({ ...f, bank_name: e.target.value }))} placeholder="e.g. FNB, Standard Bank" className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Account number</label>
+                  <input type="text" value={form.account_number} onChange={(e) => setForm((f) => ({ ...f, account_number: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Branch code</label>
+                  <input type="text" value={form.branch_code} onChange={(e) => setForm((f) => ({ ...f, branch_code: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-surface-600 mb-1">Account type</label>
+                  <select value={form.account_type} onChange={(e) => setForm((f) => ({ ...f, account_type: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm">
+                    <option value="savings">Savings</option>
+                    <option value="cheque">Cheque</option>
+                    <option value="current">Current</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Declaration */}
+            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 space-y-3">
+              <h4 className="text-xs font-semibold text-amber-800 uppercase tracking-wider">Declaration</h4>
+              <p className="text-sm text-surface-700">{declarationText}</p>
+              <label className="flex items-start gap-2">
+                <input type="checkbox" checked={form.declaration_accepted} onChange={(e) => setForm((f) => ({ ...f, declaration_accepted: e.target.checked, declaration_text: e.target.checked ? declarationText : '' }))} className="mt-0.5 rounded border-surface-300" />
+                <span className="text-sm font-medium text-surface-700">I accept the above declaration</span>
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button type="submit" disabled={saving || !form.declaration_accepted} className="px-5 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                {saving ? 'Submitting...' : 'Submit claim'}
+              </button>
+              <button type="button" onClick={() => setView('list')} className="px-4 py-2 border border-surface-300 rounded-lg text-sm text-surface-700 hover:bg-surface-50">Cancel</button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* ═══════════════ DETAIL ═══════════════ */}
+      {view === 'detail' && detailClaim && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
+            <div className="flex items-start justify-between flex-wrap gap-2">
+              <div>
+                <h3 className="text-lg font-semibold text-surface-900">{detailClaim.reference_number}</h3>
+                <p className="text-sm text-surface-500">{fmtDate(detailClaim.claim_date)} — {CLAIM_TYPES.find((t) => t.id === detailClaim.claim_type)?.label || detailClaim.claim_type}</p>
+              </div>
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${CLAIM_STATUS_STYLES[detailClaim.status] || ''}`}>{detailClaim.status}</span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 text-sm">
+              <div><p className="text-xs text-surface-500">Amount</p><p className="font-semibold tabular-nums text-brand-700">{fmtZar(detailClaim.amount)}</p></div>
+              <div><p className="text-xs text-surface-500">Department</p><p className="font-medium">{detailClaim.department_name || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Category</p><p className="font-medium">{detailClaim.category || '—'}</p></div>
+              {detailClaim.km_travelled && <div><p className="text-xs text-surface-500">KM Travelled</p><p className="font-medium">{detailClaim.km_travelled} km</p></div>}
+              {detailClaim.start_location && <div><p className="text-xs text-surface-500">From</p><p className="font-medium">{detailClaim.start_location}</p></div>}
+              {detailClaim.end_location && <div><p className="text-xs text-surface-500">To</p><p className="font-medium">{detailClaim.end_location}</p></div>}
+              {detailClaim.service_rendered && <div><p className="text-xs text-surface-500">Service</p><p className="font-medium">{detailClaim.service_rendered}</p></div>}
+              {detailClaim.hours_spent && <div><p className="text-xs text-surface-500">Hours</p><p className="font-medium">{detailClaim.hours_spent}h</p></div>}
+              {detailClaim.bank_name && <div><p className="text-xs text-surface-500">Bank</p><p className="font-medium">{detailClaim.bank_name}</p></div>}
+              {detailClaim.reviewed_by_name && <div><p className="text-xs text-surface-500">Reviewed by</p><p className="font-medium">{detailClaim.reviewed_by_name}</p></div>}
+            </div>
+
+            {detailClaim.description && <div><p className="text-xs text-surface-500 mb-1">Description</p><p className="text-sm whitespace-pre-wrap">{detailClaim.description}</p></div>}
+            {detailClaim.review_notes && <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg"><p className="text-xs text-blue-700 font-medium">Review notes:</p><p className="text-sm text-blue-600">{detailClaim.review_notes}</p></div>}
+            {detailClaim.rejection_reason && <div className="p-3 bg-red-50 border border-red-200 rounded-lg"><p className="text-xs text-red-700 font-medium">Rejection reason:</p><p className="text-sm text-red-600">{detailClaim.rejection_reason}</p></div>}
+          </div>
+
+          {/* Attachments */}
+          <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-3">
+            <h4 className="text-sm font-semibold text-surface-900">Attachments</h4>
+            {detailAttachments.length > 0 ? (
+              <div className="space-y-2">{detailAttachments.map((a) => (
+                <div key={a.id} className="flex items-center gap-3 p-2 bg-surface-50 rounded-lg">
+                  <svg className="w-5 h-5 text-surface-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                  <span className="text-sm text-surface-700 flex-1 truncate">{a.file_name}</span>
+                  {detailClaim.status === 'pending' && <button type="button" onClick={() => handleDeleteAttachment(a.id)} className="text-xs text-red-600 hover:underline">Remove</button>}
+                </div>
+              ))}</div>
+            ) : <p className="text-sm text-surface-500">No attachments</p>}
+            {detailClaim.status === 'pending' && (
+              <label className="inline-flex items-center gap-2 px-3 py-2 border border-surface-300 rounded-lg text-sm text-surface-700 hover:bg-surface-50 cursor-pointer">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                Upload receipt/files
+                <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) handleUpload(detailClaim.id, e.target.files); e.target.value = ''; }} />
+              </label>
+            )}
+          </div>
+
+          {detailClaim.status === 'pending' && (
+            <button type="button" onClick={() => handleCancel(detailClaim.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">Cancel claim</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Profile() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -135,6 +491,8 @@ export default function Profile() {
   const [swapModal, setSwapModal] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [myClaims, setMyClaims] = useState([]);
+  const [claimLoading, setClaimLoading] = useState(false);
   const [colleagueFilterIds, setColleagueFilterIds] = useState(() => {
     try {
       const s = localStorage.getItem(COLLEAGUE_FILTER_STORAGE_KEY);
@@ -424,6 +782,13 @@ export default function Profile() {
       pm.pip.list().then((d) => setPipPlans(d.plans || [])).catch(() => setPipPlans([]));
     }
   }, [activeTab, activeTenantId]);
+
+  useEffect(() => {
+    if (activeTab === 'claims') {
+      setClaimLoading(true);
+      claimsApi.myClaims().then((d) => setMyClaims(d.claims || [])).catch(() => setMyClaims([])).finally(() => setClaimLoading(false));
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     try {
@@ -1049,6 +1414,10 @@ export default function Profile() {
           )}
 
           {activeTab === 'evaluation_results' && <ColleagueEvaluationResultsTab />}
+
+          {activeTab === 'claims' && (
+            <ClaimsTab claims={myClaims} loading={claimLoading} onRefresh={() => claimsApi.myClaims().then((d) => setMyClaims(d.claims || [])).catch(() => {})} user={user} />
+          )}
 
           {activeTab === 'system_settings' && (
             <div className="space-y-6 max-w-xl">

@@ -6,7 +6,7 @@ import bcrypt from 'bcrypt';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
-import { getManagementEmailsForTenant } from '../lib/emailRecipients.js';
+import { getManagementEmailsForTenant, getManagementEmailsForTenantAndTab } from '../lib/emailRecipients.js';
 import { shiftClockAlertHtml, shiftLocationAuthRequestHtml } from '../lib/emailTemplates.js';
 import { parseClientCoords, haversineMeters, allowedLocationRadiusMeters } from '../lib/geo.js';
 import {
@@ -473,7 +473,7 @@ router.post('/session/:id/location-auth-request', requirePageAccess('profile'), 
     if (!isEmailConfigured()) {
       return res.status(503).json({ error: 'Email is not configured on the server. Management cannot receive codes yet.' });
     }
-    const mgmt = await getManagementEmailsForTenant(query, tenantId);
+    const mgmt = await getManagementEmailsForTenantAndTab(query, tenantId, 'shift_activity');
     if (!mgmt.length) {
       return res.status(503).json({ error: 'No management contacts with the Management page role were found to receive the code.' });
     }
@@ -670,7 +670,7 @@ export async function runShiftClockAlerts() {
         const name = getRow(s, 'full_name') || 'User';
         let mgmt = mgmtCache.get(tenantId);
         if (!mgmt) {
-          mgmt = await getManagementEmailsForTenant(query, tenantId);
+          mgmt = await getManagementEmailsForTenantAndTab(query, tenantId, 'shift_activity');
           mgmtCache.set(tenantId, mgmt);
         }
         const html = shiftClockAlertHtml({
@@ -712,7 +712,7 @@ export async function runShiftClockAlerts() {
       const userEmail = (getRow(b, 'email') || '').trim();
       let mgmt = mgmtCache.get(tenantId);
       if (!mgmt) {
-        mgmt = await getManagementEmailsForTenant(query, tenantId);
+        mgmt = await getManagementEmailsForTenantAndTab(query, tenantId, 'shift_activity');
         mgmtCache.set(tenantId, mgmt);
       }
       const html = shiftClockAlertHtml({
