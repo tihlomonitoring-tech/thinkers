@@ -379,10 +379,31 @@ export const contractor = {
     contractors: () => request('/contractor/distribution/contractors'),
     create: (body) => request('/contractor/distribution-history', { method: 'POST', body: JSON.stringify(body) }),
     sendEmail: (body) => request('/contractor/distribution/send-email', { method: 'POST', body: JSON.stringify(body) }),
+    resolveRouteRecipients: (routeIds = []) => {
+      const q = new URLSearchParams();
+      if (routeIds.length > 0) q.set('routeIds', routeIds.map(String).join(','));
+      return request(`/contractor/distribution/route-recipients${q.toString() ? `?${q.toString()}` : ''}`);
+    },
     exportUrl: (params = {}) => {
       const q = new URLSearchParams(params).toString();
       return `${getApiBase()}/contractor/distribution-history/export${q ? `?${q}` : ''}`;
     },
+  },
+  routeDistributionRecipients: {
+    get: (routeId) => request(`/contractor/routes/${encodeURIComponent(routeId)}/distribution-recipients`),
+    save: (routeId, recipients) =>
+      request(`/contractor/routes/${encodeURIComponent(routeId)}/distribution-recipients`, {
+        method: 'PUT',
+        body: JSON.stringify({ recipients }),
+      }),
+  },
+  routeDistributionConfig: {
+    get: (routeId) => request(`/contractor/routes/${encodeURIComponent(routeId)}/distribution-config`),
+    save: (routeId, body) =>
+      request(`/contractor/routes/${encodeURIComponent(routeId)}/distribution-config`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
   },
   pilotDistribution: {
     list: () => request('/contractor/pilot-distribution'),
@@ -802,6 +823,43 @@ export const commandCentre = {
     const q = new URLSearchParams();
     if (params.tenantId) q.set('tenantId', params.tenantId);
     return request(`/command-centre/fleet-truck-approval-summary${q.toString() ? `?${q.toString()}` : ''}`);
+  },
+  fleetFacilityChecklists: {
+    ensure: (body) =>
+      request('/command-centre/fleet-facility-checklists/ensure', { method: 'POST', body: JSON.stringify(body) }),
+    updateScope: (body) =>
+      request('/command-centre/fleet-facility-checklists/scope', { method: 'PATCH', body: JSON.stringify(body) }),
+    get: (id) => request(`/command-centre/fleet-facility-checklists/${encodeURIComponent(id)}`),
+    getComments: (id) => request(`/command-centre/fleet-facility-checklists/${encodeURIComponent(id)}/comments`),
+    addComment: (id, body) =>
+      request(`/command-centre/fleet-facility-checklists/${encodeURIComponent(id)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ body }),
+      }),
+    uploadAttachment: (id, file, itemType) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('item_type', itemType);
+      return fetch(`${API}/command-centre/fleet-facility-checklists/${encodeURIComponent(id)}/attachments`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        })
+        .catch((err) => {
+          throw wrapNetworkError(err);
+        });
+    },
+    removeAttachment: (attachmentId) =>
+      request(`/command-centre/fleet-facility-checklists/attachments/${encodeURIComponent(attachmentId)}`, {
+        method: 'DELETE',
+      }),
+    downloadAttachmentUrl: (attachmentId) =>
+      `${API}/command-centre/fleet-facility-checklists/attachments/${encodeURIComponent(attachmentId)}/download`,
   },
   fleetChangeRequests: {
     list: (params = {}) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { todayYmd } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
@@ -175,6 +175,364 @@ function RouteChecklist({ routes, selectedIds, onToggle }) {
   );
 }
 
+function ColumnPickerGrid({ title, columns, selectedKeys, onChange, filterFn }) {
+  const visible = filterFn ? columns.filter(filterFn) : columns;
+  const visibleKeys = visible.map((c) => c.key);
+  const allSelected = visibleKeys.length > 0 && visibleKeys.every((k) => selectedKeys.includes(k));
+  const toggleAll = () => {
+    if (allSelected) {
+      onChange(selectedKeys.filter((k) => !visibleKeys.includes(k)));
+    } else {
+      onChange([...new Set([...selectedKeys, ...visibleKeys])]);
+    }
+  };
+  return (
+    <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-surface-100 bg-surface-50/80">
+        <span className="text-xs font-semibold text-surface-700">{title}</span>
+        <button
+          type="button"
+          onClick={toggleAll}
+          className="text-xs font-medium text-brand-700 hover:text-brand-800"
+        >
+          {allSelected ? 'Clear all' : 'Select all'}
+        </button>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-0.5 p-2 max-h-36 overflow-y-auto">
+        {visible.map((col) => {
+          const checked = selectedKeys.includes(col.key);
+          return (
+            <label
+              key={col.key}
+              className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer select-none ${
+                checked ? 'bg-brand-50 text-brand-900' : 'text-surface-700 hover:bg-surface-50'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={(e) =>
+                  onChange(e.target.checked ? [...selectedKeys, col.key] : selectedKeys.filter((k) => k !== col.key))
+                }
+                className="rounded border-surface-300 text-brand-600 shrink-0"
+              />
+              <span className="truncate">{col.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DistSectionHeader({ step, title, description }) {
+  return (
+    <div className="flex gap-3 items-start">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-white text-xs font-bold">
+        {step}
+      </span>
+      <div>
+        <h3 className="text-sm font-semibold text-surface-900">{title}</h3>
+        {description && <p className="text-xs text-surface-500 mt-0.5">{description}</p>}
+      </div>
+    </div>
+  );
+}
+
+function RouteDistributionRecipientsModal({ route, tenantUsers, onClose, onSaved }) {
+  const [rows, setRows] = useState([]);
+  const [includeFleet, setIncludeFleet] = useState(true);
+  const [includeDrivers, setIncludeDrivers] = useState(true);
+  const [fleetColumns, setFleetColumns] = useState(FLEET_DEFAULT_KEYS);
+  const [driverColumns, setDriverColumns] = useState(DRIVER_DEFAULT_KEYS);
+  const [groupBySubContractor, setGroupBySubContractor] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [pickUserId, setPickUserId] = useState('');
+  const [customEmail, setCustomEmail] = useState('');
+  const [customIsCc, setCustomIsCc] = useState(false);
+
+  useEffect(() => {
+    if (!route?.id) return;
+    setLoading(true);
+    setError('');
+    contractorApi.routeDistributionConfig
+      .get(route.id)
+      .then((r) => {
+        setRows(r.recipients || []);
+        const s = r.settings;
+        if (s) {
+          setIncludeFleet(s.includeFleet !== false);
+          setIncludeDrivers(s.includeDrivers !== false);
+          setFleetColumns(s.fleetColumns?.length ? s.fleetColumns : FLEET_DEFAULT_KEYS);
+          setDriverColumns(s.driverColumns?.length ? s.driverColumns : DRIVER_DEFAULT_KEYS);
+          setGroupBySubContractor(Boolean(s.groupBySubContractor));
+        } else {
+          setIncludeFleet(true);
+          setIncludeDrivers(true);
+          setFleetColumns(FLEET_DEFAULT_KEYS);
+          setDriverColumns(DRIVER_DEFAULT_KEYS);
+          setGroupBySubContractor(false);
+        }
+      })
+      .catch((e) => setError(e?.message || 'Failed to load route settings'))
+      .finally(() => setLoading(false));
+  }, [route?.id]);
+
+  const addFromUser = (userId) => {
+    const u = tenantUsers.find((x) => String(x.id) === String(userId));
+    if (!u) return;
+    const email = (u.email || '').trim().toLowerCase();
+    if (!email) return;
+    setRows((prev) => {
+      if (prev.some((r) => r.email === email && Boolean(r.isCc) === customIsCc)) return prev;
+      return [...prev, { email, label: u.full_name || u.email, userId: u.id, isCc: customIsCc }];
+    });
+    setPickUserId('');
+  };
+
+  const addCustomEmail = () => {
+    const email = customEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) return;
+    setRows((prev) => {
+      if (prev.some((r) => r.email === email && Boolean(r.isCc) === customIsCc)) return prev;
+      return [...prev, { email, label: null, userId: null, isCc: customIsCc }];
+    });
+    setCustomEmail('');
+  };
+
+  const removeRow = (email, isCc) => {
+    setRows((prev) => prev.filter((r) => !(r.email === email && Boolean(r.isCc) === isCc)));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      let fleetCols = [...fleetColumns];
+      let driverCols = [...driverColumns];
+      if (groupBySubContractor) {
+        fleetCols = ['contractor', 'sub_contractor', ...fleetCols.filter((k) => k !== 'contractor' && k !== 'sub_contractor')];
+        driverCols = ['contractor', 'sub_contractor', ...driverCols.filter((k) => k !== 'contractor' && k !== 'sub_contractor')];
+      }
+      await contractorApi.routeDistributionConfig.save(route.id, {
+        recipients: rows.map((r) => ({
+          email: r.email,
+          user_id: r.userId || null,
+          label: r.label || null,
+          is_cc: Boolean(r.isCc),
+        })),
+        settings: {
+          includeFleet,
+          includeDrivers,
+          fleetColumns: fleetCols,
+          driverColumns: driverCols,
+          groupBySubContractor,
+        },
+      });
+      onSaved?.();
+      onClose?.();
+    } catch (e) {
+      setError(e?.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!route) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-surface-200">
+          <h3 className="font-semibold text-surface-900">Route list distribution settings</h3>
+          <p className="text-sm text-surface-500 mt-0.5">
+            Route: <span className="font-medium text-surface-800">{route.name}</span>
+          </p>
+          <p className="text-xs text-surface-500 mt-1">
+            Recipients and fleet/driver columns load automatically when this route is selected on List distribution.
+          </p>
+        </div>
+        <div className="p-5 overflow-y-auto flex-1 space-y-5">
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
+          )}
+          {loading ? (
+            <p className="text-sm text-surface-500">Loading…</p>
+          ) : (
+            <>
+              <p className="text-xs font-semibold text-surface-700 uppercase tracking-wide mb-2">Email recipients</p>
+              <div className="rounded-xl border border-surface-200 p-3 space-y-2 bg-surface-50/50">
+                <p className="text-xs font-semibold text-surface-600">Add recipient</p>
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    value={pickUserId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (id) addFromUser(id);
+                    }}
+                    className="flex-1 min-w-[140px] rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="">From user…</option>
+                    {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.full_name || u.email}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="email"
+                    placeholder="Or email address"
+                    value={customEmail}
+                    onChange={(e) => setCustomEmail(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCustomEmail())}
+                    className="flex-1 min-w-[140px] rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={addCustomEmail}
+                    className="px-3 py-2 text-sm rounded-lg border border-surface-300 bg-white hover:bg-surface-50"
+                  >
+                    Add
+                  </button>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-surface-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={customIsCc}
+                    onChange={(e) => setCustomIsCc(e.target.checked)}
+                    className="rounded border-surface-300"
+                  />
+                  Add as CC (not primary recipient)
+                </label>
+              </div>
+              {rows.length === 0 ? (
+                <p className="text-sm text-surface-400 italic py-4 text-center">No recipients configured for this route yet.</p>
+              ) : (
+                <ul className="divide-y divide-surface-100 rounded-xl border border-surface-200 overflow-hidden">
+                  {rows.map((r) => (
+                    <li key={`${r.email}-${r.isCc}`} className="flex items-center gap-3 px-3 py-2.5 bg-white text-sm">
+                      <span
+                        className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                          r.isCc ? 'bg-surface-200 text-surface-600' : 'bg-brand-100 text-brand-800'
+                        }`}
+                      >
+                        {r.isCc ? 'CC' : 'To'}
+                      </span>
+                      <span className="flex-1 truncate text-surface-900">{r.label || r.email}</span>
+                      {r.label && <span className="text-xs text-surface-400 truncate max-w-[120px]">{r.email}</span>}
+                      <button
+                        type="button"
+                        onClick={() => removeRow(r.email, r.isCc)}
+                        className="text-surface-400 hover:text-red-600 shrink-0"
+                        aria-label="Remove"
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+
+          {!loading && (
+            <section className="space-y-3 pt-2 border-t border-surface-200">
+              <p className="text-xs font-semibold text-surface-700 uppercase tracking-wide">Fleet & driver columns</p>
+              <div className="flex flex-wrap gap-3">
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeFleet}
+                    onChange={(e) => setIncludeFleet(e.target.checked)}
+                    className="rounded border-surface-300 text-brand-600"
+                  />
+                  Include fleet list
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeDrivers}
+                    onChange={(e) => setIncludeDrivers(e.target.checked)}
+                    className="rounded border-surface-300 text-brand-600"
+                  />
+                  Include driver list
+                </label>
+              </div>
+              {includeFleet && (
+                <ColumnPickerGrid
+                  title="Fleet columns"
+                  columns={FLEET_COLUMNS}
+                  selectedKeys={fleetColumns}
+                  onChange={setFleetColumns}
+                  filterFn={(c) => c.key !== 'route_name' || true}
+                />
+              )}
+              {includeDrivers && (
+                <ColumnPickerGrid
+                  title="Driver columns"
+                  columns={DRIVER_COLUMNS}
+                  selectedKeys={driverColumns}
+                  onChange={setDriverColumns}
+                  filterFn={(c) => c.key !== 'route_name' || true}
+                />
+              )}
+              <label className="flex items-start gap-3 cursor-pointer rounded-lg border border-[#C4BD97]/80 bg-[#EEECE1]/40 p-3">
+                <input
+                  type="checkbox"
+                  checked={groupBySubContractor}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setGroupBySubContractor(on);
+                    if (on) {
+                      setFleetColumns((prev) => [
+                        'contractor',
+                        'sub_contractor',
+                        ...prev.filter((k) => k !== 'contractor' && k !== 'sub_contractor'),
+                      ]);
+                      setDriverColumns((prev) => [
+                        'contractor',
+                        'sub_contractor',
+                        ...prev.filter((k) => k !== 'contractor' && k !== 'sub_contractor'),
+                      ]);
+                    }
+                  }}
+                  className="mt-0.5 rounded border-[#948A54]"
+                />
+                <span className="text-sm text-surface-800">
+                  <span className="font-medium">Group by contractor & sub-contractor</span>
+                  <span className="block text-xs text-surface-600 mt-0.5">Adds tan section banners in Excel/PDF exports.</span>
+                </span>
+              </label>
+            </section>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-surface-200 flex gap-2 justify-end bg-surface-50/80">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || loading}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save settings'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AccessManagement() {
   const { user, loading: authLoading } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -229,6 +587,13 @@ export default function AccessManagement() {
   const [distContractorSearch, setDistContractorSearch] = useState('');
   const [distCcRecipients, setDistCcRecipients] = useState([]);
   const [distCustomCcEmail, setDistCustomCcEmail] = useState('');
+  const [distRouteSearch, setDistRouteSearch] = useState('');
+  const [distShowOtherOptions, setDistShowOtherOptions] = useState(false);
+  const [distRouteRecipientCounts, setDistRouteRecipientCounts] = useState({});
+  const [distRecipientModalRoute, setDistRecipientModalRoute] = useState(null);
+  const [distRecipientsSourceNote, setDistRecipientsSourceNote] = useState('');
+  const [distListSettingsNote, setDistListSettingsNote] = useState('');
+  const [distLoadingRouteRecipients, setDistLoadingRouteRecipients] = useState(false);
 
   // Distribution history tab
   const [distHistory, setDistHistory] = useState([]);
@@ -933,6 +1298,108 @@ export default function AccessManagement() {
   const distClearAllRoutes = () => setDistSelectedRouteIds([]);
   const distAllSelected = routes.length > 0 && distSelectedRouteIds.length === routes.length;
 
+  const distFilteredRoutes = useMemo(() => {
+    const q = distRouteSearch.trim().toLowerCase();
+    if (!q) return routes;
+    return routes.filter((r) => (r.name || '').toLowerCase().includes(q));
+  }, [routes, distRouteSearch]);
+
+  const distSummary = useMemo(() => {
+    const activeIds =
+      distSelectedRouteIds.length > 0 ? distSelectedRouteIds : routes.map((r) => String(r.id ?? r.Id));
+    let trucks = 0;
+    let drivers = 0;
+    for (const id of activeIds) {
+      const d = distRouteDetails[id];
+      trucks += (d?.trucks || []).length;
+      drivers += (d?.drivers || []).length;
+    }
+    return {
+      routeCount: activeIds.length,
+      trucks,
+      drivers,
+      scopeLabel: distSelectedRouteIds.length > 0 ? 'Selected routes' : 'All routes',
+    };
+  }, [distSelectedRouteIds, distRouteDetails, routes]);
+
+  const refreshDistRouteRecipientCounts = useCallback(() => {
+    if (!routes.length) return;
+    contractorApi.distributionHistory
+      .resolveRouteRecipients(routes.map((r) => String(r.id ?? r.Id)))
+      .then((data) => {
+        const counts = {};
+        for (const [rid, info] of Object.entries(data.byRoute || {})) {
+          counts[rid] = info.count || 0;
+        }
+        setDistRouteRecipientCounts(counts);
+      })
+      .catch(() => setDistRouteRecipientCounts({}));
+  }, [routes]);
+
+  const applyDistRecipientsFromRoutes = useCallback(() => {
+    if (!routes.length) return;
+    const routeIds =
+      distSelectedRouteIds.length > 0
+        ? distSelectedRouteIds
+        : routes.map((r) => String(r.id ?? r.Id));
+    setDistLoadingRouteRecipients(true);
+    contractorApi.distributionHistory
+      .resolveRouteRecipients(routeIds)
+      .then((data) => {
+        const to = (data.to || []).map((r) => ({ email: r.email, label: r.label || r.email }));
+        const cc = (data.cc || []).map((r) => ({ email: r.email, label: r.label || r.email }));
+        setDistRecipients(to);
+        setDistCcRecipients(cc);
+        const scope =
+          distSelectedRouteIds.length > 0
+            ? `${distSelectedRouteIds.length} selected route(s)`
+            : 'all routes';
+        if (to.length + cc.length > 0) {
+          setDistRecipientsSourceNote(`Loaded ${to.length} To and ${cc.length} CC from ${scope}.`);
+        } else {
+          setDistRecipientsSourceNote(
+            `No default recipients for ${scope}. Click Manage on a route to configure list settings.`
+          );
+        }
+        const counts = {};
+        for (const [rid, info] of Object.entries(data.byRoute || {})) {
+          counts[rid] = info.count || 0;
+        }
+        setDistRouteRecipientCounts((prev) => ({ ...prev, ...counts }));
+
+        const ls = data.listSettings;
+        if (ls && ls.configuredRouteCount > 0) {
+          setDistIncludeFleet(ls.includeFleet !== false);
+          setDistIncludeDrivers(ls.includeDrivers !== false);
+          if (ls.fleetColumns?.length) setDistFleetColumns(ls.fleetColumns);
+          if (ls.driverColumns?.length) setDistDriverColumns(ls.driverColumns);
+          setDistGroupBySubContractor(Boolean(ls.groupBySubContractor));
+          setDistListSettingsNote(
+            `Loaded fleet/driver columns from ${ls.configuredRouteCount} configured route(s) in ${scope}.`
+          );
+        } else {
+          setDistListSettingsNote(
+            `No column settings saved for ${scope}. Click Manage on a route to set fleet and driver columns once.`
+          );
+        }
+      })
+      .catch(() => {
+        setDistRecipientsSourceNote('');
+        setDistListSettingsNote('');
+      })
+      .finally(() => setDistLoadingRouteRecipients(false));
+  }, [routes, distSelectedRouteIds]);
+
+  useEffect(() => {
+    if (activeTab !== 'distribution' || !routes.length) return;
+    applyDistRecipientsFromRoutes();
+  }, [activeTab, distSelectedRouteIds, routes.length, applyDistRecipientsFromRoutes]);
+
+  useEffect(() => {
+    if (activeTab !== 'distribution' && activeTab !== 'routes') return;
+    refreshDistRouteRecipientCounts();
+  }, [activeTab, routes.length, refreshDistRouteRecipientCounts]);
+
   const recordDistribution = (list_type, format, channel, recipient_email = null, recipient_phone = null) => {
     contractorApi.distributionHistory
       .create({
@@ -1062,7 +1529,7 @@ export default function AccessManagement() {
       })
       .then((data) => {
         setDistSendResult(data);
-        if (data.sent > 0) setDistRecipients([]);
+        if (data.sent > 0) applyDistRecipientsFromRoutes();
       })
       .catch((err) => setError(err?.message || 'Failed to send'))
       .finally(() => setDistSending(false));
@@ -1295,6 +1762,7 @@ export default function AccessManagement() {
                       <td className="p-3">{formatDate(r.route_expiration)}</td>
                       <td className="p-3">
                         <button type="button" onClick={() => openEditRoute(r)} className="text-brand-600 hover:underline mr-2">Edit</button>
+                        <button type="button" onClick={() => setDistRecipientModalRoute({ id: r.id, name: r.name })} className="text-brand-600 hover:underline mr-2">List settings</button>
                         <button type="button" onClick={() => addRectorsToRoute(r.id)} className="text-brand-600 hover:underline mr-2">Add rectors</button>
                         <button type="button" onClick={() => deleteRoute(r.id)} className="text-red-600 hover:underline">Delete</button>
                       </td>
@@ -1675,148 +2143,206 @@ export default function AccessManagement() {
       )}
 
       {activeTab === 'distribution' && (
-        <div className="space-y-6">
-          <h2 className="text-lg font-semibold text-surface-900">List distribution</h2>
-          <p className="text-sm text-surface-500">Fleet and drivers are shown per route. Select the routes you want, then choose how to distribute the list (download, email, or WhatsApp).</p>
-
-          {distLoadingDetails && <p className="text-sm text-surface-500">Loading fleet and drivers per route…</p>}
-
-          {routes.length > 0 && (
-            <div className="flex flex-wrap gap-2 items-center mb-4">
-              <span className="text-sm font-medium text-surface-700">Select routes:</span>
-              <button type="button" onClick={distSelectAllRoutes} className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">
-                Select all
-              </button>
-              <button type="button" onClick={distClearAllRoutes} className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">
-                Clear all
-              </button>
-              {distSelectedRouteIds.length > 0 && (
-                <span className="text-sm text-surface-500">
-                  {distSelectedRouteIds.length} route{distSelectedRouteIds.length !== 1 ? 's' : ''} selected
-                </span>
-              )}
-              {distSelectedRouteIds.length === 0 && routes.length > 0 && (
-                <span className="text-sm text-surface-500">No routes selected — list will include all approved fleet/drivers. Or select routes above for route-specific lists.</span>
-              )}
-            </div>
-          )}
-
-          <div className="grid gap-4 md:grid-cols-2">
-            {routes.map((r) => {
-              const detail = distRouteDetails[r.id];
-              const trucks = detail?.trucks || [];
-              const drivers = detail?.drivers || [];
-              const selected = distSelectedRouteIds.includes(String(r.id ?? r.Id));
-              return (
-                <div key={r.id} className="app-glass-card overflow-hidden">
-                  <div className="p-4 border-b border-surface-100 flex items-center gap-3">
-                    <label className="flex items-center gap-2 cursor-pointer shrink-0">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => distToggleRoute(r.id)}
-                        className="rounded border-surface-300"
-                      />
-                      <span className="font-medium text-surface-900">{r.name}</span>
-                    </label>
-                  </div>
-                  <div className="p-4 grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Fleet ({trucks.length})</p>
-                      {trucks.length === 0 ? (
-                        <p className="text-sm text-surface-400">No trucks enrolled</p>
-                      ) : (
-                        <ul className="text-sm text-surface-700 space-y-1">
-                          {trucks.slice(0, 8).map((t) => (
-                            <li key={t.truck_id}>{t.registration}{t.make_model ? ` · ${t.make_model}` : ''}{t.fleet_no ? ` #${t.fleet_no}` : ''}</li>
-                          ))}
-                          {trucks.length > 8 && <li className="text-surface-500">+{trucks.length - 8} more</li>}
-                        </ul>
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-2">Drivers ({drivers.length})</p>
-                      {drivers.length === 0 ? (
-                        <p className="text-sm text-surface-400">No drivers enrolled</p>
-                      ) : (
-                        <ul className="text-sm text-surface-700 space-y-1">
-                          {drivers.slice(0, 8).map((d) => (
-                            <li key={d.driver_id}>{d.full_name}{d.license_number ? ` · ${d.license_number}` : ''}</li>
-                          ))}
-                          {drivers.length > 8 && <li className="text-surface-500">+{drivers.length - 8} more</li>}
-                        </ul>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+        <div className="space-y-6 max-w-6xl">
+          <div>
+            <h2 className="text-xl font-semibold text-surface-900">List distribution</h2>
+            <p className="text-sm text-surface-500 mt-1">
+              Select routes, configure columns, then download or email fleet and driver lists to recipients.
+            </p>
           </div>
 
-          {routes.length === 0 && !loading && (
-            <p className="text-sm text-surface-500">No routes yet. Add routes in Route management and enrol fleet and drivers on each route.</p>
+          {distLoadingDetails && (
+            <div className="flex items-center gap-2 text-sm text-surface-500 py-2">
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-surface-300 border-t-brand-600" />
+              Loading fleet and drivers per route…
+            </div>
           )}
 
-          <div className="app-glass-card p-6 space-y-4">
-            <h3 className="font-medium text-surface-900">How to distribute</h3>
-            <p className="text-sm text-surface-500">Choose what to include and the format. If no routes are selected, the list includes all approved fleet/drivers.</p>
-            <div className="flex flex-wrap gap-4 items-center">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={distIncludeFleet} onChange={(e) => setDistIncludeFleet(e.target.checked)} className="rounded border-surface-300" />
-                <span className="text-sm">Include fleet list</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={distIncludeDrivers} onChange={(e) => setDistIncludeDrivers(e.target.checked)} className="rounded border-surface-300" />
-                <span className="text-sm">Include driver list</span>
-              </label>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-surface-600">Format:</span>
-                <select value={distFormat} onChange={(e) => setDistFormat(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
-                  <option value="csv">CSV</option>
-                  <option value="excel">Excel (.xls)</option>
-                </select>
-              </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
+              <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">Scope</p>
+              <p className="text-lg font-semibold text-surface-900 mt-1">{distSummary.scopeLabel}</p>
+              <p className="text-xs text-surface-500 mt-0.5">
+                {distSelectedRouteIds.length === 0
+                  ? 'No routes ticked — export uses all routes'
+                  : `${distSelectedRouteIds.length} route${distSelectedRouteIds.length !== 1 ? 's' : ''} selected`}
+              </p>
             </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 shadow-sm">
+              <p className="text-xs font-medium text-emerald-800 uppercase tracking-wide">Fleet</p>
+              <p className="text-2xl font-bold text-emerald-900 tabular-nums mt-1">{distSummary.trucks}</p>
+              <p className="text-xs text-emerald-700/80">trucks in scope</p>
+            </div>
+            <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-4 shadow-sm">
+              <p className="text-xs font-medium text-blue-800 uppercase tracking-wide">Drivers</p>
+              <p className="text-2xl font-bold text-blue-900 tabular-nums mt-1">{distSummary.drivers}</p>
+              <p className="text-xs text-blue-700/80">drivers in scope</p>
+            </div>
+          </div>
 
-            {distIncludeFleet && (
-              <div className="pt-2">
-                <p className="text-xs font-medium text-surface-500 mb-2">Fleet list columns to include in email attachment:</p>
-                <div className="flex flex-wrap gap-3">
-                  {FLEET_COLUMNS.filter((c) => c.key !== 'route_name' || distSelectedRouteIds.length > 0).map((col) => (
-                    <label key={col.key} className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={distFleetColumns.includes(col.key)}
-                        onChange={(e) => setDistFleetColumns((prev) => (e.target.checked ? [...prev, col.key] : prev.filter((k) => k !== col.key)))}
-                        className="rounded border-surface-300"
-                      />
-                      <span className="text-sm text-surface-700">{col.label}</span>
-                    </label>
-                  ))}
+          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
+            <div className="px-5 py-4 border-b border-surface-200 bg-surface-50/80">
+              <DistSectionHeader
+                step="1"
+                title="Select routes"
+                description="Leave all unchecked to include every route. Search and use bulk actions to select quickly."
+              />
+            </div>
+            {routes.length === 0 && !loading ? (
+              <p className="px-5 py-8 text-sm text-surface-500 text-center">
+                No routes yet. Add routes under Route management and enrol fleet and drivers on each route.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2 items-center px-5 py-3 border-b border-surface-100">
+                  <input
+                    type="search"
+                    placeholder="Search routes…"
+                    value={distRouteSearch}
+                    onChange={(e) => setDistRouteSearch(e.target.value)}
+                    className="flex-1 min-w-[180px] max-w-xs rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    aria-label="Search routes"
+                  />
+                  <button
+                    type="button"
+                    onClick={distSelectAllRoutes}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={distClearAllRoutes}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                  >
+                    Clear
+                  </button>
+                  <span className="text-xs text-surface-500 ml-auto">
+                    {distSelectedRouteIds.length} / {routes.length} selected
+                  </span>
                 </div>
-              </div>
-            )}
-            {distIncludeDrivers && (
-              <div className="pt-2">
-                <p className="text-xs font-medium text-surface-500 mb-2">Driver list columns to include in email attachment:</p>
-                <div className="flex flex-wrap gap-3">
-                  {DRIVER_COLUMNS.filter((c) => c.key !== 'route_name' || distSelectedRouteIds.length > 0).map((col) => (
-                    <label key={col.key} className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={distDriverColumns.includes(col.key)}
-                        onChange={(e) => setDistDriverColumns((prev) => (e.target.checked ? [...prev, col.key] : prev.filter((k) => k !== col.key)))}
-                        className="rounded border-surface-300"
-                      />
-                      <span className="text-sm text-surface-700">{col.label}</span>
-                    </label>
-                  ))}
+                <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-surface-50 border-b border-surface-200 z-10">
+                      <tr>
+                        <th className="w-10 px-4 py-2" />
+                        <th className="text-left font-semibold text-surface-700 px-4 py-2">Route</th>
+                        <th className="text-right font-semibold text-surface-700 px-4 py-2 w-24">Fleet</th>
+                        <th className="text-right font-semibold text-surface-700 px-4 py-2 w-24">Drivers</th>
+                        <th className="text-right font-semibold text-surface-700 px-4 py-2 w-28">Recipients</th>
+                        <th className="text-right font-semibold text-surface-700 px-4 py-2 w-24">Manage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {distFilteredRoutes.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="px-4 py-6 text-center text-surface-500">
+                            No routes match your search.
+                          </td>
+                        </tr>
+                      ) : (
+                        distFilteredRoutes.map((r) => {
+                          const rid = String(r.id ?? r.Id);
+                          const detail = distRouteDetails[r.id];
+                          const trucks = detail?.trucks || [];
+                          const drivers = detail?.drivers || [];
+                          const selected = distSelectedRouteIds.includes(rid);
+                          return (
+                            <tr
+                              key={r.id}
+                              className={`border-b border-surface-100 last:border-0 cursor-pointer ${selected ? 'bg-brand-50/60' : 'hover:bg-surface-50'}`}
+                              onClick={() => distToggleRoute(r.id)}
+                            >
+                              <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  onChange={() => distToggleRoute(r.id)}
+                                  className="rounded border-surface-300 text-brand-600"
+                                  aria-label={`Select ${r.name}`}
+                                />
+                              </td>
+                              <td className="px-4 py-2.5 font-medium text-surface-900">{r.name || 'Unnamed route'}</td>
+                              <td className="px-4 py-2.5 text-right tabular-nums text-surface-600">{trucks.length}</td>
+                              <td className="px-4 py-2.5 text-right tabular-nums text-surface-600">{drivers.length}</td>
+                              <td className="px-4 py-2.5 text-right tabular-nums">
+                                {distRouteRecipientCounts[rid] > 0 ? (
+                                  <span className="text-brand-700 font-medium">{distRouteRecipientCounts[rid]}</span>
+                                ) : (
+                                  <span className="text-surface-400">—</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => setDistRecipientModalRoute({ id: r.id, name: r.name })}
+                                  className="text-xs font-medium text-brand-700 hover:underline"
+                                >
+                                  Manage
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-              </div>
+              </>
             )}
+          </section>
 
-            <div className="pt-2 rounded-lg border border-[#C4BD97] bg-[#EEECE1]/60 p-3">
-              <label className="flex items-start gap-3 cursor-pointer">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <section className="app-glass-panel-2xl p-5 shadow-sm space-y-4">
+              <DistSectionHeader
+                step="2"
+                title="List content & columns"
+                description="Choose which lists and columns to include. Saved per route via Manage — loads automatically when routes are selected."
+              />
+              {distListSettingsNote && (
+                <p className="text-xs text-brand-800 bg-brand-50 border border-brand-100 rounded-lg px-3 py-2">
+                  {distListSettingsNote}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-3">
+                <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm cursor-pointer hover:border-brand-300 has-[:checked]:border-brand-400 has-[:checked]:bg-brand-50">
+                  <input
+                    type="checkbox"
+                    checked={distIncludeFleet}
+                    onChange={(e) => setDistIncludeFleet(e.target.checked)}
+                    className="rounded border-surface-300 text-brand-600"
+                  />
+                  Fleet list
+                </label>
+                <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm cursor-pointer hover:border-brand-300 has-[:checked]:border-brand-400 has-[:checked]:bg-brand-50">
+                  <input
+                    type="checkbox"
+                    checked={distIncludeDrivers}
+                    onChange={(e) => setDistIncludeDrivers(e.target.checked)}
+                    className="rounded border-surface-300 text-brand-600"
+                  />
+                  Driver list
+                </label>
+              </div>
+              {distIncludeFleet && (
+                <ColumnPickerGrid
+                  title="Fleet columns"
+                  columns={FLEET_COLUMNS}
+                  selectedKeys={distFleetColumns}
+                  onChange={setDistFleetColumns}
+                  filterFn={(c) => c.key !== 'route_name' || distSelectedRouteIds.length > 0}
+                />
+              )}
+              {distIncludeDrivers && (
+                <ColumnPickerGrid
+                  title="Driver columns"
+                  columns={DRIVER_COLUMNS}
+                  selectedKeys={distDriverColumns}
+                  onChange={setDistDriverColumns}
+                  filterFn={(c) => c.key !== 'route_name' || distSelectedRouteIds.length > 0}
+                />
+              )}
+              <label className="flex items-start gap-3 cursor-pointer rounded-xl border border-[#C4BD97]/80 bg-[#EEECE1]/40 p-3">
                 <input
                   type="checkbox"
                   checked={distGroupBySubContractor}
@@ -1824,10 +2350,11 @@ export default function AccessManagement() {
                     const on = e.target.checked;
                     setDistGroupBySubContractor(on);
                     if (on) {
-                      const ensure = (prev) => {
-                        const next = ['contractor', 'sub_contractor', ...prev.filter((k) => k !== 'contractor' && k !== 'sub_contractor')];
-                        return next;
-                      };
+                      const ensure = (prev) => [
+                        'contractor',
+                        'sub_contractor',
+                        ...prev.filter((k) => k !== 'contractor' && k !== 'sub_contractor'),
+                      ];
                       setDistFleetColumns(ensure);
                       setDistDriverColumns(ensure);
                     }
@@ -1835,326 +2362,370 @@ export default function AccessManagement() {
                   className="mt-0.5 rounded border-[#948A54]"
                 />
                 <span className="text-sm text-surface-800">
-                  <span className="font-medium">Group rows by contractor and sub-contractor</span>
+                  <span className="font-medium">Group by contractor & sub-contractor</span>
                   <span className="block text-xs text-surface-600 mt-0.5">
-                    Optional. Adds a centred banner for each contractor (darker tan) with their sub-contractors nested underneath (lighter tan), then the trucks/drivers below. Both <em>Contractor</em> and <em>Sub-contractor</em> columns are added automatically. Rows that have no sub-contractor fall directly under their main contractor.
+                    Adds tan section banners in Excel/PDF. Contractor and sub-contractor columns are included automatically.
                   </span>
                 </span>
               </label>
-            </div>
+            </section>
 
-            <div className="flex flex-wrap gap-2 pt-2">
-              {distIncludeFleet && (
-                <>
-                  <button
-                    type="button"
-                    disabled={distDownloading !== null}
-                    onClick={() => downloadList('fleet', 'csv')}
-                    className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-                  >
-                    {distDownloading === 'fleet-csv' ? 'Downloading…' : 'Download fleet (CSV)'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={distDownloading !== null}
-                    onClick={() => downloadList('fleet', 'excel')}
-                    className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-                  >
-                    {distDownloading === 'fleet-excel' ? 'Downloading…' : 'Download fleet (Excel)'}
-                  </button>
-                </>
-              )}
-              {distIncludeDrivers && (
-                <>
-                  <button
-                    type="button"
-                    disabled={distDownloading !== null}
-                    onClick={() => downloadList('driver', 'csv')}
-                    className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-                  >
-                    {distDownloading === 'driver-csv' ? 'Downloading…' : 'Download drivers (CSV)'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={distDownloading !== null}
-                    onClick={() => downloadList('driver', 'excel')}
-                    className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-                  >
-                    {distDownloading === 'driver-excel' ? 'Downloading…' : 'Download drivers (Excel)'}
-                  </button>
-                </>
-              )}
-              <button type="button" onClick={() => window.print()} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">
-                Print / Save as PDF
+            <section className="app-glass-panel-2xl p-5 shadow-sm space-y-4">
+              <DistSectionHeader
+                step="3"
+                title="Download"
+                description="Save lists to your device. Format applies to direct downloads below."
+              />
+              <div>
+                <label className="text-xs font-medium text-surface-600 block mb-1">Download format</label>
+                <select
+                  value={distFormat}
+                  onChange={(e) => setDistFormat(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                >
+                  <option value="csv">CSV</option>
+                  <option value="excel">Excel (.xlsx)</option>
+                </select>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {distIncludeFleet && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={distDownloading !== null}
+                      onClick={() => downloadList('fleet', 'csv')}
+                      className="px-3 py-2.5 text-sm font-medium rounded-lg border border-surface-300 bg-white text-surface-800 hover:bg-surface-50 disabled:opacity-50 text-left"
+                    >
+                      {distDownloading === 'fleet-csv' ? 'Downloading…' : '↓ Fleet · CSV'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={distDownloading !== null}
+                      onClick={() => downloadList('fleet', 'excel')}
+                      className="px-3 py-2.5 text-sm font-medium rounded-lg border border-surface-300 bg-white text-surface-800 hover:bg-surface-50 disabled:opacity-50 text-left"
+                    >
+                      {distDownloading === 'fleet-excel' ? 'Downloading…' : '↓ Fleet · Excel'}
+                    </button>
+                  </>
+                )}
+                {distIncludeDrivers && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={distDownloading !== null}
+                      onClick={() => downloadList('driver', 'csv')}
+                      className="px-3 py-2.5 text-sm font-medium rounded-lg border border-surface-300 bg-white text-surface-800 hover:bg-surface-50 disabled:opacity-50 text-left"
+                    >
+                      {distDownloading === 'driver-csv' ? 'Downloading…' : '↓ Drivers · CSV'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={distDownloading !== null}
+                      onClick={() => downloadList('driver', 'excel')}
+                      className="px-3 py-2.5 text-sm font-medium rounded-lg border border-surface-300 bg-white text-surface-800 hover:bg-surface-50 disabled:opacity-50 text-left"
+                    >
+                      {distDownloading === 'driver-excel' ? 'Downloading…' : '↓ Drivers · Excel'}
+                    </button>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-dashed border-surface-300 text-surface-600 hover:bg-surface-50"
+              >
+                Print / save as PDF
               </button>
-            </div>
+            </section>
+          </div>
 
-            <h3 className="font-medium text-surface-900 pt-4">Send from system (actual fleet/driver list attached)</h3>
-            <p className="text-sm text-surface-500">Add recipients from existing users or enter any email address. Choose attachment format: Excel (professional layout), PDF, or CSV.</p>
-            <div className="mt-3 rounded-lg border border-surface-300 bg-surface-50/50 p-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={distSendPerContractor}
-                  onChange={(e) => setDistSendPerContractor(e.target.checked)}
-                  className="rounded border-surface-300"
-                />
-                <span className="text-sm font-medium text-surface-700">Send list per contractor (one list per contractor and route; file names: route, contractor, date and time)</span>
-              </label>
+          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
+            <div className="px-5 py-4 border-b border-surface-200 bg-gradient-to-r from-brand-50/80 to-white">
+              <DistSectionHeader
+                step="4"
+                title="Send from system"
+                description="Email the actual fleet/driver files as attachments. Recipients receive lists generated from live data."
+              />
+            </div>
+            <div className="p-5 space-y-5">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-xs font-medium text-surface-600 block mb-1">Attachment format</label>
+                  <select
+                    value={distEmailFormat}
+                    onChange={(e) => setDistEmailFormat(e.target.value)}
+                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="excel">Excel (.xlsx) — professional layout</option>
+                    <option value="pdf">PDF</option>
+                    <option value="csv">CSV</option>
+                  </select>
+                </div>
+                <label className="flex items-start gap-3 cursor-pointer rounded-lg border border-surface-200 bg-surface-50/50 p-3 self-end">
+                  <input
+                    type="checkbox"
+                    checked={distSendPerContractor}
+                    onChange={(e) => setDistSendPerContractor(e.target.checked)}
+                    className="mt-0.5 rounded border-surface-300"
+                  />
+                  <span className="text-sm text-surface-800">
+                    <span className="font-medium">One file per contractor</span>
+                    <span className="block text-xs text-surface-500 mt-0.5">Separate lists per contractor and route</span>
+                  </span>
+                </label>
+              </div>
+
               {distSendPerContractor && (
-                <div className="mt-3 pl-6 space-y-3 border-t border-surface-200 pt-3">
-                  <p className="text-xs text-surface-600">Select contractors to include (each gets fleet/driver list per route):</p>
-                  {(() => {
-                    const q = (distContractorSearch || '').trim().toLowerCase();
-                    const filtered = q
-                      ? distContractors.filter((c) => (c.name || '').toLowerCase().includes(q))
-                      : distContractors;
-                    const selectedSet = new Set(distSelectedContractorIds.map(String));
-                    const allFilteredSelected = filtered.length > 0 && filtered.every((c) => selectedSet.has(String(c.id)));
-                    const someFilteredSelected = filtered.some((c) => selectedSet.has(String(c.id)));
-                    return (
-                      <div className="rounded-lg border border-surface-300 bg-white overflow-hidden">
-                        <div className="flex flex-wrap gap-2 items-center p-2 border-b border-surface-200 bg-surface-50">
-                          <input
-                            type="search"
-                            placeholder="Search contractors…"
-                            value={distContractorSearch}
-                            onChange={(e) => setDistContractorSearch(e.target.value)}
-                            className="flex-1 min-w-[160px] rounded-md border border-surface-300 px-3 py-2 text-sm placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
-                            aria-label="Search contractors"
-                          />
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-surface-500 whitespace-nowrap">
-                              {distSelectedContractorIds.length} of {distContractors.length} selected
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const add = filtered.filter((c) => !selectedSet.has(String(c.id))).map((c) => c.id);
-                                setDistSelectedContractorIds((prev) => [...new Set([...prev, ...add])]);
-                              }}
-                              className="px-3 py-1.5 text-xs font-medium rounded-md border border-surface-300 text-surface-700 bg-white hover:bg-surface-50"
-                            >
-                              Select all
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (filtered.length === 0) return;
-                                const removeIds = new Set(filtered.map((c) => String(c.id)));
-                                setDistSelectedContractorIds((prev) => prev.filter((id) => !removeIds.has(String(id))));
-                              }}
-                              className="px-3 py-1.5 text-xs font-medium rounded-md border border-surface-300 text-surface-700 bg-white hover:bg-surface-50"
-                            >
-                              Clear
-                            </button>
-                            {distContractors.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => setDistSelectedContractorIds(allFilteredSelected ? [] : distContractors.map((c) => c.id))}
-                                className="px-3 py-1.5 text-xs font-medium rounded-md border border-brand-400 text-brand-700 bg-brand-50 hover:bg-brand-100"
-                              >
-                                {allFilteredSelected ? 'Deselect all' : 'Select all (list)'}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        <div className="max-h-[220px] overflow-y-auto p-1" role="listbox" aria-multiselectable aria-label="Contractors">
-                          {filtered.length === 0 ? (
-                            <p className="py-4 text-center text-sm text-surface-500">
-                              {distContractors.length === 0 ? 'No contractors available.' : 'No contractors match your search.'}
-                            </p>
-                          ) : (
-                            filtered.map((c) => {
-                              const id = String(c.id);
-                              const checked = selectedSet.has(id);
-                              return (
-                                <label
-                                  key={c.id}
-                                  role="option"
-                                  aria-selected={checked}
-                                  className={`flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer text-sm select-none ${checked ? 'bg-brand-50 text-surface-900 border border-brand-200' : 'hover:bg-surface-100 text-surface-800 border border-transparent'}`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={() => {
-                                      setDistSelectedContractorIds((prev) =>
-                                        prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id]
-                                      );
-                                    }}
-                                    className="rounded border-surface-300 text-brand-600 focus:ring-brand-500"
-                                    aria-label={`Select ${c.name || 'contractor'}`}
-                                  />
-                                  <span className="flex-1 truncate">{c.name || 'Unnamed'}</span>
-                                </label>
-                              );
-                            })
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                  {distSelectedContractorIds.length > 0 && (
-                    <p className="text-xs text-surface-500">Each selected contractor will receive one list per route; PDF/Excel title = contractor name and route name.</p>
+                <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
+                  <div className="flex flex-wrap gap-2 items-center p-3 border-b border-surface-100 bg-surface-50">
+                    <input
+                      type="search"
+                      placeholder="Search contractors…"
+                      value={distContractorSearch}
+                      onChange={(e) => setDistContractorSearch(e.target.value)}
+                      className="flex-1 min-w-[140px] rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    />
+                    <span className="text-xs text-surface-500">
+                      {distSelectedContractorIds.length} / {distContractors.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const q = (distContractorSearch || '').trim().toLowerCase();
+                        const filtered = q
+                          ? distContractors.filter((c) => (c.name || '').toLowerCase().includes(q))
+                          : distContractors;
+                        const selectedSet = new Set(distSelectedContractorIds.map(String));
+                        const add = filtered.filter((c) => !selectedSet.has(String(c.id))).map((c) => c.id);
+                        setDistSelectedContractorIds((prev) => [...new Set([...prev, ...add])]);
+                      }}
+                      className="px-2 py-1 text-xs rounded-md border border-surface-300 hover:bg-white"
+                    >
+                      Select visible
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDistSelectedContractorIds([])}
+                      className="px-2 py-1 text-xs rounded-md border border-surface-300 hover:bg-white"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto divide-y divide-surface-100">
+                    {(() => {
+                      const q = (distContractorSearch || '').trim().toLowerCase();
+                      const filtered = q
+                        ? distContractors.filter((c) => (c.name || '').toLowerCase().includes(q))
+                        : distContractors;
+                      if (filtered.length === 0) {
+                        return (
+                          <p className="py-4 text-center text-sm text-surface-500">No contractors match.</p>
+                        );
+                      }
+                      return filtered.map((c) => {
+                        const checked = distSelectedContractorIds.includes(c.id);
+                        return (
+                          <label
+                            key={c.id}
+                            className={`flex items-center gap-3 px-3 py-2 cursor-pointer text-sm ${checked ? 'bg-brand-50' : 'hover:bg-surface-50'}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setDistSelectedContractorIds((prev) =>
+                                  prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id]
+                                )
+                              }
+                              className="rounded border-surface-300 text-brand-600"
+                            />
+                            <span className="truncate">{c.name || 'Unnamed'}</span>
+                          </label>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-xl border border-surface-200 bg-surface-50/50 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-surface-700 uppercase tracking-wide">Recipients</p>
+                  {distLoadingRouteRecipients && (
+                    <span className="text-xs text-surface-500">Loading from routes…</span>
                   )}
                 </div>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-4 items-center mt-3">
-              <span className="text-sm text-surface-600">Attachment format:</span>
-              <select
-                value={distEmailFormat}
-                onChange={(e) => setDistEmailFormat(e.target.value)}
-                className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
-              >
-                <option value="excel">Excel (.xlsx) – professional</option>
-                <option value="pdf">PDF</option>
-                <option value="csv">CSV</option>
-              </select>
-            </div>
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-2 items-center">
-                <label className="text-xs font-medium text-surface-500">Add from users:</label>
-                <select
-                  value=""
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    if (!id) return;
-                    const u = tenantUsers.find((x) => x.id === id);
-                    if (u) addRecipientFromUser(u);
-                    e.target.value = '';
-                  }}
-                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[200px]"
-                >
-                  <option value="">Choose a user…</option>
-                  {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
-                    <option key={u.id} value={u.id}>{u.full_name || u.email} ({u.email})</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex flex-wrap gap-2 items-center">
-                <label className="text-xs font-medium text-surface-500">Or enter email:</label>
-                <input
-                  type="email"
-                  placeholder="email@example.com"
-                  value={distCustomEmail}
-                  onChange={(e) => setDistCustomEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addRecipientByEmail())}
-                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-56"
-                />
-                <button type="button" onClick={addRecipientByEmail} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">
-                  Add
-                </button>
-              </div>
-              {distRecipients.length > 0 && (
+                {distRecipientsSourceNote && (
+                  <p className="text-xs text-brand-800 bg-brand-50 border border-brand-100 rounded-lg px-3 py-2">
+                    {distRecipientsSourceNote}
+                  </p>
+                )}
                 <div className="flex flex-wrap gap-2">
-                  {distRecipients.map((r) => (
-                    <span
-                      key={r.email}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-surface-100 border border-surface-200 px-3 py-1 text-sm text-surface-800"
-                    >
-                      {r.label || r.email}
-                      {r.label && <span className="text-surface-500 truncate max-w-[120px]">({r.email})</span>}
-                      <button type="button" onClick={() => removeDistRecipient(r.email)} className="text-surface-500 hover:text-red-600 ml-0.5" aria-label="Remove">×</button>
-                    </span>
-                  ))}
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (!id) return;
+                      const u = tenantUsers.find((x) => x.id === id);
+                      if (u) addRecipientFromUser(u);
+                      e.target.value = '';
+                    }}
+                    className="flex-1 min-w-[160px] rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="">Add from users…</option>
+                    {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.full_name || u.email}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="email"
+                    placeholder="Or type email"
+                    value={distCustomEmail}
+                    onChange={(e) => setDistCustomEmail(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addRecipientByEmail())}
+                    className="flex-1 min-w-[160px] rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={addRecipientByEmail}
+                    className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 bg-white hover:bg-surface-50"
+                  >
+                    Add
+                  </button>
                 </div>
-              )}
-              <p className="text-xs font-medium text-surface-500 pt-2">CC (optional)</p>
-              <div className="flex flex-wrap gap-2 items-center">
-                <select
-                  value=""
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    if (!id) return;
-                    const u = tenantUsers.find((x) => x.id === id);
-                    if (u) addCcFromUser(u);
-                    e.target.value = '';
-                  }}
-                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[200px]"
-                >
-                  <option value="">Add CC from users…</option>
-                  {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
-                    <option key={u.id} value={u.id}>{u.full_name || u.email} ({u.email})</option>
-                  ))}
-                </select>
-                <input
-                  type="email"
-                  placeholder="Or enter CC email"
-                  value={distCustomCcEmail}
-                  onChange={(e) => setDistCustomCcEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCcByEmail())}
-                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48"
-                />
-                <button type="button" onClick={addCcByEmail} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">
-                  Add CC
-                </button>
-              </div>
-              {distCcRecipients.length > 0 && (
+                {distRecipients.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {distRecipients.map((r) => (
+                      <span
+                        key={r.email}
+                        className="inline-flex items-center gap-1 rounded-full bg-white border border-surface-200 pl-3 pr-1 py-1 text-sm text-surface-800 shadow-sm"
+                      >
+                        <span className="truncate max-w-[200px]">{r.label || r.email}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeDistRecipient(r.email)}
+                          className="h-6 w-6 rounded-full text-surface-400 hover:bg-red-50 hover:text-red-600"
+                          aria-label="Remove"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs font-medium text-surface-500 pt-1">CC (optional)</p>
                 <div className="flex flex-wrap gap-2">
-                  {distCcRecipients.map((r) => (
-                    <span
-                      key={r.email}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-surface-100 border border-surface-200 px-3 py-1 text-sm text-surface-600"
-                    >
-                      CC: {r.label || r.email}
-                      <button type="button" onClick={() => removeDistCcRecipient(r.email)} className="text-surface-500 hover:text-red-600 ml-0.5" aria-label="Remove">×</button>
-                    </span>
-                  ))}
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (!id) return;
+                      const u = tenantUsers.find((x) => x.id === id);
+                      if (u) addCcFromUser(u);
+                      e.target.value = '';
+                    }}
+                    className="flex-1 min-w-[140px] rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="">CC from users…</option>
+                    {tenantUsers.filter((u) => (u.email || '').trim()).map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.full_name || u.email}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="email"
+                    placeholder="CC email"
+                    value={distCustomCcEmail}
+                    onChange={(e) => setDistCustomCcEmail(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCcByEmail())}
+                    className="flex-1 min-w-[120px] rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white"
+                  />
+                  <button type="button" onClick={addCcByEmail} className="px-3 py-2 text-sm rounded-lg border border-surface-300 bg-white hover:bg-surface-50">
+                    Add CC
+                  </button>
                 </div>
-              )}
-              <div className="flex flex-wrap gap-2 items-center pt-2">
+                {distCcRecipients.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {distCcRecipients.map((r) => (
+                      <span
+                        key={r.email}
+                        className="inline-flex items-center gap-1 rounded-full bg-white border border-surface-200 pl-3 pr-1 py-1 text-xs text-surface-600"
+                      >
+                        CC: {r.label || r.email}
+                        <button type="button" onClick={() => removeDistCcRecipient(r.email)} className="h-5 w-5 hover:text-red-600">×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
                 <button
                   type="button"
                   disabled={distSending || distRecipients.length === 0}
                   onClick={sendFromSystem}
-                  className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-5 py-2.5 text-sm font-semibold rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 shadow-sm"
                 >
-                  {distSending ? 'Sending…' : 'Send list(s) via email'}
+                  {distSending ? 'Sending…' : 'Send via email'}
                 </button>
                 {distSendResult && (
-                  <span className="text-sm text-green-700">
+                  <span className="text-sm text-emerald-700 font-medium">
                     Sent to {distSendResult.sent} recipient(s).
                     {distSendResult.failed > 0 && ` ${distSendResult.failed} failed.`}
                   </span>
                 )}
               </div>
             </div>
+          </section>
 
-            <h3 className="font-medium text-surface-900 pt-4">Other options</h3>
-            <div className="flex flex-wrap gap-4 items-end">
-              <div>
-                <label className="block text-xs font-medium text-surface-500 mb-1">Recipient email (open your mail client)</label>
-                <input
-                  type="email"
-                  placeholder="email@example.com"
-                  value={distRecipientEmail}
-                  onChange={(e) => setDistRecipientEmail(e.target.value)}
-                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-56"
-                />
+          <section className="rounded-xl border border-surface-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setDistShowOtherOptions((v) => !v)}
+              className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-surface-700 bg-surface-50 hover:bg-surface-100"
+            >
+              <span>Other options (mail client & WhatsApp)</span>
+              <span className="text-surface-400">{distShowOtherOptions ? '−' : '+'}</span>
+            </button>
+            {distShowOtherOptions && (
+              <div className="p-5 grid gap-4 sm:grid-cols-2 border-t border-surface-200 bg-white">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-surface-600">Open in mail client</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      placeholder="email@example.com"
+                      value={distRecipientEmail}
+                      onChange={(e) => setDistRecipientEmail(e.target.value)}
+                      className="flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    />
+                    <button type="button" onClick={sendViaEmail} className="px-4 py-2 text-sm rounded-lg border border-surface-300 hover:bg-surface-50 shrink-0">
+                      Open
+                    </button>
+                  </div>
+                  <p className="text-xs text-surface-500">Attach a file you downloaded above.</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-surface-600">Share via WhatsApp</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="tel"
+                      placeholder="27123456789"
+                      value={distRecipientWhatsApp}
+                      onChange={(e) => setDistRecipientWhatsApp(e.target.value)}
+                      className="flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                    />
+                    <button type="button" onClick={shareViaWhatsApp} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700 shrink-0">
+                      Share
+                    </button>
+                  </div>
+                </div>
               </div>
-              <button type="button" onClick={sendViaEmail} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">
-                Open mail client
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-4 items-end">
-              <div>
-                <label className="block text-xs font-medium text-surface-500 mb-1">WhatsApp number (with country code)</label>
-                <input
-                  type="tel"
-                  placeholder="e.g. 27123456789"
-                  value={distRecipientWhatsApp}
-                  onChange={(e) => setDistRecipientWhatsApp(e.target.value)}
-                  className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-56"
-                />
-              </div>
-              <button type="button" onClick={shareViaWhatsApp} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">
-                Share via WhatsApp
-              </button>
-            </div>
-            <p className="text-xs text-surface-500">Use “Send list(s) via email” to send the actual fleet/driver list from the system. “Open mail client” opens your email app so you can attach a file you downloaded.</p>
-          </div>
+            )}
+          </section>
         </div>
       )}
 
@@ -3943,6 +4514,18 @@ export default function AccessManagement() {
       )}
         </div>
       </div>
+
+      {distRecipientModalRoute && (
+        <RouteDistributionRecipientsModal
+          route={distRecipientModalRoute}
+          tenantUsers={tenantUsers}
+          onClose={() => setDistRecipientModalRoute(null)}
+          onSaved={() => {
+            refreshDistRouteRecipientCounts();
+            if (activeTab === 'distribution') applyDistRecipientsFromRoutes();
+          }}
+        />
+      )}
     </div>
   );
 }

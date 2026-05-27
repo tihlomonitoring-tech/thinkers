@@ -3280,6 +3280,442 @@ router.delete('/route-factors/:id', async (req, res, next) => {
   }
 });
 
+function mapRouteDistributionRecipientRow(r) {
+  const email = String(r.recipient_email || r.user_email || '').trim().toLowerCase();
+  return {
+    id: r.id,
+    routeId: r.route_id,
+    userId: r.user_id || null,
+    email,
+    label: r.recipient_name || r.user_full_name || null,
+    isCc: Boolean(r.is_cc),
+  };
+}
+
+const VALID_FLEET_LIST_COLUMNS = new Set([
+  'contractor', 'sub_contractor', 'registration', 'make_model', 'fleet_no',
+  'trailer_1_reg_no', 'trailer_2_reg_no', 'commodity_type', 'capacity_tonnes', 'route_name',
+]);
+const VALID_DRIVER_LIST_COLUMNS = new Set([
+  'contractor', 'sub_contractor', 'full_name', 'license_number', 'phone', 'email', 'route_name',
+]);
+
+function parseColumnKeys(raw, allowed) {
+  if (!raw) return [];
+  let keys = [];
+  if (Array.isArray(raw)) keys = raw.map(String);
+  else keys = String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+  return [...new Set(keys.filter((k) => allowed.has(k)))];
+}
+
+function serializeColumnKeys(keys) {
+  const list = Array.isArray(keys) ? keys.filter(Boolean) : [];
+  return list.length ? list.join(',') : null;
+}
+
+function mapRouteDistributionSettingsRow(r) {
+  if (!r) return null;
+  return {
+    routeId: r.route_id,
+    includeFleet: r.include_fleet !== false && r.include_fleet !== 0,
+    includeDrivers: r.include_drivers !== false && r.include_drivers !== 0,
+    fleetColumns: parseColumnKeys(r.fleet_columns, VALID_FLEET_LIST_COLUMNS),
+    driverColumns: parseColumnKeys(r.driver_columns, VALID_DRIVER_LIST_COLUMNS),
+    groupBySubContractor: Boolean(r.group_by_sub_contractor),
+    updatedAt: r.updated_at,
+  };
+}
+
+function mergeRouteListSettings(rows) {
+  const configured = (rows || []).filter(Boolean);
+  if (!configured.length) return null;
+  const fleetSet = new Set();
+  const driverSet = new Set();
+  let includeFleet = false;
+  let includeDrivers = false;
+  let groupBySubContractor = false;
+  for (const row of configured) {
+    const mapped = mapRouteDistributionSettingsRow(row);
+    if (!mapped) continue;
+    if (mapped.includeFleet) includeFleet = true;
+    if (mapped.includeDrivers) includeDrivers = true;
+    if (mapped.groupBySubContractor) groupBySubContractor = true;
+    mapped.fleetColumns.forEach((k) => fleetSet.add(k));
+    mapped.driverColumns.forEach((k) => driverSet.add(k));
+  }
+  return {
+    includeFleet,
+    includeDrivers,
+    fleetColumns: [...fleetSet],
+    driverColumns: [...driverSet],
+    groupBySubContractor,
+    configuredRouteCount: configured.length,
+  };
+}
+
+async function loadRouteDistributionConfig(tenantId, routeId) {
+  const recipientsResult = await query(
+    `SELECT r.id, r.route_id, r.user_id, r.recipient_email, r.recipient_name, r.is_cc,
+            u.full_name AS user_full_name, u.email AS user_email
+     FROM access_route_distribution_recipients r
+     LEFT JOIN users u ON u.id = r.user_id
+     WHERE r.tenant_id = @tenantId AND r.route_id = @routeId
+     ORDER BY r.is_cc ASC, r.recipient_email ASC`,
+    { tenantId, routeId }
+  );
+  let settings = null;
+  try {
+    const settingsResult = await query(
+      `SELECT * FROM access_route_distribution_settings WHERE tenant_id = @tenantId AND route_id = @routeId`,
+      { tenantId, routeId }
+    );
+    settings = mapRouteDistributionSettingsRow(settingsResult.recordset?.[0]);
+  } catch (e) {
+    if (!String(e?.message || '').includes('access_route_distribution_settings')) throw e;
+  }
+  return {
+    recipients: (recipientsResult.recordset || []).map(mapRouteDistributionRecipientRow),
+    settings,
+  };
+}
+
+function requireAccessManagement(req, res, next) {
+  if (req.user?.role === 'super_admin') return next();
+  const roles = Array.isArray(req.user?.page_roles) ? req.user.page_roles : [];
+  if (roles.includes('access_management')) return next();
+  return res.status(403).json({ error: 'Only Access Management can manage route distribution recipients.' });
+}
+
+/** GET list-distribution config (recipients + column settings) for one route */
+router.get('/routes/:id/distribution-config', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = String(req.params.id || '').trim();
+    const config = await loadRouteDistributionConfig(tenantId, routeId);
+    res.json(config);
+  } catch (err) {
+    if (
+      err.message?.includes('access_route_distribution_recipients')
+      || err.message?.includes('access_route_distribution_settings')
+    ) {
+      return res.json({ recipients: [], settings: null, migrationRequired: true });
+    }
+    next(err);
+  }
+});
+
+/** PUT save list-distribution config for one route */
+router.put('/routes/:id/distribution-config', requireAccessManagement, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = String(req.params.id || '').trim();
+    const routeCheck = await query(
+      `SELECT id FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
+      { routeId, tenantId }
+    );
+    if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
+
+    const rawRecipients = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+    const normalized = [];
+    const seen = new Set();
+    for (const item of rawRecipients) {
+      let email = String(item?.email || item?.recipient_email || '').trim().toLowerCase();
+      const userId = item?.user_id || item?.userId || null;
+      if (userId && !email) {
+        const u = await query(`SELECT email, full_name FROM users WHERE id = @userId`, { userId });
+        email = String(u.recordset?.[0]?.email || '').trim().toLowerCase();
+        if (!item?.label && !item?.recipient_name) {
+          item.label = u.recordset?.[0]?.full_name || null;
+        }
+      }
+      if (!email || !email.includes('@')) continue;
+      const isCc = Boolean(item?.is_cc ?? item?.isCc);
+      const key = `${email}|${isCc ? 'cc' : 'to'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push({ userId: userId || null, email, label: item?.label || item?.recipient_name || null, isCc });
+    }
+
+    await query(
+      `DELETE FROM access_route_distribution_recipients WHERE tenant_id = @tenantId AND route_id = @routeId`,
+      { tenantId, routeId }
+    );
+    for (const rec of normalized) {
+      await query(
+        `INSERT INTO access_route_distribution_recipients
+           (tenant_id, route_id, user_id, recipient_email, recipient_name, is_cc)
+         VALUES (@tenantId, @routeId, @userId, @email, @label, @isCc)`,
+        {
+          tenantId,
+          routeId,
+          userId: rec.userId,
+          email: rec.email,
+          label: rec.label,
+          isCc: rec.isCc ? 1 : 0,
+        }
+      );
+    }
+
+    const settingsBody = req.body?.settings || req.body?.listSettings || {};
+    const fleetColumns = parseColumnKeys(
+      settingsBody.fleet_columns ?? settingsBody.fleetColumns,
+      VALID_FLEET_LIST_COLUMNS
+    );
+    const driverColumns = parseColumnKeys(
+      settingsBody.driver_columns ?? settingsBody.driverColumns,
+      VALID_DRIVER_LIST_COLUMNS
+    );
+    const includeFleet = settingsBody.include_fleet ?? settingsBody.includeFleet;
+    const includeDrivers = settingsBody.include_drivers ?? settingsBody.includeDrivers;
+    const groupBySubContractor = settingsBody.group_by_sub_contractor ?? settingsBody.groupBySubContractor;
+
+    const hasSettings =
+      settingsBody
+      && (
+        includeFleet !== undefined
+        || includeDrivers !== undefined
+        || fleetColumns.length > 0
+        || driverColumns.length > 0
+        || groupBySubContractor !== undefined
+      );
+
+    if (hasSettings) {
+      await query(
+        `MERGE access_route_distribution_settings AS t
+         USING (SELECT @tenantId AS tenant_id, @routeId AS route_id) AS s
+           ON t.tenant_id = s.tenant_id AND t.route_id = s.route_id
+         WHEN MATCHED THEN UPDATE SET
+           include_fleet = @includeFleet,
+           include_drivers = @includeDrivers,
+           fleet_columns = @fleetColumns,
+           driver_columns = @driverColumns,
+           group_by_sub_contractor = @groupBySubContractor,
+           updated_at = SYSUTCDATETIME()
+         WHEN NOT MATCHED THEN INSERT
+           (tenant_id, route_id, include_fleet, include_drivers, fleet_columns, driver_columns, group_by_sub_contractor)
+         VALUES (@tenantId, @routeId, @includeFleet, @includeDrivers, @fleetColumns, @driverColumns, @groupBySubContractor);`,
+        {
+          tenantId,
+          routeId,
+          includeFleet: includeFleet === false ? 0 : 1,
+          includeDrivers: includeDrivers === false ? 0 : 1,
+          fleetColumns: serializeColumnKeys(fleetColumns),
+          driverColumns: serializeColumnKeys(driverColumns),
+          groupBySubContractor: groupBySubContractor ? 1 : 0,
+        }
+      );
+    }
+
+    const config = await loadRouteDistributionConfig(tenantId, routeId);
+    res.json(config);
+  } catch (err) {
+    if (
+      err.message?.includes('access_route_distribution_recipients')
+      || err.message?.includes('access_route_distribution_settings')
+    ) {
+      return res.status(503).json({ error: 'Run: npm run db:route-distribution-recipients and npm run db:route-distribution-settings' });
+    }
+    next(err);
+  }
+});
+
+/** GET saved list-distribution recipients for one route */
+router.get('/routes/:id/distribution-recipients', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = String(req.params.id || '').trim();
+    const result = await query(
+      `SELECT r.id, r.route_id, r.user_id, r.recipient_email, r.recipient_name, r.is_cc,
+              u.full_name AS user_full_name, u.email AS user_email
+       FROM access_route_distribution_recipients r
+       LEFT JOIN users u ON u.id = r.user_id
+       WHERE r.tenant_id = @tenantId AND r.route_id = @routeId
+       ORDER BY r.is_cc ASC, r.recipient_email ASC`,
+      { tenantId, routeId }
+    );
+    res.json({ recipients: (result.recordset || []).map(mapRouteDistributionRecipientRow) });
+  } catch (err) {
+    if (err.message?.includes('access_route_distribution_recipients')) {
+      return res.json({ recipients: [], migrationRequired: true });
+    }
+    next(err);
+  }
+});
+
+/** PUT replace all list-distribution recipients for one route */
+router.put('/routes/:id/distribution-recipients', requireAccessManagement, async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = String(req.params.id || '').trim();
+    const routeCheck = await query(
+      `SELECT id FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
+      { routeId, tenantId }
+    );
+    if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
+
+    const raw = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+    const normalized = [];
+    const seen = new Set();
+    for (const item of raw) {
+      let email = String(item?.email || item?.recipient_email || '').trim().toLowerCase();
+      const userId = item?.user_id || item?.userId || null;
+      if (userId && !email) {
+        const u = await query(`SELECT email, full_name FROM users WHERE id = @userId`, { userId });
+        email = String(u.recordset?.[0]?.email || '').trim().toLowerCase();
+        if (!item?.label && !item?.recipient_name) {
+          item.label = u.recordset?.[0]?.full_name || null;
+        }
+      }
+      if (!email || !email.includes('@')) continue;
+      const isCc = Boolean(item?.is_cc ?? item?.isCc);
+      const key = `${email}|${isCc ? 'cc' : 'to'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push({
+        userId: userId || null,
+        email,
+        label: item?.label || item?.recipient_name || null,
+        isCc,
+      });
+    }
+
+    await query(
+      `DELETE FROM access_route_distribution_recipients WHERE tenant_id = @tenantId AND route_id = @routeId`,
+      { tenantId, routeId }
+    );
+    for (const rec of normalized) {
+      await query(
+        `INSERT INTO access_route_distribution_recipients
+           (tenant_id, route_id, user_id, recipient_email, recipient_name, is_cc)
+         VALUES (@tenantId, @routeId, @userId, @email, @label, @isCc)`,
+        {
+          tenantId,
+          routeId,
+          userId: rec.userId,
+          email: rec.email,
+          label: rec.label,
+          isCc: rec.isCc ? 1 : 0,
+        }
+      );
+    }
+
+    const result = await query(
+      `SELECT r.id, r.route_id, r.user_id, r.recipient_email, r.recipient_name, r.is_cc,
+              u.full_name AS user_full_name, u.email AS user_email
+       FROM access_route_distribution_recipients r
+       LEFT JOIN users u ON u.id = r.user_id
+       WHERE r.tenant_id = @tenantId AND r.route_id = @routeId
+       ORDER BY r.is_cc ASC, r.recipient_email ASC`,
+      { tenantId, routeId }
+    );
+    res.json({ recipients: (result.recordset || []).map(mapRouteDistributionRecipientRow) });
+  } catch (err) {
+    if (err.message?.includes('access_route_distribution_recipients')) {
+      return res.status(503).json({ error: 'Run: npm run db:route-distribution-recipients' });
+    }
+    next(err);
+  }
+});
+
+/** GET merged recipients for selected routes (list distribution auto-fill) */
+router.get('/distribution/route-recipients', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const rawIds = String(req.query.routeIds || req.query.route_ids || '').trim();
+    const routeIds = rawIds
+      ? rawIds.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+
+    let sql = `SELECT r.id, r.route_id, r.user_id, r.recipient_email, r.recipient_name, r.is_cc,
+                      u.full_name AS user_full_name, u.email AS user_email,
+                      cr.name AS route_name
+               FROM access_route_distribution_recipients r
+               INNER JOIN contractor_routes cr ON cr.id = r.route_id AND cr.tenant_id = r.tenant_id
+               LEFT JOIN users u ON u.id = r.user_id
+               WHERE r.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (routeIds.length > 0) {
+      const placeholders = routeIds.map((_, i) => `@r${i}`).join(',');
+      sql += ` AND r.route_id IN (${placeholders})`;
+      routeIds.forEach((id, i) => {
+        params[`r${i}`] = id;
+      });
+    }
+    sql += ` ORDER BY cr.name, r.is_cc ASC, r.recipient_email ASC`;
+
+    const result = await query(sql, params);
+    const rows = (result.recordset || []).map((row) => ({
+      ...mapRouteDistributionRecipientRow(row),
+      routeName: row.route_name || '',
+    }));
+
+    const toMap = new Map();
+    const ccMap = new Map();
+    const byRoute = {};
+    for (const row of rows) {
+      const rid = String(row.routeId);
+      if (!byRoute[rid]) byRoute[rid] = { to: [], cc: [], count: 0 };
+      const entry = { email: row.email, label: row.label, userId: row.userId };
+      if (row.isCc) {
+        ccMap.set(row.email, { email: row.email, label: row.label || row.email });
+        byRoute[rid].cc.push(entry);
+      } else {
+        toMap.set(row.email, { email: row.email, label: row.label || row.email });
+        byRoute[rid].to.push(entry);
+      }
+      byRoute[rid].count += 1;
+    }
+
+    let settingsRows = [];
+    const settingsByRouteOut = {};
+    try {
+      let settingsSql = `SELECT s.*, cr.name AS route_name
+                         FROM access_route_distribution_settings s
+                         INNER JOIN contractor_routes cr ON cr.id = s.route_id AND cr.tenant_id = s.tenant_id
+                         WHERE s.tenant_id = @tenantId`;
+      const settingsParams = { tenantId };
+      if (routeIds.length > 0) {
+        const placeholders = routeIds.map((_, i) => `@s${i}`).join(',');
+        settingsSql += ` AND s.route_id IN (${placeholders})`;
+        routeIds.forEach((id, i) => {
+          settingsParams[`s${i}`] = id;
+        });
+      }
+      settingsSql += ` ORDER BY cr.name`;
+      const settingsResult = await query(settingsSql, settingsParams);
+      settingsRows = settingsResult.recordset || [];
+      for (const row of settingsRows) {
+        const mapped = mapRouteDistributionSettingsRow(row);
+        if (mapped) settingsByRouteOut[String(mapped.routeId)] = mapped;
+      }
+    } catch (e) {
+      if (!String(e?.message || '').includes('access_route_distribution_settings')) throw e;
+    }
+
+    res.json({
+      to: [...toMap.values()],
+      cc: [...ccMap.values()],
+      byRoute,
+      totalConfiguredRoutes: Object.keys(byRoute).length,
+      listSettings: mergeRouteListSettings(settingsRows),
+      settingsByRoute: settingsByRouteOut,
+    });
+  } catch (err) {
+    if (err.message?.includes('access_route_distribution_recipients')) {
+      return res.json({
+        to: [],
+        cc: [],
+        byRoute: {},
+        totalConfiguredRoutes: 0,
+        listSettings: null,
+        settingsByRoute: {},
+        migrationRequired: true,
+      });
+    }
+    next(err);
+  }
+});
+
 // --- Distribution history (Access management: log downloads/sends) ---
 /** GET distribution history with optional filters: dateFrom, dateTo, routeId, listType, channel */
 router.get('/distribution-history', async (req, res, next) => {

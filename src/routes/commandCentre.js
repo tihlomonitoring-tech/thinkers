@@ -35,6 +35,11 @@ import { nextShiftReportRefNumber } from '../lib/shiftReportRefNumbers.js';
 import { buildStyledListSheet } from '../lib/distributionExcel.js';
 import { applyTruckChangeRequest, mapChangeRequestRow } from '../lib/fleetChangeRequests.js';
 import { logFleetApplicationHistory, getFleetApplicationHistory } from '../lib/fleetApplicationHistory.js';
+import {
+  buildSubcontractorScopeKey,
+  mapChecklistRow,
+  computeChecklistProgress,
+} from '../lib/fleetFacilityChecklist.js';
 import logisticsFlowRouter from './logisticsFlow.js';
 
 const libraryUploadsDir = path.join(process.cwd(), 'uploads', 'library');
@@ -55,6 +60,22 @@ const libraryUpload = multer({
 
 const fleetVerificationUpload = multer({
   storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+}).single('file');
+
+const fleetFacilityChecklistDir = path.join(process.cwd(), 'uploads', 'fleet-facility-checklists');
+const fleetFacilityChecklistUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(fleetFacilityChecklistDir, String(req.params.id || 'unknown'));
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '').replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
   limits: { fileSize: 25 * 1024 * 1024 },
 }).single('file');
 
@@ -1928,19 +1949,60 @@ router.get('/fleet-truck-approval-summary', async (req, res, next) => {
     const rows = (result.recordset || []).map((r) => {
       const total = Number(getRow(r, 'total_trucks') ?? 0);
       const integrated = Number(getRow(r, 'integrated_trucks') ?? 0);
+      const subcontractorId = getRow(r, 'subcontractor_id') || null;
+      const subcontractorDisplay = getRow(r, 'subcontractor_display') || '';
       return {
         tenantId: getRow(r, 'tenant_id'),
         tenantName: getRow(r, 'tenant_name') || '',
         contractorId: getRow(r, 'contractor_id'),
         contractorName: getRow(r, 'contractor_name') || '',
-        subcontractorId: getRow(r, 'subcontractor_id') || null,
-        subcontractorDisplay: getRow(r, 'subcontractor_display') || '',
+        subcontractorId,
+        subcontractorDisplay,
+        subcontractorScopeKey: buildSubcontractorScopeKey(subcontractorId, subcontractorDisplay),
         totalTrucks: total,
         integratedTrucks: integrated,
         notIntegratedTrucks: Math.max(0, total - integrated),
       };
     });
-    const totals = rows.reduce(
+
+    let checklistByScope = {};
+    try {
+      const checklistSql = tenantId
+        ? `SELECT c.*, u.full_name AS updated_by_name,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'consent_letter') AS consent_letter_upload_count,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'credentials') AS credentials_upload_count,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'general') AS general_upload_count,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_comments cm WHERE cm.checklist_id = c.id) AS comment_count
+           FROM cc_fleet_facility_checklists c
+           LEFT JOIN users u ON u.id = c.updated_by_user_id
+           WHERE c.tenant_id = @tenantId`
+        : `SELECT c.*, u.full_name AS updated_by_name,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'consent_letter') AS consent_letter_upload_count,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'credentials') AS credentials_upload_count,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'general') AS general_upload_count,
+                  (SELECT COUNT(1) FROM cc_fleet_facility_checklist_comments cm WHERE cm.checklist_id = c.id) AS comment_count
+           FROM cc_fleet_facility_checklists c
+           LEFT JOIN users u ON u.id = c.updated_by_user_id`;
+      const checklistResult = await query(checklistSql, params);
+      for (const r of checklistResult.recordset || []) {
+        const mapped = mapChecklistRow(r, getRow);
+        if (!mapped) continue;
+        const key = `${mapped.tenantId}|${mapped.contractorId}|${mapped.subcontractorScopeKey}`;
+        checklistByScope[key] = mapped;
+      }
+    } catch (e) {
+      if (!String(e?.message || '').includes('cc_fleet_facility_checklists')) throw e;
+      checklistByScope = {};
+    }
+
+    const enrichedRows = rows.map((row) => {
+      const key = `${row.tenantId}|${row.contractorId}|${row.subcontractorScopeKey}`;
+      const checklist = checklistByScope[key] || null;
+      const progress = computeChecklistProgress(checklist);
+      return { ...row, checklist, progress };
+    });
+
+    const totals = enrichedRows.reduce(
       (acc, row) => ({
         totalTrucks: acc.totalTrucks + row.totalTrucks,
         integratedTrucks: acc.integratedTrucks + row.integratedTrucks,
@@ -1948,8 +2010,308 @@ router.get('/fleet-truck-approval-summary', async (req, res, next) => {
       }),
       { totalTrucks: 0, integratedTrucks: 0, notIntegratedTrucks: 0 }
     );
-    res.json({ rows, totals });
+    res.json({ rows: enrichedRows, totals });
   } catch (err) {
+    next(err);
+  }
+});
+
+async function ensureFleetFacilityChecklist({ tenantId, contractorId, subcontractorScopeKey, subcontractorId, userId }) {
+  const existing = await query(
+    `SELECT id FROM cc_fleet_facility_checklists
+     WHERE tenant_id = @tenantId AND contractor_id = @contractorId AND subcontractor_scope_key = @subcontractorScopeKey`,
+    { tenantId, contractorId, subcontractorScopeKey }
+  );
+  const found = existing.recordset?.[0];
+  if (found?.id) return found.id;
+
+  const inserted = await query(
+    `INSERT INTO cc_fleet_facility_checklists
+       (tenant_id, contractor_id, subcontractor_scope_key, subcontractor_id, updated_by_user_id)
+     OUTPUT INSERTED.id
+     VALUES (@tenantId, @contractorId, @subcontractorScopeKey, @subcontractorId, @userId)`,
+    {
+      tenantId,
+      contractorId,
+      subcontractorScopeKey,
+      subcontractorId: subcontractorId || null,
+      userId: userId || null,
+    }
+  );
+  return inserted.recordset?.[0]?.id;
+}
+
+async function loadFleetFacilityChecklistById(checklistId) {
+  const result = await query(
+    `SELECT c.*, u.full_name AS updated_by_name,
+            (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'consent_letter') AS consent_letter_upload_count,
+            (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'credentials') AS credentials_upload_count,
+            (SELECT COUNT(1) FROM cc_fleet_facility_checklist_attachments a WHERE a.checklist_id = c.id AND a.item_type = N'general') AS general_upload_count,
+            (SELECT COUNT(1) FROM cc_fleet_facility_checklist_comments cm WHERE cm.checklist_id = c.id) AS comment_count
+     FROM cc_fleet_facility_checklists c
+     LEFT JOIN users u ON u.id = c.updated_by_user_id
+     WHERE c.id = @checklistId`,
+    { checklistId }
+  );
+  return mapChecklistRow(result.recordset?.[0], getRow);
+}
+
+/** Upsert checklist ticks for a contractor / sub-contractor scope */
+router.patch('/fleet-facility-checklists/scope', async (req, res, next) => {
+  try {
+    const tenantId = String(req.body?.tenantId || req.body?.tenant_id || '').trim();
+    const contractorId = String(req.body?.contractorId || req.body?.contractor_id || '').trim();
+    const subcontractorScopeKey = String(req.body?.subcontractorScopeKey || req.body?.subcontractor_scope_key || '').trim();
+    const subcontractorId = String(req.body?.subcontractorId || req.body?.subcontractor_id || '').trim() || null;
+    if (!tenantId || !contractorId || !subcontractorScopeKey) {
+      return res.status(400).json({ error: 'tenantId, contractorId, and subcontractorScopeKey are required' });
+    }
+
+    const checklistId = await ensureFleetFacilityChecklist({
+      tenantId,
+      contractorId,
+      subcontractorScopeKey,
+      subcontractorId,
+      userId: req.user?.id,
+    });
+
+    const sets = [];
+    const params = { checklistId, userId: req.user?.id || null };
+    if (typeof req.body?.consentLetterChecked === 'boolean') {
+      sets.push('consent_letter_checked = @consentLetterChecked');
+      params.consentLetterChecked = req.body.consentLetterChecked ? 1 : 0;
+    }
+    if (typeof req.body?.credentialsChecked === 'boolean') {
+      sets.push('credentials_checked = @credentialsChecked');
+      params.credentialsChecked = req.body.credentialsChecked ? 1 : 0;
+    }
+    if (typeof req.body?.trackingProviderChecked === 'boolean') {
+      sets.push('tracking_provider_checked = @trackingProviderChecked');
+      params.trackingProviderChecked = req.body.trackingProviderChecked ? 1 : 0;
+    }
+    if (sets.length > 0) {
+      sets.push('updated_by_user_id = @userId', 'updated_at = SYSUTCDATETIME()');
+      await query(`UPDATE cc_fleet_facility_checklists SET ${sets.join(', ')} WHERE id = @checklistId`, params);
+    }
+
+    const checklist = await loadFleetFacilityChecklistById(checklistId);
+    res.json({ checklist });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_facility_checklists')) {
+      return res.status(503).json({ error: 'Checklists not set up. Run: npm run db:fleet-facility-checklist' });
+    }
+    next(err);
+  }
+});
+
+/** GET checklist detail with attachments */
+router.get('/fleet-facility-checklists/:id', async (req, res, next) => {
+  try {
+    const checklistId = String(req.params.id || '').trim();
+    const checklist = await loadFleetFacilityChecklistById(checklistId);
+    if (!checklist) return res.status(404).json({ error: 'Checklist not found' });
+
+    const attResult = await query(
+      `SELECT a.id, a.item_type, a.file_name, a.mime_type, a.file_size, a.created_at, u.full_name AS uploaded_by_name
+       FROM cc_fleet_facility_checklist_attachments a
+       LEFT JOIN users u ON u.id = a.uploaded_by_user_id
+       WHERE a.checklist_id = @checklistId
+       ORDER BY a.created_at DESC`,
+      { checklistId }
+    );
+    const attachments = (attResult.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      itemType: getRow(r, 'item_type'),
+      fileName: getRow(r, 'file_name'),
+      mimeType: getRow(r, 'mime_type'),
+      fileSize: getRow(r, 'file_size'),
+      createdAt: getRow(r, 'created_at'),
+      uploadedByName: getRow(r, 'uploaded_by_name'),
+    }));
+    res.json({ checklist, attachments });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_facility_checklists')) return res.status(503).json({ error: 'Checklists not set up. Run: npm run db:fleet-facility-checklist' });
+    next(err);
+  }
+});
+
+/** POST upload attachment for checklist item */
+router.post('/fleet-facility-checklists/:id/attachments', fleetFacilityChecklistUpload, async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const checklistId = String(req.params.id || '').trim();
+    const itemType = String(req.body?.item_type || req.body?.itemType || 'general').trim().toLowerCase();
+    if (!['consent_letter', 'credentials', 'general'].includes(itemType)) {
+      return res.status(400).json({ error: 'item_type must be consent_letter, credentials, or general' });
+    }
+
+    const checklist = await loadFleetFacilityChecklistById(checklistId);
+    if (!checklist) return res.status(404).json({ error: 'Checklist not found' });
+
+    const relPath = path.join('fleet-facility-checklists', checklistId, req.file.filename).replace(/\\/g, '/');
+    const inserted = await query(
+      `INSERT INTO cc_fleet_facility_checklist_attachments
+         (checklist_id, item_type, file_name, stored_path, mime_type, file_size, uploaded_by_user_id)
+       OUTPUT INSERTED.id, INSERTED.file_name, INSERTED.item_type, INSERTED.created_at
+       VALUES (@checklistId, @itemType, @fileName, @storedPath, @mimeType, @fileSize, @userId)`,
+      {
+        checklistId,
+        itemType,
+        fileName: req.file.originalname || req.file.filename,
+        storedPath: relPath,
+        mimeType: req.file.mimetype || null,
+        fileSize: req.file.size || null,
+        userId: req.user?.id || null,
+      }
+    );
+    const row = inserted.recordset?.[0];
+    res.status(201).json({
+      attachment: {
+        id: getRow(row, 'id'),
+        itemType: getRow(row, 'item_type'),
+        fileName: getRow(row, 'file_name'),
+        createdAt: getRow(row, 'created_at'),
+      },
+    });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_facility_checklist_attachments')) {
+      return res.status(503).json({ error: 'Checklists not set up. Run: npm run db:fleet-facility-checklist' });
+    }
+    next(err);
+  }
+});
+
+/** DELETE checklist attachment */
+router.delete('/fleet-facility-checklists/attachments/:attachmentId', async (req, res, next) => {
+  try {
+    const attachmentId = String(req.params.attachmentId || '').trim();
+    const result = await query(
+      `SELECT stored_path FROM cc_fleet_facility_checklist_attachments WHERE id = @attachmentId`,
+      { attachmentId }
+    );
+    const storedPath = getRow(result.recordset?.[0], 'stored_path');
+    if (!storedPath) return res.status(404).json({ error: 'Attachment not found' });
+
+    await query(`DELETE FROM cc_fleet_facility_checklist_attachments WHERE id = @attachmentId`, { attachmentId });
+    try {
+      const abs = path.join(process.cwd(), 'uploads', String(storedPath).replace(/\//g, path.sep));
+      if (fs.existsSync(abs)) fs.unlinkSync(abs);
+    } catch (_) { /* ignore file delete errors */ }
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET download checklist attachment */
+router.get('/fleet-facility-checklists/attachments/:attachmentId/download', async (req, res, next) => {
+  try {
+    const attachmentId = String(req.params.attachmentId || '').trim();
+    const result = await query(
+      `SELECT file_name, stored_path, mime_type FROM cc_fleet_facility_checklist_attachments WHERE id = @attachmentId`,
+      { attachmentId }
+    );
+    const row = result.recordset?.[0];
+    const storedPath = getRow(row, 'stored_path');
+    if (!storedPath) return res.status(404).json({ error: 'Attachment not found' });
+    const abs = path.join(process.cwd(), 'uploads', String(storedPath).replace(/\//g, path.sep));
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'File not found on disk' });
+    const fileName = getRow(row, 'file_name') || 'attachment';
+    const mimeType = getRow(row, 'mime_type') || 'application/octet-stream';
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${String(fileName).replace(/"/g, '')}"`);
+    fs.createReadStream(abs).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET checklist comments */
+router.get('/fleet-facility-checklists/:id/comments', async (req, res, next) => {
+  try {
+    const checklistId = String(req.params.id || '').trim();
+    const result = await query(
+      `SELECT c.id, c.body, c.created_at, u.full_name AS author_name
+       FROM cc_fleet_facility_checklist_comments c
+       INNER JOIN users u ON u.id = c.user_id
+       WHERE c.checklist_id = @checklistId
+       ORDER BY c.created_at ASC`,
+      { checklistId }
+    );
+    const comments = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      body: getRow(r, 'body'),
+      createdAt: getRow(r, 'created_at'),
+      authorName: getRow(r, 'author_name'),
+    }));
+    res.json({ comments });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_facility_checklist_comments')) return res.json({ comments: [], migrationRequired: true });
+    next(err);
+  }
+});
+
+/** POST checklist comment */
+router.post('/fleet-facility-checklists/:id/comments', async (req, res, next) => {
+  try {
+    const checklistId = String(req.params.id || '').trim();
+    const body = String(req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'Comment body is required' });
+
+    const checklist = await loadFleetFacilityChecklistById(checklistId);
+    if (!checklist) return res.status(404).json({ error: 'Checklist not found' });
+
+    await query(
+      `INSERT INTO cc_fleet_facility_checklist_comments (checklist_id, user_id, body)
+       VALUES (@checklistId, @userId, @body)`,
+      { checklistId, userId: req.user?.id, body }
+    );
+    const result = await query(
+      `SELECT c.id, c.body, c.created_at, u.full_name AS author_name
+       FROM cc_fleet_facility_checklist_comments c
+       INNER JOIN users u ON u.id = c.user_id
+       WHERE c.checklist_id = @checklistId
+       ORDER BY c.created_at ASC`,
+      { checklistId }
+    );
+    const comments = (result.recordset || []).map((r) => ({
+      id: getRow(r, 'id'),
+      body: getRow(r, 'body'),
+      createdAt: getRow(r, 'created_at'),
+      authorName: getRow(r, 'author_name'),
+    }));
+    res.status(201).json({ comments });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_facility_checklist_comments')) {
+      return res.status(503).json({ error: 'Comments not set up. Run: npm run db:fleet-facility-checklist' });
+    }
+    next(err);
+  }
+});
+
+/** Ensure checklist exists for scope and return id (used before first upload from UI) */
+router.post('/fleet-facility-checklists/ensure', async (req, res, next) => {
+  try {
+    const tenantId = String(req.body?.tenantId || req.body?.tenant_id || '').trim();
+    const contractorId = String(req.body?.contractorId || req.body?.contractor_id || '').trim();
+    const subcontractorScopeKey = String(req.body?.subcontractorScopeKey || req.body?.subcontractor_scope_key || '').trim();
+    const subcontractorId = String(req.body?.subcontractorId || req.body?.subcontractor_id || '').trim() || null;
+    if (!tenantId || !contractorId || !subcontractorScopeKey) {
+      return res.status(400).json({ error: 'tenantId, contractorId, and subcontractorScopeKey are required' });
+    }
+    const checklistId = await ensureFleetFacilityChecklist({
+      tenantId,
+      contractorId,
+      subcontractorScopeKey,
+      subcontractorId,
+      userId: req.user?.id,
+    });
+    const checklist = await loadFleetFacilityChecklistById(checklistId);
+    res.json({ checklist });
+  } catch (err) {
+    if (err.message?.includes('cc_fleet_facility_checklists')) {
+      return res.status(503).json({ error: 'Checklists not set up. Run: npm run db:fleet-facility-checklist' });
+    }
     next(err);
   }
 });
