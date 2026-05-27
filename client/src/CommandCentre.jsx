@@ -3100,7 +3100,7 @@ function TabReports() {
   const canAccessShiftTemplates = user?.role === 'super_admin';
 
   const reportTypes = [
-    { id: 'shift', label: 'Shift report', description: 'Official controller shift documentation for fleet monitoring & logistics' },
+    { id: 'shift', label: 'Shift report', description: 'Official telematics specialist shift documentation for fleet monitoring & logistics' },
     { id: 'single_ops_shift', label: 'Single operations shift report', description: 'Multi-route shift report with per-truck delivery account and loads per route (separate records from standard shift reports)' },
     { id: 'investigation', label: 'Investigation report', description: 'Record investigation findings and actions taken' },
     { id: 'performance', label: 'Performance report', description: 'Performance metrics and operational summary' },
@@ -3252,7 +3252,7 @@ function ShiftReportTemplateTab({ user }) {
       communication_log: repeat(n, { time: line, recipient: line, subject: line, method: line, action_required: line }),
       outstanding_issues: line,
       handover_key_info: line,
-      declaration: 'As the controller(s) on duty, I/we certify that the information in this shift report is accurate and complete to the best of my/our knowledge.',
+      declaration: 'As the telematics specialist(s) on duty, I/we certify that the information in this shift report is accurate and complete to the best of my/our knowledge.',
       shift_conclusion_time: '',
     };
   };
@@ -3556,9 +3556,9 @@ function TabSavedReports() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !submitting && setSubmitModal(false)}>
             <div className="bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6" onClick={(e) => e.stopPropagation()}>
               <h3 className="font-semibold text-surface-900 mb-2">Submit for approval</h3>
-              <p className="text-sm text-surface-600 mb-4">Select the controller who will approve this report.</p>
+              <p className="text-sm text-surface-600 mb-4">Select the telematics specialist who will approve this report.</p>
               <select value={submittingTo} onChange={(e) => setSubmittingTo(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-4">
-                <option value="">Select controller…</option>
+                <option value="">Select telematics specialist…</option>
                 {approvers.map((u) => <option key={u.id} value={u.id}>{u.full_name} ({u.email})</option>)}
               </select>
               <div className="flex justify-end gap-2">
@@ -3606,7 +3606,7 @@ function TabSavedReports() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search ref, route, controllers, creator, status, date..."
+            placeholder="Search ref, route, telematics specialists, creator, status, date..."
             className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
           />
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
@@ -3635,7 +3635,7 @@ function TabSavedReports() {
                 <th className="text-left font-semibold text-surface-700 px-4 py-3 w-20">Ref</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Saved date</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Time</th>
-                <th className="text-left font-semibold text-surface-700 px-4 py-3">Controller(s)</th>
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">Telematics specialist(s)</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">{listKind === 'single_ops' ? 'Routes / Report' : 'Route / Report'}</th>
                 <th className="text-left font-semibold text-surface-700 px-4 py-3">Status</th>
               </tr>
@@ -4783,7 +4783,7 @@ function TabShiftItems({ setActiveTab }) {
           <span className="font-medium text-surface-900">{reportDate}</span>
           {statusBadge(r.status)}
         </div>
-        <p className="text-sm text-surface-600 mt-1 truncate" title={controllers}>Controllers: {controllers}</p>
+        <p className="text-sm text-surface-600 mt-1 truncate" title={controllers}>Telematics specialists: {controllers}</p>
         <div className="flex flex-wrap gap-3 mt-3 text-xs text-surface-500">
           <span>Delivered: <strong className="text-surface-700">{delivered}</strong></span>
           {incidentCount > 0 && <span className="text-amber-600 font-medium">{incidentCount} incident(s)</span>}
@@ -5083,7 +5083,7 @@ function TabShiftReportExports() {
               </select>
               <p className="text-xs text-surface-500 mt-1">
                 {section === 'all' && 'One workbook with all sheets: Report summary, Truck updates, Incidents, Non-compliance, Investigations, Communication log, Handover.'}
-                {section === 'report_summary' && 'One row per shift report: date, route, controllers, loads, performance, highlights.'}
+                {section === 'report_summary' && 'One row per shift report: date, route, telematics specialists, loads, performance, highlights.'}
                 {section === 'truck_updates' && 'Truck updates & logistics flow entries with report context.'}
                 {section === 'incidents_non_compliance' && 'Two sheets: Incidents and Non-compliance.'}
                 {section === 'investigations' && 'Investigations (findings & action taken).'}
@@ -5140,12 +5140,12 @@ const CONTROLLER_EVALUATION_QUESTIONS = [
   { id: 'q2', label: 'Was the shift report submitted for approval before 18:30?' },
   { id: 'q3', label: 'Was the shift report completed correctly and accurately?' },
   { id: 'q4', label: 'Are all report sections properly completed and accounted for?' },
-  { id: 'q5', label: 'Did the controller go the extra mile to resolve and manage situations or issues?' },
-  { id: 'q6', label: 'Was the controller able to answer all questions related to his/her shift?' },
-  { id: 'q7', label: 'Did the controllers work effectively as a team?' },
-  { id: 'q8', label: 'Did the controller apply critical thinking in resolving issues?' },
-  { id: 'q9', label: 'Did the controller follow up on matters and outstanding issues?' },
-  { id: 'q10', label: "Was the controller's shift report presentation detailed, insightful, and helpful?" },
+  { id: 'q5', label: 'Did the telematics specialist go the extra mile to resolve and manage situations or issues?' },
+  { id: 'q6', label: 'Was the telematics specialist able to answer all questions related to his/her shift?' },
+  { id: 'q7', label: 'Did the telematics specialists work effectively as a team?' },
+  { id: 'q8', label: 'Did the telematics specialist apply critical thinking in resolving issues?' },
+  { id: 'q9', label: 'Did the telematics specialist follow up on matters and outstanding issues?' },
+  { id: 'q10', label: "Was the telematics specialist's shift report presentation detailed, insightful, and helpful?" },
   { id: 'q11', label: 'Was the office space left clean in accordance with company policy?' },
 ];
 
@@ -5188,7 +5188,7 @@ function ControllerEvaluationForm({ reportId, existingEvaluation, onSaved, savin
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <p className="text-sm text-surface-600">Evaluate how the controllers ran their shift. Every question requires Yes or No and a comment. Your evaluation is required before you can approve, reject, or grant provisional approval.</p>
+      <p className="text-sm text-surface-600">Evaluate how the telematics specialist(s) ran their shift. Every question requires Yes or No and a comment. Your evaluation is required before you can approve, reject, or grant provisional approval.</p>
       {CONTROLLER_EVALUATION_QUESTIONS.map((q, idx) => (
         <div key={q.id} className="app-glass-card p-4">
           <p className="font-medium text-surface-900 mb-2">{idx + 1}. {q.label}</p>
@@ -5532,10 +5532,10 @@ function TabRequests() {
         {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
         <ShiftReportReadOnlyView report={report} reportKind={selectedKind === 'single_ops' ? 'single_ops' : 'shift'} />
 
-        {/* Controller evaluation (required before first decision) */}
+        {/* Telematics specialist evaluation (required before first decision) */}
         {showEvalForm && (
           <div className="rounded-xl border-2 border-brand-200 bg-brand-50/30 p-6">
-            <h3 className="font-semibold text-surface-900 mb-2 text-lg">Controller evaluation</h3>
+            <h3 className="font-semibold text-surface-900 mb-2 text-lg">Telematics specialist evaluation</h3>
             <ControllerEvaluationForm
               reportId={selectedId}
               existingEvaluation={evaluation}
@@ -5607,7 +5607,7 @@ function TabRequests() {
           )}
           {canShowActions && !needsOverrideToAct && (
             <div className="mt-4 pt-4 border-t border-surface-200 flex flex-wrap gap-2">
-              <p className="text-xs text-surface-500 w-full">Complete the controller evaluation above, then choose an action.</p>
+              <p className="text-xs text-surface-500 w-full">Complete the telematics specialist evaluation above, then choose an action.</p>
               <button type="button" onClick={approve} disabled={acting || !evaluation} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">Approve</button>
               <button type="button" onClick={reject} disabled={acting || !evaluation} className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">Reject</button>
               <button type="button" onClick={provisional} disabled={acting || !evaluation} className="px-4 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">Provisional approval</button>
@@ -5628,7 +5628,7 @@ function TabRequests() {
         topic="shift report requests"
       >
         <p>
-          Standard and single-operations shift reports submitted to you for approval appear here. Complete the controller evaluation, then
+          Standard and single-operations shift reports submitted to you for approval appear here. Complete the telematics specialist evaluation, then
           approve, reject, or grant provisional approval. To change a decision you already made, open the report under &quot;Recently decided by you&quot; and
           request an override code.
         </p>
@@ -5743,7 +5743,7 @@ function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' 
     { id: 'incidents', label: 'Incidents/breakdowns & non-compliance' },
     { id: 'comms', label: 'Communication log' },
     { id: 'handover', label: 'Handover' },
-    { id: 'declaration', label: 'Controller declaration' },
+    { id: 'declaration', label: 'Telematics specialist declaration' },
   ];
   const [openSection, setOpenSection] = useState('info');
   const truckUpdates = Array.isArray(r.truck_updates) ? r.truck_updates : [];
@@ -5770,12 +5770,12 @@ function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' 
             <div><span className="text-xs text-surface-500">Shift date</span><p className="font-medium">{r.shift_date ? new Date(r.shift_date).toLocaleDateString() : '—'}</p></div>
             <div><span className="text-xs text-surface-500">Shift start / end</span><p className="font-medium">{r.shift_start || '—'} / {r.shift_end || '—'}</p></div>
             <div>
-              <span className="text-xs text-surface-500">Controller 1</span>
+              <span className="text-xs text-surface-500">Telematics specialist 1</span>
               <p className="font-medium text-surface-900 mt-0.5">{r.controller1_name?.trim() || '—'}</p>
               {r.controller1_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller1_email}</p> : null}
             </div>
             <div>
-              <span className="text-xs text-surface-500">Controller 2 <span className="text-surface-400 font-normal">(optional)</span></span>
+              <span className="text-xs text-surface-500">Telematics specialist 2 <span className="text-surface-400 font-normal">(optional)</span></span>
               <p className="font-medium text-surface-900 mt-0.5">{r.controller2_name?.trim() || '—'}</p>
               {r.controller2_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller2_email}</p> : null}
             </div>
@@ -6499,8 +6499,8 @@ function ShiftReportForm({
     { id: 'truck_updates', label: 'Truck updates & logistics flow' },
     { id: 'incidents', label: 'Incidents/breakdowns & non-compliance' },
     { id: 'comms', label: 'Communication log' },
-    { id: 'handover', label: 'Handover for incoming controller' },
-    { id: 'declaration', label: 'Controller declaration' },
+    { id: 'handover', label: 'Handover for incoming telematics specialist' },
+    { id: 'declaration', label: 'Telematics specialist declaration' },
   ];
 
   if (readOnly && initialData) {
@@ -6687,17 +6687,17 @@ function ShiftReportForm({
             </div>
             <div className="sm:col-span-2 lg:col-span-1" />
             <div>
-              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Controller 1</label>
+              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Telematics specialist 1</label>
               <input name="controller1_name" type="text" value={formFields.controller1_name} onChange={set('controller1_name')} placeholder="Full name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-1" />
               <input name="controller1_email" type="email" value={formFields.controller1_email} onChange={set('controller1_email')} placeholder="Email" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">
-                Controller 2 <span className="font-normal normal-case text-surface-400">(optional)</span>
+                Telematics specialist 2 <span className="font-normal normal-case text-surface-400">(optional)</span>
               </label>
-              <p className="text-xs text-surface-500 mb-1.5">Choose a teammate or enter name and email below — same layout as Controller 1.</p>
+              <p className="text-xs text-surface-500 mb-1.5">Choose a teammate or enter name and email below — same layout as Telematics specialist 1.</p>
               <select
-                aria-label="Optional: select Controller 2 from Command Centre team"
+                aria-label="Optional: select Telematics specialist 2 from Command Centre team"
                 value={selectedController2 ? String(selectedController2.id) : ''}
                 onChange={(e) => {
                   const v = e.target.value;
@@ -7015,7 +7015,7 @@ function ShiftReportForm({
         </SectionBlock>
 
         {/* 6. Handover */}
-        <SectionBlock title="Handover information for incoming controller" open={openSection === 'handover'} onToggle={() => setOpenSection((p) => (p === 'handover' ? null : 'handover'))}>
+        <SectionBlock title="Handover information for incoming telematics specialist" open={openSection === 'handover'} onToggle={() => setOpenSection((p) => (p === 'handover' ? null : 'handover'))}>
           <div>
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Outstanding issues</label>
             <textarea name="outstanding_issues" rows={2} placeholder="e.g. Ensure all fleet lists are up to date and accurate" value={formFields.outstanding_issues} onChange={set('outstanding_issues')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
@@ -7026,12 +7026,12 @@ function ShiftReportForm({
           </div>
         </SectionBlock>
 
-        {/* 7. Controller declaration */}
-        <SectionBlock title="Controller declaration" open={openSection === 'declaration'} onToggle={() => setOpenSection((p) => (p === 'declaration' ? null : 'declaration'))}>
+        {/* 7. Telematics specialist declaration */}
+        <SectionBlock title="Telematics specialist declaration" open={openSection === 'declaration'} onToggle={() => setOpenSection((p) => (p === 'declaration' ? null : 'declaration'))}>
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Declaration</label>
-              <textarea name="declaration" rows={3} placeholder="As the controller(s) on duty, I/we certify that the information in this shift report is accurate and complete to the best of my/our knowledge." value={formFields.declaration} onChange={set('declaration')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="declaration" rows={3} placeholder="As the telematics specialist(s) on duty, I/we certify that the information in this shift report is accurate and complete to the best of my/our knowledge." value={formFields.declaration} onChange={set('declaration')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Shift conclusion time</label>
@@ -7508,7 +7508,7 @@ function TabLibrary() {
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
           </span>
-          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by route, case number, controller…" className="w-full pl-10 pr-4 py-3 rounded-xl border border-surface-200/70 bg-white/70 backdrop-blur-md text-surface-900 placeholder:text-surface-400 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 dark:bg-white/[0.08] dark:border-white/12 dark:text-surface-100" />
+          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by route, case number, telematics specialist…" className="w-full pl-10 pr-4 py-3 rounded-xl border border-surface-200/70 bg-white/70 backdrop-blur-md text-surface-900 placeholder:text-surface-400 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 dark:bg-white/[0.08] dark:border-white/12 dark:text-surface-100" />
         </div>
         <div className="flex gap-2 items-center">
           <input ref={fileInputRef} type="file" onChange={handleUpload} disabled={uploading} className="hidden" id="library-file-upload" />

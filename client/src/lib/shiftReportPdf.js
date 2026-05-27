@@ -105,10 +105,10 @@ function drawReportInformationPanel(doc, yRef, report, isSingleOps) {
   if (report.shift_date) entries.push({ label: 'Shift date', value: fmtDate(report.shift_date) });
   if (shiftTimeText !== '—') entries.push({ label: 'Shift time', value: shiftTimeText });
   if (report.status) entries.push({ label: 'Status', value: statusBadgeMeta(report.status).label });
-  if (report.controller1_name) entries.push({ label: 'Controller 1', value: report.controller1_name });
-  if (report.controller2_name) entries.push({ label: 'Controller 2', value: report.controller2_name });
-  if (report.controller1_email) entries.push({ label: 'Controller 1 email', value: report.controller1_email });
-  if (report.controller2_email) entries.push({ label: 'Controller 2 email', value: report.controller2_email });
+  if (report.controller1_name) entries.push({ label: 'Telematics specialist 1', value: report.controller1_name });
+  if (report.controller2_name) entries.push({ label: 'Telematics specialist 2', value: report.controller2_name });
+  if (report.controller1_email) entries.push({ label: 'Telematics specialist 1 email', value: report.controller1_email });
+  if (report.controller2_email) entries.push({ label: 'Telematics specialist 2 email', value: report.controller2_email });
   if (report.created_by_name) entries.push({ label: 'Created by', value: report.created_by_name });
   if (report.created_at) entries.push({ label: 'Created at', value: fmtDateTime(report.created_at) });
 
@@ -264,12 +264,12 @@ function buildDeclaration(report) {
   const c1 = (report.controller1_name || '').trim();
   const c2 = (report.controller2_name || '').trim();
   if (c1 && c2) {
-    return `As the controllers on duty, ${c1} and ${c2}, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.`;
+    return `As the telematics specialists on duty, ${c1} and ${c2}, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.`;
   }
   if (c1) {
-    return `As the controller on duty, ${c1}, I certify that the information contained in this shift report is accurate and complete to the best of my knowledge.`;
+    return `As the telematics specialist on duty, ${c1}, I certify that the information contained in this shift report is accurate and complete to the best of my knowledge.`;
   }
-  return 'As the controller(s) on duty, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.';
+  return 'As the telematics specialist(s) on duty, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.';
 }
 
 /** Strip characters that are invalid in file names on common OSes. */
@@ -419,7 +419,7 @@ export function generateShiftReportPdf(report, options = {}) {
     doc.text(line, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(line) / 2, routeY);
     routeY += routeLineH;
   });
-  const subtitleText = "Thinkers Afrika's Official Controller Shift Documentation";
+  const subtitleText = "Thinkers Afrika's Official Telematics Specialist Shift Documentation";
   doc.text(subtitleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(subtitleText) / 2, routeY + 1);
   yRef.current = routeY + 6;
   doc.setDrawColor(...BLACK);
@@ -502,13 +502,13 @@ export function generateShiftReportPdf(report, options = {}) {
     drawTable(doc, yRef, ['Time', 'Recipient', 'Subject', 'Method', 'Action required'], comms.map((c) => [c.time || '—', c.recipient || '—', c.subject || '—', c.method || '—', c.action_required || '—']), cols(16, 34, 48, 26, 42));
   }
 
-  sectionBar(doc, yRef, 'Handover information for incoming controller');
+  sectionBar(doc, yRef, 'Handover information for incoming telematics specialist');
   keyValueTable(doc, yRef, [
     ['Outstanding issues', report.outstanding_issues],
     ['Key information', report.handover_key_info],
   ].filter(([, v]) => v != null && v !== ''));
 
-  sectionBar(doc, yRef, 'Controller declaration');
+  sectionBar(doc, yRef, 'Telematics specialist declaration');
   const declarationText = buildDeclaration(report);
   keyValueTable(doc, yRef, [
     ['Declaration', declarationText],

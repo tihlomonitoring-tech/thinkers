@@ -2166,12 +2166,12 @@ const CONTROLLER_EVAL_QUESTION_LABELS = {
   q2: 'Was the shift report submitted for approval before 18:30?',
   q3: 'Was the shift report completed correctly and accurately?',
   q4: 'Are all report sections properly completed and accounted for?',
-  q5: 'Did the controller go the extra mile to resolve and manage situations or issues?',
-  q6: 'Was the controller able to answer all questions related to his/her shift?',
-  q7: 'Did the controllers work effectively as a team?',
-  q8: 'Did the controller apply critical thinking in resolving issues?',
-  q9: 'Did the controller follow up on matters and outstanding issues?',
-  q10: "Was the controller's shift report presentation detailed, insightful, and helpful?",
+  q5: 'Did the telematics specialist go the extra mile to resolve and manage situations or issues?',
+  q6: 'Was the telematics specialist able to answer all questions related to his/her shift?',
+  q7: 'Did the telematics specialists work effectively as a team?',
+  q8: 'Did the telematics specialist apply critical thinking in resolving issues?',
+  q9: 'Did the telematics specialist follow up on matters and outstanding issues?',
+  q10: "Was the telematics specialist's shift report presentation detailed, insightful, and helpful?",
   q11: 'Was the office space left clean in accordance with company policy?',
 };
 
@@ -2293,22 +2293,22 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
 
       <section>
         <div className="flex flex-wrap items-center gap-2 mb-4">
-          <h2 className="text-lg font-semibold text-surface-800">Shift report (controller) evaluations</h2>
+          <h2 className="text-lg font-semibold text-surface-800">Shift report (telematics specialist) evaluations</h2>
           <InfoHint
-            title="Controller evaluations"
-            text="Full controller evaluations from Command Centre → Requests. Click a row to view the detailed evaluation."
+            title="Telematics specialist evaluations"
+            text="Full telematics specialist evaluations from Command Centre → Requests. Click a row to view the detailed evaluation."
           />
         </div>
         {controllerMigrationRequired && (
           <div className="rounded-xl border-2 border-amber-200 bg-amber-50 p-4 mb-4 text-amber-900">
             <p className="font-medium">Database migration required</p>
-            <p className="text-sm mt-1">Controller evaluations are not available until the migration is run. From the project root, run:</p>
+            <p className="text-sm mt-1">Telematics specialist evaluations are not available until the migration is run. From the project root, run:</p>
             <code className="block mt-2 p-2 bg-amber-100 rounded text-sm">node scripts/run-command-centre-controller-evaluations.js</code>
           </div>
         )}
         {controllerEvaluations.length === 0 && !controllerMigrationRequired && (
           <div className="rounded-xl border border-surface-200 bg-surface-50 p-8 text-center text-surface-500">
-            <p className="font-medium text-surface-600">No controller evaluations yet</p>
+            <p className="font-medium text-surface-600">No telematics specialist evaluations yet</p>
             <div className="flex justify-center mt-2">
               <InfoHint
                 title="When evaluations appear"
@@ -2326,7 +2326,7 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
                     <th className="px-4 py-2 text-left font-medium text-surface-700">Route</th>
                     <th className="px-4 py-2 text-left font-medium text-surface-700">Date</th>
                     <th className="px-4 py-2 text-left font-medium text-surface-700">Evaluator</th>
-                    <th className="px-4 py-2 text-left font-medium text-surface-700">Evaluated</th>
+                    <th className="px-4 py-2 text-left font-medium text-surface-700">Telematics specialist(s)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-100">
@@ -2359,7 +2359,7 @@ function EvaluationsSection({ evaluations, controllerEvaluations, controllerMigr
                       <div className="grid gap-2 sm:grid-cols-2 text-sm">
                         <div><span className="text-surface-500">Route</span><p className="font-medium">{controllerEvalDetail.route || '—'}</p></div>
                         <div><span className="text-surface-500">Report date</span><p className="font-medium">{controllerEvalDetail.report_date ? formatDate(controllerEvalDetail.report_date) : '—'}</p></div>
-                        <div><span className="text-surface-500">Controllers</span><p className="font-medium">{[controllerEvalDetail.controller1_name, controllerEvalDetail.controller2_name].filter(Boolean).join(', ') || '—'}</p></div>
+                        <div><span className="text-surface-500">Telematics specialist(s)</span><p className="font-medium">{[controllerEvalDetail.controller1_name, controllerEvalDetail.controller2_name].filter(Boolean).join(', ') || '—'}</p></div>
                         <div><span className="text-surface-500">Evaluator</span><p className="font-medium">{controllerEvalDetail.evaluator_name || '—'}</p></div>
                         <div><span className="text-surface-500">Evaluated at</span><p className="font-medium">{controllerEvalDetail.created_at ? formatDate(controllerEvalDetail.created_at) : '—'}</p></div>
                       </div>

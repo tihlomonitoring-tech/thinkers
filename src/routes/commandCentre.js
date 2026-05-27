@@ -4339,7 +4339,7 @@ router.get('/shift-report-export', async (req, res, next) => {
     const doAll = section === 'all';
 
     if (doAll || section === 'report_summary') {
-      const headers = ['Report date', 'Route', 'Status', 'Shift start', 'Shift end', 'Controller 1', 'Controller 2', 'Total trucks scheduled', 'Balance brought down', 'Total loads dispatched', 'Total pending', 'Total loads delivered', 'Overall performance', 'Key highlights', 'Shift conclusion time'];
+      const headers = ['Report date', 'Route', 'Status', 'Shift start', 'Shift end', 'Telematics specialist 1', 'Telematics specialist 2', 'Total trucks scheduled', 'Balance brought down', 'Total loads dispatched', 'Total pending', 'Total loads delivered', 'Overall performance', 'Key highlights', 'Shift conclusion time'];
       const rows = reports.map((r) => [
         reportDateStr(r),
         routeStr(r),
@@ -5832,7 +5832,7 @@ async function requireEvaluationOrOverride(query, reportId, userId, status, over
     `SELECT id FROM controller_evaluations WHERE shift_report_id = @reportId AND evaluator_user_id = @userId`,
     { reportId, userId }
   );
-  if (!evalResult.recordset?.length) return { error: 'Complete the controller evaluation before approving, rejecting, or granting provisional approval.' };
+  if (!evalResult.recordset?.length) return { error: 'Complete the telematics specialist evaluation before approving, rejecting, or granting provisional approval.' };
   return {};
 }
 

@@ -36,12 +36,12 @@ function buildDeclaration(report) {
   const c1 = (report.controller1_name || '').trim();
   const c2 = (report.controller2_name || '').trim();
   if (c1 && c2) {
-    return `As the controllers on duty, ${c1} and ${c2}, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.`;
+    return `As the telematics specialists on duty, ${c1} and ${c2}, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.`;
   }
   if (c1) {
-    return `As the controller on duty, ${c1}, I certify that the information contained in this shift report is accurate and complete to the best of my knowledge.`;
+    return `As the telematics specialist on duty, ${c1}, I certify that the information contained in this shift report is accurate and complete to the best of my knowledge.`;
   }
-  return 'As the controller(s) on duty, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.';
+  return 'As the telematics specialist(s) on duty, we certify that the information contained in this shift report is accurate and complete to the best of our knowledge.';
 }
 
 /**
@@ -63,10 +63,10 @@ export function buildShiftReportTemplateWordHtml(report, options = {}) {
     ['Report Date', report.report_date ? new Date(report.report_date).toLocaleDateString() : ''],
     ['Shift Date', report.shift_date ? new Date(report.shift_date).toLocaleDateString() : ''],
     ['Shift Time', shiftTime],
-    ['Controller 1', report.controller1_name],
-    ['Controller 1 Email', report.controller1_email],
-    ['Controller 2', report.controller2_name],
-    ['Controller 2 Email', report.controller2_email],
+    ['Telematics specialist 1', report.controller1_name],
+    ['Telematics specialist 1 Email', report.controller1_email],
+    ['Telematics specialist 2', report.controller2_name],
+    ['Telematics specialist 2 Email', report.controller2_email],
     ['Report Status', report.status],
     ['Created By', report.created_by_name],
     ['Created At', report.created_at ? new Date(report.created_at).toLocaleString() : ''],
@@ -125,7 +125,7 @@ export function buildShiftReportTemplateWordHtml(report, options = {}) {
     logoBlock,
     '<h1>SHIFT REPORT</h1>',
     `<p class="sub">${h(routeLine)}</p>`,
-    `<p class="sub">Thinkers Afrika's Official Controller Shift Documentation</p>`,
+    `<p class="sub">Thinkers Afrika's Official Telematics Specialist Shift Documentation</p>`,
     '<hr />',
     sectionBar('Report information'),
     kvTable(infoRows.filter(([, v]) => v != null && String(v).trim() !== '')),
@@ -182,7 +182,7 @@ export function buildShiftReportTemplateWordHtml(report, options = {}) {
     ['Outstanding issues', report.outstanding_issues],
     ['Key information', report.handover_key_info],
   ].filter(([, v]) => v != null && String(v).trim() !== '');
-  parts.push(sectionBar('Handover information for incoming controller'));
+  parts.push(sectionBar('Handover information for incoming telematics specialist'));
   parts.push(handoverRows.length ? kvTable(handoverRows) : '<p style="font-size:9pt;color:#666;">—</p>');
 
   const declText = (report.declaration || '').trim() || buildDeclaration(report);
@@ -190,7 +190,7 @@ export function buildShiftReportTemplateWordHtml(report, options = {}) {
     ['Declaration', declText],
     ['Shift conclusion time', report.shift_conclusion_time],
   ].filter(([, v]) => v != null && String(v).trim() !== '');
-  parts.push(sectionBar('Controller declaration'));
+  parts.push(sectionBar('Telematics specialist declaration'));
   parts.push(kvTable(declRows));
 
   parts.push(sectionBar('Approvers / Approval information'));

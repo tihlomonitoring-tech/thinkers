@@ -59,7 +59,7 @@ export default function EmployeeProductivityScoreSection() {
           <h1 className="text-xl font-semibold text-surface-900">Employee productivity score</h1>
           <InfoHint
             title="Management insights"
-            text="Scores aggregate Command Centre team members only (page or tab access). Each row is a rolling total from clock punctuality, controller evaluations on authored shift reports (standard and single-operations), assigned tasks, shift-report submission timing for both report types, and team progress (achieved measurable objectives plus management 1–5 ratings). Use this to spot coaching opportunities — not as the sole measure of performance."
+            text="Scores aggregate Command Centre team members only (page or tab access). Each row is a rolling total from clock punctuality, telematics specialist evaluations on authored shift reports (standard and single-operations), assigned tasks, shift-report submission timing for both report types, and team progress (achieved measurable objectives plus management 1–5 ratings). Use this to spot coaching opportunities — not as the sole measure of performance."
           />
         </div>
         <p className="text-sm text-surface-500">

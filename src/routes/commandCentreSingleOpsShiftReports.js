@@ -266,7 +266,7 @@ async function requireSingleOpsEvaluationOrOverride(reportId, userId, status, ov
     { reportId, userId }
   );
   if (!evalResult.recordset?.length) {
-    return { error: 'Complete the controller evaluation before approving, rejecting, or granting provisional approval.' };
+    return { error: 'Complete the telematics specialist evaluation before approving, rejecting, or granting provisional approval.' };
   }
   return {};
 }

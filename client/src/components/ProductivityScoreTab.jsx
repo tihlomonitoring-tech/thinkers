@@ -4,7 +4,7 @@ import InfoHint from './InfoHint.jsx';
 
 const CAT_LABELS = {
   punctuality: 'Clock-in punctuality',
-  evaluation: 'Controller evaluations (standard & single-ops)',
+  evaluation: 'Telematics specialist evaluations (standard & single-ops)',
   tasks: 'Tasks (on time vs overdue)',
   reportTiming: 'Shift report hand-in — standard & single-ops (06:15 / 18:15 SAST)',
   teamProgress: 'Team progress (objectives & management ratings)',
@@ -63,7 +63,7 @@ export default function ProductivityScoreTab() {
             <h2 className="text-lg font-semibold text-surface-900">Productivity score</h2>
             <InfoHint
               title="How your score is built"
-              text="Rolling window on your tenant calendar. Points come from: shift clock-in vs scheduled day (06:00) or night (18:00) start; controller evaluations on shift reports you authored (standard Command Centre and single-operations reports); tasks assigned to you completed on or before due date; both report types submitted before shift end plus 15 minutes (18:15 day / 06:15 morning after night); measurable objectives marked achieved and management 1–5 team ratings (neutral at 3). Only Command Centre team members are included in the team average."
+              text="Rolling window on your tenant calendar. Points come from: shift clock-in vs scheduled day (06:00) or night (18:00) start; telematics specialist evaluations on shift reports you authored (standard Command Centre and single-operations reports); tasks assigned to you completed on or before due date; both report types submitted before shift end plus 15 minutes (18:15 day / 06:15 morning after night); measurable objectives marked achieved and management 1–5 team ratings (neutral at 3). Only Command Centre team members are included in the team average."
             />
           </div>
           <p className="text-sm text-surface-600 mt-1">
