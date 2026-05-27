@@ -105,15 +105,15 @@ function drawReportInformationPanel(doc, yRef, report, isSingleOps) {
   if (report.shift_date) entries.push({ label: 'Shift date', value: fmtDate(report.shift_date) });
   if (shiftTimeText !== '—') entries.push({ label: 'Shift time', value: shiftTimeText });
   if (report.status) entries.push({ label: 'Status', value: statusBadgeMeta(report.status).label });
-  if (report.controller1_name) entries.push({ label: 'Telematics specialist 1', value: report.controller1_name });
-  if (report.controller2_name) entries.push({ label: 'Telematics specialist 2', value: report.controller2_name });
-  if (report.controller1_email) entries.push({ label: 'Telematics specialist 1 email', value: report.controller1_email });
-  if (report.controller2_email) entries.push({ label: 'Telematics specialist 2 email', value: report.controller2_email });
+  if (report.controller1_name) entries.push({ label: 'Tel. specialist 1', value: report.controller1_name });
+  if (report.controller2_name) entries.push({ label: 'Tel. specialist 2', value: report.controller2_name });
+  if (report.controller1_email) entries.push({ label: 'Tel. specialist 1 email', value: report.controller1_email });
+  if (report.controller2_email) entries.push({ label: 'Tel. specialist 2 email', value: report.controller2_email });
   if (report.created_by_name) entries.push({ label: 'Created by', value: report.created_by_name });
   if (report.created_at) entries.push({ label: 'Created at', value: fmtDateTime(report.created_at) });
 
   // 4 columns: [Label] [Value] [Label] [Value] — two key/value pairs side by side per row.
-  const labelW = 32;
+  const labelW = 44;
   const valueW = (CONTENT_WIDTH - labelW * 2) / 2;
   const colWidths = [labelW, valueW, labelW, valueW];
   const colXs = [MARGIN, MARGIN + labelW, MARGIN + labelW + valueW, MARGIN + labelW * 2 + valueW];
@@ -121,10 +121,15 @@ function drawReportInformationPanel(doc, yRef, report, isSingleOps) {
   const cellPadY = 1.6;
   const lineH = 4.2;
 
-  const measure = (text, w) => {
+  const measureValue = (text, w) => {
     doc.setFont(FONT, 'normal');
     doc.setFontSize(FONT_SIZE_TABLE);
     return wrap(doc, text || '—', w - cellPadX * 2).length;
+  };
+  const measureLabel = (text, w) => {
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(FONT_SIZE_TABLE);
+    return wrap(doc, `${text}:`, w - cellPadX * 2).length;
   };
 
   doc.setDrawColor(...TABLE_BORDER);
@@ -134,10 +139,10 @@ function drawReportInformationPanel(doc, yRef, report, isSingleOps) {
     const left = entries[r];
     const right = entries[r + 1] || null;
 
-    const linesLeftLabel = 1;
-    const linesLeftValue = measure(left?.value, valueW);
-    const linesRightLabel = right ? 1 : 0;
-    const linesRightValue = right ? measure(right?.value, valueW) : 0;
+    const linesLeftLabel = left ? measureLabel(left.label, colWidths[0]) : 0;
+    const linesLeftValue = left ? measureValue(left.value, colWidths[1]) : 0;
+    const linesRightLabel = right ? measureLabel(right.label, colWidths[2]) : 0;
+    const linesRightValue = right ? measureValue(right.value, colWidths[3]) : 0;
     const maxLines = Math.max(linesLeftLabel, linesLeftValue, linesRightLabel, linesRightValue, 1);
     const rowH = cellPadY * 2 + maxLines * lineH;
 
@@ -155,7 +160,10 @@ function drawReportInformationPanel(doc, yRef, report, isSingleOps) {
       doc.setFont(FONT, 'bold');
       doc.setFontSize(FONT_SIZE_TABLE);
       doc.setTextColor(...TEXT_DARK);
-      doc.text(`${text}:`, x + cellPadX, y + cellPadY + lineH - 0.4);
+      const lines = wrap(doc, `${text}:`, w - cellPadX * 2);
+      lines.forEach((line, i) => {
+        doc.text(line, x + cellPadX, y + cellPadY + (i + 1) * lineH - 0.4);
+      });
     };
     const drawValueCell = (x, w, text) => {
       doc.setFont(FONT, 'normal');

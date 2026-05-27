@@ -411,6 +411,8 @@ export const contractor = {
       if (routeId) q.set('routeId', routeId);
       if (contractorId) q.set('contractor_id', contractorId);
       if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
+      if (opts.format) q.set('format', String(opts.format).toLowerCase());
+      if (opts.includeAll) q.set('includeAll', '1');
       const qs = q.toString();
       return fetch(`${API}/contractor/enrollment/fleet-list${qs ? `?${qs}` : ''}`, { credentials: 'include' })
         .then((res) => {
@@ -420,7 +422,12 @@ export const contractor = {
         .then((blob) => {
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
-          a.download = 'fleet-list.csv';
+          const ext = String(opts.format || 'csv').toLowerCase() === 'excel'
+            ? 'xlsx'
+            : String(opts.format || 'csv').toLowerCase() === 'pdf'
+              ? 'pdf'
+              : 'csv';
+          a.download = opts.filename || `fleet-list.${ext}`;
           a.click();
           URL.revokeObjectURL(a.href);
         });
@@ -430,6 +437,8 @@ export const contractor = {
       if (routeId) q.set('routeId', routeId);
       if (contractorId) q.set('contractor_id', contractorId);
       if (opts.enrollmentPortal) q.set('enrollmentPortal', opts.enrollmentPortal);
+      if (opts.format) q.set('format', String(opts.format).toLowerCase());
+      if (opts.includeAll) q.set('includeAll', '1');
       const qs = q.toString();
       return fetch(`${API}/contractor/enrollment/driver-list${qs ? `?${qs}` : ''}`, { credentials: 'include' })
         .then((res) => {
@@ -439,7 +448,12 @@ export const contractor = {
         .then((blob) => {
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
-          a.download = 'driver-list.csv';
+          const ext = String(opts.format || 'csv').toLowerCase() === 'excel'
+            ? 'xlsx'
+            : String(opts.format || 'csv').toLowerCase() === 'pdf'
+              ? 'pdf'
+              : 'csv';
+          a.download = opts.filename || `driver-list.${ext}`;
           a.click();
           URL.revokeObjectURL(a.href);
         });

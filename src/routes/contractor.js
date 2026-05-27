@@ -2801,7 +2801,7 @@ router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
   }
 });
 
-/** GET fleet list CSV or Excel (approved trucks; optional ?routeId= or ?routeIds=id1,id2, ?format=excel). Scoped by company when user has contractor scope. */
+/** GET fleet list CSV/Excel/PDF (approved trucks; optional ?routeId= or ?routeIds=id1,id2, ?format=excel|pdf). Scoped by company when user has contractor scope. */
 router.get('/enrollment/fleet-list', async (req, res, next) => {
   try {
     if (await rejectSubcontractorPortalUser(req, res)) return;
@@ -2809,8 +2809,26 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
     const allowed = scope.allowed;
-    const wantExcel = (req.query.format || '').toLowerCase() === 'excel';
+    const fmt = String(req.query.format || '').toLowerCase();
+    const wantExcel = fmt === 'excel';
+    const wantPdf = fmt === 'pdf';
+    const selectedContractorId = req.query.contractor_id || null;
+    let selectedContractorName = null;
+    if (selectedContractorId) {
+      const c = await query(`SELECT TOP 1 name FROM contractors WHERE id = @id`, { id: selectedContractorId });
+      selectedContractorName = c.recordset?.[0]?.name || null;
+    } else if (!selectedContractorId && allowed && allowed.length === 1) {
+      const c = await query(`SELECT TOP 1 name FROM contractors WHERE id = @id`, { id: allowed[0] });
+      selectedContractorName = c.recordset?.[0]?.name || null;
+    }
+
     if (allowed && allowed.length === 0) {
+      if (wantPdf) {
+        const buf = await buildFleetListPdf(query, tenantId, null, null, { companyName: selectedContractorName || 'Contractor' });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="fleet-list-not-official.pdf"');
+        return res.send(Buffer.from(buf));
+      }
       if (wantExcel) {
         const buf = await buildFleetListExcel(query, tenantId, null, null, {});
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -2825,6 +2843,7 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
       res.setHeader('Content-Disposition', 'attachment; filename="fleet-list.csv"');
       return res.send('\uFEFF' + csv);
     }
+    const includeAll = String(req.query.includeAll || req.query.include_all || '').trim() === '1';
     const routeId = req.query.routeId;
     const routeIdsRaw = req.query.routeIds;
     const routeIds = routeIdsRaw && typeof routeIdsRaw === 'string' ? routeIdsRaw.split(',').map((id) => id.trim()).filter(Boolean) : null;
@@ -2840,6 +2859,20 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
     if (groupBy === 'sub_contractor' && effectiveCols) {
       const rest = effectiveCols.filter((k) => k !== 'contractor' && k !== 'sub_contractor');
       effectiveCols = ['contractor', 'sub_contractor', ...rest];
+    }
+    if (wantPdf) {
+      const routeIdsForPdf = useRoutes && ids.length > 0 ? ids : null;
+      const opts = {
+        ...(selectedContractorId
+          ? { contractorId: selectedContractorId }
+          : (allowed && allowed.length > 0 ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed }) : {})),
+        groupBy,
+        companyName: selectedContractorName || 'Contractor',
+      };
+      const buf = await buildFleetListPdf(query, tenantId, routeIdsForPdf, effectiveCols, { ...opts, includeAll });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="fleet-list-not-official.pdf"');
+      return res.send(Buffer.from(buf));
     }
     if (wantExcel) {
       const routeIdsForExcel = useRoutes && ids.length > 0 ? ids : null;
@@ -2865,7 +2898,7 @@ router.get('/enrollment/fleet-list', async (req, res, next) => {
   }
 });
 
-/** GET driver list CSV or Excel (approved drivers; optional ?routeId= or ?routeIds=id1,id2, ?format=excel). Scoped by company when user has contractor scope. */
+/** GET driver list CSV/Excel/PDF (approved drivers; optional ?routeId= or ?routeIds=id1,id2, ?format=excel|pdf). Scoped by company when user has contractor scope. */
 router.get('/enrollment/driver-list', async (req, res, next) => {
   try {
     if (await rejectSubcontractorPortalUser(req, res)) return;
@@ -2873,8 +2906,16 @@ router.get('/enrollment/driver-list', async (req, res, next) => {
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
     const allowed = scope.allowed;
-    const wantExcel = (req.query.format || '').toLowerCase() === 'excel';
+    const fmt = String(req.query.format || '').toLowerCase();
+    const wantExcel = fmt === 'excel';
+    const wantPdf = fmt === 'pdf';
     if (allowed && allowed.length === 0) {
+      if (wantPdf) {
+        const buf = await buildDriverListPdf(query, tenantId, null, null, {});
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="driver-list-not-official.pdf"');
+        return res.send(Buffer.from(buf));
+      }
       if (wantExcel) {
         const buf = await buildDriverListExcel(query, tenantId, null, null, {});
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -2904,6 +2945,17 @@ router.get('/enrollment/driver-list', async (req, res, next) => {
     if (groupBy === 'sub_contractor' && effectiveCols) {
       const rest = effectiveCols.filter((k) => k !== 'contractor' && k !== 'sub_contractor');
       effectiveCols = ['contractor', 'sub_contractor', ...rest];
+    }
+    if (wantPdf) {
+      const routeIdsForPdf = useRoutes && ids.length > 0 ? ids : null;
+      const opts = {
+        ...(allowed && allowed.length > 0 ? (allowed.length === 1 ? { contractorId: allowed[0] } : { contractorIds: allowed }) : {}),
+        groupBy,
+      };
+      const buf = await buildDriverListPdf(query, tenantId, routeIdsForPdf, effectiveCols, opts);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="driver-list-not-official.pdf"');
+      return res.send(Buffer.from(buf));
     }
     if (wantExcel) {
       const routeIdsForExcel = useRoutes && ids.length > 0 ? ids : null;
@@ -3325,13 +3377,14 @@ router.get('/distribution/contractors', async (req, res, next) => {
 });
 
 const FLEET_COLUMNS = [
-  { key: 'contractor', label: 'Contractor' },
+  { key: 'contractor', label: 'Main contractor' },
   { key: 'sub_contractor', label: 'Sub-contractor' },
   { key: 'registration', label: 'Registration' },
   { key: 'make_model', label: 'Make/Model' },
   { key: 'fleet_no', label: 'Fleet No' },
   { key: 'trailer_1_reg_no', label: 'Trailer 1 reg' },
   { key: 'trailer_2_reg_no', label: 'Trailer 2 reg' },
+  { key: 'integration_status', label: 'System status' },
   { key: 'commodity_type', label: 'Commodity' },
   { key: 'capacity_tonnes', label: 'Capacity (t)' },
   { key: 'route_name', label: 'Route' },
@@ -3354,8 +3407,9 @@ const OPTIONAL_LIST_COLUMN_KEYS = new Set(['contractor', 'sub_contractor']);
 async function getFleetListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null, queryOpts = {}) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
-  const skipAccessOnRoute = queryOpts.includeRouteEnrollmentWithoutAccessFilter === true && useRoutes && ids.length > 0;
-  const accessClause = skipAccessOnRoute ? '' : ' AND t.facility_access = 1';
+  const includeAll = queryOpts.includeAll === true;
+  const skipAccessOnRoute = (queryOpts.includeRouteEnrollmentWithoutAccessFilter === true || includeAll) && useRoutes && ids.length > 0;
+  const accessClause = (skipAccessOnRoute || includeAll) ? '' : ' AND t.facility_access = 1';
   let sql;
   const params = { tenantId };
   let contractorClause = '';
@@ -3371,21 +3425,31 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
     const placeholders = ids.map((_, i) => `@routeId${i}`).join(',');
     for (let i = 0; i < ids.length; i++) params[`routeId${i}`] = ids[i];
     sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes, r.name AS route_name,
+                  CASE
+                    WHEN t.facility_access = 1 THEN N'Facility access'
+                    ELSE N'Pending CC'
+                  END AS integration_status,
                   ISNULL(NULLIF(LTRIM(RTRIM(c.name)), N''), NULLIF(LTRIM(RTRIM(t.main_contractor)), N'')) AS contractor,
-                  NULLIF(LTRIM(RTRIM(t.sub_contractor)), N'') AS sub_contractor
+                  ISNULL(NULLIF(LTRIM(RTRIM(t.sub_contractor)), N''), NULLIF(LTRIM(RTRIM(sc.name)), N'')) AS sub_contractor
            FROM contractor_route_trucks rt
            JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId${accessClause}${contractorClause}
            JOIN contractor_routes r ON r.id = rt.route_id AND r.tenant_id = @tenantId
            LEFT JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = @tenantId
+           LEFT JOIN contractors sc ON sc.id = t.subcontractor_id AND sc.tenant_id = @tenantId
            WHERE rt.route_id IN (${placeholders})
            ORDER BY r.[order], r.name, t.registration`;
   } else {
     sql = `SELECT t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.commodity_type, t.capacity_tonnes,
+                  CASE
+                    WHEN t.facility_access = 1 THEN N'Facility access'
+                    ELSE N'Pending CC'
+                  END AS integration_status,
                   ISNULL(NULLIF(LTRIM(RTRIM(c.name)), N''), NULLIF(LTRIM(RTRIM(t.main_contractor)), N'')) AS contractor,
-                  NULLIF(LTRIM(RTRIM(t.sub_contractor)), N'') AS sub_contractor
+                  ISNULL(NULLIF(LTRIM(RTRIM(t.sub_contractor)), N''), NULLIF(LTRIM(RTRIM(sc.name)), N'')) AS sub_contractor
            FROM contractor_trucks t
            LEFT JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = @tenantId
-           WHERE t.tenant_id = @tenantId AND t.facility_access = 1${contractorClause}
+           LEFT JOIN contractors sc ON sc.id = t.subcontractor_id AND sc.tenant_id = @tenantId
+           WHERE t.tenant_id = @tenantId${includeAll ? '' : ' AND t.facility_access = 1'}${contractorClause}
              AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
            ORDER BY t.registration`;
   }
@@ -3420,8 +3484,9 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
 async function getDriverListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null, queryOpts = {}) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
-  const skipAccessOnRoute = queryOpts.includeRouteEnrollmentWithoutAccessFilter === true && useRoutes && ids.length > 0;
-  const accessClause = skipAccessOnRoute ? '' : ' AND d.facility_access = 1';
+  const includeAll = queryOpts.includeAll === true;
+  const skipAccessOnRoute = (queryOpts.includeRouteEnrollmentWithoutAccessFilter === true || includeAll) && useRoutes && ids.length > 0;
+  const accessClause = (skipAccessOnRoute || includeAll) ? '' : ' AND d.facility_access = 1';
   let sql;
   const params = { tenantId };
   let contractorClause = '';
@@ -3453,7 +3518,7 @@ async function getDriverListData(query, tenantId, routeIds, columns = null, cont
            FROM contractor_drivers d
            LEFT JOIN contractors c ON c.id = d.contractor_id AND c.tenant_id = @tenantId
            LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = @tenantId
-           WHERE d.tenant_id = @tenantId AND d.facility_access = 1${contractorClause}
+           WHERE d.tenant_id = @tenantId${includeAll ? '' : ' AND d.facility_access = 1'}${contractorClause}
              AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
            ORDER BY d.full_name`;
   }
@@ -3658,21 +3723,37 @@ async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols
 /** Build distribution list PDF (title, subtitle, table; no contact footer). */
 function buildDistributionPdf(title, subtitle, headers, rows, keys) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 40 });
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
     const chunks = [];
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const MARGIN = 40;
-    const PAGE_W = 595.28;
-    const PAGE_H = 841.89;
+    const MARGIN = 30;
+    const PAGE_W = doc.page.width;
+    const PAGE_H = doc.page.height;
     const TABLE_W = PAGE_W - MARGIN * 2;
     const ROW_H = 16;
     const HEADER_COLOR = '#1e40af';
     const FONT = 'Helvetica';
 
+    const drawNotOfficialWatermark = () => {
+      const centerX = PAGE_W / 2;
+      const centerY = PAGE_H / 2;
+      doc.save();
+      doc.translate(centerX, centerY);
+      doc.rotate(-32);
+      doc.font(FONT, 'bold');
+      doc.fontSize(56);
+      doc.fillColor('#dc2626');
+      doc.opacity(0.11);
+      doc.text('NOT OFFICIAL', -220, -18, { width: 440, align: 'center' });
+      doc.restore();
+      doc.opacity(1);
+    };
+
     let y = MARGIN;
+    drawNotOfficialWatermark();
     doc.fontSize(16).font(FONT, 'bold').fillColor(HEADER_COLOR).text(title, MARGIN, y);
     y += 22;
     doc.fontSize(9).fillColor('#64748b').font(FONT, 'normal').text(subtitle, MARGIN, y);
@@ -3698,6 +3779,7 @@ function buildDistributionPdf(title, subtitle, headers, rows, keys) {
       if (y + ROW_H > PAGE_H - MARGIN) {
         doc.addPage();
         y = MARGIN;
+        drawNotOfficialWatermark();
         doc.fillColor(HEADER_COLOR);
         doc.rect(MARGIN, y, TABLE_W, ROW_H).fill();
         doc.fillColor('#ffffff').font(FONT, 'bold').fontSize(9);
@@ -3722,9 +3804,17 @@ function buildDistributionPdf(title, subtitle, headers, rows, keys) {
 async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
-  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
-  const title = opts.title ?? 'Thinkers – Fleet list';
+  const listQ = {
+    ...(opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {}),
+    ...(opts.includeAll ? { includeAll: true } : {}),
+  };
+  const defaultPdfColumns = ['contractor', 'sub_contractor', 'registration', 'make_model', 'fleet_no', 'trailer_1_reg_no', 'trailer_2_reg_no', 'integration_status', 'route_name'];
+  const requestedColumns = Array.isArray(columns) && columns.length > 0
+    ? columns.filter((c) => !['commodity_type', 'capacity_tonnes'].includes(String(c).toLowerCase()))
+    : defaultPdfColumns;
+  const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, requestedColumns, contractorId, contractorIds, listQ);
+  const companyLabel = String(opts.companyName || '').trim() || 'Contractor';
+  const title = opts.title ?? `${companyLabel} list – Fleet list`;
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
   return buildDistributionPdf(title, subtitle, headers, rows, keys);
 }

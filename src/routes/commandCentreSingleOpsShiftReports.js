@@ -6,6 +6,7 @@ import { query } from '../db.js';
 import { getAccessManagementEmails } from '../lib/emailRecipients.js';
 import { shiftReportOverrideRequestHtml, shiftReportOverrideCodeToRequesterHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
+import { nextShiftReportRefNumber } from '../lib/shiftReportRefNumbers.js';
 
 function getR(row, key) {
   if (!row) return undefined;
@@ -332,30 +333,19 @@ export function registerCommandCentreSingleOpsShiftReports(router) {
       const b = req.body || {};
       const payload = bodyToMainPayload(b, req.user.id, false);
       delete payload.status;
-      const tenantId = req.user?.tenant_id;
-      let nextRef = 1;
-      if (tenantId) {
-        const refRow = await query(
-          `SELECT ISNULL(MAX(r.ref_number), 0) + 1 AS next_ref
-           FROM command_centre_single_ops_shift_reports r
-           JOIN users u ON u.id = r.created_by_user_id
-           WHERE u.tenant_id = @tenantId`,
-          { tenantId }
-        );
-        const v = Number(refRow.recordset?.[0]?.next_ref || 1);
-        if (Number.isFinite(v) && v > 0) nextRef = v;
-      }
-      payload.ref_number = nextRef;
+      const tenantId = req.user?.tenant_id || null;
+      payload.tenant_id = tenantId;
+      payload.ref_number = await nextShiftReportRefNumber(tenantId, 'single_ops');
       const result = await query(
         `INSERT INTO command_centre_single_ops_shift_reports (
-          created_by_user_id, ref_number, routes_json, report_date, shift_date, shift_start, shift_end,
+          created_by_user_id, tenant_id, ref_number, routes_json, report_date, shift_date, shift_start, shift_end,
           controller1_name, controller1_email, controller2_name, controller2_email,
           total_trucks_scheduled, balance_brought_down, total_loads_dispatched, total_pending_deliveries, total_loads_delivered,
           overall_performance, key_highlights, truck_updates, incidents, non_compliance_calls, investigations, communication_log,
           outstanding_issues, handover_key_info, declaration, shift_conclusion_time, status
         ) OUTPUT INSERTED.*
         VALUES (
-          @created_by_user_id, @ref_number, @routes_json, @report_date, @shift_date, @shift_start, @shift_end,
+          @created_by_user_id, @tenant_id, @ref_number, @routes_json, @report_date, @shift_date, @shift_start, @shift_end,
           @controller1_name, @controller1_email, @controller2_name, @controller2_email,
           @total_trucks_scheduled, @balance_brought_down, @total_loads_dispatched, @total_pending_deliveries, @total_loads_delivered,
           @overall_performance, @key_highlights, @truck_updates, @incidents, @non_compliance_calls, @investigations, @communication_log,

@@ -37,6 +37,7 @@
     "db:cc-compliance-expand": "node scripts/run-cc-compliance-expand.js",
     "db:cc-logo-settings": "node scripts/run-cc-logo-settings.js",
     "db:cc-shift-report-ref-numbers": "node scripts/run-cc-shift-report-ref-numbers.js",
+    "db:cc-shift-report-ref-counter": "node scripts/run-cc-shift-report-ref-counter.js",
     "db:contractor-trucks-relax-unique": "node scripts/run-contractor-trucks-relax-unique.js",
     "db:pilot-distribution-group-by": "node scripts/run-pilot-list-distribution-group-by.js",
     "db:compliance-response-attachments": "node scripts/run-compliance-response-attachments.js",

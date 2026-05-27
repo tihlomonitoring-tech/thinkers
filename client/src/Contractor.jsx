@@ -2106,7 +2106,24 @@ export default function Contractor() {
             {activeTab === 'fleet' && (
               <div className="w-full">
                 <div className="app-glass-card p-6">
-                  <h2 className="font-medium text-surface-900 mb-4">Fleet</h2>
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="font-medium text-surface-900">Fleet</h2>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        contractorApi.enrollment
+                          .downloadFleetList(null, selectedContractorId || null, {
+                            format: 'pdf',
+                            includeAll: true,
+                            filename: 'fleet-list-not-official.pdf',
+                          })
+                          .catch((err) => setError(err?.message || 'Failed to download fleet PDF'))
+                      }
+                      className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                    >
+                      Download PDF (Not official)
+                    </button>
+                  </div>
                   {canAccessPage(user, 'tracking_integration') && (
                     <p className="text-sm text-surface-600 mb-3">
                       <Link to="/tracking-integration" className="text-brand-600 font-medium hover:underline">
@@ -2331,7 +2348,24 @@ export default function Contractor() {
             {activeTab === 'driver-register' && (
               <div className="w-full">
                 <div className="app-glass-card p-6">
-                  <h2 className="font-medium text-surface-900 mb-4">Driver register</h2>
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="font-medium text-surface-900">Driver register</h2>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        contractorApi.enrollment
+                          .downloadDriverList(null, selectedContractorId || null, {
+                            format: 'pdf',
+                            includeAll: true,
+                            filename: 'driver-register-not-official.pdf',
+                          })
+                          .catch((err) => setError(err?.message || 'Failed to download register PDF'))
+                      }
+                      className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                    >
+                      Download PDF (Not official)
+                    </button>
+                  </div>
                   <p className="text-xs text-surface-500 mb-4">Click a row to view and edit driver details.</p>
                   <DriverAdvancedView
                     drivers={driversList}
