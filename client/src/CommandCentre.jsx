@@ -1,30 +1,36 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { addCalendarDays, todayYmd } from './lib/appTime.js';
 import { buildDeskForecast } from './lib/ccForecasting.js';
 import { Link } from 'react-router-dom';
-import ExcelJS from 'exceljs';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth, shiftClock, shiftScore } from './api';
-import { generateShiftReportPdf, buildShiftReportDownloadFilename, formatShiftReportRef } from './lib/shiftReportPdf.js';
-import { loadShiftReportLogoDataUrl } from './lib/shiftReportLogo.js';
+import { buildShiftReportDownloadFilename, formatShiftReportRef } from './lib/shiftReportPdf.js';
+import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets } from './lib/shiftReportLogo.js';
 import { buildMockSingleOpsShiftReport } from './lib/mockSingleOpsShiftReport.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
-import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
-import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import { getApiBase } from './lib/apiBase.js';
-import TruckUpdateRecordsTab from './components/TruckUpdateRecordsTab.jsx';
-import LogisticsFlowPage from './components/LogisticsFlowPage.jsx';
-import HandedOverAnalysisTab from './components/HandedOverAnalysisTab.jsx';
-import TabAtomicFleetVerification from './commandCentre/TabAtomicFleetVerification.jsx';
+import { loadExcelJS } from './lib/lazyExceljs.js';
+import { readCachedCcTabs, writeCachedCcTabs } from './lib/ccTabsCache.js';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
-import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
-import FleetPendingChangesTab from './components/FleetPendingChangesTab.jsx';
+import { ShiftReportTextAssist, ShiftReportSummaryAssist } from './components/ShiftReportTextAssist.jsx';
+import { buildShiftReportAiPayload } from './lib/shiftReportAiContext.js';
 import { buildStyledListSheet, groupRowsByContractorAndSubContractor } from './lib/styledListExcel.js';
+
+const TruckUpdateRecordsTab = lazy(() => import('./components/TruckUpdateRecordsTab.jsx'));
+const LogisticsFlowPage = lazy(() => import('./components/LogisticsFlowPage.jsx'));
+const HandedOverAnalysisTab = lazy(() => import('./components/HandedOverAnalysisTab.jsx'));
+const TabAtomicFleetVerification = lazy(() => import('./commandCentre/TabAtomicFleetVerification.jsx'));
+const FleetTruckApprovalSummaryPanel = lazy(() => import('./components/FleetTruckApprovalSummaryPanel.jsx'));
+const FleetPendingChangesTab = lazy(() => import('./components/FleetPendingChangesTab.jsx'));
+
+function TabPanelFallback({ label = 'tab' }) {
+  return <div className="p-6 text-sm text-surface-500 animate-pulse">Loading {label}…</div>;
+}
 
 /** Column definitions for Fleet & driver applications Excel export. getValue(app, { formatDate }) returns cell value. */
 const FLEET_APP_EXPORT_COLUMNS = [
@@ -207,8 +213,9 @@ function loadStoredInspections() {
 export default function CommandCentre() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('command-centre');
-  const [allowedTabs, setAllowedTabs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cachedTabs = useMemo(() => readCachedCcTabs(), []);
+  const [allowedTabs, setAllowedTabs] = useState(() => cachedTabs || []);
+  const [loading, setLoading] = useState(() => !cachedTabs?.length);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [truckAnalysisResumeId, setTruckAnalysisResumeId] = useState(null);
@@ -223,30 +230,24 @@ export default function CommandCentre() {
 
   useEffect(() => {
     let cancelled = false;
-    shiftClock
-      .ccAccess()
-      .then((d) => {
-        if (cancelled) return;
-        setShiftClockGate({
-          loading: false,
-          allowed: d.allowed !== false,
-          message: d.message || '',
-        });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // Fail closed: if we cannot verify shift status, do not grant Command Centre (was fail-open and hid a broken gate).
-        if (isSuperAdmin) {
-          setShiftClockGate({ loading: false, allowed: true, message: '' });
-          return;
-        }
-        setShiftClockGate({
-          loading: false,
-          allowed: false,
-          message:
-            'Could not verify shift clock status. Refresh the page. If you have a shift today, clock in on Profile → Work schedule before using Command Centre.',
-        });
-      });
+    const clockPromise = isSuperAdmin
+      ? Promise.resolve({ allowed: true, message: '' })
+      : shiftClock
+          .ccAccess()
+          .then((d) => ({
+            allowed: d.allowed !== false,
+            message: d.message || '',
+          }))
+          .catch(() => ({
+            allowed: false,
+            message:
+              'Could not verify shift clock status. Refresh the page. If you have a shift today, clock in on Profile → Work schedule before using Command Centre.',
+          }));
+
+    clockPromise.then((gate) => {
+      if (!cancelled) setShiftClockGate({ loading: false, ...gate });
+    });
+
     return () => {
       cancelled = true;
     };
@@ -271,14 +272,23 @@ export default function CommandCentre() {
 
   useEffect(() => {
     let cancelled = false;
-    ccApi.myTabs()
+    ccApi
+      .myTabs()
       .then((r) => {
         if (cancelled) return;
-        setAllowedTabs(r.tabs || []);
+        const tabs = r.tabs || [];
+        setAllowedTabs(tabs);
+        writeCachedCcTabs(tabs);
       })
-      .catch((err) => { if (!cancelled) setError(err?.message || 'Failed to load access'); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .catch((err) => {
+        if (!cancelled) setError(err?.message || 'Failed to load access');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -295,8 +305,11 @@ export default function CommandCentre() {
       if (!report) return;
       (async () => {
         try {
-          const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId });
-          const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+          const [{ generateShiftReportPdf }, pdfAssets] = await Promise.all([
+            import('./lib/shiftReportPdf.js'),
+            loadShiftReportPdfAssets({ tenantId }),
+          ]);
+          const doc = generateShiftReportPdf(report, pdfAssets);
           doc.save(buildShiftReportDownloadFilename(report, { tenantName }));
         } catch (err) {
           setError(err?.message || 'Failed to generate PDF');
@@ -311,12 +324,15 @@ export default function CommandCentre() {
     const handler = (e) => {
       const report = e.detail?.report ?? e.detail;
       if (!report) return;
-      try {
-        const doc = generateInvestigationReportPdf(report);
-        doc.save(`investigation-report-${report.id || report.case_number || 'download'}.pdf`);
-      } catch (err) {
-        setError(err?.message || 'Failed to generate PDF');
-      }
+      (async () => {
+        try {
+          const { generateInvestigationReportPdf } = await import('./lib/investigationReportPdf.js');
+          const doc = generateInvestigationReportPdf(report);
+          doc.save(`investigation-report-${report.id || report.case_number || 'download'}.pdf`);
+        } catch (err) {
+          setError(err?.message || 'Failed to generate PDF');
+        }
+      })();
     };
     window.addEventListener('investigation-report-download', handler);
     return () => window.removeEventListener('investigation-report-download', handler);
@@ -356,22 +372,21 @@ export default function CommandCentre() {
   const hasAccess = allowedTabs.length > 0 || isSuperAdmin;
   const navAutoHideReady =
     !loading &&
-    !shiftClockGate.loading &&
     shiftClockGate.allowed &&
     hasAccess &&
     (activeTab === 'manage_access' ||
       allowedTabs.includes(activeTab) ||
       (isSuperAdmin && allowedTabs.length === 0));
   useAutoHideNavAfterTabChange(activeTab, { ready: navAutoHideReady });
-  if (loading || shiftClockGate.loading) {
+  if (loading) {
     return (
       <div className="max-w-7xl mx-auto p-6">
-        <p className="text-surface-500">Loading Command Centre…</p>
+        <p className="text-surface-500 animate-pulse">Loading Command Centre…</p>
       </div>
     );
   }
 
-  if (!shiftClockGate.allowed) {
+  if (!shiftClockGate.loading && !shiftClockGate.allowed) {
     return (
       <div className="max-w-xl mx-auto p-6 sm:p-8">
         <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-100 shadow-lg p-8 text-center sm:text-left">
@@ -408,6 +423,13 @@ export default function CommandCentre() {
 
   return (
     <div className="flex gap-0 flex-1 min-h-0 overflow-hidden relative">
+      {shiftClockGate.loading && (
+        <div className="absolute inset-0 z-20 flex items-start justify-center pt-24 bg-white/50 dark:bg-surface-950/40 pointer-events-none">
+          <p className="text-sm text-surface-600 dark:text-surface-300 bg-white/90 dark:bg-surface-900/90 px-4 py-2 rounded-lg shadow-sm border border-surface-200">
+            Verifying shift clock…
+          </p>
+        </div>
+      )}
       <nav className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${navHidden ? 'w-0 border-r-0' : 'w-72'}`} aria-hidden={navHidden}>
         <div className="p-4 border-b border-surface-100 shrink-0 flex items-start justify-between gap-2 w-72">
           <div className="min-w-0 flex-1">
@@ -472,7 +494,9 @@ export default function CommandCentre() {
         </div>
       </nav>
 
-      <div className="flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin flex flex-col">
+      <div
+        className={`flex-1 min-w-0 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin flex flex-col ${shiftClockGate.loading ? 'pointer-events-none opacity-80' : ''}`}
+      >
         {navHidden && (
           <button type="button" onClick={() => setNavHidden(false)} className="self-start flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 text-sm font-medium shadow-sm" aria-label="Show navigation">
             <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
@@ -495,6 +519,7 @@ export default function CommandCentre() {
               users={users}
               setUsers={setUsers}
               allTabIds={CC_TABS.map((t) => t.id)}
+              user={user}
             />
           )}
 
@@ -519,21 +544,27 @@ export default function CommandCentre() {
           {activeTab === 'saved_reports' && canSeeTab('saved_reports') && <TabSavedReports />}
           {activeTab === 'trends' && canSeeTab('trends') && <TabTrends />}
           {activeTab === 'truck_update_records' && canSeeTab('truck_update_records') && (
-            <TruckUpdateRecordsTab
-              resumeServerSessionId={truckAnalysisResumeId}
-              onResumeConsumed={() => setTruckAnalysisResumeId(null)}
-            />
+            <Suspense fallback={<TabPanelFallback label="truck update records" />}>
+              <TruckUpdateRecordsTab
+                resumeServerSessionId={truckAnalysisResumeId}
+                onResumeConsumed={() => setTruckAnalysisResumeId(null)}
+              />
+            </Suspense>
           )}
           {activeTab === 'logistics_flow' && canSeeTab('logistics_flow') && (
-            <LogisticsFlowPage logisticsApi={ccApi.logisticsFlow} routesApi={contractorApi.routes} portal="command_centre" />
+            <Suspense fallback={<TabPanelFallback label="logistics flow" />}>
+              <LogisticsFlowPage logisticsApi={ccApi.logisticsFlow} routesApi={contractorApi.routes} portal="command_centre" />
+            </Suspense>
           )}
           {activeTab === 'handed_over_analysis' && canSeeTab('handed_over_analysis') && (
-            <HandedOverAnalysisTab
-              onContinueSession={(id) => {
-                setTruckAnalysisResumeId(id);
-                setActiveTab('truck_update_records');
-              }}
-            />
+            <Suspense fallback={<TabPanelFallback label="handed over analysis" />}>
+              <HandedOverAnalysisTab
+                onContinueSession={(id) => {
+                  setTruckAnalysisResumeId(id);
+                  setActiveTab('truck_update_records');
+                }}
+              />
+            </Suspense>
           )}
           {activeTab === 'shift_items' && canSeeTab('shift_items') && <TabShiftItems setActiveTab={setActiveTab} />}
           {activeTab === 'shift_report_exports' && canSeeTab('shift_report_exports') && <TabShiftReportExports />}
@@ -552,7 +583,11 @@ export default function CommandCentre() {
           {activeTab === 'contractor_expiries' && canSeeTab('contractor_expiries') && <TabContractorExpiries />}
           {activeTab === 'breakdowns' && canSeeTab('breakdowns') && <TabBreakdowns />}
           {activeTab === 'fleet_verification' && canSeeTab('fleet_verification') && <TabFleetVerification />}
-          {activeTab === 'atomic_fleet_verification' && canSeeTab('atomic_fleet_verification') && <TabAtomicFleetVerification />}
+          {activeTab === 'atomic_fleet_verification' && canSeeTab('atomic_fleet_verification') && (
+            <Suspense fallback={<TabPanelFallback label="atomic fleet verification" />}>
+              <TabAtomicFleetVerification />
+            </Suspense>
+          )}
           {activeTab === 'delete_fleet_drivers' && canSeeTab('delete_fleet_drivers') && <TabDeleteFleetDrivers />}
           {activeTab === 'command_centre_settings' && canSeeTab('command_centre_settings') && <TabCommandCentreSettings user={user} />}
 
@@ -2385,6 +2420,7 @@ function TabBreakdowns() {
           }
         } catch (_) {}
       }
+      const { generateBreakdownPdf } = await import('./lib/breakdownPdfReport.js');
       const doc = generateBreakdownPdf({
         incident: detail,
         ref,
@@ -3257,16 +3293,17 @@ function ShiftReportTemplateTab({ user }) {
     };
   };
 
-  const loadTemplateLogoDataUrl = async () => {
-    return loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
-  };
+  const loadTemplatePdfAssets = async () => loadShiftReportPdfAssets({ tenantId: user?.tenant_id });
 
   const downloadTemplatePdf = async () => {
     setDownloading(true);
     try {
       const template = buildShiftTemplatePayload();
-      const logoDataUrl = await loadTemplateLogoDataUrl();
-      const doc = generateShiftReportPdf(template, logoDataUrl ? { logoDataUrl } : {});
+      const [{ generateShiftReportPdf }, pdfAssets] = await Promise.all([
+        import('./lib/shiftReportPdf.js'),
+        loadTemplatePdfAssets(),
+      ]);
+      const doc = generateShiftReportPdf(template, pdfAssets);
       doc.save('shift-report-template.pdf');
     } finally {
       setDownloading(false);
@@ -3277,7 +3314,7 @@ function ShiftReportTemplateTab({ user }) {
     setDownloadingWord(true);
     try {
       const template = buildShiftTemplatePayload();
-      const logoDataUrl = await loadTemplateLogoDataUrl();
+      const { logoDataUrl } = await loadTemplatePdfAssets();
       const html = buildShiftReportTemplateWordHtml(template, logoDataUrl ? { logoDataUrl } : {});
       downloadShiftReportTemplateWord(html, 'shift-report-template.doc');
     } finally {
@@ -3289,8 +3326,11 @@ function ShiftReportTemplateTab({ user }) {
     setDownloadingMockSingleOps(true);
     try {
       const mock = buildMockSingleOpsShiftReport(10, { createdByName: user?.full_name || 'Command Centre' });
-      const logoDataUrl = await loadTemplateLogoDataUrl();
-      const doc = generateShiftReportPdf(mock, logoDataUrl ? { logoDataUrl } : {});
+      const [{ generateShiftReportPdf }, pdfAssets] = await Promise.all([
+        import('./lib/shiftReportPdf.js'),
+        loadTemplatePdfAssets(),
+      ]);
+      const doc = generateShiftReportPdf(mock, pdfAssets);
       doc.save(buildShiftReportDownloadFilename(mock, { tenantName: user?.tenant_name }));
     } finally {
       setDownloadingMockSingleOps(false);
@@ -4931,6 +4971,7 @@ function TabShiftItems({ setActiveTab }) {
 }
 
 async function buildShiftExportWorkbook(data) {
+  const ExcelJS = await loadExcelJS();
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Command Centre';
   workbook.created = new Date();
@@ -6107,6 +6148,7 @@ function ShiftReportForm({
   const [selectedBreakdownToImport, setSelectedBreakdownToImport] = useState('');
   const [fleetLoadError, setFleetLoadError] = useState('');
   const [markingAddressed, setMarkingAddressed] = useState(null);
+  const [shiftReportAiEnabled, setShiftReportAiEnabled] = useState(false);
   const [activeReportId, setActiveReportId] = useState(reportId || initialData?.id || null);
   const [autoSaving, setAutoSaving] = useState(false);
   const autosaveTimerRef = useRef(null);
@@ -6145,6 +6187,45 @@ function ShiftReportForm({
   useEffect(() => {
     setActiveReportId(reportId || initialData?.id || null);
   }, [reportId, initialData?.id]);
+
+  useEffect(() => {
+    ccApi.shiftReportAi
+      .status()
+      .then((r) => setShiftReportAiEnabled(!!r.enabled && !!r.ai_configured))
+      .catch(() => setShiftReportAiEnabled(false));
+  }, []);
+
+  const getAiContext = useCallback(
+    () =>
+      buildShiftReportAiPayload({
+        formFields,
+        truckUpdates,
+        incidents,
+        nonComplianceCalls,
+        investigations,
+        commsLog,
+        reportKind,
+        selectedRoutes,
+        otherRoutesText,
+        truckDeliveries,
+        routeLoadTotals,
+      }),
+    [
+      formFields,
+      truckUpdates,
+      incidents,
+      nonComplianceCalls,
+      investigations,
+      commsLog,
+      reportKind,
+      selectedRoutes,
+      otherRoutesText,
+      truckDeliveries,
+      routeLoadTotals,
+    ]
+  );
+
+  const aiAssistOff = readOnly || !shiftReportAiEnabled;
 
   useEffect(() => {
     let cancelled = false;
@@ -6757,13 +6838,38 @@ function ShiftReportForm({
               <input name="total_loads_delivered" type="number" min="0" value={formFields.total_loads_delivered} onChange={set('total_loads_delivered')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
           </div>
+          <ShiftReportSummaryAssist
+            disabled={aiAssistOff}
+            getContext={getAiContext}
+            onApply={({ overall_performance, key_highlights }) =>
+              setFormFields((f) => ({
+                ...f,
+                overall_performance: overall_performance || f.overall_performance,
+                key_highlights: key_highlights || f.key_highlights,
+              }))
+            }
+          />
           <div className="mt-4">
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Overall performance</label>
             <textarea name="overall_performance" rows={4} placeholder="Summarise shift operations, loading/offloading flow, any bottlenecks or issues..." value={formFields.overall_performance} onChange={set('overall_performance')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <ShiftReportTextAssist
+              value={formFields.overall_performance}
+              onApply={(v) => setFormFields((f) => ({ ...f, overall_performance: v }))}
+              fieldLabel="Overall performance"
+              getContext={getAiContext}
+              disabled={aiAssistOff}
+            />
           </div>
           <div className="mt-4">
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Key highlights</label>
             <textarea name="key_highlights" rows={2} placeholder="Brief bullet-style highlights (e.g. Majuba operations stable, backlog cleared)" value={formFields.key_highlights} onChange={set('key_highlights')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <ShiftReportTextAssist
+              value={formFields.key_highlights}
+              onApply={(v) => setFormFields((f) => ({ ...f, key_highlights: v }))}
+              fieldLabel="Key highlights"
+              getContext={getAiContext}
+              disabled={aiAssistOff}
+            />
           </div>
           {reportKind === 'single_ops' && (
             <>
@@ -6830,6 +6936,13 @@ function ShiftReportForm({
                     rows={2}
                     className="w-full rounded-lg border border-surface-300 px-3 py-1.5 text-sm"
                   />
+                  <ShiftReportTextAssist
+                    value={row.remarks}
+                    onApply={(v) => updateRow(setTruckDeliveries, i, 'remarks', v)}
+                    fieldLabel="Truck delivery remarks"
+                    getContext={getAiContext}
+                    disabled={aiAssistOff}
+                  />
                   <button type="button" onClick={() => removeRow(setTruckDeliveries, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
                 </div>
               ))}
@@ -6846,8 +6959,24 @@ function ShiftReportForm({
               <input type="time" value={row.time} onChange={(e) => updateRow(setTruckUpdates, i, 'time', e.target.value)} placeholder="Time" className="w-28 rounded-lg border border-surface-300 px-2 py-2 text-sm" />
               <div className="flex-1 min-w-[200px]">
                 <input type="text" value={row.summary} onChange={(e) => updateRow(setTruckUpdates, i, 'summary', e.target.value)} placeholder="Summary (e.g. 1 truck parked Bethal, 4 en route Majuba, 12 queuing)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.summary}
+                  onApply={(v) => updateRow(setTruckUpdates, i, 'summary', v)}
+                  fieldLabel="Truck update summary"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
               </div>
-              <input type="text" value={row.delays} onChange={(e) => updateRow(setTruckUpdates, i, 'delays', e.target.value)} placeholder="Delays" className="w-48 rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <div className="w-48 min-w-[12rem]">
+                <input type="text" value={row.delays} onChange={(e) => updateRow(setTruckUpdates, i, 'delays', e.target.value)} placeholder="Delays" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.delays}
+                  onApply={(v) => updateRow(setTruckUpdates, i, 'delays', v)}
+                  fieldLabel="Truck update delays"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
               <button type="button" onClick={() => removeRow(setTruckUpdates, i)} className="text-surface-400 hover:text-red-600 p-2" aria-label="Remove row">×</button>
             </div>
           ))}
@@ -6906,8 +7035,26 @@ function ShiftReportForm({
               <div className="relative">
                 <DriverSearchSelect value={row.driver_name} onChange={(v) => updateRow(setIncidents, i, 'driver_name', v)} driversList={driversList} placeholder="Search driver…" id={`incident-driver-${i}`} />
               </div>
-              <input type="text" value={row.issue} onChange={(e) => updateRow(setIncidents, i, 'issue', e.target.value)} placeholder="Issue" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-              <input type="text" value={row.status} onChange={(e) => updateRow(setIncidents, i, 'status', e.target.value)} placeholder="Status" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+              <div className="sm:col-span-2 space-y-1">
+                <input type="text" value={row.issue} onChange={(e) => updateRow(setIncidents, i, 'issue', e.target.value)} placeholder="Issue" className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.issue}
+                  onApply={(v) => updateRow(setIncidents, i, 'issue', v)}
+                  fieldLabel="Incident issue"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
+              <div className="space-y-1">
+                <input type="text" value={row.status} onChange={(e) => updateRow(setIncidents, i, 'status', e.target.value)} placeholder="Status" className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.status}
+                  onApply={(v) => updateRow(setIncidents, i, 'status', v)}
+                  fieldLabel="Incident status"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
               <button type="button" onClick={() => removeRow(setIncidents, i)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
             </div>
           ))}
@@ -6943,8 +7090,26 @@ function ShiftReportForm({
                 />
               )}
               <input type="text" value={row.time_of_call} onChange={(e) => updateRow(setNonComplianceCalls, i, 'time_of_call', e.target.value)} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-              <input type="text" value={row.summary} onChange={(e) => updateRow(setNonComplianceCalls, i, 'summary', e.target.value)} placeholder="Summary" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
-              <input type="text" value={row.driver_response} onChange={(e) => updateRow(setNonComplianceCalls, i, 'driver_response', e.target.value)} placeholder="Driver response" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
+              <div className="col-span-2 space-y-1">
+                <input type="text" value={row.summary} onChange={(e) => updateRow(setNonComplianceCalls, i, 'summary', e.target.value)} placeholder="Summary" className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.summary}
+                  onApply={(v) => updateRow(setNonComplianceCalls, i, 'summary', v)}
+                  fieldLabel="Non-compliance summary"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
+              <div className="col-span-2 space-y-1">
+                <input type="text" value={row.driver_response} onChange={(e) => updateRow(setNonComplianceCalls, i, 'driver_response', e.target.value)} placeholder="Driver response" className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.driver_response}
+                  onApply={(v) => updateRow(setNonComplianceCalls, i, 'driver_response', v)}
+                  fieldLabel="Driver response"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
               <button type="button" onClick={() => removeRow(setNonComplianceCalls, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
             </div>
           ))}
@@ -6979,8 +7144,29 @@ function ShiftReportForm({
                 <input type="text" value={row.location} onChange={(e) => updateRow(setInvestigations, i, 'location', e.target.value)} placeholder="Location" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm sm:col-span-2" />
               </div>
               <input type="text" value={row.issue_identified} onChange={(e) => updateRow(setInvestigations, i, 'issue_identified', e.target.value)} placeholder="Issue identified (e.g. Overspeeding, unscheduled stop)" className="w-full rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
+              <ShiftReportTextAssist
+                value={row.issue_identified}
+                onApply={(v) => updateRow(setInvestigations, i, 'issue_identified', v)}
+                fieldLabel="Investigation issue identified"
+                getContext={getAiContext}
+                disabled={aiAssistOff}
+              />
               <textarea value={row.findings} onChange={(e) => updateRow(setInvestigations, i, 'findings', e.target.value)} placeholder="Findings" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
+              <ShiftReportTextAssist
+                value={row.findings}
+                onApply={(v) => updateRow(setInvestigations, i, 'findings', v)}
+                fieldLabel="Investigation findings"
+                getContext={getAiContext}
+                disabled={aiAssistOff}
+              />
               <textarea value={row.action_taken} onChange={(e) => updateRow(setInvestigations, i, 'action_taken', e.target.value)} placeholder="Action taken (e.g. Warning issued. Transporter notified.)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
+              <ShiftReportTextAssist
+                value={row.action_taken}
+                onApply={(v) => updateRow(setInvestigations, i, 'action_taken', v)}
+                fieldLabel="Investigation action taken"
+                getContext={getAiContext}
+                disabled={aiAssistOff}
+              />
               <button type="button" onClick={() => removeRow(setInvestigations, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
             </div>
           ))}
@@ -6993,9 +7179,27 @@ function ShiftReportForm({
             <div key={i} className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2">
               <input type="time" value={row.time} onChange={(e) => updateRow(setCommsLog, i, 'time', e.target.value)} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
               <input type="text" value={row.recipient} onChange={(e) => updateRow(setCommsLog, i, 'recipient', e.target.value)} placeholder="Recipient" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-              <input type="text" value={row.subject} onChange={(e) => updateRow(setCommsLog, i, 'subject', e.target.value)} placeholder="Subject" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+              <div className="space-y-1">
+                <input type="text" value={row.subject} onChange={(e) => updateRow(setCommsLog, i, 'subject', e.target.value)} placeholder="Subject" className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.subject}
+                  onApply={(v) => updateRow(setCommsLog, i, 'subject', v)}
+                  fieldLabel="Communication subject"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
               <input type="text" value={row.method} onChange={(e) => updateRow(setCommsLog, i, 'method', e.target.value)} placeholder="Method (e.g. WhatsApp/Call)" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-              <input type="text" value={row.action_required} onChange={(e) => updateRow(setCommsLog, i, 'action_required', e.target.value)} placeholder="Action required" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+              <div className="space-y-1">
+                <input type="text" value={row.action_required} onChange={(e) => updateRow(setCommsLog, i, 'action_required', e.target.value)} placeholder="Action required" className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
+                <ShiftReportTextAssist
+                  value={row.action_required}
+                  onApply={(v) => updateRow(setCommsLog, i, 'action_required', v)}
+                  fieldLabel="Communication action required"
+                  getContext={getAiContext}
+                  disabled={aiAssistOff}
+                />
+              </div>
               <button type="button" onClick={() => removeRow(setCommsLog, i)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
             </div>
           ))}
@@ -7019,10 +7223,24 @@ function ShiftReportForm({
           <div>
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Outstanding issues</label>
             <textarea name="outstanding_issues" rows={2} placeholder="e.g. Ensure all fleet lists are up to date and accurate" value={formFields.outstanding_issues} onChange={set('outstanding_issues')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <ShiftReportTextAssist
+              value={formFields.outstanding_issues}
+              onApply={(v) => setFormFields((f) => ({ ...f, outstanding_issues: v }))}
+              fieldLabel="Outstanding issues"
+              getContext={getAiContext}
+              disabled={aiAssistOff}
+            />
           </div>
           <div className="mt-4">
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Key information</label>
             <textarea name="handover_key_info" rows={2} placeholder="e.g. Loading expected to resume today, please follow up for update" value={formFields.handover_key_info} onChange={set('handover_key_info')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <ShiftReportTextAssist
+              value={formFields.handover_key_info}
+              onApply={(v) => setFormFields((f) => ({ ...f, handover_key_info: v }))}
+              fieldLabel="Handover key information"
+              getContext={getAiContext}
+              disabled={aiAssistOff}
+            />
           </div>
         </SectionBlock>
 
@@ -7032,6 +7250,13 @@ function ShiftReportForm({
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Declaration</label>
               <textarea name="declaration" rows={3} placeholder="As the telematics specialist(s) on duty, I/we certify that the information in this shift report is accurate and complete to the best of my/our knowledge." value={formFields.declaration} onChange={set('declaration')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <ShiftReportTextAssist
+                value={formFields.declaration}
+                onApply={(v) => setFormFields((f) => ({ ...f, declaration: v }))}
+                fieldLabel="Telematics specialist declaration"
+                getContext={getAiContext}
+                disabled={aiAssistOff}
+              />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Shift conclusion time</label>
@@ -9573,6 +9798,37 @@ function TabCommandCentreSettings({ user }) {
           </div>
         </div>
       </div>
+
+      {canManage && (
+        <div className="rounded-2xl border border-surface-200 bg-white dark:bg-surface-900/60 dark:border-surface-700 p-6 shadow-sm max-w-xl">
+          <h3 className="text-base font-semibold text-surface-900 dark:text-surface-50">Shift report AI assistant</h3>
+          <p className="text-sm text-surface-600 dark:text-surface-300 mt-1">
+            Grammar help and auto-summary for shift reports. Super admins can also manage this under Manage tab access → Switch off AI assistant for shift reports.
+          </p>
+          {!settings?.ai_configured && (
+            <p className="mt-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              OPENAI_API_KEY is not set on the server — AI features stay hidden until configured.
+            </p>
+          )}
+          <label className="mt-4 flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings?.shift_report_ai_enabled !== false}
+              disabled={loading}
+              onChange={(e) => {
+                ccApi.settings
+                  .patchShiftReportAi(e.target.checked)
+                  .then(() => reload())
+                  .catch((err) => setError(err?.message || 'Failed to update AI setting'));
+              }}
+              className="rounded border-surface-300 w-4 h-4"
+            />
+            <span className="text-sm font-medium text-surface-900 dark:text-surface-100">
+              {settings?.shift_report_ai_enabled !== false ? 'AI assistant enabled' : 'AI assistant switched off'}
+            </span>
+          </label>
+        </div>
+      )}
     </div>
   );
 }
@@ -10665,6 +10921,7 @@ function TabApplications() {
       });
       return row;
     });
+    const ExcelJS = await loadExcelJS();
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Thinkers Afrika';
     buildStyledListSheet(workbook, {
@@ -10755,18 +11012,22 @@ function TabApplications() {
         </div>
 
         {applicationsSubTab === 'facility-summary' && (
-          <FleetTruckApprovalSummaryPanel commandCentre />
+          <Suspense fallback={<TabPanelFallback label="facility access summary" />}>
+            <FleetTruckApprovalSummaryPanel commandCentre />
+          </Suspense>
         )}
 
         {applicationsSubTab === 'pending-changes' && (
-          <FleetPendingChangesTab
-            changeRequests={pendingChangeRequests}
-            loading={changeRequestsLoading}
-            acting={acting}
-            onRefresh={loadPendingChangeRequests}
-            onApprove={handleApproveFleetChange}
-            onDecline={handleDeclineFleetChange}
-          />
+          <Suspense fallback={<TabPanelFallback label="pending fleet changes" />}>
+            <FleetPendingChangesTab
+              changeRequests={pendingChangeRequests}
+              loading={changeRequestsLoading}
+              acting={acting}
+              onRefresh={loadPendingChangeRequests}
+              onApprove={handleApproveFleetChange}
+              onDecline={handleDeclineFleetChange}
+            />
+          </Suspense>
         )}
 
         {applicationsSubTab === 'integration' && (
@@ -11500,6 +11761,7 @@ function TabApplicationsIntegration() {
           return v != null ? String(v) : '';
         })
       );
+      const ExcelJS = await loadExcelJS();
       const workbook = new ExcelJS.Workbook();
       workbook.creator = 'Thinkers';
       const ws = workbook.addWorksheet('Fleet with linked drivers', {
@@ -12191,9 +12453,17 @@ function TabDelivery() {
   );
 }
 
-function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, setUsers, allTabIds }) {
+function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, setUsers, allTabIds, user }) {
+  const [adminPanel, setAdminPanel] = useState('tab_access');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(null);
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const [aiConfigured, setAiConfigured] = useState(false);
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiMessage, setAiMessage] = useState('');
+
+  const canManageAi =
+    user?.role === 'super_admin' || user?.role === 'tenant_admin';
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -12206,6 +12476,17 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
       .catch(() => setPermissions([]))
       .finally(() => setLoading(false));
   }, [isSuperAdmin]);
+
+  useEffect(() => {
+    if (!canManageAi) return;
+    ccApi.settings
+      .get()
+      .then((s) => {
+        setAiEnabled(s?.shift_report_ai_enabled !== false);
+        setAiConfigured(!!s?.ai_configured);
+      })
+      .catch(() => {});
+  }, [canManageAi]);
 
   const handleGrant = (userId, tabId) => {
     setSaving(`${userId}-${tabId}`);
@@ -12230,13 +12511,74 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
   };
 
   if (!isSuperAdmin) return null;
-  if (loading) return <p className="text-surface-500">Loading permissions…</p>;
+  if (loading && adminPanel === 'tab_access') return <p className="text-surface-500">Loading permissions…</p>;
 
   const permByUser = (permissions || []).reduce((acc, p) => { acc[p.user_id] = p; return acc; }, {});
 
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold text-surface-900">Manage tab access</h2>
+      <div className="flex flex-wrap gap-2 border-b border-surface-200 pb-2">
+        <button
+          type="button"
+          onClick={() => setAdminPanel('tab_access')}
+          className={`text-sm px-3 py-1.5 rounded-lg font-medium ${adminPanel === 'tab_access' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700'}`}
+        >
+          User tab access
+        </button>
+        {canManageAi && (
+          <button
+            type="button"
+            onClick={() => setAdminPanel('shift_report_ai')}
+            className={`text-sm px-3 py-1.5 rounded-lg font-medium ${adminPanel === 'shift_report_ai' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700'}`}
+          >
+            Switch off AI assistant for shift reports
+          </button>
+        )}
+      </div>
+
+      {adminPanel === 'shift_report_ai' && canManageAi && (
+        <div className="app-glass-card p-6 max-w-xl space-y-4">
+          <h3 className="font-semibold text-surface-900">Shift report AI assistant</h3>
+          <p className="text-sm text-surface-600">
+            When enabled, controllers can improve grammar on narrative fields and auto-generate overall performance and key
+            highlights. Disable to turn off AI for all shift reports in your organisation (saves API usage).
+          </p>
+          {!aiConfigured && (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              OPENAI_API_KEY is not configured on the server — AI buttons will not work until it is set.
+            </p>
+          )}
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={aiEnabled}
+              disabled={aiSaving}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setAiSaving(true);
+                setAiMessage('');
+                ccApi.settings
+                  .patchShiftReportAi(next)
+                  .then(() => {
+                    setAiEnabled(next);
+                    setAiMessage(next ? 'AI assistant enabled for shift reports.' : 'AI assistant switched off for shift reports.');
+                  })
+                  .catch((err) => setAiMessage(err?.message || 'Failed to update setting'))
+                  .finally(() => setAiSaving(false));
+              }}
+              className="rounded border-surface-300 w-4 h-4"
+            />
+            <span className="text-sm font-medium text-surface-900">
+              {aiEnabled ? 'AI assistant is ON' : 'AI assistant is OFF (switched off)'}
+            </span>
+          </label>
+          {aiMessage && <p className="text-sm text-emerald-700">{aiMessage}</p>}
+        </div>
+      )}
+
+      {adminPanel === 'tab_access' && (
+        <>
       <p className="text-sm text-surface-600">Grant or revoke Command Centre tab access for users. Only super admins see this.</p>
       <div className="app-glass-card overflow-hidden">
         <div className="overflow-x-auto">
@@ -12295,6 +12637,8 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
         </div>
         {(!users || users.length === 0) && <p className="p-4 text-surface-500 text-sm">No users found.</p>}
       </div>
+        </>
+      )}
     </div>
   );
 }

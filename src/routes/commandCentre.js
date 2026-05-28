@@ -30,6 +30,11 @@ import {
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz } from '../lib/emailService.js';
 import { todayYmd, addCalendarDays, toYmdFromDbOrString } from '../lib/appTime.js';
 import { getAiModel, getOpenAiClient, isAiConfigured } from '../lib/ai.js';
+import {
+  buildShiftReportContextBrief,
+  improveShiftReportText,
+  generateShiftReportSummary,
+} from '../lib/shiftReportAi.js';
 import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
 import { nextShiftReportRefNumber } from '../lib/shiftReportRefNumbers.js';
 import { buildStyledListSheet } from '../lib/distributionExcel.js';
@@ -181,13 +186,16 @@ router.get('/settings', async (req, res, next) => {
     const tid = req.user?.tenant_id;
     if (!tid) return res.status(400).json({ error: 'No tenant context.' });
     const r = await query(
-      `SELECT cc_logo_url, cc_logo_updated_at FROM tenants WHERE id = @tid`,
+      `SELECT cc_logo_url, cc_logo_updated_at, shift_report_ai_enabled FROM tenants WHERE id = @tid`,
       { tid }
     );
     const row = r.recordset?.[0] || {};
+    const aiFlag = row.shift_report_ai_enabled;
     res.json({
       cc_logo_url: row.cc_logo_url || null,
       cc_logo_updated_at: row.cc_logo_updated_at || null,
+      shift_report_ai_enabled: aiFlag === false || aiFlag === 0 ? false : true,
+      ai_configured: isAiConfigured(),
       can_manage: canManageCcSettings(req.user),
     });
   } catch (err) {
@@ -279,6 +287,101 @@ router.delete('/logo', async (req, res, next) => {
     );
     res.json({ cc_logo_url: null, cc_logo_updated_at: null });
   } catch (err) {
+    next(err);
+  }
+});
+
+async function getTenantShiftReportAiEnabled(tenantId) {
+  if (!tenantId) return false;
+  try {
+    const r = await query(`SELECT shift_report_ai_enabled FROM tenants WHERE id = @tid`, { tid: tenantId });
+    const flag = r.recordset?.[0]?.shift_report_ai_enabled;
+    return !(flag === false || flag === 0);
+  } catch (err) {
+    if (String(err?.message || '').includes('shift_report_ai_enabled')) return true;
+    throw err;
+  }
+}
+
+/** GET shift report AI status for current tenant */
+router.get('/shift-report-ai/status', async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+    const enabled = await getTenantShiftReportAiEnabled(tid);
+    res.json({ enabled, ai_configured: isAiConfigured() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH tenant shift report AI on/off (tenant admin or super admin) */
+router.patch('/shift-report-ai/settings', async (req, res, next) => {
+  try {
+    if (!canManageCcSettings(req.user)) {
+      return res.status(403).json({ error: 'Tenant admin or super admin required.' });
+    }
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+    const enabled = req.body?.enabled !== false && req.body?.enabled !== 0;
+    try {
+      await query(
+        `UPDATE tenants SET shift_report_ai_enabled = @enabled, updated_at = SYSUTCDATETIME() WHERE id = @tid`,
+        { tid, enabled: enabled ? 1 : 0 }
+      );
+    } catch (err) {
+      if (String(err?.message || '').includes('shift_report_ai_enabled')) {
+        return res.status(503).json({ error: 'Run npm run db:cc-shift-report-ai to enable this setting.' });
+      }
+      throw err;
+    }
+    res.json({ shift_report_ai_enabled: enabled, ai_configured: isAiConfigured() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST improve grammar/phrasing for one text field */
+router.post('/shift-report-ai/improve-text', async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+    if (!(await getTenantShiftReportAiEnabled(tid))) {
+      return res.status(403).json({ error: 'Shift report AI assistant is disabled for your organisation.' });
+    }
+    const { text, field_label, context_brief, context_payload } = req.body || {};
+    const brief =
+      String(context_brief || '').trim() ||
+      (context_payload ? buildShiftReportContextBrief(context_payload) : '');
+    const result = await improveShiftReportText({
+      text,
+      fieldLabel: field_label,
+      contextBrief: brief,
+      userId: req.user.id,
+    });
+    res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+/** POST generate overall performance + key highlights from report context */
+router.post('/shift-report-ai/generate-summary', async (req, res, next) => {
+  try {
+    const tid = req.user?.tenant_id;
+    if (!tid) return res.status(400).json({ error: 'No tenant context.' });
+    if (!(await getTenantShiftReportAiEnabled(tid))) {
+      return res.status(403).json({ error: 'Shift report AI assistant is disabled for your organisation.' });
+    }
+    const { context_brief, context_payload } = req.body || {};
+    const brief =
+      String(context_brief || '').trim() ||
+      (context_payload ? buildShiftReportContextBrief(context_payload) : '');
+    const result = await generateShiftReportSummary({ contextBrief: brief, userId: req.user.id });
+    res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });

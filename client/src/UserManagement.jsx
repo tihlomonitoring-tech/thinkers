@@ -15,6 +15,8 @@ const PAGE_ROLES = [
   { id: 'tenants', label: 'Tenants' },
   { id: 'contractor', label: 'Contractor' },
   { id: 'command_centre', label: 'Command Centre' },
+  { id: 'report_generation', label: 'Report generation' },
+  { id: 'office_admin', label: 'Office Admin' },
   { id: 'access_management', label: 'Access management' },
   { id: 'rector', label: 'Rector' },
   { id: 'tasks', label: 'Tasks' },

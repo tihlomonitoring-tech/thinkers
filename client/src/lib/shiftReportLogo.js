@@ -1,4 +1,5 @@
 import { commandCentre as ccApi, tenants as tenantsApi } from '../api';
+import { SHELL_BG_SOURCES } from './shellBackground.js';
 
 const DEFAULT_LOGO_PATHS = ['/logos/tihlo-logo.png', '/logos/tihlo-logo.jpg', '/logos/logo.png'];
 
@@ -57,6 +58,31 @@ export async function loadShiftReportLogoDataUrl({ tenantId } = {}) {
     } catch (_) {}
   }
   return null;
+}
+
+/**
+ * Load the app shell background (mining haul / open pit) for PDF watermark.
+ */
+export async function loadShiftReportBackgroundDataUrl() {
+  for (const path of SHELL_BG_SOURCES) {
+    try {
+      const blob = await fetchBlobOrNull(path);
+      if (blob) {
+        const url = await blobToDataUrl(blob);
+        if (url) return url;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+/** Logo + page watermark background for shift report PDFs. */
+export async function loadShiftReportPdfAssets({ tenantId } = {}) {
+  const [logoDataUrl, backgroundDataUrl] = await Promise.all([
+    loadShiftReportLogoDataUrl({ tenantId }),
+    loadShiftReportBackgroundDataUrl(),
+  ]);
+  return { logoDataUrl, backgroundDataUrl };
 }
 
 export default loadShiftReportLogoDataUrl;

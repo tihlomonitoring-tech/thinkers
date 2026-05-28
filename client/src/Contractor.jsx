@@ -20,6 +20,42 @@ import WorkshopManagementPage from './contractor/WorkshopManagementPage.jsx';
 import TruckInspectionPage from './contractor/TruckInspectionPage.jsx';
 import { parsePendingChangeJson } from './lib/fleetChangeDiff.js';
 
+/** Matches FleetAdvancedView / DriverAdvancedView access badges. */
+function classifyIntegrationStatus(entity) {
+  if (entity?.has_pending_change || entity?.pending_change?.id) return 'pending_changes';
+  if (entity?.facility_access) return 'facility';
+  if (entity?.last_decline_reason) return 'declined';
+  const cas = entity?.contractor_approval_status ?? entity?.contractorApprovalStatus;
+  if (cas === 'declined_contractor') return 'declined';
+  if (cas === 'pending_contractor') return 'pending_contractor';
+  return 'pending_cc';
+}
+
+function summarizeIntegrationStatus(entities) {
+  const counts = {
+    facility: 0,
+    pending_cc: 0,
+    pending_contractor: 0,
+    declined: 0,
+    pending_changes: 0,
+    total: (entities || []).length,
+  };
+  (entities || []).forEach((e) => {
+    counts[classifyIntegrationStatus(e)] += 1;
+  });
+  const integrated = counts.facility;
+  const pct = counts.total > 0 ? Math.round((integrated / counts.total) * 100) : 0;
+  return { ...counts, integrated, pct };
+}
+
+const INTEGRATION_STATUS_LABELS = {
+  facility: { label: 'Facility access', className: 'bg-green-100 text-green-800' },
+  pending_cc: { label: 'Pending Command Centre', className: 'bg-amber-100 text-amber-800' },
+  pending_contractor: { label: 'Awaiting contractor', className: 'bg-violet-100 text-violet-800' },
+  declined: { label: 'Declined', className: 'bg-red-100 text-red-800' },
+  pending_changes: { label: 'Pending changes', className: 'bg-red-100 text-red-800 border border-red-300' },
+};
+
 const CONTRACTOR_NAV = [
   {
     section: 'Overview',
@@ -751,6 +787,14 @@ export default function Contractor() {
   const trucksList = byContractor(data.trucks);
   const driversList = byContractor(data.drivers);
   const incidentsList = byContractor(data.incidents);
+
+  const integrationSummary = useMemo(
+    () => ({
+      trucks: summarizeIntegrationStatus(trucksList),
+      drivers: summarizeIntegrationStatus(driversList),
+    }),
+    [trucksList, driversList]
+  );
 
   // Subcontractor company names from fleet (trucks’ sub_contractor) + existing subcontractors, for dropdown
   const subcontractorCompanyOptions = (() => {
@@ -2004,6 +2048,76 @@ export default function Contractor() {
                     <p className="mt-1 text-2xl font-semibold text-surface-900">{messagesList.length}</p>
                     <p className="text-sm text-surface-500">inbox</p>
                   </div>
+                </div>
+                <div className="app-glass-card p-4 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-2 mb-4">
+                    <div>
+                      <h3 className="font-medium text-surface-900">Integration status</h3>
+                      <p className="text-xs text-surface-500 mt-0.5">
+                        Facility access (integrated with Command Centre). Same statuses as the Fleet and Driver registers.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('fleet')}
+                        className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                      >
+                        View fleet
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('driver-register')}
+                        className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                      >
+                        View drivers
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    {[
+                      { key: 'trucks', title: 'Trucks', stats: integrationSummary.trucks },
+                      { key: 'drivers', title: 'Drivers', stats: integrationSummary.drivers },
+                    ].map(({ key, title, stats }) => (
+                      <div key={key} className="rounded-lg border border-surface-200 bg-surface-50/80 p-4">
+                        <div className="flex items-baseline justify-between gap-2 mb-2">
+                          <p className="text-sm font-semibold text-surface-900">{title}</p>
+                          <p className="text-sm text-surface-600">
+                            <span className="font-semibold text-surface-900">{stats.integrated}</span>
+                            <span className="text-surface-500"> / {stats.total} integrated</span>
+                            <span className="text-surface-400"> ({stats.pct}%)</span>
+                          </p>
+                        </div>
+                        <div className="h-2 rounded-full bg-surface-200 overflow-hidden mb-3">
+                          <div
+                            className="h-full rounded-full bg-green-500 transition-all"
+                            style={{ width: `${stats.pct}%` }}
+                          />
+                        </div>
+                        <ul className="space-y-1.5 text-sm">
+                          {(['facility', 'pending_cc', 'pending_contractor', 'declined', 'pending_changes']).map((statusKey) => {
+                            const n = stats[statusKey];
+                            if (!n) return null;
+                            const meta = INTEGRATION_STATUS_LABELS[statusKey];
+                            return (
+                              <li key={statusKey} className="flex items-center justify-between gap-2">
+                                <span className={`text-xs px-2 py-0.5 rounded-full ${meta.className}`}>{meta.label}</span>
+                                <span className="font-medium text-surface-800 tabular-nums">{n}</span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                  {canAccessPage(user, 'tracking_integration') && (
+                    <p className="text-sm text-surface-600 mt-4 pt-3 border-t border-surface-200">
+                      <Link to="/tracking-integration" className="text-brand-600 font-medium hover:underline">
+                        Tracking &amp; integration
+                      </Link>
+                      <span className="text-surface-500"> — telematics providers and live trip monitoring.</span>
+                    </p>
+                  )}
                 </div>
                 <div className="app-glass-card p-4">
                   <h3 className="font-medium text-surface-900 mb-2">Quick links</h3>

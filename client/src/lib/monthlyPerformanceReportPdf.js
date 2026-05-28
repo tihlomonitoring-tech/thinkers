@@ -198,6 +198,22 @@ export function generateMonthlyPerformanceReportPdf(report, options = {}) {
     coverY += 10;
   }
 
+  const disclaimer =
+    report.disclaimer ||
+    'Disclaimer: Report Accuracy and Continuous Improvement — These circuit performance reports are being formalised. Absolute data accuracy is not guaranteed. Please review operational data and report any inaccuracies for continuous improvement.';
+  const discLines = wrap(doc, disclaimer, CONTENT_WIDTH - 8);
+  const boxH = discLines.length * 4.5 + 8;
+  const boxY = Math.min(coverY + 8, PAGE_HEIGHT - FOOTER_MARGIN - boxH - 28);
+  doc.setDrawColor(...BLACK);
+  doc.setLineWidth(0.3);
+  doc.rect(centerX - (CONTENT_WIDTH - 8) / 2, boxY, CONTENT_WIDTH - 8, boxH, 'S');
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...TEXT_DARK);
+  discLines.forEach((line, i) => {
+    doc.text(line, centerX - doc.getTextWidth(line) / 2, boxY + 6 + i * 4.5);
+  });
+
   // Confidentiality notice at bottom of cover page (above footer)
   const conf = 'This report contains proprietary and confidential information intended solely for use by Tihlo and parties duly authorised by Thinkers Afrika. Unauthorised distribution or disclosure is strictly prohibited.';
   const confLineHeight = 4;
@@ -219,10 +235,26 @@ export function generateMonthlyPerformanceReportPdf(report, options = {}) {
     yRef.current += SECTION_GAP - 3;
   }
 
+  const keyInsights = Array.isArray(report.key_insights) ? report.key_insights : [];
+  if (keyInsights.length > 0) {
+    checkNewPage(doc, yRef, 12);
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(FONT_SIZE_SECTION);
+    doc.setTextColor(...TEXT_DARK);
+    doc.text('1.1 Key Operational Insights', MARGIN, yRef.current);
+    yRef.current += 6;
+    setBodyFont(doc);
+    keyInsights.forEach((ins) => {
+      const head = ins.title ? `• ${ins.title}: ` : '• ';
+      drawJustifiedParagraph(doc, yRef, `${head}${ins.body || ''}`);
+    });
+    yRef.current += SECTION_GAP - 3;
+  }
+
   const keyMetrics = Array.isArray(report.key_metrics) ? report.key_metrics : [];
   if (keyMetrics.length > 0) {
     sectionBar(doc, yRef, '2. Key Performance Metrics');
-    const headers = ['Metric', 'Value', 'Commentary'];
+    const headers = ['Metric', 'Value', 'Analytical Context'];
     const rows = keyMetrics.map((m) => [m.metric || '—', m.value ?? '—', (m.commentary || '—').toString().slice(0, 80)]);
     const cw = [45, 25, CONTENT_WIDTH - 70];
     const tableWidth = CONTENT_WIDTH;
@@ -300,16 +332,55 @@ export function generateMonthlyPerformanceReportPdf(report, options = {}) {
     drawGenericTable(doc, yRef, rows);
   }
 
+  const conclusion = report.conclusion;
+  const recommendations = Array.isArray(report.recommendations) ? report.recommendations : [];
+  if (conclusion?.summary || (conclusion?.bullets || []).length || recommendations.length) {
+    sectionBar(doc, yRef, '8. Conclusion and Recommendations');
+    if (conclusion?.summary) {
+      checkNewPage(doc, yRef, 20);
+      doc.setDrawColor(...TABLE_BORDER);
+      doc.setLineWidth(0.3);
+      const sumLines = wrap(doc, conclusion.summary, CONTENT_WIDTH - 6);
+      const boxH = sumLines.length * LINE_HEIGHT + 6;
+      doc.rect(MARGIN, yRef.current, CONTENT_WIDTH, boxH, 'S');
+      setBodyFont(doc);
+      sumLines.forEach((line, i) => doc.text(line, MARGIN + 3, yRef.current + 5 + i * LINE_HEIGHT));
+      yRef.current += boxH + 6;
+    }
+    if ((conclusion?.bullets || []).length) {
+      doc.setFont(FONT, 'bold');
+      doc.setFontSize(FONT_SIZE_SECTION);
+      doc.text('8.1 Conclusion', MARGIN, yRef.current);
+      yRef.current += 5;
+      setBodyFont(doc);
+      conclusion.bullets.forEach((b) => drawJustifiedParagraph(doc, yRef, `• ${b}`));
+    }
+    if (recommendations.length) {
+      sectionBar(doc, yRef, '8.2 Recommendations');
+      recommendations.forEach((rec, idx) => {
+        checkNewPage(doc, yRef, 20);
+        doc.setFont(FONT, 'bold');
+        doc.setFontSize(FONT_SIZE_BODY);
+        doc.text(`${idx + 1}. ${rec.title || 'Recommendation'}`, MARGIN, yRef.current);
+        yRef.current += 5;
+        setBodyFont(doc);
+        if (rec.issue) drawJustifiedParagraph(doc, yRef, `Issue: ${rec.issue}`);
+        if (rec.action) drawJustifiedParagraph(doc, yRef, `Action: ${rec.action}`);
+        yRef.current += 2;
+      });
+    }
+  }
+
   const pageCount = doc.getNumberOfPages();
   for (let p = 1; p <= pageCount; p++) {
     doc.setPage(p);
     doc.setFont(FONT, 'normal');
     doc.setFontSize(8);
     doc.setTextColor(...TEXT_MUTED);
-    doc.text(`Page ${p} of ${pageCount}`, MARGIN, PAGE_HEIGHT - 8);
-    // Cover page: use "Tihlo" to avoid duplicating "Thinkers Afrika" (already in confidentiality notice)
-    const footerBrand = p === 1 ? 'Tihlo' : 'Thinkers Afrika';
-    doc.text(footerBrand, MARGIN + CONTENT_WIDTH - doc.getTextWidth(footerBrand), PAGE_HEIGHT - 8);
+    const pageLabel = `Page ${p} of ${pageCount}`;
+    doc.text(pageLabel, centerX - doc.getTextWidth(pageLabel) / 2, PAGE_HEIGHT - 8);
+    const footerBrand = 'Tihlo';
+    doc.text(footerBrand, centerX - doc.getTextWidth(footerBrand) / 2, PAGE_HEIGHT - 4);
   }
   return doc;
 }

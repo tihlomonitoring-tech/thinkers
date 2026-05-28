@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import Layout from './Layout';
@@ -8,7 +9,9 @@ import SignUp from './SignUp';
 import UserManagement from './UserManagement';
 import TenantManagement from './TenantManagement';
 import Contractor from './Contractor';
-import CommandCentre from './CommandCentre';
+const CommandCentre = lazy(() => import('./CommandCentre.jsx'));
+import ReportGeneration from './ReportGeneration';
+import OfficeAdmin from './OfficeAdmin';
 import AccessManagement from './AccessManagement';
 import Rector from './Rector';
 import Tasks from './Tasks';
@@ -97,7 +100,24 @@ function AppRoutes() {
         <Route path="users" element={<PageGate pathKey="/users"><UserManagement /></PageGate>} />
         <Route path="tenants" element={<PageGate pathKey="/tenants"><TenantManagement /></PageGate>} />
         <Route path="contractor" element={<PageGate pathKey="/contractor"><Contractor /></PageGate>} />
-        <Route path="command-centre" element={<PageGate pathKey="/command-centre"><CommandCentre /></PageGate>} />
+        <Route
+          path="command-centre"
+          element={
+            <PageGate pathKey="/command-centre">
+              <Suspense
+                fallback={
+                  <div className="max-w-7xl mx-auto p-6">
+                    <p className="text-surface-500 animate-pulse">Loading Command Centre…</p>
+                  </div>
+                }
+              >
+                <CommandCentre />
+              </Suspense>
+            </PageGate>
+          }
+        />
+        <Route path="report-generation" element={<PageGate pathKey="/report-generation"><ReportGeneration /></PageGate>} />
+        <Route path="office-admin" element={<PageGate pathKey="/office-admin"><OfficeAdmin /></PageGate>} />
         <Route path="fuel-supply-management" element={<PageGate pathKey="/fuel-supply-management"><FuelSupplyManagement /></PageGate>} />
         <Route path="fuel-customer-orders" element={<PageGate pathKey="/fuel-customer-orders"><FuelCustomerOrders /></PageGate>} />
         <Route path="fuel-data" element={<PageGate pathKey="/fuel-data"><FuelData /></PageGate>} />

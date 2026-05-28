@@ -11,5 +11,16 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: { port: 5173, proxy: { '/api': 'http://localhost:3001' } },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/exceljs')) return 'exceljs';
+            if (id.includes('node_modules/jspdf')) return 'jspdf';
+            if (id.includes('/CommandCentre.jsx')) return 'command-centre';
+          },
+        },
+      },
+    },
   };
 });

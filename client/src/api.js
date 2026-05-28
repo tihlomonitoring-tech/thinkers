@@ -656,6 +656,18 @@ export const commandCentre = {
         });
     },
     deleteLogo: () => request('/command-centre/logo', { method: 'DELETE' }),
+    patchShiftReportAi: (enabled) =>
+      request('/command-centre/shift-report-ai/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+  },
+  shiftReportAi: {
+    status: () => request('/command-centre/shift-report-ai/status'),
+    improveText: (body) =>
+      request('/command-centre/shift-report-ai/improve-text', { method: 'POST', body: JSON.stringify(body) }),
+    generateSummary: (body) =>
+      request('/command-centre/shift-report-ai/generate-summary', { method: 'POST', body: JSON.stringify(body) }),
   },
   approvers: () => request('/command-centre/approvers'),
   trends: (params = {}) => {
@@ -986,6 +998,110 @@ export const commandCentre = {
       }),
   },
   rectorsWithRoutes: () => request('/command-centre/rectors-with-routes'),
+};
+
+export const reportGeneration = {
+  list: () => request('/report-generation'),
+  get: (id) => request(`/report-generation/${encodeURIComponent(id)}`),
+  create: (body) => request('/report-generation', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) =>
+    request(`/report-generation/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  delete: (id) => request(`/report-generation/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  buildDataBundle: (id) =>
+    request(`/report-generation/${encodeURIComponent(id)}/data-bundle`, { method: 'POST' }),
+  generate: (id, body = {}) =>
+    request(`/report-generation/${encodeURIComponent(id)}/generate`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  uploadAttachment: (id, file, meta = {}) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (meta.slot_key) formData.append('slot_key', meta.slot_key);
+    if (meta.label) formData.append('label', meta.label);
+    return fetch(`${API}/report-generation/${encodeURIComponent(id)}/attachments`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    });
+  },
+  deleteAttachment: (reportId, attachmentId) =>
+    request(
+      `/report-generation/${encodeURIComponent(reportId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: 'DELETE' }
+    ),
+  attachmentFileUrl: (reportId, attachmentId) =>
+    `${API}/report-generation/${encodeURIComponent(reportId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
+  logoUrl: () => `${API}/command-centre/logo`,
+};
+
+export const officeAdmin = {
+  myTabs: () => request('/office-admin/my-tabs'),
+  permissions: () => request('/office-admin/permissions'),
+  grantPermission: (userId, tabId) =>
+    request('/office-admin/permissions', { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
+  revokePermission: (userId, tabId) =>
+    request(
+      `/office-admin/permissions?user_id=${encodeURIComponent(userId)}&tab_id=${encodeURIComponent(tabId)}`,
+      { method: 'DELETE' }
+    ),
+  dashboard: () => request('/office-admin/dashboard'),
+  assets: {
+    list: (q) => request(`/office-admin/assets${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    create: (body) => request('/office-admin/assets', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) =>
+      request(`/office-admin/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => request(`/office-admin/assets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  consumables: {
+    list: () => request('/office-admin/consumables'),
+    create: (body) => request('/office-admin/consumables', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) =>
+      request(`/office-admin/consumables/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  },
+  maintenance: {
+    reports: (status) =>
+      request(`/office-admin/maintenance/reports${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+    createReport: (body) =>
+      request('/office-admin/maintenance/reports', { method: 'POST', body: JSON.stringify(body) }),
+    updateReport: (id, body) =>
+      request(`/office-admin/maintenance/reports/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    records: (assetId) =>
+      request(
+        `/office-admin/maintenance/records${assetId ? `?asset_id=${encodeURIComponent(assetId)}` : ''}`
+      ),
+    createRecord: (body) =>
+      request('/office-admin/maintenance/records', { method: 'POST', body: JSON.stringify(body) }),
+  },
+  requests: {
+    list: (mine) => request(`/office-admin/requests${mine ? '?mine=1' : ''}`),
+    create: (body) => request('/office-admin/requests', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) =>
+      request(`/office-admin/requests/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    messages: (id) => request(`/office-admin/requests/${encodeURIComponent(id)}/messages`),
+    addMessage: (id, body) =>
+      request(`/office-admin/requests/${encodeURIComponent(id)}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+  },
+  manager: {
+    inbox: () => request('/office-admin/manager/inbox'),
+  },
+  accounting: {
+    items: () => request('/office-admin/accounting/items'),
+    suppliers: () => request('/office-admin/accounting/suppliers'),
+  },
 };
 
 export const fuelSupply = {

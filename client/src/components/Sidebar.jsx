@@ -70,6 +70,22 @@ function IconCaseManagement({ className }) {
   );
 }
 
+function IconReportGeneration({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
+
+function IconOfficeAdmin({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+    </svg>
+  );
+}
+
 function IconProfile({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -240,6 +256,8 @@ const navSections = [
     items: [
       { to: '/contractor', label: 'Contractor', icon: IconContractor, shortcut: '⌘3', pageId: 'contractor' },
       { to: '/command-centre', label: 'Command Centre', icon: IconCommandCentre, shortcut: '⌘4', pageId: 'command_centre' },
+      { to: '/report-generation', label: 'Report generation', icon: IconReportGeneration, shortcut: '', pageId: 'report_generation' },
+      { to: '/office-admin', label: 'Office Admin', icon: IconOfficeAdmin, shortcut: '', pageId: 'office_admin' },
       { to: '/fuel-supply-management', label: 'Fuel supply', icon: IconFuel, shortcut: '⌘8', pageId: 'fuel_supply_management' },
       { to: '/fuel-customer-orders', label: 'Customer diesel orders', icon: IconFuel, shortcut: '', pageId: 'fuel_customer_orders' },
       { to: '/fuel-data', label: 'Fuel Data', icon: IconFuel, shortcut: '', pageId: 'fuel_data' },

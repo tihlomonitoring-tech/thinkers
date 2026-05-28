@@ -4,7 +4,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
-import { loadShiftReportLogoDataUrl } from './lib/shiftReportLogo.js';
+import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets } from './lib/shiftReportLogo.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
@@ -642,8 +642,8 @@ export default function Rector() {
   const downloadShiftReportPdf = async (report) => {
     setPdfDownloading(report.id);
     try {
-      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId: user?.tenant_id });
-      const doc = generateShiftReportPdf(report, logoDataUrl ? { logoDataUrl } : {});
+      const pdfAssets = await loadShiftReportPdfAssets({ tenantId: user?.tenant_id });
+      const doc = generateShiftReportPdf(report, pdfAssets);
       doc.save(buildShiftReportDownloadFilename(report, { tenantName: user?.tenant_name }));
     } catch (e) {
       setError(e?.message || 'PDF failed');
