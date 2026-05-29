@@ -29,6 +29,10 @@ const TRUCK_LINE_SPACE_TONS =
 const TRUCK_LINE_HOURS_WEIGHT =
   /^([A-Z0-9]+)\s*-\s*(.+?)\s*-\s*\(([^)]*)\)\s*-\s*Hours:\s*([\d.]+)\s*-\s*(?:Weight|Tons|Load):\s*([\d.]+)\s*$/i;
 
+/** REG - STATUS - (COMPANY) - Hours: 12.22 (no tons on export) */
+const TRUCK_LINE_HOURS_ONLY =
+  /^([A-Z0-9]+)\s*-\s*(.+?)\s*-\s*\(([^)]*)\)\s*-\s*Hours:?\s*([\d.]+)\s*$/i;
+
 function parseTruckLine(line) {
   const clean = normDashes(stripBold(line));
   let m = clean.match(TRUCK_LINE_COLON) || clean.match(TRUCK_LINE_SPACE_TONS);
@@ -51,10 +55,20 @@ function parseTruckLine(line) {
       hours: parseFloat(m[4]),
     };
   }
+  m = clean.match(TRUCK_LINE_HOURS_ONLY);
+  if (m) {
+    return {
+      registration: normReg(m[1]),
+      entity: m[3].trim(),
+      status: m[2].trim(),
+      tons: 0,
+      hours: parseFloat(m[4]),
+    };
+  }
   if (!/Tons/i.test(clean) && !/Hours/i.test(clean) && !/Weight/i.test(clean)) return null;
   const tonsM = clean.match(/(?:Tons|Weight|Load):?\s*([\d.]+)/i);
   const hoursM = clean.match(/Hours:?\s*([\d.]+)/i);
-  if (!tonsM || !hoursM) return null;
+  if (!hoursM) return null;
   const idx = Math.min(
     clean.search(/(?:Tons|Weight|Load)/i),
     clean.search(/Hours/i)
@@ -78,7 +92,7 @@ function parseTruckLine(line) {
     registration,
     entity,
     status,
-    tons: parseFloat(tonsM[1]),
+    tons: tonsM ? parseFloat(tonsM[1]) : 0,
     hours: parseFloat(hoursM[1]),
   };
 }
@@ -127,7 +141,7 @@ export function parseLogisticsFlowText(text) {
     }
     if (hasMetrics || /Hours:\s*[\d.]+/i.test(line)) {
       const row = parseTruckLine(rawLines[i]);
-      if (row && !Number.isNaN(row.tons) && !Number.isNaN(row.hours)) {
+      if (row && !Number.isNaN(row.hours)) {
         rows.push({
           ...row,
           date: currentDate,

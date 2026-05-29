@@ -33,8 +33,6 @@ export default function Login() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
 
-  if (user) return <Navigate to={getFirstAllowedPath(user)} replace />;
-
   useEffect(() => {
     try {
       const r = localStorage.getItem(REMEMBER_KEY) === '1';
@@ -72,6 +70,8 @@ export default function Login() {
       cancelled = true;
     };
   }, []);
+
+  if (user) return <Navigate to={getFirstAllowedPath(user)} replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();

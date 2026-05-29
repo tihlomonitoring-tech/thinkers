@@ -2,7 +2,10 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { classifyStatus, matchRouteFromPaste } from '../lib/truckUpdateInsights.js';
 import {
   buildWhatsAppFleetUpdateFromRows,
+  groupRowsForWhatsAppExport,
   refineRowForWhatsApp,
+  resolveRouteDestinationShort,
+  statusBucketForRow,
   WHATSAPP_FLEET_UPDATE_SAMPLE,
 } from '../lib/rawExportToFleetUpdate.js';
 import {
@@ -335,6 +338,10 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
         if (field === 'status') {
           updated.displayStatus = value;
           updated.statusManuallyEdited = true;
+          updated.statusBucket = statusBucketForRow(
+            updated,
+            resolveRouteDestinationShort(routeLabelForExport || parseMeta.route)
+          );
         }
         return updated;
       });
@@ -378,6 +385,26 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
       return hay.includes(q);
     });
   }, [parsedRows, reviewSearch, reviewFilter]);
+
+  const reviewTableItems = useMemo(() => {
+    if (!filteredParsedRows.length) return [];
+    const dest = resolveRouteDestinationShort(routeLabelForExport);
+    const groups = groupRowsForWhatsAppExport(filteredParsedRows, dest);
+    const items = [];
+    for (const g of groups) {
+      items.push({
+        kind: 'group',
+        id: `grp-${g.bucket}-${g.title}`,
+        title: g.title,
+        truckCount: g.truckCount,
+        totalTons: g.totalTons,
+      });
+      for (const row of g.rows) {
+        items.push({ kind: 'row', row });
+      }
+    }
+    return items;
+  }, [filteredParsedRows, routeLabelForExport]);
 
   const copyWhatsAppExport = async () => {
     if (!whatsappExportText.trim()) return;
@@ -821,7 +848,7 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                     <div>
                       <h3 className="font-semibold text-emerald-900">WhatsApp export preview</h3>
                       <p className="text-xs text-emerald-800 mt-0.5">
-                        Presentable text for clients — copy before or after accepting. Status lines use the route destination (e.g. Queuing at Majuba PS, not QUEUEING (D)).
+                        Presentable text for clients — trucks are grouped by status (en route, queuing, offloading, etc.) with section headers and separators. Status lines use the route destination (e.g. Queuing at Majuba, not QUEUEING (D)).
                       </p>
                     </div>
                     <button
@@ -903,14 +930,32 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredParsedRows.length === 0 ? (
+                        {reviewTableItems.length === 0 ? (
                           <tr>
                             <td colSpan={9} className="px-4 py-8 text-center text-surface-500">
                               No trucks match your search or filter.
                             </td>
                           </tr>
                         ) : (
-                        filteredParsedRows.map((row) => (
+                        reviewTableItems.map((item) => {
+                          if (item.kind === 'group') {
+                            return (
+                            <tr
+                              key={item.id}
+                              className="bg-surface-100 border-y border-surface-300 sticky top-9 z-[5]"
+                            >
+                              <td colSpan={9} className="px-3 py-2">
+                                <span className="font-semibold text-surface-900">{item.title}</span>
+                                <span className="text-xs text-surface-600 ml-2">
+                                  {item.truckCount} truck{item.truckCount === 1 ? '' : 's'} ·{' '}
+                                  {item.totalTons.toFixed(2)} t
+                                </span>
+                              </td>
+                            </tr>
+                            );
+                          }
+                          const row = item.row;
+                          return (
                           <tr
                             key={row._id}
                             className={`border-b border-surface-100 ${
@@ -1014,7 +1059,9 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                               )}
                             </td>
                           </tr>
-                        )))}
+                          );
+                        })
+                        )}
                       </tbody>
                     </table>
                   </div>

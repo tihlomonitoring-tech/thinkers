@@ -1,4 +1,4 @@
-import { normalizeRegistration } from './truckUpdateInsights.js';
+import { classifyStatus, normalizeRegistration } from './truckUpdateInsights.js';
 
 /** Canonical key for matching paste ↔ fleet (spaces stripped, hyphens/underscores removed, uppercased). */
 export function registrationKeyForLookup(reg) {
@@ -23,6 +23,16 @@ function stripMarkdownBold(s) {
 function wrapWhatsAppBold(inner) {
   const s = stripMarkdownBold(inner);
   return s ? `*${s}*` : '';
+}
+
+/** WhatsApp underscore italic (strip markers that would break formatting). */
+function wrapWhatsAppItalic(inner) {
+  const s = String(inner || '')
+    .replace(/_/g, ' ')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s ? `_${s}_` : '';
 }
 
 /**
@@ -240,6 +250,8 @@ export function parseRawExportTruckLine(line) {
     }
   }
   if (!m) {
+    const hoursOnly = tryParseRawExportHoursOnly(clean);
+    if (hoursOnly) return hoursOnly;
     const segmented = tryParseRawExportSegmented(clean);
     if (segmented) return segmented;
     const loose = tryParseRawExportLineLoose(clean);
@@ -257,15 +269,50 @@ export function parseRawExportTruckLine(line) {
 }
 
 /**
+ * Schedule export with hours only: REG - STATUS - (COMPANY) - Hours: 12.22
+ */
+function tryParseRawExportHoursOnly(clean) {
+  const reStatusCompany = new RegExp(
+    `^${REGISTRATION_FIRST_SEGMENT}\\s*-\\s*(.+?)\\s*-\\s*\\(([^)]*)\\)\\s*-\\s*Hours:\\s*([\\d.]+)\\s*$`,
+    'i'
+  );
+  let m = clean.match(reStatusCompany);
+  if (m) {
+    const registration = normalizeRegistrationFromExportSegment(m[1]);
+    const rawStatus = m[2].trim();
+    const contractorFromPaste = m[3].trim();
+    const hours = parseFloat(m[4]);
+    if (!Number.isNaN(hours) && /^[A-Z0-9]{3,26}$/.test(registration)) {
+      return { registration, rawStatus, contractorFromPaste, hours, tons: 0, driverName: '' };
+    }
+  }
+  const reCompanyStatus = new RegExp(
+    `^${REGISTRATION_FIRST_SEGMENT}\\s*-\\s*\\(([^)]*)\\)\\s*-\\s*(.+?)\\s*-\\s*Hours:\\s*([\\d.]+)\\s*$`,
+    'i'
+  );
+  m = clean.match(reCompanyStatus);
+  if (m) {
+    const registration = normalizeRegistrationFromExportSegment(m[1]);
+    const contractorFromPaste = m[2].trim();
+    const rawStatus = m[3].trim();
+    const hours = parseFloat(m[4]);
+    if (!Number.isNaN(hours) && /^[A-Z0-9]{3,26}$/.test(registration)) {
+      return { registration, rawStatus, contractorFromPaste, hours, tons: 0, driverName: '' };
+    }
+  }
+  return null;
+}
+
+/**
  * Split the line before the first metric (Hours or Weight/Tons) and parse REG - … segments.
  * Handles: no parentheses around company; Hours before or after Weight; optional "Load" label.
  */
 function tryParseRawExportSegmented(clean) {
   const hMatch = clean.match(/Hours:\s*([\d.]+)/i);
   const massMatch = clean.match(/(?:Weight|Tons|Load)\s*:\s*([\d.]+)/i);
-  if (!hMatch || !massMatch) return null;
+  if (!hMatch) return null;
   const hours = parseFloat(hMatch[1]);
-  const tons = parseFloat(massMatch[1]);
+  const tons = massMatch ? parseFloat(massMatch[1]) : 0;
   if (Number.isNaN(hours) || Number.isNaN(tons)) return null;
 
   const hi = hMatch.index ?? 0;
@@ -299,11 +346,13 @@ function tryParseRawExportSegmented(clean) {
 
 /** Last resort: find Hours + Weight/Tons and (company); registration = first segment before metrics. */
 function tryParseRawExportLineLoose(clean) {
+  const hoursOnly = tryParseRawExportHoursOnly(clean);
+  if (hoursOnly) return hoursOnly;
   const h = clean.match(/Hours:\s*([\d.]+)/i);
   const w = clean.match(/(?:Weight|Tons|Load)\s*:\s*([\d.]+)/i);
-  if (!h || !w) return null;
+  if (!h) return null;
   const hours = parseFloat(h[1]);
-  const tons = parseFloat(w[1]);
+  const tons = w ? parseFloat(w[1]) : 0;
   if (Number.isNaN(hours) || Number.isNaN(tons)) return null;
   const contractorM = clean.match(/\(\s*([^)]{1,120})\s*\)/);
   const contractorFromPaste = contractorM ? contractorM[1].trim() : '';
@@ -592,18 +641,142 @@ export function refineRowForWhatsApp(row, routeLabel) {
   const destShort = resolveRouteDestinationShort(route);
   const imported = row.rawStatus ?? row.status ?? '';
   const displayStatus = formatPresentableStatus(imported, destShort);
+  const statusBucket = statusBucketForRow(
+    { ...row, displayStatus, status: displayStatus },
+    destShort
+  );
   return {
     ...row,
     rawStatus: row.rawStatus ?? imported,
     status: displayStatus,
     displayStatus,
+    statusBucket,
   };
+}
+
+/** Operational order for WhatsApp sections (mine → road → queue → offload). */
+export const WHATSAPP_STATUS_GROUP_ORDER = [
+  { bucket: 'active_site', title: (d) => `Loading / at site — ${d}` },
+  { bucket: 'transit', title: (d) => `En route to ${d}` },
+  { bucket: 'queue', title: (d) => `Queuing at ${d}` },
+  { bucket: 'complete', title: (d) => `Offloading at ${d}` },
+  { bucket: 'other', title: () => 'Other status' },
+];
+
+function resolveRowExportStatusPlain(row, destShort) {
+  if (row.statusManuallyEdited) {
+    return stripMarkdownBold(row.displayStatus || row.status || '');
+  }
+  return formatPresentableStatus(
+    row.rawStatus || row.displayStatus || row.status || '',
+    destShort
+  );
+}
+
+/** Status bucket for grouping export lines (aligns with truckUpdateInsights.classifyStatus). */
+export function statusBucketForRow(row, destShort) {
+  const plain = resolveRowExportStatusPlain(row, destShort);
+  if (/^offloading\b/i.test(plain) || /\boffloading at\b/i.test(plain)) return 'complete';
+  if (/^queuing\b/i.test(plain) || /\bqueuing at\b/i.test(plain)) return 'queue';
+  if (/^enroute\b/i.test(plain) || /^en route\b/i.test(plain) || /\benroute to\b/i.test(plain)) {
+    return 'transit';
+  }
+  if (/^loading\b/i.test(plain) || /\bloading at\b/i.test(plain)) return 'active_site';
+  return classifyStatus(plain);
+}
+
+function sortRowsInWhatsAppGroup(bucket, rows) {
+  const copy = [...rows];
+  const byReg = (a, b) =>
+    normalizeRegistration(a.registration).localeCompare(normalizeRegistration(b.registration));
+  const byHoursDesc = (a, b) => (Number(b.hours) || 0) - (Number(a.hours) || 0);
+  if (bucket === 'queue' || bucket === 'complete' || bucket === 'active_site') {
+    return copy.sort((a, b) => byHoursDesc(a, b) || byReg(a, b));
+  }
+  if (bucket === 'transit') {
+    return copy.sort((a, b) => (Number(a.hours) || 0) - (Number(b.hours) || 0) || byReg(a, b));
+  }
+  return copy.sort(byReg);
+}
+
+function sumGroupTons(rows) {
+  return rows.reduce(
+    (sum, r) => sum + (Number.isFinite(Number(r.tons)) ? Number(r.tons) : 0),
+    0
+  );
+}
+
+/**
+ * Group reviewed rows for WhatsApp export (status sections, sorted within each group).
+ * @returns {Array<{ bucket: string, title: string, rows: object[], truckCount: number, totalTons: number }>}
+ */
+export function groupRowsForWhatsAppExport(rows, destShort) {
+  const d = (destShort || 'destination').trim() || 'destination';
+  const bySection = new Map();
+  for (const row of rows || []) {
+    if (!normalizeRegistration(row.registration)) continue;
+    const bucket = row.statusBucket || statusBucketForRow(row, d);
+    const title = resolveRowExportStatusPlain(row, d) || 'Other status';
+    const key = `${bucket}\0${title}`;
+    if (!bySection.has(key)) {
+      bySection.set(key, { bucket, title, rows: [] });
+    }
+    bySection.get(key).rows.push(row);
+  }
+
+  const bucketRank = (b) => {
+    const i = WHATSAPP_STATUS_GROUP_ORDER.findIndex((g) => g.bucket === b);
+    return i >= 0 ? i : WHATSAPP_STATUS_GROUP_ORDER.length;
+  };
+
+  return [...bySection.values()]
+    .map((g) => {
+      const sorted = sortRowsInWhatsAppGroup(g.bucket, g.rows);
+      return {
+        bucket: g.bucket,
+        title: g.title,
+        rows: sorted,
+        truckCount: sorted.length,
+        totalTons: sumGroupTons(sorted),
+      };
+    })
+    .sort(
+      (a, b) =>
+        bucketRank(a.bucket) - bucketRank(b.bucket) ||
+        a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
+    );
+}
+
+function formatWhatsAppTruckLine(row, destShort) {
+  const reg = normalizeRegistration(row.registration);
+  const entity = formatEntityParen(
+    row.suggestedContractor || row.systemContractor || row.entity || 'Unknown'
+  );
+  const statusPlain = resolveRowExportStatusPlain(row, destShort);
+  const statusPart = wrapWhatsAppBold(statusPlain);
+  const tons = Number(row.tons);
+  const hours = Number(row.hours);
+  if (Number.isNaN(tons) || Number.isNaN(hours)) return null;
+  const regPart = row.enrollmentFound === false ? `*${reg}* ⚠ Not integrated` : reg;
+  let line = `${regPart} - ${entity} - ${statusPart} - Tons ${tons.toFixed(2)} - Hours: ${hours.toFixed(2)}`;
+  const comment = String(row.comment || '').trim();
+  if (comment) {
+    const italicComment = wrapWhatsAppItalic(comment);
+    if (italicComment) line += ` — ⚠️ ${italicComment}`;
+  }
+  return line;
 }
 
 /**
  * Build full WhatsApp fleet update block from reviewed rows.
  */
-export function buildWhatsAppFleetUpdateFromRows({ rows, routeLabel, dayName, isoDate }) {
+export function buildWhatsAppFleetUpdateFromRows({
+  rows,
+  routeLabel,
+  dayName,
+  isoDate,
+  groupByStatus = true,
+}) {
   const fallback = defaultHeaderNow();
   const dn = dayName || fallback.dayName;
   const id = isoDate || fallback.isoDate;
@@ -633,26 +806,26 @@ export function buildWhatsAppFleetUpdateFromRows({ rows, routeLabel, dayName, is
     out.push('');
   }
 
-  for (const row of validRows) {
-    const reg = normalizeRegistration(row.registration);
-    const entity = formatEntityParen(
-      row.suggestedContractor || row.systemContractor || row.entity || 'Unknown'
-    );
-    const statusPlain = row.statusManuallyEdited
-      ? stripMarkdownBold(row.displayStatus || row.status || '')
-      : formatPresentableStatus(row.rawStatus || row.displayStatus || row.status || '', destShort);
-    const statusPart = wrapWhatsAppBold(statusPlain);
-    const tons = Number(row.tons);
-    const hours = Number(row.hours);
-    if (Number.isNaN(tons) || Number.isNaN(hours)) continue;
-    const regPart =
-      row.enrollmentFound === false ? `*${reg}* ⚠ Not integrated` : reg;
-    let line = `${regPart} - ${entity} - ${statusPart} - Tons ${tons.toFixed(2)} - Hours: ${hours.toFixed(2)}`;
-    const comment = String(row.comment || '').trim();
-    if (comment) {
-      line += ` — Comment: ${comment}`;
-    }
-    out.push(line);
+  const emitTruckLine = (row) => {
+    const line = formatWhatsAppTruckLine(row, destShort);
+    if (line) out.push(line);
+  };
+
+  if (groupByStatus && validRows.length > 0) {
+    const groups = groupRowsForWhatsAppExport(validRows, destShort);
+    groups.forEach((group, idx) => {
+      if (idx > 0) {
+        out.push('');
+        out.push('──────────────');
+        out.push('');
+      }
+      const countLabel = `${group.truckCount} truck${group.truckCount === 1 ? '' : 's'}`;
+      out.push(`*${group.title} · ${countLabel} · ${group.totalTons.toFixed(2)} t*`);
+      out.push('');
+      for (const row of group.rows) emitTruckLine(row);
+    });
+  } else {
+    for (const row of validRows) emitTruckLine(row);
   }
 
   return `${out.join('\n')}\n`;
@@ -670,11 +843,28 @@ Monday
 
 *NTSHOVELO -> MAJUBA POWER STATION*
 
+*En route to Majuba · 1 truck · 36.00 t*
+
+JWV080MP - (SINGISI) - *Enroute to Majuba PS* - Tons 36.00 - Hours: 1.61
+
+──────────────
+
+*Queuing at Majuba · 3 trucks · 99.00 t*
+
 JW40LXGP - (SINGISI) - *Queuing at Majuba PS* - Tons 33.00 - Hours: 24.19
 KGM364MP - (SINGISI) - *Queuing at Majuba PS* - Tons 33.00 - Hours: 24.18
 LBG177MP - (TTC) - *Queuing at Majuba PS* - Tons 33.00 - Hours: 24.15
-JWV080MP - (SINGISI) - *Enroute to Majuba PS* - Tons 36.00 - Hours: 1.61
+
+──────────────
+
+*Offloading at Majuba · 1 truck · 34.40 t*
+
 KGC381MP - (SINGISI) - *Offloading at Majuba PS* - Tons 34.40 - Hours: 1.48
+
+──────────────
+
+*Queuing at Ntshovelo · 1 truck · 34.80 t*
+
 *MF49BMGP* ⚠ Not integrated - (COLT LOGISTICS) - *Queuing at Ntshovelo* - Tons 34.80 - Hours: 0.26
 `;
 
