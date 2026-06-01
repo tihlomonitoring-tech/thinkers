@@ -22,9 +22,11 @@ import ReportBreakdown from './ReportBreakdown';
 import Recruitment from './Recruitment';
 import Letters from './Letters';
 import AccountingManagement from './AccountingManagement';
+import LogisticsFinanceManagement from './LogisticsFinanceManagement';
 import FuelSupplyManagement from './FuelSupplyManagement';
 import FuelCustomerOrders from './FuelCustomerOrders';
 import FuelData from './FuelData';
+import OnboardingAdmin from './OnboardingAdmin';
 import TeamLeaderAdmin from './TeamLeaderAdmin';
 import PerformanceEvaluations from './PerformanceEvaluations';
 import Auditor from './Auditor';
@@ -121,6 +123,7 @@ function AppRoutes() {
         <Route path="fuel-supply-management" element={<PageGate pathKey="/fuel-supply-management"><FuelSupplyManagement /></PageGate>} />
         <Route path="fuel-customer-orders" element={<PageGate pathKey="/fuel-customer-orders"><FuelCustomerOrders /></PageGate>} />
         <Route path="fuel-data" element={<PageGate pathKey="/fuel-data"><FuelData /></PageGate>} />
+        <Route path="onboarding-admin" element={<PageGate pathKey="/onboarding-admin"><OnboardingAdmin /></PageGate>} />
         <Route path="access-management" element={<PageGate pathKey="/access-management"><AccessManagement /></PageGate>} />
         <Route path="rector" element={<PageGate pathKey="/rector"><Rector /></PageGate>} />
         <Route path="tasks" element={<PageGate pathKey="/tasks"><Tasks /></PageGate>} />
@@ -134,6 +137,7 @@ function AppRoutes() {
         <Route path="recruitment" element={<PageGate pathKey="/recruitment"><Recruitment /></PageGate>} />
         <Route path="letters" element={<PageGate pathKey="/letters"><Letters /></PageGate>} />
         <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />
+        <Route path="logistics-finance-management" element={<PageGate pathKey="/logistics-finance-management"><LogisticsFinanceManagement /></PageGate>} />
         <Route path="quick-sign" element={<PageGate pathKey="/quick-sign"><QuickSign /></PageGate>} />
         <Route path="operator-profile" element={<PageGate pathKey="/operator-profile"><OperatorProfile /></PageGate>} />
         <Route path="operator-management" element={<PageGate pathKey="/operator-management"><OperatorManagement /></PageGate>} />

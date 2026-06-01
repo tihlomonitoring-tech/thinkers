@@ -18,6 +18,7 @@ import LogisticsFlowPage from './components/LogisticsFlowPage.jsx';
 import FleetMaintenancePage from './contractor/FleetMaintenancePage.jsx';
 import WorkshopManagementPage from './contractor/WorkshopManagementPage.jsx';
 import TruckInspectionPage from './contractor/TruckInspectionPage.jsx';
+import ContractorOnboardingTab from './contractor/ContractorOnboardingTab.jsx';
 import { parsePendingChangeJson } from './lib/fleetChangeDiff.js';
 
 /** Matches FleetAdvancedView / DriverAdvancedView access badges. */
@@ -86,6 +87,10 @@ const CONTRACTOR_NAV = [
     items: [{ id: 'enrollment', label: 'Fleet and driver enrollment', icon: 'route', mainContractorOnly: true }],
   },
   {
+    section: 'Onboarding',
+    items: [{ id: 'onboarding', label: 'Onboarding', icon: 'clipboard-check' }],
+  },
+  {
     section: 'Contractor Information',
     items: [
       { id: 'contractor-details', label: 'Details of the contractor', icon: 'building', mainContractorOnly: true },
@@ -106,6 +111,8 @@ const CONTRACTOR_NAV = [
     ],
   },
 ];
+
+const ALL_CONTRACTOR_TAB_IDS = CONTRACTOR_NAV.flatMap((g) => g.items.map((i) => i.id));
 
 const COMMODITY_TYPES = ['Grain', 'Coal', 'Minerals', 'Bulk general', 'Livestock', 'Other'];
 const TRACKING_PROVIDERS = ['', 'Fleetcam', 'Cartrack', 'Nest Tar', 'Other'];
@@ -550,7 +557,7 @@ export default function Contractor() {
   useEffect(() => {
     tabAccessApi.myTabs('contractor')
       .then((d) => setAllowedTabs(d.tabs || []))
-      .catch(() => setAllowedTabs([]))
+      .catch(() => setAllowedTabs(ALL_CONTRACTOR_TAB_IDS))
       .finally(() => setTabAccessLoading(false));
   }, []);
 
@@ -562,16 +569,24 @@ export default function Contractor() {
     setIsSubcontractorUser(Boolean(user?.is_subcontractor_user));
   }, [user?.is_subcontractor_user]);
 
+  /** Tab grants from API, or all tabs when none configured; always include onboarding for contractor users. */
+  const effectiveAllowedTabs = useMemo(() => {
+    const base = allowedTabs.length > 0 ? allowedTabs : ALL_CONTRACTOR_TAB_IDS;
+    return [...new Set([...base, 'onboarding'])];
+  }, [allowedTabs]);
+
   const visibleContractorNav = useMemo(() => {
     const filtered = CONTRACTOR_NAV.map((group) => ({
       ...group,
-      items: group.items.filter((item) => !(item.mainContractorOnly && isSubcontractorUser) && allowedTabs.includes(item.id)),
+      items: group.items.filter(
+        (item) => !(item.mainContractorOnly && isSubcontractorUser) && effectiveAllowedTabs.includes(item.id)
+      ),
     })).filter((g) => g.items.length > 0);
     if (isSuperAdmin) {
       filtered.push({ section: 'Admin', items: [{ id: 'manage-tab-access', label: 'Manage tab access', icon: 'settings' }] });
     }
     return filtered;
-  }, [isSubcontractorUser, allowedTabs, isSuperAdmin]);
+  }, [isSubcontractorUser, effectiveAllowedTabs, isSuperAdmin]);
 
   const visibleContractorTabIds = useMemo(
     () => new Set(visibleContractorNav.flatMap((g) => g.items.map((i) => i.id))),
@@ -585,10 +600,10 @@ export default function Contractor() {
   }, [isSubcontractorUser, activeTab]);
 
   useEffect(() => {
-    if (allowedTabs.length > 0 && activeTab !== 'manage-tab-access' && !allowedTabs.includes(activeTab)) {
-      setActiveTab(allowedTabs[0] || 'dashboard');
+    if (effectiveAllowedTabs.length > 0 && activeTab !== 'manage-tab-access' && !effectiveAllowedTabs.includes(activeTab)) {
+      setActiveTab(effectiveAllowedTabs[0] || 'dashboard');
     }
-  }, [allowedTabs]);
+  }, [effectiveAllowedTabs, activeTab]);
 
   useEffect(() => {
     const requested = (() => {
@@ -3509,6 +3524,10 @@ export default function Contractor() {
                   </div>
                 )}
               </div>
+            )}
+
+            {activeTab === 'onboarding' && (
+              <ContractorOnboardingTab onError={setError} />
             )}
 
             {activeTab === 'enrollment' && !isSubcontractorUser && (

@@ -22,7 +22,7 @@ const PAGE_TABS = {
   ],
   contractor: [
     'dashboard', 'trucks', 'fleet', 'fleet-access-summary', 'subcontractor-fleets',
-    'drivers', 'driver-register', 'import-all', 'enrollment',
+    'drivers', 'driver-register', 'import-all', 'enrollment', 'onboarding',
     'contractor-details', 'subcontract-details', 'library',
     'fleet-maintenance', 'workshop', 'truck-inspection',
     'incidents', 'expiries', 'suspensions', 'messages',
@@ -40,8 +40,10 @@ router.get('/my-tabs/:pageKey', async (req, res, next) => {
       `SELECT tab_id FROM tab_access_grants WHERE user_id = @userId AND page_key = @pageKey`,
       { userId: req.user.id, pageKey }
     );
-    const tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => PAGE_TABS[pageKey].includes(id));
-    res.json({ tabs: tabs.length > 0 ? tabs : PAGE_TABS[pageKey] });
+    let tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => PAGE_TABS[pageKey].includes(id));
+    if (tabs.length === 0) tabs = PAGE_TABS[pageKey];
+    else if (pageKey === 'contractor') tabs = [...new Set([...tabs, 'onboarding'])];
+    res.json({ tabs });
   } catch (err) { next(err); }
 });
 

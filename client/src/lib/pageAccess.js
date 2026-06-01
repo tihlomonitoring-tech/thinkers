@@ -15,6 +15,7 @@ export const PATH_PAGE_IDS = {
   '/recruitment': 'recruitment',
   '/letters': 'letters',
   '/accounting-management': 'accounting_management',
+  '/logistics-finance-management': 'logistics_finance_management',
   '/fuel-supply-management': 'fuel_supply_management',
   '/fuel-customer-orders': 'fuel_customer_orders',
   '/fuel-data': 'fuel_data',
@@ -25,9 +26,15 @@ export const PATH_PAGE_IDS = {
   '/quick-sign': 'quick_sign',
   '/operator-profile': 'operator_profile',
   '/operator-management': 'operator_management',
+  '/onboarding-admin': 'onboarding_admin',
 };
 
-export const ALL_PATHS_ORDER = ['/profile', '/operator-profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/operator-management', '/company-library', '/quick-sign', '/users', '/tenants', '/contractor', '/command-centre', '/report-generation', '/office-admin', '/fuel-supply-management', '/fuel-customer-orders', '/fuel-data', '/access-management', '/rector', '/tasks', '/case-management', '/recruitment', '/letters', '/accounting-management'];
+/** page_id values that also grant access to onboarding_admin screen */
+const PAGE_ROLE_ALIASES = {
+  onboarding_admin: ['onboarding_admin', 'command_centre', 'management'],
+};
+
+export const ALL_PATHS_ORDER = ['/profile', '/operator-profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/operator-management', '/company-library', '/quick-sign', '/users', '/tenants', '/contractor', '/command-centre', '/onboarding-admin', '/report-generation', '/office-admin', '/fuel-supply-management', '/fuel-customer-orders', '/fuel-data', '/access-management', '/rector', '/tasks', '/case-management', '/recruitment', '/letters', '/accounting-management', '/logistics-finance-management'];
 
 /**
  * Whether the user can access the given page.
@@ -37,9 +44,11 @@ export function canAccessPage(user, pageId) {
   if (!user) return false;
   if (user.role === 'super_admin') return true;
   const pid = String(pageId).toLowerCase();
-  const roles = user.page_roles;
-  if (!roles || roles.length === 0) return false;
-  return roles.some((r) => String(r).toLowerCase() === pid);
+  const roles = (user.page_roles || []).map((r) => String(r).toLowerCase());
+  if (!roles.length) return false;
+  const aliases = PAGE_ROLE_ALIASES[pid];
+  if (aliases) return aliases.some((a) => roles.includes(a));
+  return roles.includes(pid);
 }
 
 /**

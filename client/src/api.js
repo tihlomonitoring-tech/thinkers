@@ -1392,6 +1392,162 @@ export const fuelVehicleExpenses = {
   },
 };
 
+const lf = (path, options = {}) => request(`/logistics-finance${path}`, options);
+
+export const logisticsFinance = {
+  dashboard: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return lf(`/dashboard${s ? `?${s}` : ''}`);
+  },
+  listTransactions: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return lf(`/transactions${s ? `?${s}` : ''}`);
+  },
+  audit: (id) => lf(`/transactions/${encodeURIComponent(id)}/audit`),
+  importExcel: (file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(`${API}/logistics-finance/import`, { method: 'POST', body: fd, credentials: 'include' }).then(
+      async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      }
+    );
+  },
+  patch: (id, body) => lf(`/transactions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: (id) => lf(`/transactions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  create: (body) => lf('/transactions', { method: 'POST', body: JSON.stringify(body) }),
+  exportExcelUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return `${API}/logistics-finance/export/excel${s ? `?${s}` : ''}`;
+  },
+  exportPdfUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return `${API}/logistics-finance/export/pdf${s ? `?${s}` : ''}`;
+  },
+};
+
+const tob = (path, options = {}) => request(`/truck-onboarding${path}`, options);
+
+export const truckOnboarding = {
+  dashboard: () => tob('/dashboard'),
+  listTemplates: () => tob('/templates'),
+  createTemplate: (body) => tob('/templates', { method: 'POST', body: JSON.stringify(body || {}) }),
+  getTemplate: (id) => tob(id ? `/templates/${encodeURIComponent(id)}` : '/template'),
+  saveTemplate: (id, body) =>
+    id
+      ? tob(`/templates/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body || {}) })
+      : tob('/template', { method: 'PUT', body: JSON.stringify(body || {}) }),
+  trucks: () => tob('/trucks'),
+  drivers: () => tob('/drivers'),
+  getOnboarding: (id) => tob(`/onboardings/${encodeURIComponent(id)}`),
+  startOnboarding: (payload) =>
+    tob('/onboardings', {
+      method: 'POST',
+      body: JSON.stringify(
+        typeof payload === 'object' && payload !== null
+          ? payload
+          : { truck_id: payload }
+      ),
+    }),
+  patchOnboarding: (id, body) =>
+    tob(`/onboardings/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body || {}) }),
+  patchTask: (onboardingId, taskId, body) =>
+    tob(`/onboardings/${encodeURIComponent(onboardingId)}/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body || {}),
+    }),
+  uploadTaskAttachment: (onboardingId, taskId, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(
+      `${API}/truck-onboarding/onboardings/${encodeURIComponent(onboardingId)}/tasks/${encodeURIComponent(taskId)}/attachments`,
+      { method: 'POST', body: fd, credentials: 'include' }
+    ).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    });
+  },
+  completeStage: (onboardingId, stageId) =>
+    tob(`/onboardings/${encodeURIComponent(onboardingId)}/stages/${encodeURIComponent(stageId)}/complete`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  postMessage: (onboardingId, body) =>
+    tob(`/onboardings/${encodeURIComponent(onboardingId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+  uploadAttachment: (onboardingId, stageId, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(`${API}/truck-onboarding/onboardings/${encodeURIComponent(onboardingId)}/stages/${encodeURIComponent(stageId)}/attachments`, {
+      method: 'POST',
+      body: fd,
+      credentials: 'include',
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    });
+  },
+  attachmentDownloadUrl: (id) => `${API}/truck-onboarding/attachments/${encodeURIComponent(id)}/download`,
+  contractorBoard: () => tob('/contractor/board'),
+  contractorGetOnboarding: (id) => tob(`/contractor/onboardings/${encodeURIComponent(id)}`),
+  contractorPatchTask: (onboardingId, taskId, body) =>
+    tob(`/contractor/onboardings/${encodeURIComponent(onboardingId)}/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body || {}),
+    }),
+  contractorUploadTaskAttachment: (onboardingId, taskId, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(
+      `${API}/truck-onboarding/contractor/onboardings/${encodeURIComponent(onboardingId)}/tasks/${encodeURIComponent(taskId)}/attachments`,
+      { method: 'POST', body: fd, credentials: 'include' }
+    ).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    });
+  },
+  contractorUploadAttachment: (onboardingId, stageId, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(
+      `${API}/truck-onboarding/contractor/onboardings/${encodeURIComponent(onboardingId)}/stages/${encodeURIComponent(stageId)}/attachments`,
+      { method: 'POST', body: fd, credentials: 'include' }
+    ).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    });
+  },
+  contractorPostMessage: (onboardingId, body) =>
+    tob(`/contractor/onboardings/${encodeURIComponent(onboardingId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+};
+
 export const fuelCustomerPortal = {
   myRequests: () => request('/fuel-customer-portal/requests'),
   createRequest: (body) =>

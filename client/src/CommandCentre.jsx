@@ -19,6 +19,7 @@ import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx'
 import InfoHint from './components/InfoHint.jsx';
 import { ShiftReportTextAssist, ShiftReportSummaryAssist } from './components/ShiftReportTextAssist.jsx';
 import { buildShiftReportAiPayload } from './lib/shiftReportAiContext.js';
+import { useShiftReportUndo } from './lib/useShiftReportUndo.js';
 import { buildStyledListSheet, groupRowsByContractorAndSubContractor } from './lib/styledListExcel.js';
 
 const TruckUpdateRecordsTab = lazy(() => import('./components/TruckUpdateRecordsTab.jsx'));
@@ -3500,7 +3501,12 @@ function TabSavedReports() {
   const canDownload = report && report.status === 'approved';
   const isApprover = report && user && report.approved_by_user_id != null && normId(report.approved_by_user_id) === normId(user.id);
   const isSuperAdminHere = user?.role === 'super_admin';
-  const canDeleteDraftSuperAdmin = isSuperAdminHere && report && String(report.status || '').toLowerCase().trim() === 'draft';
+  const reportStatusNorm = String(report?.status || '').toLowerCase().trim();
+  const canDeleteDraft =
+    report &&
+    reportStatusNorm === 'draft' &&
+    reportStatusNorm !== 'approved' &&
+    (isCreator || isSuperAdminHere);
   const canRevokeApproval = report && report.status === 'approved' && (isApprover || isSuperAdminHere);
   const showCommentsToCreator = report && isCreator && (report.status === 'provisional' || report.status === 'pending_approval');
   const canMarkAddressed = report && isCreator && report.status === 'provisional';
@@ -3541,11 +3547,16 @@ function TabSavedReports() {
             {canRevokeApproval && (
               <button type="button" onClick={() => { setSavingReport(true); listApi().revokeApproval(selectedId).then((r) => { setReport(r.report); loadList(); setSavingReport(false); }).catch((err) => { setError(err?.message || 'Revoke failed'); setSavingReport(false); }); }} disabled={savingReport} className="px-4 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">Revoke approval</button>
             )}
-            {canDeleteDraftSuperAdmin && (
+            {canDeleteDraft && (
               <button
                 type="button"
                 onClick={() => {
-                  if (!window.confirm('Permanently delete this draft shift report? This cannot be undone.')) return;
+                  if (
+                    !window.confirm(
+                      'Permanently delete this draft shift report? Approved reports cannot be deleted. This cannot be undone.'
+                    )
+                  )
+                    return;
                   setDeletingReport(true);
                   setError('');
                   listApi()
@@ -3572,7 +3583,7 @@ function TabSavedReports() {
         </div>
         {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
         <ShiftReportForm
-          key={`${report.id}-${report.updated_at || report.created_at || ''}`}
+          key={String(report.id)}
           reportKind={listKind === 'single_ops' ? 'single_ops' : 'shift'}
           user={user}
           initialData={report}
@@ -3621,7 +3632,9 @@ function TabSavedReports() {
         setOpen={setSavedReportsHelpOpen}
         topic="saved shift reports"
       >
-        <p>Open a report to view, edit, submit for approval, or download (when approved). Use the toggle to switch between standard shift reports and single operations shift reports.</p>
+        <p>
+          Open a report to view, edit, submit for approval, or download (when approved). Draft reports you created can be deleted; approved reports cannot. While editing, use Undo (or Ctrl+Z) after removing rows or importing from the system.
+        </p>
       </CollapsibleSectionHelp>
       <div className="app-glass-segmented mb-2">
         <button
@@ -6153,6 +6166,8 @@ function ShiftReportForm({
   const [autoSaving, setAutoSaving] = useState(false);
   const autosaveTimerRef = useRef(null);
   const lastAutoSavedSignatureRef = useRef('');
+  const undoRestorePendingRef = useRef(false);
+  const fieldFocusUndoDoneRef = useRef(false);
 
   useEffect(() => {
     if (reportId && initialData && String(initialData.id) === String(reportId)) {
@@ -6332,6 +6347,97 @@ function ShiftReportForm({
   const removeRow = (setter, index) => setter((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
   const todayDate = () => todayYmd();
 
+  const undoStateRef = useRef({});
+  undoStateRef.current = {
+    formFields,
+    truckUpdates,
+    incidents,
+    nonComplianceCalls,
+    investigations,
+    commsLog,
+    selectedRoutes,
+    otherRoutesText,
+    truckDeliveries,
+    routeLoadTotals,
+  };
+
+  const captureUndoSnapshot = useCallback(() => {
+    try {
+      return JSON.parse(JSON.stringify(undoStateRef.current));
+    } catch {
+      return { ...undoStateRef.current };
+    }
+  }, []);
+
+  const restoreUndoSnapshot = useCallback(
+    (snap) => {
+      if (!snap) return;
+      let s = snap;
+      try {
+        s = JSON.parse(JSON.stringify(snap));
+      } catch {
+        /* use snap as-is */
+      }
+      undoRestorePendingRef.current = true;
+      setFormFields(s.formFields ?? initFormFields(initialData));
+      setTruckUpdates(
+        Array.isArray(s.truckUpdates) && s.truckUpdates.length ? s.truckUpdates : [{ ...emptyTruck }]
+      );
+      setIncidents(Array.isArray(s.incidents) && s.incidents.length ? s.incidents : [{ ...emptyIncident }]);
+      setNonComplianceCalls(
+        Array.isArray(s.nonComplianceCalls) && s.nonComplianceCalls.length ? s.nonComplianceCalls : [{ ...emptyNonComp }]
+      );
+      setInvestigations(
+        Array.isArray(s.investigations) && s.investigations.length ? s.investigations : [{ ...emptyInv }]
+      );
+      setCommsLog(Array.isArray(s.commsLog) && s.commsLog.length ? s.commsLog : [{ ...emptyComm }]);
+      setSelectedRoutes(Array.isArray(s.selectedRoutes) ? [...s.selectedRoutes] : []);
+      setOtherRoutesText(s.otherRoutesText ?? '');
+      setTruckDeliveries(
+        Array.isArray(s.truckDeliveries) && s.truckDeliveries.length ? s.truckDeliveries : [{ ...emptyTruckDelivery }]
+      );
+      setRouteLoadTotals(
+        Array.isArray(s.routeLoadTotals) && s.routeLoadTotals.length ? s.routeLoadTotals : [{ ...emptyRouteLoadTotal }]
+      );
+    },
+    [initialData]
+  );
+
+  const { pushUndo, undo: performUndo, canUndo } = useShiftReportUndo({
+    enabled: !readOnly,
+    onRestore: restoreUndoSnapshot,
+    onUndone: () => setMessage?.('Change undone.'),
+  });
+
+  const handleFormFocusCapture = (e) => {
+    if (readOnly) return;
+    const el = e.target;
+    if (!el?.matches?.('input, textarea, select')) return;
+    if (fieldFocusUndoDoneRef.current) return;
+    pushUndo(captureUndoSnapshot());
+    fieldFocusUndoDoneRef.current = true;
+  };
+  const handleFormBlurCapture = (e) => {
+    if (e.target?.matches?.('input, textarea, select')) {
+      fieldFocusUndoDoneRef.current = false;
+    }
+  };
+
+  const removeRowWithUndo = (setter, index, rows) => {
+    if (!Array.isArray(rows) || rows.length <= 1) return;
+    pushUndo(captureUndoSnapshot());
+    removeRow(setter, index);
+  };
+
+  const addRowWithUndo = (setter, empty) => {
+    pushUndo(captureUndoSnapshot());
+    addRow(setter, empty);
+  };
+
+  const handleUndoClick = () => {
+    performUndo();
+  };
+
   // "Export from system" - pulls comm logs and non-compliance entries created during this controller's shift
   // on the Fleet & driver compliance page. Scoped to current shift_date+shift_start..shift_end and current user.
   const exportFromSystem = async (target /* 'communication_log' | 'non_compliance' | 'all' */) => {
@@ -6357,6 +6463,7 @@ function ShiftReportForm({
         endedAt = tentative;
       }
     }
+    pushUndo(captureUndoSnapshot());
     setExportingFromSystem(true);
     try {
       const data = await ccApi.complianceInspections.shiftExport({
@@ -6432,6 +6539,7 @@ function ShiftReportForm({
     }
     const picked = controller2Options.find((u) => String(u.id) === String(selectedId));
     if (!picked) return;
+    pushUndo(captureUndoSnapshot());
     setFormFields((f) => ({
       ...f,
       controller2_name: picked.full_name || '',
@@ -6441,6 +6549,7 @@ function ShiftReportForm({
     }));
   };
   const clearController2 = () => {
+    pushUndo(captureUndoSnapshot());
     setFormFields((f) => ({ ...f, controller2_name: '', controller2_email: '' }));
   };
   const routeSetForBreakdowns = useMemo(() => {
@@ -6468,6 +6577,7 @@ function ShiftReportForm({
       issue: b.title || b.description || b.type || '',
       status: b.resolved_at ? 'Resolved' : 'Open',
     };
+    pushUndo(captureUndoSnapshot());
     setIncidents((prev) => {
       if (!Array.isArray(prev) || prev.length === 0) return [incidentRow];
       const first = prev[0] || {};
@@ -6523,6 +6633,11 @@ function ShiftReportForm({
   useEffect(() => {
     const payload = buildShiftPayload();
     const signature = JSON.stringify(payload);
+    if (undoRestorePendingRef.current) {
+      undoRestorePendingRef.current = false;
+      lastAutoSavedSignatureRef.current = signature;
+      return;
+    }
     if (!lastAutoSavedSignatureRef.current) {
       lastAutoSavedSignatureRef.current = signature;
       return;
@@ -6640,12 +6755,26 @@ function ShiftReportForm({
   const set = (key) => (e) => setFormFields((f) => ({ ...f, [key]: e.target.value }));
   return (
     <>
-    <form onSubmit={handleSubmit} className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
+    <form
+      onSubmit={handleSubmit}
+      onFocusCapture={handleFormFocusCapture}
+      onBlurCapture={handleFormBlurCapture}
+      className="divide-y divide-surface-200/40 dark:divide-white/[0.06]"
+    >
       <div className="app-glass-form-topbar">
         <button type="button" onClick={onBack} className="text-sm text-surface-600 hover:text-surface-900 font-medium">
           {reportId ? '← Back to list' : '← Back to report types'}
         </button>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <button
+            type="button"
+            disabled={!canUndo}
+            onClick={handleUndoClick}
+            className="text-xs px-3 py-1.5 rounded-lg border border-surface-300/80 bg-white/30 backdrop-blur-sm text-surface-700 hover:bg-white/50 disabled:opacity-40 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200"
+            title="Undo last change — restores removed rows, imports, and text edited since you focused a field (Ctrl+Z)"
+          >
+            Undo
+          </button>
           <button type="button" onClick={() => setOpenSection(null)} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300/80 bg-white/30 backdrop-blur-sm text-surface-700 hover:bg-white/50 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Collapse all</button>
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
             {saving ? 'Saving…' : 'Save shift report'}
@@ -6892,10 +7021,10 @@ function ShiftReportForm({
                     placeholder="Loads delivered"
                     className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
                   />
-                  <button type="button" onClick={() => removeRow(setRouteLoadTotals, i)} className="text-sm text-surface-400 hover:text-red-600 text-left sm:text-right">Remove</button>
+                  <button type="button" onClick={() => removeRowWithUndo(setRouteLoadTotals, i, routeLoadTotals)} className="text-sm text-surface-400 hover:text-red-600 text-left sm:text-right">Remove</button>
                 </div>
               ))}
-              <button type="button" onClick={() => addRow(setRouteLoadTotals, { ...emptyRouteLoadTotal })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add route total</button>
+              <button type="button" onClick={() => addRowWithUndo(setRouteLoadTotals, { ...emptyRouteLoadTotal })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add route total</button>
 
               <p className="text-xs font-semibold text-surface-600 mt-6 mb-2">Deliveries per truck (performance account)</p>
               <p className="text-xs text-surface-500 mb-2">Same structure as investigations: one row per truck — registration, driver, completed deliveries, remarks.</p>
@@ -6943,10 +7072,10 @@ function ShiftReportForm({
                     getContext={getAiContext}
                     disabled={aiAssistOff}
                   />
-                  <button type="button" onClick={() => removeRow(setTruckDeliveries, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
+                  <button type="button" onClick={() => removeRowWithUndo(setTruckDeliveries, i, truckDeliveries)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
                 </div>
               ))}
-              <button type="button" onClick={() => addRow(setTruckDeliveries, { ...emptyTruckDelivery })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add truck row</button>
+              <button type="button" onClick={() => addRowWithUndo(setTruckDeliveries, { ...emptyTruckDelivery })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add truck row</button>
             </>
           )}
         </SectionBlock>
@@ -6977,10 +7106,10 @@ function ShiftReportForm({
                   disabled={aiAssistOff}
                 />
               </div>
-              <button type="button" onClick={() => removeRow(setTruckUpdates, i)} className="text-surface-400 hover:text-red-600 p-2" aria-label="Remove row">×</button>
+              <button type="button" onClick={() => removeRowWithUndo(setTruckUpdates, i, truckUpdates)} className="text-surface-400 hover:text-red-600 p-2" aria-label="Remove row">×</button>
             </div>
           ))}
-          <button type="button" onClick={() => addRow(setTruckUpdates, { time: '', summary: '', delays: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
+          <button type="button" onClick={() => addRowWithUndo(setTruckUpdates, { time: '', summary: '', delays: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
             + Add truck update
           </button>
         </SectionBlock>
@@ -7055,10 +7184,10 @@ function ShiftReportForm({
                   disabled={aiAssistOff}
                 />
               </div>
-              <button type="button" onClick={() => removeRow(setIncidents, i)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
+              <button type="button" onClick={() => removeRowWithUndo(setIncidents, i, incidents)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
             </div>
           ))}
-          <button type="button" onClick={() => addRow(setIncidents, { truck_reg: '', time_reported: '', driver_name: '', issue: '', status: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium mb-4">+ Add incident</button>
+          <button type="button" onClick={() => addRowWithUndo(setIncidents, { truck_reg: '', time_reported: '', driver_name: '', issue: '', status: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium mb-4">+ Add incident</button>
 
           <p className="text-xs font-semibold text-surface-600 mb-2 mt-6">Non-compliance calls</p>
           {nonComplianceCalls.map((row, i) => (
@@ -7110,11 +7239,11 @@ function ShiftReportForm({
                   disabled={aiAssistOff}
                 />
               </div>
-              <button type="button" onClick={() => removeRow(setNonComplianceCalls, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
+              <button type="button" onClick={() => removeRowWithUndo(setNonComplianceCalls, i, nonComplianceCalls)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
             </div>
           ))}
           <div className="flex flex-wrap items-center gap-3 mb-4">
-            <button type="button" onClick={() => addRow(setNonComplianceCalls, { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add non-compliance call</button>
+            <button type="button" onClick={() => addRowWithUndo(setNonComplianceCalls, { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add non-compliance call</button>
             <button
               type="button"
               onClick={() => exportFromSystem('non_compliance')}
@@ -7167,10 +7296,10 @@ function ShiftReportForm({
                 getContext={getAiContext}
                 disabled={aiAssistOff}
               />
-              <button type="button" onClick={() => removeRow(setInvestigations, i)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
+              <button type="button" onClick={() => removeRowWithUndo(setInvestigations, i, investigations)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
             </div>
           ))}
-          <button type="button" onClick={() => addRow(setInvestigations, { truck_reg: '', time: '', location: '', issue_identified: '', findings: '', action_taken: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add investigation</button>
+          <button type="button" onClick={() => addRowWithUndo(setInvestigations, { truck_reg: '', time: '', location: '', issue_identified: '', findings: '', action_taken: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add investigation</button>
         </SectionBlock>
 
         {/* 5. Communication log */}
@@ -7200,11 +7329,11 @@ function ShiftReportForm({
                   disabled={aiAssistOff}
                 />
               </div>
-              <button type="button" onClick={() => removeRow(setCommsLog, i)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
+              <button type="button" onClick={() => removeRowWithUndo(setCommsLog, i, commsLog)} className="col-span-2 sm:col-span-1 text-surface-400 hover:text-red-600 text-sm">Remove</button>
             </div>
           ))}
           <div className="flex flex-wrap items-center gap-3">
-            <button type="button" onClick={() => addRow(setCommsLog, { time: '', recipient: '', subject: '', method: '', action_required: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add communication</button>
+            <button type="button" onClick={() => addRowWithUndo(setCommsLog, { time: '', recipient: '', subject: '', method: '', action_required: '' })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add communication</button>
             <button
               type="button"
               onClick={() => exportFromSystem('communication_log')}

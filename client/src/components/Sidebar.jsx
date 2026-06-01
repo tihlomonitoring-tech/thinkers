@@ -256,6 +256,7 @@ const navSections = [
     items: [
       { to: '/contractor', label: 'Contractor', icon: IconContractor, shortcut: '⌘3', pageId: 'contractor' },
       { to: '/command-centre', label: 'Command Centre', icon: IconCommandCentre, shortcut: '⌘4', pageId: 'command_centre' },
+      { to: '/onboarding-admin', label: 'Onboarding Admin', icon: IconTasks, shortcut: '', pageId: 'onboarding_admin' },
       { to: '/report-generation', label: 'Report generation', icon: IconReportGeneration, shortcut: '', pageId: 'report_generation' },
       { to: '/office-admin', label: 'Office Admin', icon: IconOfficeAdmin, shortcut: '', pageId: 'office_admin' },
       { to: '/fuel-supply-management', label: 'Fuel supply', icon: IconFuel, shortcut: '⌘8', pageId: 'fuel_supply_management' },
@@ -280,6 +281,13 @@ const navSections = [
     label: 'Accounting',
     items: [
       { to: '/accounting-management', label: 'Accounting management', icon: IconAccounting, shortcut: '⌘A', pageId: 'accounting_management' },
+      {
+        to: '/logistics-finance-management',
+        label: 'Logistics finance management',
+        icon: IconAccounting,
+        shortcut: '',
+        pageId: 'logistics_finance_management',
+      },
     ],
   },
 ];

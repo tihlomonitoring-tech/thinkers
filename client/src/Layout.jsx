@@ -120,6 +120,7 @@ export default function Layout() {
     { id: 'ct:driver-register', label: 'Contractor · Driver register', path: '/contractor', section: 'Contractor', tab: 'driver-register', key: 'contractor-global-target-tab', keywords: ['driver', 'register', 'license'] },
     { id: 'ct:import-all', label: 'Contractor · Import all', path: '/contractor', section: 'Contractor', tab: 'import-all', key: 'contractor-global-target-tab' },
     { id: 'ct:enrollment', label: 'Contractor · Fleet and driver enrollment', path: '/contractor', section: 'Contractor', tab: 'enrollment', key: 'contractor-global-target-tab' },
+    { id: 'ct:onboarding', label: 'Contractor · Onboarding', path: '/contractor', section: 'Contractor · Onboarding', tab: 'onboarding', key: 'contractor-global-target-tab', keywords: ['truck onboarding', 'stages', 'mou'] },
     { id: 'ct:incidents', label: 'Contractor · Report breakdown / incidents', path: '/contractor', section: 'Contractor', tab: 'incidents', key: 'contractor-global-target-tab' },
     { id: 'ct:expiries', label: 'Contractor · Expiries', path: '/contractor', section: 'Contractor', tab: 'expiries', key: 'contractor-global-target-tab' },
     { id: 'ct:suspensions', label: 'Contractor · Suspensions and appeals', path: '/contractor', section: 'Contractor', tab: 'suspensions', key: 'contractor-global-target-tab' },

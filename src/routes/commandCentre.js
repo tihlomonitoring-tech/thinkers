@@ -6116,21 +6116,31 @@ router.patch('/shift-reports/:id', async (req, res, next) => {
   }
 });
 
-/** DELETE draft shift report (super_admin only). Cascades comments, evaluations, override requests. */
+/** DELETE draft shift report (author or super_admin). Approved reports cannot be deleted. */
 router.delete('/shift-reports/:id', async (req, res, next) => {
   try {
-    if (req.user?.role !== 'super_admin') {
-      return res.status(403).json({ error: 'Only a system administrator can delete draft shift reports.' });
-    }
     const getResult = await query(
-      `SELECT id, status FROM command_centre_shift_reports WHERE id = @id`,
+      `SELECT r.id, r.status, r.created_by_user_id, creator.email AS creator_email
+       FROM command_centre_shift_reports r
+       LEFT JOIN users creator ON creator.id = r.created_by_user_id
+       WHERE r.id = @id`,
       { id: req.params.id }
     );
     const existing = getResult.recordset?.[0];
     if (!existing) return res.status(404).json({ error: 'Report not found' });
     const status = existing.status != null ? String(existing.status).toLowerCase().trim() : '';
+    if (status === 'approved') {
+      return res.status(403).json({ error: 'Approved shift reports cannot be deleted.' });
+    }
     if (status !== 'draft') {
-      return res.status(400).json({ error: 'Only draft reports can be deleted.' });
+      return res.status(400).json({ error: 'Only draft reports can be deleted. Submit or keep the draft as needed.' });
+    }
+    const norm = (v) => (v != null ? String(v).toLowerCase().trim() : '');
+    const isCreator =
+      (norm(existing.created_by_user_id) && norm(existing.created_by_user_id) === norm(req.user?.id)) ||
+      (norm(existing.creator_email) && norm(existing.creator_email) === norm(req.user?.email));
+    if (req.user?.role !== 'super_admin' && !isCreator) {
+      return res.status(403).json({ error: 'Only the report author can delete this draft.' });
     }
     await query(`DELETE FROM command_centre_shift_reports WHERE id = @id`, { id: req.params.id });
     res.sendStatus(204);

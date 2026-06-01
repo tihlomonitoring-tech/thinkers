@@ -18,7 +18,7 @@ const SALT_ROUNDS = 10;
 
 /** Page IDs that can be assigned as roles (main app pages). Must match client PAGE_ROLES. */
 /** Allowed page_id values; DB CHECK CK_user_page_roles_page_id must match — run `npm run db:user-page-roles-check-sync` after adding a page here. */
-export const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'access_management', 'rector', 'tasks', 'case_management', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'fuel_data', 'team_leader_admin', 'performance_evaluations', 'auditor', 'company_library', 'quick_sign', 'report_generation', 'office_admin'];
+export const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'onboarding_admin', 'access_management', 'rector', 'tasks', 'case_management', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'fuel_data', 'team_leader_admin', 'performance_evaluations', 'auditor', 'company_library', 'quick_sign', 'report_generation', 'office_admin', 'logistics_finance_management'];
 
 async function getPageRolesForUsers(pool, userIds) {
   if (!userIds || userIds.length === 0) return {};

@@ -40,9 +40,11 @@ import companyLibraryRoutes, { runCompanyLibraryExpiryReminders } from './src/ro
 import quickSignRoutes from './src/routes/quickSign.js';
 import operatorManagementRoutes from './src/routes/operatorManagement.js';
 import expenseManagementRoutes from './src/routes/expenseManagement.js';
+import logisticsFinanceRoutes from './src/routes/logisticsFinance.js';
 import tabAccessRoutes from './src/routes/tabAccess.js';
 import claimsRoutes from './src/routes/claims.js';
 import orgStructureRoutes from './src/routes/orgStructure.js';
+import truckOnboardingRoutes from './src/routes/truckOnboarding.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
 import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
@@ -163,9 +165,11 @@ app.use('/api/monthly-performance-reports', monthlyPerformanceReportsRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
 app.use('/api/expense-management', expenseManagementRoutes);
+app.use('/api/logistics-finance', logisticsFinanceRoutes);
 app.use('/api/tab-access', tabAccessRoutes);
 app.use('/api/claims', claimsRoutes);
 app.use('/api/org-structure', orgStructureRoutes);
+app.use('/api/truck-onboarding', truckOnboardingRoutes);
 app.use('/api/fuel-supply', fuelSupplyRoutes);
 app.use('/api/fuel-data', fuelDataRoutes);
 app.use('/api/fuel-data/vehicle-expenses', fuelVehicleExpensesRoutes);
@@ -185,13 +189,16 @@ app.use('/api', (req, res) => {
   const truckAnalysisHint =
     pathLower.includes('truck-analysis') &&
     'Command Centre truck analysis requires this API version (routes under /api/command-centre/truck-analysis) and the truck_analysis_handovers table. On the database host run: npm run db:truck-analysis-handovers — then redeploy the Node server so it includes src/routes/commandCentre.js with those routes.';
+  const logisticsFinanceHint =
+    pathLower.includes('logistics-finance') &&
+    'Logistics finance requires this API version (routes under /api/logistics-finance). Run: npm run db:logistics-finance && npm run db:logistics-finance-page-role — then restart the Node server (npm run server). Ping: GET /api/logistics-finance/ping should return 200.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || genericHint,
   });
 });
 
