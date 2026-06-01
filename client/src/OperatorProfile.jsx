@@ -5,7 +5,10 @@ import { operatorManagement as opMgmt, profileManagement as pm, claims as claims
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
+import OvertimeClaimFields, { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
+import { calculateSaOvertimeClaim } from './lib/saOvertimeClaim.js';
 import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
+import OrgStructureView from './components/OrgStructureView.jsx';
 import { wallMonthYearInAppZone } from './lib/appTime.js';
 
 const TABS = [
@@ -14,6 +17,7 @@ const TABS = [
   { id: 'wages', label: 'Wages & salary' },
   { id: 'leave', label: 'Leave application' },
   { id: 'claims', label: 'Claims & reimbursements' },
+  { id: 'organisational_structure', label: 'Organisational structure' },
   { id: 'employee_details', label: 'Employee details' },
 ];
 
@@ -25,7 +29,8 @@ function formatDate(d) {
 const CLAIM_TYPES = [
   { id: 'fuel', label: 'Fuel' }, { id: 'travel', label: 'Travel expense' }, { id: 'accommodation', label: 'Accommodation' },
   { id: 'meals', label: 'Meals' }, { id: 'equipment', label: 'Equipment' }, { id: 'tools', label: 'Tools' },
-  { id: 'training', label: 'Training' }, { id: 'communication', label: 'Communication' }, { id: 'service', label: 'Service rendered' }, { id: 'other', label: 'Other' },
+  { id: 'training', label: 'Training' }, { id: 'communication', label: 'Communication' }, { id: 'service', label: 'Service rendered' },
+  { id: 'overtime', label: 'Overtime' }, { id: 'other', label: 'Other' },
 ];
 const CLAIM_STATUS_STYLES = { draft: 'bg-surface-100 text-surface-700', pending: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200', approved: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200', declined: 'bg-red-50 text-red-700 ring-1 ring-red-200', paid: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200', cancelled: 'bg-surface-200 text-surface-500' };
 
@@ -35,7 +40,14 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
   const [detailClaim, setDetailClaim] = useState(null);
   const [detailAttachments, setDetailAttachments] = useState([]);
 
-  const emptyForm = { claim_date: new Date().toISOString().slice(0, 10), claim_type: 'fuel', category: '', department_name: '', description: '', amount: '', km_travelled: '', start_location: '', end_location: '', vehicle_registration: '', rate_per_km: '4.64', service_rendered: '', hours_spent: '', hourly_rate: '', bank_name: '', account_holder: user?.full_name || '', account_number: '', branch_code: '', account_type: 'savings', declaration_accepted: false };
+  const emptyForm = {
+    claim_date: new Date().toISOString().slice(0, 10), claim_type: 'fuel', category: '', department_name: '', description: '', amount: '',
+    km_travelled: '', start_location: '', end_location: '', vehicle_registration: '', rate_per_km: '4.64',
+    service_rendered: '', hours_spent: '', hourly_rate: '',
+    ot_period_end: '', ot_weekday_hours: '', ot_sunday_hours: '', ot_public_holiday_hours: '', ot_monthly_salary: '',
+    bank_name: '', account_holder: user?.full_name || '', account_number: '', branch_code: '', account_type: 'savings',
+    declaration_accepted: false,
+  };
   const [form, setForm] = useState({ ...emptyForm });
 
   const fmtZar = (v) => { const n = Number(v); return isNaN(n) ? 'R 0.00' : 'R ' + n.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
@@ -43,10 +55,26 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
 
   useEffect(() => { if (form.claim_type === 'travel' && form.km_travelled && form.rate_per_km) { const c = (Number(form.km_travelled) * Number(form.rate_per_km)).toFixed(2); if (c !== form.amount) setForm((f) => ({ ...f, amount: c })); } }, [form.km_travelled, form.rate_per_km, form.claim_type]);
   useEffect(() => { if (form.claim_type === 'service' && form.hours_spent && form.hourly_rate) { const c = (Number(form.hours_spent) * Number(form.hourly_rate)).toFixed(2); if (c !== form.amount) setForm((f) => ({ ...f, amount: c })); } }, [form.hours_spent, form.hourly_rate, form.claim_type]);
+  useEffect(() => {
+    if (form.claim_type !== 'overtime') return;
+    const { total } = calculateSaOvertimeClaim({
+      ordinaryHourlyRate: form.hourly_rate,
+      weekdayHours: form.ot_weekday_hours,
+      sundayHours: form.ot_sunday_hours,
+      publicHolidayHours: form.ot_public_holiday_hours,
+    });
+    const next = total > 0 ? total.toFixed(2) : '';
+    if (next !== form.amount) setForm((f) => ({ ...f, amount: next }));
+  }, [form.claim_type, form.hourly_rate, form.ot_weekday_hours, form.ot_sunday_hours, form.ot_public_holiday_hours, form.amount]);
 
   const openDetail = (claim) => { setView('detail'); claimsApi.get(claim.id).then((d) => { setDetailClaim(d.claim); setDetailAttachments(d.attachments || []); }).catch(() => {}); };
   const handleSubmit = async (e) => { e.preventDefault(); if (!form.declaration_accepted) { alert('Please accept the declaration.'); return; } setSaving(true); try { await claimsApi.create(form); setForm({ ...emptyForm }); setView('list'); onRefresh(); } catch (err) { alert(err?.message || 'Failed'); } finally { setSaving(false); } };
   const handleCancel = async (id) => { if (!window.confirm('Cancel this claim?')) return; try { await claimsApi.cancel(id); onRefresh(); if (view === 'detail') setView('list'); } catch {} };
+  const canDeleteClaim = (c) => ['draft', 'pending', 'cancelled', 'declined'].includes(c?.status);
+  const handleDelete = async (id) => {
+    if (!window.confirm('Permanently delete this claim? A deletion email will be sent.')) return;
+    try { await claimsApi.delete(id); onRefresh(); if (view === 'detail') setView('list'); } catch (err) { alert(err?.message || 'Could not delete'); }
+  };
   const handleUpload = async (claimId, files) => { const fd = new FormData(); for (const f of files) fd.append('files', f); try { await claimsApi.uploadAttachments(claimId, fd); claimsApi.get(claimId).then((d) => setDetailAttachments(d.attachments || [])); } catch {} };
   const handleDeleteAtt = async (attId) => { if (!window.confirm('Remove?')) return; try { await claimsApi.removeAttachment(attId); if (detailClaim) claimsApi.get(detailClaim.id).then((d) => setDetailAttachments(d.attachments || [])); } catch {} };
 
@@ -71,7 +99,12 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
               <td className="px-4 py-2.5 max-w-[200px] truncate">{c.description}</td>
               <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(c.amount)}</td>
               <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${CLAIM_STATUS_STYLES[c.status] || ''}`}>{c.status}</span></td>
-              <td className="px-4 py-2.5" onClick={(ev) => ev.stopPropagation()}>{(c.status === 'pending' || c.status === 'draft') && <button type="button" onClick={() => handleCancel(c.id)} className="text-red-600 hover:underline text-xs">Cancel</button>}</td>
+              <td className="px-4 py-2.5" onClick={(ev) => ev.stopPropagation()}>
+                <div className="flex flex-wrap gap-2">
+                  {(c.status === 'pending' || c.status === 'draft') && <button type="button" onClick={() => handleCancel(c.id)} className="text-amber-700 hover:underline text-xs">Cancel</button>}
+                  {canDeleteClaim(c) && <button type="button" onClick={() => handleDelete(c.id)} className="text-red-600 hover:underline text-xs font-medium">Delete</button>}
+                </div>
+              </td>
             </tr>
           ))}</tbody></table>
         </div>
@@ -96,6 +129,7 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
                 {form.claim_type === 'travel' && <><div><label className="block text-xs font-medium text-surface-600 mb-1">KM travelled</label><input type="number" step="0.1" value={form.km_travelled} onChange={(e) => setForm((f) => ({ ...f, km_travelled: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" /></div><div><label className="block text-xs font-medium text-surface-600 mb-1">Rate/KM</label><input type="number" step="0.01" value={form.rate_per_km} onChange={(e) => setForm((f) => ({ ...f, rate_per_km: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" /></div></>}
               </div></div>
             )}
+            {form.claim_type === 'overtime' && <OvertimeClaimFields form={form} setForm={setForm} />}
             {form.claim_type === 'service' && (
               <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-4 space-y-3"><h4 className="text-xs font-semibold text-purple-800 uppercase">Service details</h4>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -105,7 +139,7 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
               </div></div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div><label className="block text-xs font-medium text-surface-600 mb-1">Amount (ZAR) *</label><input type="number" step="0.01" required value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm font-semibold text-lg" /></div>
+              <div><label className="block text-xs font-medium text-surface-600 mb-1">Amount (ZAR) *</label><input type="number" step="0.01" required readOnly={form.claim_type === 'overtime'} value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} className={`w-full border border-surface-300 rounded-lg px-3 py-2 text-sm font-semibold text-lg ${form.claim_type === 'overtime' ? 'bg-orange-50/80' : ''}`} />{form.claim_type === 'overtime' && form.amount && <p className="text-xs text-orange-800 mt-1">BCEA auto-calculated</p>}</div>
               <div><label className="block text-xs font-medium text-surface-600 mb-1">Category</label><input type="text" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm" /></div>
             </div>
             <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 space-y-3"><h4 className="text-xs font-semibold text-emerald-800 uppercase">Banking details</h4>
@@ -139,6 +173,7 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
               {detailClaim.end_location && <div><p className="text-xs text-surface-500">To</p><p className="font-medium">{detailClaim.end_location}</p></div>}
               {detailClaim.reviewed_by_name && <div><p className="text-xs text-surface-500">Reviewed by</p><p className="font-medium">{detailClaim.reviewed_by_name}</p></div>}
             </div>
+            <OvertimeClaimDetail claim={detailClaim} fmtZar={fmtZar} />
             {detailClaim.description && <div><p className="text-xs text-surface-500 mb-1">Description</p><p className="text-sm whitespace-pre-wrap">{detailClaim.description}</p></div>}
             {detailClaim.review_notes && <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg"><p className="text-xs text-blue-700 font-medium">Review notes:</p><p className="text-sm text-blue-600">{detailClaim.review_notes}</p></div>}
             {detailClaim.rejection_reason && <div className="p-3 bg-red-50 border border-red-200 rounded-lg"><p className="text-xs text-red-700 font-medium">Reason:</p><p className="text-sm text-red-600">{detailClaim.rejection_reason}</p></div>}
@@ -148,7 +183,10 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
             {detailAttachments.length > 0 ? <div className="space-y-2">{detailAttachments.map((a) => (<div key={a.id} className="flex items-center gap-3 p-2 bg-surface-50 rounded-lg"><span className="text-sm text-surface-700 flex-1 truncate">{a.file_name}</span>{detailClaim.status === 'pending' && <button type="button" onClick={() => handleDeleteAtt(a.id)} className="text-xs text-red-600 hover:underline">Remove</button>}</div>))}</div> : <p className="text-sm text-surface-500">No attachments</p>}
             {detailClaim.status === 'pending' && <label className="inline-flex items-center gap-2 px-3 py-2 border border-surface-300 rounded-lg text-sm cursor-pointer hover:bg-surface-50"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>Upload<input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files?.length) handleUpload(detailClaim.id, e.target.files); e.target.value = ''; }} /></label>}
           </div>
-          {detailClaim.status === 'pending' && <button type="button" onClick={() => handleCancel(detailClaim.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">Cancel claim</button>}
+          <div className="flex flex-wrap gap-2">
+            {detailClaim.status === 'pending' && <button type="button" onClick={() => handleCancel(detailClaim.id)} className="px-4 py-2 border border-amber-300 text-amber-800 rounded-lg text-sm font-medium hover:bg-amber-50">Cancel claim</button>}
+            {canDeleteClaim(detailClaim) && <button type="button" onClick={() => handleDelete(detailClaim.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">Delete permanently</button>}
+          </div>
         </div>
       )}
     </div>
@@ -694,6 +732,8 @@ export default function OperatorProfile() {
           {activeTab === 'claims' && (
             <ClaimsTab claims={myClaims} loading={claimLoading} onRefresh={() => claimsApi.myClaims().then((d) => setMyClaims(d.claims || [])).catch(() => {})} user={user} />
           )}
+
+          {activeTab === 'organisational_structure' && <OrgStructureView onError={setError} />}
 
           {activeTab === 'employee_details' && <EmployeeDetailsTab onError={setError} />}
         </div>

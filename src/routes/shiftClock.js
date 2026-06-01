@@ -21,8 +21,28 @@ const router = Router();
 function requireProfileOrManagement(req, res, next) {
   if (req.user?.role === 'super_admin') return next();
   const pr = req.user?.page_roles || [];
-  if (pr.includes('profile') || pr.includes('management')) return next();
+  if (pr.includes('profile') || pr.includes('management') || pr.includes('team_leader_admin')) return next();
   return res.status(403).json({ error: 'Forbidden' });
+}
+
+async function resolveLeaderShiftType(tenantId, leaderId, workDate, shiftTypeRaw) {
+  let shiftType = String(shiftTypeRaw || 'auto').toLowerCase();
+  let shiftInferred = false;
+  if (shiftType === 'auto' || shiftType === '') {
+    shiftInferred = true;
+    const me = await query(
+      `SELECT TOP 1 LOWER(LTRIM(RTRIM(e.shift_type))) AS st
+       FROM work_schedule_entries e
+       INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId
+       WHERE s.user_id = @leaderId AND CAST(e.work_date AS DATE) = @workDate`,
+      { tenantId, leaderId, workDate }
+    );
+    const st = String(getRow(me.recordset?.[0] || {}, 'st') || '').toLowerCase();
+    shiftType = st === 'night' ? 'night' : 'day';
+  } else {
+    shiftType = shiftType === 'night' ? 'night' : 'day';
+  }
+  return { shiftType, shiftInferred };
 }
 
 const TWO_H_MS = 2 * 60 * 60 * 1000;
@@ -524,21 +544,52 @@ router.get('/my-history', requirePageAccess('profile'), async (req, res, next) =
   }
 });
 
-/** Team schedules + clock status for a calendar day (tenant). Default: users with Command Centre page or CC tab grants. */
+/** Team schedules + clock status for a calendar day (tenant). Default: users with Command Centre page or CC tab grants. Team leaders may use scope=scheduled_shift. */
 router.get('/team-day', requireProfileOrManagement, async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     const viewerId = req.user.id;
     const date = String(req.query.date || todayYmd()).slice(0, 10);
-    const scopeRaw = String(req.query.scope || 'command_centre').toLowerCase();
+    const scopeRaw = String(req.query.scope || '').toLowerCase();
     const pageRoles = req.user?.page_roles || [];
     const isMgmt = req.user?.role === 'super_admin' || pageRoles.includes('management');
-    let scope = scopeRaw === 'all' && isMgmt ? 'all' : 'command_centre';
+    const isTeamLeader = pageRoles.includes('team_leader_admin');
+    let scope = 'command_centre';
+    if (scopeRaw === 'all' && isMgmt) scope = 'all';
+    else if (scopeRaw === 'scheduled_shift' && (isTeamLeader || isMgmt)) scope = 'scheduled_shift';
 
     const tenantClause = `(u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`;
 
+    let shiftTypeUsed = null;
+    let shiftInferred = false;
+
     let usersR;
-    if (scope === 'all') {
+    if (scope === 'scheduled_shift') {
+      const { shiftType, shiftInferred: inferred } = await resolveLeaderShiftType(
+        tenantId,
+        viewerId,
+        date,
+        req.query.shift_type
+      );
+      shiftTypeUsed = shiftType;
+      shiftInferred = inferred;
+      try {
+        usersR = await query(
+          `SELECT DISTINCT u.id, u.full_name, u.email
+           FROM work_schedule_entries e
+           INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId
+           INNER JOIN users u ON u.id = s.user_id AND (${tenantClause})
+           WHERE CAST(e.work_date AS DATE) = @date
+             AND LOWER(LTRIM(RTRIM(e.shift_type))) = @shiftType
+             AND u.email IS NOT NULL`,
+          { tenantId, date, shiftType }
+        );
+      } catch (e) {
+        const m = String(e?.message || '').toLowerCase();
+        if (m.includes('work_schedule')) usersR = { recordset: [] };
+        else throw e;
+      }
+    } else if (scope === 'all') {
       usersR = await query(
         `SELECT u.id, u.full_name, u.email FROM users u
          WHERE ${tenantClause}
@@ -612,7 +663,13 @@ router.get('/team-day', requireProfileOrManagement, async (req, res, next) => {
         sensitivity: 'base',
       })
     );
-    res.json({ date, team: out, scope });
+    res.json({
+      date,
+      team: out,
+      scope,
+      shift_type_used: shiftTypeUsed,
+      shift_inferred: shiftInferred,
+    });
   } catch (err) {
     next(err);
   }

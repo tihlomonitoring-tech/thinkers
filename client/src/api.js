@@ -1340,6 +1340,58 @@ export const fuelData = {
   },
 };
 
+const fve = (path, options = {}) => request(`/fuel-data/vehicle-expenses${path}`, options);
+
+export const fuelVehicleExpenses = {
+  trucks: () => fve('/trucks'),
+  list: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return fve(`/expenses${s ? `?${s}` : ''}`);
+  },
+  dashboard: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return fve(`/dashboard${s ? `?${s}` : ''}`);
+  },
+  importExcel: (file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(`${API}/fuel-data/vehicle-expenses/import`, { method: 'POST', body: fd, credentials: 'include' }).then(
+      async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      }
+    );
+  },
+  patch: (id, body) => fve(`/expenses/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: (id) => fve(`/expenses/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  rematch: (id) => fve(`/expenses/${encodeURIComponent(id)}/rematch`, { method: 'POST', body: '{}' }),
+  exportExcelUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return `${API}/fuel-data/vehicle-expenses/export/excel${s ? `?${s}` : ''}`;
+  },
+  exportPdfUrl: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') q.set(k, String(v));
+    });
+    const s = q.toString();
+    return `${API}/fuel-data/vehicle-expenses/export/pdf${s ? `?${s}` : ''}`;
+  },
+};
+
 export const fuelCustomerPortal = {
   myRequests: () => request('/fuel-customer-portal/requests'),
   createRequest: (body) =>
@@ -1740,6 +1792,42 @@ export const profileManagement = {
   commandCentreSchedulePeers: () => pm('/users/command-centre-peers'),
 };
 
+const org = (path, options = {}) => request(`/org-structure${path}`, options);
+
+/** Organisational structure: departments, positions, reporting lines, escalations. */
+export const orgStructure = {
+  bundle: () => org('/bundle'),
+  person: (userId) => org(`/person/${encodeURIComponent(userId)}`),
+  attachmentDownloadUrl: (positionId, attId) =>
+    `${API}/org-structure/positions/${encodeURIComponent(positionId)}/attachments/${encodeURIComponent(attId)}/download`,
+  departments: {
+    create: (body) => org('/departments', { method: 'POST', body: JSON.stringify(body) }),
+    patch: (id, body) => org(`/departments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => org(`/departments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+  positions: {
+    create: (body) => org('/positions', { method: 'POST', body: JSON.stringify(body) }),
+    patch: (id, body) => org(`/positions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => org(`/positions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    deleteAttachment: (positionId, attId) =>
+      org(`/positions/${encodeURIComponent(positionId)}/attachments/${encodeURIComponent(attId)}`, { method: 'DELETE' }),
+    uploadAttachments: (positionId, files) => {
+      const formData = new FormData();
+      for (const f of files) formData.append('files', f);
+      return fetch(`${API}/org-structure/positions/${encodeURIComponent(positionId)}/attachments`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      }).then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+  },
+  assignments: {
+    create: (body) => org('/assignments', { method: 'POST', body: JSON.stringify(body) }),
+    patch: (id, body) => org(`/assignments/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    delete: (id) => org(`/assignments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+};
+
 const cl = (path, options = {}) => request(`/company-library${path}`, options);
 
 /** Company library: AI summaries, secured docs with system PIN + email-only file delivery, audit. */
@@ -1811,6 +1899,7 @@ export const shiftClock = {
     const q = new URLSearchParams();
     if (date) q.set('date', date);
     if (opts.scope) q.set('scope', opts.scope);
+    if (opts.shift_type) q.set('shift_type', opts.shift_type);
     const qs = q.toString();
     return sc(`/team-day${qs ? `?${qs}` : ''}`);
   },
@@ -2415,6 +2504,7 @@ export const claims = {
   update: (id, body) => clm(`/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   review: (id, body) => clm(`/${id}/review`, { method: 'POST', body: JSON.stringify(body) }),
   cancel: (id) => clm(`/${id}/cancel`, { method: 'POST' }),
+  delete: (id) => clm(`/${id}`, { method: 'DELETE' }),
   uploadAttachments: (id, formData) => clm(`/${id}/attachments`, { method: 'POST', body: formData, rawBody: true }),
   removeAttachment: (id) => clm(`/attachments/${id}`, { method: 'DELETE' }),
   summary: () => clm('/stats/summary'),

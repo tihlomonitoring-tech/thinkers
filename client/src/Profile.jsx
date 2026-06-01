@@ -10,6 +10,8 @@ import {
   AUTO_HIDE_NAV_PREF_CHANGED,
 } from './lib/autoHideNav.js';
 import InfoHint from './components/InfoHint.jsx';
+import OvertimeClaimFields, { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
+import { calculateSaOvertimeClaim } from './lib/saOvertimeClaim.js';
 import ShiftClockPanel from './components/ShiftClockPanel.jsx';
 import ShiftActivityTab from './components/ShiftActivityTab.jsx';
 import ProductivityScoreTab from './components/ProductivityScoreTab.jsx';
@@ -18,6 +20,7 @@ import CareerDevelopmentHub from './components/CareerDevelopmentHub.jsx';
 import ColleagueEvaluationResultsTab from './components/ColleagueEvaluationResultsTab.jsx';
 import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
 import EmployeeOnboardmentTab from './components/EmployeeOnboardmentTab.jsx';
+import OrgStructureView from './components/OrgStructureView.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import {
@@ -49,6 +52,7 @@ const TABS = [
   { id: 'growth', label: 'Growth' },
   { id: 'evaluation_results', label: 'Colleagues evaluation results' },
   { id: 'claims', label: 'Claims & reimbursements' },
+  { id: 'organisational_structure', label: 'Organisational structure' },
   { id: 'system_settings', label: 'System settings' },
 ];
 
@@ -115,6 +119,7 @@ const CLAIM_TYPES = [
   { id: 'training', label: 'Training' },
   { id: 'communication', label: 'Communication' },
   { id: 'service', label: 'Service rendered' },
+  { id: 'overtime', label: 'Overtime' },
   { id: 'other', label: 'Other' },
 ];
 
@@ -138,6 +143,7 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
     claim_date: new Date().toISOString().slice(0, 10), claim_type: 'fuel', category: '', department_name: '',
     description: '', amount: '', km_travelled: '', start_location: '', end_location: '',
     vehicle_registration: '', rate_per_km: '4.64', service_rendered: '', hours_spent: '', hourly_rate: '',
+    ot_period_end: '', ot_weekday_hours: '', ot_sunday_hours: '', ot_public_holiday_hours: '', ot_monthly_salary: '',
     bank_name: '', account_holder: user?.full_name || '', account_number: '', branch_code: '', account_type: 'savings',
     declaration_accepted: false,
   };
@@ -159,6 +165,25 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
       if (calc !== form.amount) setForm((f) => ({ ...f, amount: calc }));
     }
   }, [form.hours_spent, form.hourly_rate, form.claim_type]);
+
+  useEffect(() => {
+    if (form.claim_type !== 'overtime') return;
+    const { total } = calculateSaOvertimeClaim({
+      ordinaryHourlyRate: form.hourly_rate,
+      weekdayHours: form.ot_weekday_hours,
+      sundayHours: form.ot_sunday_hours,
+      publicHolidayHours: form.ot_public_holiday_hours,
+    });
+    const next = total > 0 ? total.toFixed(2) : '';
+    if (next !== form.amount) setForm((f) => ({ ...f, amount: next }));
+  }, [
+    form.claim_type,
+    form.hourly_rate,
+    form.ot_weekday_hours,
+    form.ot_sunday_hours,
+    form.ot_public_holiday_hours,
+    form.amount,
+  ]);
 
   const openDetail = (claim) => {
     setSelectedClaim(claim);
@@ -182,6 +207,19 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
   const handleCancel = async (id) => {
     if (!window.confirm('Cancel this claim?')) return;
     try { await claimsApi.cancel(id); onRefresh(); if (view === 'detail') setView('list'); } catch {}
+  };
+
+  const canDeleteClaim = (c) => ['draft', 'pending', 'cancelled', 'declined'].includes(c?.status);
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Permanently delete this claim? You and management will receive a deletion email.')) return;
+    try {
+      await claimsApi.delete(id);
+      onRefresh();
+      if (view === 'detail') setView('list');
+    } catch (err) {
+      alert(err?.message || 'Could not delete claim');
+    }
   };
 
   const handleUpload = async (claimId, files) => {
@@ -243,7 +281,18 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
                     <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(c.amount)}</td>
                     <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${CLAIM_STATUS_STYLES[c.status] || ''}`}>{c.status}</span></td>
                     <td className="px-4 py-2.5" onClick={(ev) => ev.stopPropagation()}>
-                      {(c.status === 'pending' || c.status === 'draft') && <button type="button" onClick={() => handleCancel(c.id)} className="text-red-600 hover:underline text-xs">Cancel</button>}
+                      <div className="flex flex-wrap gap-2">
+                        {(c.status === 'pending' || c.status === 'draft') && (
+                          <button type="button" onClick={() => handleCancel(c.id)} className="text-amber-700 hover:underline text-xs">
+                            Cancel
+                          </button>
+                        )}
+                        {canDeleteClaim(c) && (
+                          <button type="button" onClick={() => handleDelete(c.id)} className="text-red-600 hover:underline text-xs font-medium">
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -315,6 +364,10 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
             )}
 
             {/* Service fields */}
+            {form.claim_type === 'overtime' && (
+              <OvertimeClaimFields form={form} setForm={setForm} />
+            )}
+
             {form.claim_type === 'service' && (
               <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-4 space-y-3">
                 <h4 className="text-xs font-semibold text-purple-800 uppercase tracking-wider">Service details</h4>
@@ -339,9 +392,20 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-surface-600 mb-1">Total amount (ZAR) *</label>
-                <input type="number" step="0.01" required value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm font-semibold text-lg" />
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  readOnly={form.claim_type === 'overtime'}
+                  value={form.amount}
+                  onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+                  className={`w-full border border-surface-300 rounded-lg px-3 py-2 text-sm font-semibold text-lg ${form.claim_type === 'overtime' ? 'bg-orange-50/80' : ''}`}
+                />
                 {(form.claim_type === 'travel' && form.km_travelled && form.rate_per_km) && <p className="text-xs text-surface-500 mt-1">Auto-calculated: {form.km_travelled} km × R{form.rate_per_km}/km</p>}
                 {(form.claim_type === 'service' && form.hours_spent && form.hourly_rate) && <p className="text-xs text-surface-500 mt-1">Auto-calculated: {form.hours_spent}h × R{form.hourly_rate}/h</p>}
+                {form.claim_type === 'overtime' && form.amount && (
+                  <p className="text-xs text-orange-800 mt-1">Auto-calculated from BCEA overtime rates (see breakdown above).</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
@@ -425,6 +489,7 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
               {detailClaim.reviewed_by_name && <div><p className="text-xs text-surface-500">Reviewed by</p><p className="font-medium">{detailClaim.reviewed_by_name}</p></div>}
             </div>
 
+            <OvertimeClaimDetail claim={detailClaim} fmtZar={fmtZar} />
             {detailClaim.description && <div><p className="text-xs text-surface-500 mb-1">Description</p><p className="text-sm whitespace-pre-wrap">{detailClaim.description}</p></div>}
             {detailClaim.review_notes && <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg"><p className="text-xs text-blue-700 font-medium">Review notes:</p><p className="text-sm text-blue-600">{detailClaim.review_notes}</p></div>}
             {detailClaim.rejection_reason && <div className="p-3 bg-red-50 border border-red-200 rounded-lg"><p className="text-xs text-red-700 font-medium">Rejection reason:</p><p className="text-sm text-red-600">{detailClaim.rejection_reason}</p></div>}
@@ -451,9 +516,18 @@ function ClaimsTab({ claims, loading, onRefresh, user }) {
             )}
           </div>
 
-          {detailClaim.status === 'pending' && (
-            <button type="button" onClick={() => handleCancel(detailClaim.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">Cancel claim</button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {detailClaim.status === 'pending' && (
+              <button type="button" onClick={() => handleCancel(detailClaim.id)} className="px-4 py-2 border border-amber-300 text-amber-800 rounded-lg text-sm font-medium hover:bg-amber-50">
+                Cancel claim
+              </button>
+            )}
+            {canDeleteClaim(detailClaim) && (
+              <button type="button" onClick={() => handleDelete(detailClaim.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">
+                Delete permanently
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1418,6 +1492,8 @@ export default function Profile() {
           {activeTab === 'claims' && (
             <ClaimsTab claims={myClaims} loading={claimLoading} onRefresh={() => claimsApi.myClaims().then((d) => setMyClaims(d.claims || [])).catch(() => {})} user={user} />
           )}
+
+          {activeTab === 'organisational_structure' && <OrgStructureView onError={setError} />}
 
           {activeTab === 'system_settings' && (
             <div className="space-y-6 max-w-xl">

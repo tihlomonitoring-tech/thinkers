@@ -18,7 +18,7 @@ const PAGE_TABS = {
     'shift_activity', 'shift-swaps', 'schedule-events', 'leave', 'documents',
     'employee-details', 'compose_onboardment', 'warnings-rewards', 'queries',
     'evaluations', 'perf_eval_period', 'perf_eval_trends', 'perf_eval_questions',
-    'auditor_results', 'pip', 'growth', 'company_library_policy', 'claims',
+    'auditor_results', 'pip', 'growth', 'company_library_policy', 'claims', 'org_structure',
   ],
   contractor: [
     'dashboard', 'trucks', 'fleet', 'fleet-access-summary', 'subcontractor-fleets',

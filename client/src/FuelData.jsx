@@ -14,6 +14,10 @@ import InfoHint from './components/InfoHint.jsx';
 import FuelSlipAiCameraModal from './components/FuelSlipAiCameraModal.jsx';
 import FuelAdvancedDashboard from './components/FuelAdvancedDashboard.jsx';
 import FuelDataAutoShareTab from './components/FuelDataAutoShareTab.jsx';
+import FuelImportExpensesTab from './components/FuelImportExpensesTab.jsx';
+import FuelExpenditureTab from './components/FuelExpenditureTab.jsx';
+import InternalVehiclesFuelDashboardTab from './components/InternalVehiclesFuelDashboardTab.jsx';
+import { fuelVehicleExpenses as fveApi } from './api';
 
 const FUEL_EXPORT_COLS_STORAGE_KEY = 'fuel-data-export-columns';
 
@@ -389,6 +393,7 @@ export default function FuelData() {
   const [emailCustomerId, setEmailCustomerId] = useState('');
   const [emailAttachPdf, setEmailAttachPdf] = useState(false);
   const [emailBusy, setEmailBusy] = useState(false);
+  const [vehicleExpenseRefreshKey, setVehicleExpenseRefreshKey] = useState(0);
 
   const [recordFormHidden, setRecordFormHidden] = useState(() => {
     try {
@@ -2051,8 +2056,41 @@ export default function FuelData() {
               onClearFilters={() => setSelectedVerifiedIds([])}
             />
 
+            {(allowedTabs.includes('fuel_expenditure') || allowedTabs.includes('file_export')) && (
+              <section className="space-y-3 rounded-xl border border-brand-200 bg-brand-50/30 dark:border-brand-800 dark:bg-brand-950/20 p-4">
+                <h3 className="text-md font-semibold text-surface-900 dark:text-surface-50">Internal vehicle fuel expenditure</h3>
+                <p className="text-sm text-surface-600 dark:text-surface-400">
+                  Export imported fleet fuel transactions with the same branded Excel/PDF layout as diesel statements (supplier logo, header band, totals).
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="px-4 py-2 rounded-lg border border-surface-300 text-sm bg-white dark:bg-surface-900"
+                    onClick={() =>
+                      downloadAttachmentWithAuth(fveApi.exportExcelUrl({}), 'internal-vehicle-fuel-expenditure.xlsx').catch((err) =>
+                        setError(err.message)
+                      )
+                    }
+                  >
+                    Download Excel (all vehicle fuel)
+                  </button>
+                  <button
+                    type="button"
+                    className="px-4 py-2 rounded-lg border border-surface-300 text-sm bg-white dark:bg-surface-900"
+                    onClick={() =>
+                      downloadAttachmentWithAuth(fveApi.exportPdfUrl({}), 'internal-vehicle-fuel-expenditure.pdf').catch((err) =>
+                        setError(err.message)
+                      )
+                    }
+                  >
+                    Download PDF (all vehicle fuel)
+                  </button>
+                </div>
+              </section>
+            )}
+
             <section className="space-y-3">
-              <h3 className="text-md font-semibold text-surface-900 dark:text-surface-50">Exports (Excel &amp; PDF)</h3>
+              <h3 className="text-md font-semibold text-surface-900 dark:text-surface-50">Diesel transactions (Excel &amp; PDF)</h3>
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -2431,6 +2469,22 @@ export default function FuelData() {
               ) : null}
             </div>
           </div>
+        ) : null}
+
+        {activeTab === 'import_fuel_expenses' && allowedTabs.includes('import_fuel_expenses') ? (
+          <FuelImportExpensesTab
+            onError={setError}
+            onInfo={setInfo}
+            onImported={() => setVehicleExpenseRefreshKey((k) => k + 1)}
+          />
+        ) : null}
+
+        {activeTab === 'fuel_expenditure' && allowedTabs.includes('fuel_expenditure') ? (
+          <FuelExpenditureTab onError={setError} onInfo={setInfo} refreshKey={vehicleExpenseRefreshKey} />
+        ) : null}
+
+        {activeTab === 'internal_vehicles_fuel' && allowedTabs.includes('internal_vehicles_fuel') ? (
+          <InternalVehiclesFuelDashboardTab onError={setError} />
         ) : null}
 
         {activeTab === 'auto_share' && allowedTabs.includes('auto_share') ? (

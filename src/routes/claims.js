@@ -6,6 +6,7 @@ import { query } from '../db.js';
 import { requireAuth, loadUser } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { getManagementEmailsForTenantAndTab } from '../lib/emailRecipients.js';
+import { calculateSaOvertimeClaim, formatOvertimeBreakdownText } from '../lib/saOvertimeClaim.js';
 
 const router = Router();
 router.use(requireAuth, loadUser);
@@ -19,7 +20,34 @@ const upload = multer({ storage: multer.diskStorage({
   filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_')}`),
 }), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const CLAIM_TYPES = ['fuel', 'travel', 'accommodation', 'meals', 'equipment', 'tools', 'training', 'communication', 'service', 'other'];
+const CLAIM_TYPES = ['fuel', 'travel', 'accommodation', 'meals', 'equipment', 'tools', 'training', 'communication', 'service', 'overtime', 'other'];
+
+const CLAIM_TYPE_LABELS = {
+  fuel: 'Fuel',
+  travel: 'Travel expense',
+  accommodation: 'Accommodation',
+  meals: 'Meals',
+  equipment: 'Equipment',
+  tools: 'Tools',
+  training: 'Training',
+  communication: 'Communication',
+  service: 'Service rendered',
+  overtime: 'Overtime',
+  other: 'Other',
+};
+
+function resolveOvertimeAmount(b) {
+  const calc = calculateSaOvertimeClaim({
+    ordinaryHourlyRate: b.hourly_rate,
+    weekdayHours: b.ot_weekday_hours,
+    sundayHours: b.ot_sunday_hours,
+    publicHolidayHours: b.ot_public_holiday_hours,
+  });
+  if (calc.total <= 0) {
+    return { error: calc.warnings[0] || 'Invalid overtime hours or hourly rate' };
+  }
+  return { amount: calc.total, calc };
+}
 
 async function nextClaimRef(tenantId) {
   const r = await query(
@@ -58,6 +86,95 @@ ${actionHtml || ''}
 <div style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">
 This is an automated notification from Thinkers App.${appUrl ? ` <a href="${appUrl}" style="color:#1e40af;">Open app</a>` : ''}
 </div></div></body></html>`;
+}
+
+function userHasManagement(req) {
+  if (req.user?.role === 'super_admin') return true;
+  return (req.user?.page_roles || []).some((r) => String(r).toLowerCase() === 'management');
+}
+
+/** Send at most one email per claim + event + recipient (requires claim_email_log table). */
+async function sendClaimEmailOnce({ claimId, eventType, to, subject, html }) {
+  if (!to || !isEmailConfigured() || !claimId) return false;
+  const email = String(to).trim().toLowerCase();
+  if (!email) return false;
+  try {
+    const dup = await query(
+      `SELECT 1 FROM claim_email_log WHERE claim_id = @cid AND event_type = @ev AND LOWER(recipient_email) = @to`,
+      { cid: claimId, ev: eventType, to: email }
+    );
+    if (dup.recordset?.length) return false;
+  } catch (e) {
+    const m = String(e?.message || '').toLowerCase();
+    if (!m.includes('claim_email_log')) throw e;
+  }
+  await sendEmail({ to, subject, body: html, html: true });
+  try {
+    await query(
+      `INSERT INTO claim_email_log (claim_id, event_type, recipient_email) VALUES (@cid, @ev, @to)`,
+      { cid: claimId, ev: eventType, to: email }
+    );
+  } catch (e) {
+    console.error('[claims] email log insert:', e?.message);
+  }
+  return true;
+}
+
+async function notifyClaimDeleted(claim, deletedByName) {
+  if (!isEmailConfigured() || !claim?.id) return;
+  const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+  const ref = claim.reference_number;
+  const claimantName = claim.claimant_name || claim.full_name || 'Claimant';
+  const claimType = CLAIM_TYPE_LABELS[claim.claim_type] || claim.claim_type;
+  const deletedBy = deletedByName || 'User';
+
+  const claimantHtml = claimEmailHtml({
+    title: 'Claim deleted',
+    claimRef: ref,
+    claimant: claimantName,
+    claimType,
+    amount: claim.amount,
+    description: claim.description,
+    department: claim.department_name,
+    appUrl: `${appUrl}/profile`,
+    actionHtml: `<div style="margin-top:16px;padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;"><p style="margin:0;color:#991b1b;font-weight:600;">Claim <strong>${ref}</strong> has been deleted${deletedBy ? ` by ${deletedBy}` : ''}.</p></div>`,
+  });
+
+  if (claim.claimant_email) {
+    await sendClaimEmailOnce({
+      claimId: claim.id,
+      eventType: 'deleted_claimant',
+      to: claim.claimant_email,
+      subject: `Claim deleted: ${ref}`,
+      html: claimantHtml,
+    });
+  }
+
+  try {
+    const mgmtEmails = await getManagementEmailsForTenantAndTab(query, claim.tenant_id, 'claims');
+    const mgmtHtml = claimEmailHtml({
+      title: 'Claim deleted',
+      claimRef: ref,
+      claimant: claimantName,
+      claimType,
+      amount: claim.amount,
+      description: claim.description,
+      department: claim.department_name,
+      appUrl: `${appUrl}/management`,
+      actionHtml: `<p style="margin-top:16px;font-size:14px;color:#374151;">Claim <strong>${ref}</strong> was deleted by ${deletedBy}.</p>`,
+    });
+    for (const to of mgmtEmails) {
+      await sendClaimEmailOnce({
+        claimId: claim.id,
+        eventType: 'deleted_mgmt',
+        to,
+        subject: `Claim deleted: ${ref} — ${claimantName}`,
+        html: mgmtHtml,
+      });
+    }
+  } catch (e) {
+    console.error('[claims] delete mgmt notify:', e?.message);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -162,28 +279,46 @@ router.post('/', async (req, res, next) => {
     }
     if (!CLAIM_TYPES.includes(b.claim_type)) return res.status(400).json({ error: 'Invalid claim type' });
 
+    let amount = Number(b.amount);
+    let category = b.category || null;
+    if (b.claim_type === 'overtime') {
+      if (!b.hourly_rate) return res.status(400).json({ error: 'Ordinary hourly rate is required for overtime claims' });
+      const ot = resolveOvertimeAmount(b);
+      if (ot.error) return res.status(400).json({ error: ot.error });
+      amount = ot.amount;
+      if (!category) category = formatOvertimeBreakdownText(ot.calc).slice(0, 500) || null;
+    } else if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+
     const ref = await nextClaimRef(t);
     const r = await query(
       `INSERT INTO claims (tenant_id, reference_number, claim_date, claim_type, category, department_name, description, amount, currency,
         km_travelled, start_location, end_location, vehicle_registration, rate_per_km,
         service_rendered, hours_spent, hourly_rate,
+        ot_period_end, ot_weekday_hours, ot_sunday_hours, ot_public_holiday_hours,
         bank_name, account_holder, account_number, branch_code, account_type,
         declaration_accepted, declaration_text, [status], claimant_user_id)
        OUTPUT INSERTED.*
        VALUES (@t, @ref, @date, @type, @cat, @dept, @desc, @amount, @currency,
         @km, @startLoc, @endLoc, @vehicle, @rateKm,
         @service, @hours, @hourlyRate,
+        @otEnd, @otWeekday, @otSunday, @otPh,
         @bankName, @accHolder, @accNum, @branchCode, @accType,
         @declAccepted, @declText, @status, @userId)`,
       {
-        t, ref, date: b.claim_date, type: b.claim_type, cat: b.category || null,
-        dept: b.department_name || null, desc: b.description, amount: Number(b.amount),
+        t, ref, date: b.claim_date, type: b.claim_type, cat: category,
+        dept: b.department_name || null, desc: b.description, amount,
         currency: b.currency || 'ZAR',
         km: b.km_travelled ? Number(b.km_travelled) : null,
         startLoc: b.start_location || null, endLoc: b.end_location || null,
         vehicle: b.vehicle_registration || null, rateKm: b.rate_per_km ? Number(b.rate_per_km) : null,
         service: b.service_rendered || null, hours: b.hours_spent ? Number(b.hours_spent) : null,
         hourlyRate: b.hourly_rate ? Number(b.hourly_rate) : null,
+        otEnd: b.ot_period_end || b.claim_date || null,
+        otWeekday: b.ot_weekday_hours != null && b.ot_weekday_hours !== '' ? Number(b.ot_weekday_hours) : null,
+        otSunday: b.ot_sunday_hours != null && b.ot_sunday_hours !== '' ? Number(b.ot_sunday_hours) : null,
+        otPh: b.ot_public_holiday_hours != null && b.ot_public_holiday_hours !== '' ? Number(b.ot_public_holiday_hours) : null,
         bankName: b.bank_name || null, accHolder: b.account_holder || null,
         accNum: b.account_number || null, branchCode: b.branch_code || null,
         accType: b.account_type || null,
@@ -193,21 +328,24 @@ router.post('/', async (req, res, next) => {
     );
     const claim = r.recordset?.[0];
 
-    if (claim && isEmailConfigured()) {
+    if (claim?.id && isEmailConfigured()) {
       const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
       const claimantName = req.user.full_name || req.user.email || 'User';
       const claimantEmail = req.user.email;
+      const claimId = claim.id;
 
       if (claimantEmail) {
         const html = claimEmailHtml({
           title: 'Claim submitted — your copy',
-          claimRef: ref, claimant: claimantName, claimType: b.claim_type,
-          amount: b.amount, description: b.description, department: b.department_name,
+          claimRef: ref, claimant: claimantName, claimType: CLAIM_TYPE_LABELS[b.claim_type] || b.claim_type,
+          amount, description: b.description, department: b.department_name,
           appUrl: `${appUrl}/profile`,
           extra: b.km_travelled ? `<tr><td style="padding:6px 0;font-weight:600;">KM Travelled</td><td style="padding:6px 0;">${b.km_travelled} km</td></tr>` : '',
           actionHtml: `<p style="margin-top:16px;font-size:14px;color:#374151;">Your claim <strong>${ref}</strong> has been submitted and is pending review by management.</p>`,
         });
-        sendEmail({ to: claimantEmail, subject: `Claim submitted: ${ref}`, body: html, html: true }).catch((e) => console.error('[claims] Claimant email error:', e?.message));
+        sendClaimEmailOnce({
+          claimId, eventType: 'submitted_claimant', to: claimantEmail, subject: `Claim submitted: ${ref}`, html,
+        }).catch((e) => console.error('[claims] Claimant email error:', e?.message));
       }
 
       try {
@@ -215,14 +353,20 @@ router.post('/', async (req, res, next) => {
         if (mgmtEmails.length > 0) {
           const html = claimEmailHtml({
             title: 'New claim requires review',
-            claimRef: ref, claimant: claimantName, claimType: b.claim_type,
-            amount: b.amount, description: b.description, department: b.department_name,
+            claimRef: ref, claimant: claimantName, claimType: CLAIM_TYPE_LABELS[b.claim_type] || b.claim_type,
+            amount, description: b.description, department: b.department_name,
             appUrl: `${appUrl}/management`,
-            extra: b.km_travelled ? `<tr><td style="padding:6px 0;font-weight:600;">KM Travelled</td><td style="padding:6px 0;">${b.km_travelled} km</td></tr>` : '',
+            extra:
+              (b.claim_type === 'overtime' && category
+                ? `<tr><td style="padding:6px 0;font-weight:600;vertical-align:top;">Overtime</td><td style="padding:6px 0;white-space:pre-line;">${category.replace(/</g, '&lt;')}</td></tr>`
+                : '') +
+              (b.km_travelled ? `<tr><td style="padding:6px 0;font-weight:600;">KM Travelled</td><td style="padding:6px 0;">${b.km_travelled} km</td></tr>` : ''),
             actionHtml: `<div style="margin-top:20px;"><a href="${appUrl}/management" style="display:inline-block;padding:10px 24px;background:#1e40af;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Review claim ${ref}</a></div>`,
           });
           for (const to of mgmtEmails) {
-            sendEmail({ to, subject: `Claim for review: ${ref} — ${claimantName}`, body: html, html: true }).catch((e) => console.error('[claims] Management email error:', e?.message));
+            sendClaimEmailOnce({
+              claimId, eventType: 'submitted_mgmt', to, subject: `Claim for review: ${ref} — ${claimantName}`, html,
+            }).catch((e) => console.error('[claims] Management email error:', e?.message));
           }
         }
       } catch (e) { console.error('[claims] Management notification error:', e?.message); }
@@ -325,16 +469,24 @@ router.post('/:id/review', async (req, res, next) => {
         const claimantResult = await query(`SELECT full_name, email FROM users WHERE id = @id`, { id: claim.claimant_user_id });
         const claimant = claimantResult.recordset?.[0];
         if (claimant?.email) {
+          const eventType = action === 'approve' ? 'reviewed_approved' : 'reviewed_declined';
           const html = claimEmailHtml({
             title: action === 'approve' ? 'Claim approved' : 'Claim declined',
             claimRef: claim.reference_number, claimant: claimant.full_name || claimant.email,
-            claimType: claim.claim_type, amount: claim.amount, description: claim.description,
+            claimType: CLAIM_TYPE_LABELS[claim.claim_type] || claim.claim_type,
+            amount: claim.amount, description: claim.description,
             department: claim.department_name, appUrl: `${appUrl}/profile`,
             actionHtml: action === 'approve'
               ? `<div style="margin-top:16px;padding:12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;"><p style="margin:0;color:#065f46;font-weight:600;">Your claim has been approved by ${req.user.full_name || 'management'}.</p>${review_notes ? `<p style="margin:8px 0 0;color:#065f46;font-size:13px;">Notes: ${review_notes}</p>` : ''}</div>`
               : `<div style="margin-top:16px;padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;"><p style="margin:0;color:#991b1b;font-weight:600;">Your claim has been declined by ${req.user.full_name || 'management'}.</p>${rejection_reason ? `<p style="margin:8px 0 0;color:#991b1b;font-size:13px;">Reason: ${rejection_reason}</p>` : ''}</div>`,
           });
-          sendEmail({ to: claimant.email, subject: `Claim ${action === 'approve' ? 'approved' : 'declined'}: ${claim.reference_number}`, body: html, html: true }).catch((e) => console.error('[claims] Review email error:', e?.message));
+          sendClaimEmailOnce({
+            claimId: claim.id,
+            eventType,
+            to: claimant.email,
+            subject: `Claim ${action === 'approve' ? 'approved' : 'declined'}: ${claim.reference_number}`,
+            html,
+          }).catch((e) => console.error('[claims] Review email error:', e?.message));
         }
       } catch (e) { console.error('[claims] Review email error:', e?.message); }
     }
@@ -351,6 +503,43 @@ router.post('/:id/review', async (req, res, next) => {
 router.post('/:id/cancel', async (req, res, next) => {
   try {
     await query(`UPDATE claims SET [status] = N'cancelled', updated_at = SYSUTCDATETIME() WHERE id = @id AND claimant_user_id = @userId AND [status] IN (N'draft', N'pending')`, { id: req.params.id, userId: req.user.id });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ════════════════════════════════════════════════════════════════════
+//  DELETE CLAIM (permanent — sends deleted notification once per recipient)
+// ════════════════════════════════════════════════════════════════════
+
+router.delete('/:id', async (req, res, next) => {
+  try {
+    const r = await query(
+      `SELECT c.*, u.full_name AS claimant_name, u.email AS claimant_email
+       FROM claims c
+       LEFT JOIN users u ON u.id = c.claimant_user_id
+       WHERE c.id = @id`,
+      { id: req.params.id }
+    );
+    const claim = r.recordset?.[0];
+    if (!claim) return res.status(404).json({ error: 'Claim not found' });
+
+    const isOwner = String(claim.claimant_user_id) === String(req.user.id);
+    const isMgmt = userHasManagement(req);
+    if (!isOwner && !isMgmt) return res.status(403).json({ error: 'You cannot delete this claim' });
+
+    const ownerDeletable = ['draft', 'pending', 'cancelled', 'declined'];
+    if (isOwner && !isMgmt && !ownerDeletable.includes(claim.status)) {
+      return res.status(400).json({ error: 'Approved or paid claims cannot be deleted. Contact management.' });
+    }
+    if (isMgmt && claim.status === 'paid') {
+      return res.status(400).json({ error: 'Paid claims cannot be deleted' });
+    }
+    if (isMgmt && String(claim.tenant_id) !== String(tid(req)) && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    await notifyClaimDeleted(claim, req.user.full_name || req.user.email);
+    await query(`DELETE FROM claims WHERE id = @id`, { id: req.params.id });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

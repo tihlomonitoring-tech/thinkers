@@ -25,6 +25,12 @@ CREATE TABLE claims (
   hours_spent DECIMAL(8,2) NULL,
   hourly_rate DECIMAL(10,2) NULL,
 
+  -- Overtime (SA BCEA)
+  ot_period_end DATE NULL,
+  ot_weekday_hours DECIMAL(8,2) NULL,
+  ot_sunday_hours DECIMAL(8,2) NULL,
+  ot_public_holiday_hours DECIMAL(8,2) NULL,
+
   -- Banking details
   bank_name NVARCHAR(255) NULL,
   account_holder NVARCHAR(255) NULL,
@@ -51,7 +57,7 @@ CREATE TABLE claims (
   created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
   updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
 
-  CONSTRAINT CK_claims_type CHECK (claim_type IN (N'fuel', N'travel', N'accommodation', N'meals', N'equipment', N'tools', N'training', N'communication', N'service', N'other')),
+  CONSTRAINT CK_claims_type CHECK (claim_type IN (N'fuel', N'travel', N'accommodation', N'meals', N'equipment', N'tools', N'training', N'communication', N'service', N'overtime', N'other')),
   CONSTRAINT CK_claims_status CHECK ([status] IN (N'draft', N'pending', N'approved', N'declined', N'paid', N'cancelled'))
 );
 GO

@@ -23,7 +23,7 @@ const NAV_SECTIONS = [
       { id: 'statements', label: 'Customer statements & other statements', icon: 'statement' },
       { id: 'library', label: 'Library', icon: 'folder' },
       { id: 'department-budget', label: 'Department budget', icon: 'statement' },
-      { id: 'expense-management', label: 'Expense management', icon: 'statement' },
+      { id: 'expense-management', label: 'Income and expense management', icon: 'statement' },
     ],
   },
 ];
@@ -3897,7 +3897,7 @@ function ExpenseManagementTab() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-surface-900">Expense management</h2>
+      <h2 className="text-lg font-semibold text-surface-900">Income and expense management</h2>
 
       {/* Sub-tab bar */}
       <div className="flex items-center gap-1 border-b border-surface-200 overflow-x-auto">

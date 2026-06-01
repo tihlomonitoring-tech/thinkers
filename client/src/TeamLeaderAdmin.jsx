@@ -3,12 +3,14 @@ import { teamGoals, profileManagement as pm, tenants as tenantsApi } from './api
 import { useAuth } from './AuthContext';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftObjectivesTab from './components/ShiftObjectivesTab.jsx';
+import TeamPunctualityTab from './components/TeamPunctualityTab.jsx';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { todayYmd } from './lib/appTime.js';
 
 const MAIN_TABS = [
   { id: 'pulse', label: 'Daily pulse' },
+  { id: 'punctuality', label: 'Team punctuality' },
   { id: 'submissions', label: 'Recent submissions' },
   { id: 'objectives', label: 'Shift & team objectives' },
   { id: 'insights', label: 'Performance snapshot' },
@@ -753,6 +755,12 @@ export default function TeamLeaderAdmin() {
                 text="Operational measurable goals for your shift and teams. Team-scoped rows are available when you have the Team leader admin page role."
               />
             )}
+            {mainTab === 'punctuality' && (
+              <InfoHint
+                title="Team punctuality"
+                text="See check-in, check-out, and breaks for everyone on your scheduled shift line. Punctuality compares clock-in to the nominal day (06:00) or night (18:00) start with a 5-minute grace."
+              />
+            )}
             {mainTab === 'submissions' && (
               <InfoHint
                 title="Recent submissions"
@@ -793,6 +801,7 @@ export default function TeamLeaderAdmin() {
                 defaultTenantId={defaultPulseTenantId}
               />
             )}
+            {mainTab === 'punctuality' && <TeamPunctualityTab />}
             {mainTab === 'submissions' && <RecentSubmissionsPanel entries={entries} />}
             {mainTab === 'objectives' && <ShiftObjectivesTab userId={user?.id} tenantUsers={tenantUsers} leadershipMode />}
             {mainTab === 'insights' && <InsightsPanel />}

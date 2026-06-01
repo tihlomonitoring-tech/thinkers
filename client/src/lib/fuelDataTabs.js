@@ -8,6 +8,9 @@ export const FD_TABS = [
   { id: 'analytics', label: 'Analytics', icon: 'trend', section: 'Insights' },
   { id: 'attendant_portal', label: 'Fuel Attendant portal', icon: 'truck', section: 'Field' },
   { id: 'auto_share', label: 'Auto share', icon: 'mail', section: 'Operations' },
+  { id: 'import_fuel_expenses', label: 'Import fuel expenses', icon: 'export', section: 'Internal fleet' },
+  { id: 'fuel_expenditure', label: 'Fuel expenditure', icon: 'list', section: 'Internal fleet' },
+  { id: 'internal_vehicles_fuel', label: 'Internal vehicles fuel expenditure', icon: 'trend', section: 'Internal fleet' },
 ];
 
 export const GRANT_TAB_IDS = FD_TABS.map((t) => t.id);

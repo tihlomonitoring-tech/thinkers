@@ -6,6 +6,7 @@ import { calendarMonthStartYmd, wallMonthYearInAppZone } from './lib/appTime.js'
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
+import { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
 import EmployeeProductivityScoreSection from './components/EmployeeProductivityScoreSection.jsx';
 import TeamGoalsManagementSection from './components/TeamGoalsManagementSection.jsx';
 import PerformanceEvaluationTrendsSection from './components/PerformanceEvaluationTrendsSection.jsx';
@@ -14,6 +15,7 @@ import PerformanceEvaluationPeriodSection from './components/PerformanceEvaluati
 import PerformanceEvaluationAuditorResultsSection from './components/PerformanceEvaluationAuditorResultsSection.jsx';
 import EmployeeDetailsManagementSection from './components/EmployeeDetailsManagementSection.jsx';
 import ComposeOnboardmentSection from './components/ComposeOnboardmentSection.jsx';
+import OrgStructureManagementSection from './components/OrgStructureManagementSection.jsx';
 
 const SECTIONS = [
   { id: 'schedules', label: 'Work schedules' },
@@ -38,6 +40,7 @@ const SECTIONS = [
   { id: 'growth', label: 'Employee growth' },
   { id: 'company_library_policy', label: 'Company library (hours)' },
   { id: 'claims', label: 'Claims & reimbursements' },
+  { id: 'org_structure', label: 'Organisational structure' },
 ];
 
 function formatDate(d) {
@@ -356,7 +359,7 @@ function ManagePageTabAccess({ pageKey, pageLabel, allTabIds, tabLabels, permiss
 
 /* ═══════════════ CLAIMS MANAGEMENT SECTION ═══════════════ */
 
-const CLAIM_TYPES_MAP = { fuel: 'Fuel', travel: 'Travel expense', accommodation: 'Accommodation', meals: 'Meals', equipment: 'Equipment', tools: 'Tools', training: 'Training', communication: 'Communication', service: 'Service rendered', other: 'Other' };
+const CLAIM_TYPES_MAP = { fuel: 'Fuel', travel: 'Travel expense', accommodation: 'Accommodation', meals: 'Meals', equipment: 'Equipment', tools: 'Tools', training: 'Training', communication: 'Communication', service: 'Service rendered', overtime: 'Overtime', other: 'Other' };
 const CLAIM_STATUS_STYLES = { draft: 'bg-surface-100 text-surface-700', pending: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200', approved: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200', declined: 'bg-red-50 text-red-700 ring-1 ring-red-200', paid: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200', cancelled: 'bg-surface-200 text-surface-500' };
 
 function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) {
@@ -397,6 +400,20 @@ function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) 
     finally { setReviewing(false); }
   };
 
+  const handleDeleteClaim = async () => {
+    if (!detailClaim) return;
+    if (detailClaim.status === 'paid') { alert('Paid claims cannot be deleted.'); return; }
+    if (!window.confirm(`Permanently delete claim ${detailClaim.reference_number}? Deletion emails will be sent.`)) return;
+    setReviewing(true);
+    try {
+      await claimsApi.delete(detailClaim.id);
+      setView('dashboard');
+      setDetailClaim(null);
+      onRefresh();
+    } catch (err) { alert(err?.message || 'Delete failed'); }
+    finally { setReviewing(false); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -429,7 +446,8 @@ function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) 
             <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-xs text-surface-500 border-b border-surface-200 bg-surface-50">
-                  <th className="px-4 py-2.5">Ref</th><th className="px-4 py-2.5">Claimant</th><th className="px-4 py-2.5">Date</th><th className="px-4 py-2.5">Type</th><th className="px-4 py-2.5">Description</th><th className="px-4 py-2.5 text-right">Amount</th><th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">Ref</th><th className="px-4 py-2.5">Claimant</th><th className="px-4 py-2.5">Date</th><th className="px-4 py-2.5">Type</th><th className="px-4 py-2.5">Description</th><th className="px-4 py-2.5 text-right">Amount</th>                  <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">Actions</th>
                 </tr></thead>
                 <tbody>{filtered.map((c) => (
                   <tr key={c.id} className="border-b border-surface-50 hover:bg-surface-50 cursor-pointer" onClick={() => openDetail(c)}>
@@ -440,6 +458,25 @@ function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) 
                     <td className="px-4 py-2.5 max-w-[200px] truncate">{c.description}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(c.amount)}</td>
                     <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${CLAIM_STATUS_STYLES[c.status] || ''}`}>{c.status}</span></td>
+                    <td className="px-4 py-2.5" onClick={(ev) => ev.stopPropagation()}>
+                      {c.status !== 'paid' && (
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-red-600 hover:underline"
+                          onClick={async () => {
+                            if (!window.confirm(`Delete claim ${c.reference_number}?`)) return;
+                            try {
+                              await claimsApi.delete(c.id);
+                              onRefresh();
+                            } catch (err) {
+                              alert(err?.message || 'Delete failed');
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -473,6 +510,7 @@ function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) 
               {detailClaim.reviewed_by_name && <div><p className="text-xs text-surface-500">Reviewed by</p><p className="font-medium">{detailClaim.reviewed_by_name}</p></div>}
               {detailClaim.reviewed_at && <div><p className="text-xs text-surface-500">Reviewed at</p><p className="font-medium tabular-nums">{new Date(detailClaim.reviewed_at).toLocaleString()}</p></div>}
             </div>
+            <OvertimeClaimDetail claim={detailClaim} fmtZar={fmtZar} />
             {detailClaim.description && <div><p className="text-xs text-surface-500 mb-1">Description</p><p className="text-sm whitespace-pre-wrap">{detailClaim.description}</p></div>}
             {detailClaim.review_notes && <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg"><p className="text-xs text-blue-700 font-medium">Review notes:</p><p className="text-sm text-blue-600">{detailClaim.review_notes}</p></div>}
             {detailClaim.rejection_reason && <div className="p-3 bg-red-50 border border-red-200 rounded-lg"><p className="text-xs text-red-700 font-medium">Rejection reason:</p><p className="text-sm text-red-600">{detailClaim.rejection_reason}</p></div>}
@@ -483,6 +521,14 @@ function ClaimsManagementSection({ claims, loading, summary, onRefresh, user }) 
             <h4 className="text-sm font-semibold text-surface-900">Attachments</h4>
             {detailAttachments.length > 0 ? <div className="space-y-2">{detailAttachments.map((a) => (<div key={a.id} className="flex items-center gap-3 p-2 bg-surface-50 rounded-lg"><span className="text-sm text-surface-700 flex-1 truncate">{a.file_name}</span></div>))}</div> : <p className="text-sm text-surface-500">No attachments</p>}
           </div>
+
+          {detailClaim.status !== 'paid' && (
+            <div className="flex justify-end">
+              <button type="button" disabled={reviewing} onClick={handleDeleteClaim} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50">
+                Delete claim
+              </button>
+            </div>
+          )}
 
           {/* Review panel */}
           {detailClaim.status === 'pending' && (
@@ -922,6 +968,8 @@ export default function Management() {
           {activeSection === 'claims' && (
             <ClaimsManagementSection claims={allClaims} loading={claimsLoading} summary={claimsSummary} onRefresh={loadClaims} user={user} />
           )}
+
+          {activeSection === 'org_structure' && <OrgStructureManagementSection onError={setError} />}
 
           {activeSection === 'manage-tab-access' && isSuperAdmin && (
             <ManagePageTabAccess
