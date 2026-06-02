@@ -4,15 +4,11 @@ import { useAuth } from './AuthContext';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { officeAdmin, users as usersApi } from './api';
-import { OA_TABS, OA_TAB_IDS, CONSUMABLE_CATEGORIES, REQUEST_TYPES } from './lib/officeAdminTabs.js';
-import {
-  downloadAssetTemplate,
-  downloadConsumableTemplate,
-  exportAssetsExcel,
-  exportConsumablesExcel,
-  exportAssetsPdf,
-  exportMaintenancePdf,
-} from './lib/officeAdminExports.js';
+import { OA_TABS, OA_TAB_IDS, REQUEST_TYPES } from './lib/officeAdminTabs.js';
+import OfficeAdminAssetRegister from './components/officeAdmin/OfficeAdminAssetRegister.jsx';
+import OfficeAdminConsumables from './components/officeAdmin/OfficeAdminConsumables.jsx';
+import OfficeAdminMaintenance from './components/officeAdmin/OfficeAdminMaintenance.jsx';
+import { MAINTENANCE_TAB_IDS } from './lib/officeAdminTabs.js';
 
 const inputClass = 'w-full rounded-lg border border-surface-300 px-3 py-2 text-sm';
 const btnPrimary = 'px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50';
@@ -31,6 +27,8 @@ function TabIcon({ name, className = 'w-5 h-5' }) {
     manager: p('M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z'),
     calc: p('M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z'),
     settings: p('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z'),
+    history: p('M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z'),
+    alert: p('M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z'),
   };
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -145,6 +143,7 @@ export default function OfficeAdmin() {
 
   const [summary, setSummary] = useState(null);
   const [assets, setAssets] = useState([]);
+  const [assetCategories, setAssetCategories] = useState([]);
   const [assetSearch, setAssetSearch] = useState('');
   const [consumables, setConsumables] = useState([]);
   const [maintReports, setMaintReports] = useState([]);
@@ -156,27 +155,6 @@ export default function OfficeAdmin() {
   const [permissions, setPermissions] = useState([]);
   const [grantUsers, setGrantUsers] = useState([]);
 
-  const [assetForm, setAssetForm] = useState({
-    asset_code: '',
-    name: '',
-    category: '',
-    location: '',
-    status: 'active',
-  });
-  const [consumableForm, setConsumableForm] = useState({
-    name: '',
-    category: 'coffee',
-    unit: 'unit',
-    quantity_on_hand: 0,
-    reorder_level: 5,
-  });
-  const [brokenForm, setBrokenForm] = useState({ asset_id: '', title: '', description: '', priority: 'medium' });
-  const [maintRecordForm, setMaintRecordForm] = useState({
-    asset_id: '',
-    description: '',
-    cost: '',
-    report_id: '',
-  });
   const [requestForm, setRequestForm] = useState({
     request_type: 'supplies',
     title: '',
@@ -191,9 +169,10 @@ export default function OfficeAdmin() {
 
   const loadCore = useCallback(async () => {
     setError('');
-    const [dash, a, c, mr, mrec, req, mgr] = await Promise.allSettled([
+    const [dash, a, cats, c, mr, mrec, req, mgr] = await Promise.allSettled([
       officeAdmin.dashboard(),
       officeAdmin.assets.list(assetSearch || undefined),
+      officeAdmin.assetCategories.list(),
       officeAdmin.consumables.list(),
       officeAdmin.maintenance.reports(),
       officeAdmin.maintenance.records(),
@@ -202,6 +181,7 @@ export default function OfficeAdmin() {
     ]);
     if (dash.status === 'fulfilled') setSummary(dash.value.summary);
     if (a.status === 'fulfilled') setAssets(a.value.assets || []);
+    if (cats.status === 'fulfilled') setAssetCategories(cats.value.categories || []);
     if (c.status === 'fulfilled') setConsumables(c.value.consumables || []);
     if (mr.status === 'fulfilled') setMaintReports(mr.value.reports || []);
     if (mrec.status === 'fulfilled') setMaintRecords(mrec.value.records || []);
@@ -215,7 +195,13 @@ export default function OfficeAdmin() {
       .then((r) => {
         const tabs = r.tabs?.length ? r.tabs : OA_TAB_IDS;
         setAllowedTabs(tabs);
-        if (!tabs.includes(activeTab)) setActiveTab(tabs[0] || 'dashboard');
+        if (!tabs.includes(activeTab)) {
+          if (activeTab === 'maintenance' && tabs.some((t) => MAINTENANCE_TAB_IDS.includes(t))) {
+            setActiveTab('maintenance_reports');
+          } else {
+            setActiveTab(tabs[0] || 'dashboard');
+          }
+        }
       })
       .catch(() => setAllowedTabs(OA_TAB_IDS))
       .finally(() => setLoading(false));
@@ -312,236 +298,36 @@ export default function OfficeAdmin() {
         )}
 
         {activeTab === 'asset_register' && canSee('asset_register') && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-xl font-semibold">Asset register</h2>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className={btnSecondary} onClick={() => downloadAssetTemplate()}>
-                  Download template
-                </button>
-                <button type="button" className={btnSecondary} onClick={() => exportAssetsExcel(assets)}>
-                  Export Excel
-                </button>
-                <button type="button" className={btnSecondary} onClick={() => exportAssetsPdf(assets)}>
-                  Export PDF
-                </button>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <input
-                className={inputClass}
-                placeholder="Search assets…"
-                value={assetSearch}
-                onChange={(e) => setAssetSearch(e.target.value)}
-              />
-              <button type="button" className={btnSecondary} onClick={() => loadCore()}>
-                Search
-              </button>
-            </div>
-            <div className="app-glass-card p-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <input className={inputClass} placeholder="Asset code" value={assetForm.asset_code} onChange={(e) => setAssetForm((f) => ({ ...f, asset_code: e.target.value }))} />
-              <input className={inputClass} placeholder="Name" value={assetForm.name} onChange={(e) => setAssetForm((f) => ({ ...f, name: e.target.value }))} />
-              <input className={inputClass} placeholder="Category" value={assetForm.category} onChange={(e) => setAssetForm((f) => ({ ...f, category: e.target.value }))} />
-              <input className={inputClass} placeholder="Location" value={assetForm.location} onChange={(e) => setAssetForm((f) => ({ ...f, location: e.target.value }))} />
-              <button
-                type="button"
-                className={`${btnPrimary} sm:col-span-2 lg:col-span-4`}
-                onClick={() =>
-                  officeAdmin.assets
-                    .create(assetForm)
-                    .then(() => {
-                      flash('Asset added.');
-                      setAssetForm({ asset_code: '', name: '', category: '', location: '', status: 'active' });
-                      loadCore();
-                    })
-                    .catch((e) => setError(e.message))
-                }
-              >
-                Add asset
-              </button>
-            </div>
-            <div className="app-glass-card overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-surface-50 text-left">
-                    <th className="p-3">Code</th>
-                    <th className="p-3">Name</th>
-                    <th className="p-3">Location</th>
-                    <th className="p-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assets.map((a) => (
-                    <tr key={a.id} className="border-b border-surface-100">
-                      <td className="p-3 font-mono text-xs">{a.asset_code}</td>
-                      <td className="p-3">{a.name}</td>
-                      <td className="p-3">{a.location || '—'}</td>
-                      <td className="p-3">
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-surface-100">{a.status}</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <OfficeAdminAssetRegister
+            assets={assets}
+            assetCategories={assetCategories}
+            assetSearch={assetSearch}
+            setAssetSearch={setAssetSearch}
+            onReload={loadCore}
+            onError={setError}
+            onFlash={flash}
+          />
         )}
 
         {activeTab === 'consumables' && canSee('consumables') && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap justify-between gap-2">
-              <h2 className="text-xl font-semibold">Coffee, tea & supplies</h2>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className={btnSecondary} onClick={() => downloadConsumableTemplate()}>
-                  Template
-                </button>
-                <button type="button" className={btnSecondary} onClick={() => exportConsumablesExcel(consumables)}>
-                  Excel
-                </button>
-              </div>
-            </div>
-            <div className="app-glass-card p-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <input className={inputClass} placeholder="Item name" value={consumableForm.name} onChange={(e) => setConsumableForm((f) => ({ ...f, name: e.target.value }))} />
-              <select className={inputClass} value={consumableForm.category} onChange={(e) => setConsumableForm((f) => ({ ...f, category: e.target.value }))}>
-                {CONSUMABLE_CATEGORIES.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-              <input type="number" className={inputClass} placeholder="Qty on hand" value={consumableForm.quantity_on_hand} onChange={(e) => setConsumableForm((f) => ({ ...f, quantity_on_hand: e.target.value }))} />
-              <input type="number" className={inputClass} placeholder="Reorder at" value={consumableForm.reorder_level} onChange={(e) => setConsumableForm((f) => ({ ...f, reorder_level: e.target.value }))} />
-              <button
-                type="button"
-                className={btnPrimary}
-                onClick={() =>
-                  officeAdmin.consumables
-                    .create(consumableForm)
-                    .then(() => {
-                      flash('Item saved.');
-                      loadCore();
-                    })
-                    .catch((e) => setError(e.message))
-                }
-              >
-                Add item
-              </button>
-            </div>
-            <div className="app-glass-card overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-surface-50 text-left">
-                    <th className="p-3">Name</th>
-                    <th className="p-3">Category</th>
-                    <th className="p-3">On hand</th>
-                    <th className="p-3">Reorder</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {consumables.map((c) => (
-                    <tr key={c.id} className={`border-b ${Number(c.quantity_on_hand) <= Number(c.reorder_level) ? 'bg-amber-50' : ''}`}>
-                      <td className="p-3">{c.name}</td>
-                      <td className="p-3 capitalize">{c.category}</td>
-                      <td className="p-3">{c.quantity_on_hand}</td>
-                      <td className="p-3">{c.reorder_level}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <OfficeAdminConsumables
+            consumables={consumables}
+            onReload={loadCore}
+            onError={setError}
+            onFlash={flash}
+          />
         )}
 
-        {activeTab === 'maintenance' && canSee('maintenance') && (
-          <div className="space-y-8">
-            <div className="flex flex-wrap justify-between gap-2">
-              <h2 className="text-xl font-semibold">Maintenance</h2>
-              <button type="button" className={btnSecondary} onClick={() => exportMaintenancePdf(maintReports, maintRecords)}>
-                Export PDF
-              </button>
-            </div>
-            <section className="app-glass-card p-4 space-y-3">
-              <h3 className="font-medium">Report broken / faulty item</h3>
-              <select className={inputClass} value={brokenForm.asset_id} onChange={(e) => setBrokenForm((f) => ({ ...f, asset_id: e.target.value }))}>
-                <option value="">Select asset (optional)</option>
-                {assets.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.asset_code} — {a.name}
-                  </option>
-                ))}
-              </select>
-              <input className={inputClass} placeholder="Issue title" value={brokenForm.title} onChange={(e) => setBrokenForm((f) => ({ ...f, title: e.target.value }))} />
-              <textarea className={inputClass} rows={2} placeholder="Description" value={brokenForm.description} onChange={(e) => setBrokenForm((f) => ({ ...f, description: e.target.value }))} />
-              <button
-                type="button"
-                className={btnPrimary}
-                onClick={() =>
-                  officeAdmin.maintenance
-                    .createReport(brokenForm)
-                    .then(() => {
-                      flash('Report submitted.');
-                      setBrokenForm({ asset_id: '', title: '', description: '', priority: 'medium' });
-                      loadCore();
-                    })
-                    .catch((e) => setError(e.message))
-                }
-              >
-                Submit report
-              </button>
-            </section>
-            <section className="app-glass-card p-4 space-y-3">
-              <h3 className="font-medium">Record maintenance (search asset)</h3>
-              <select className={inputClass} value={maintRecordForm.asset_id} onChange={(e) => setMaintRecordForm((f) => ({ ...f, asset_id: e.target.value }))}>
-                <option value="">Select asset</option>
-                {assets.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.asset_code} — {a.name}
-                  </option>
-                ))}
-              </select>
-              <textarea className={inputClass} rows={2} placeholder="Work performed" value={maintRecordForm.description} onChange={(e) => setMaintRecordForm((f) => ({ ...f, description: e.target.value }))} />
-              <input className={inputClass} placeholder="Cost (optional)" value={maintRecordForm.cost} onChange={(e) => setMaintRecordForm((f) => ({ ...f, cost: e.target.value }))} />
-              <button
-                type="button"
-                className={btnPrimary}
-                onClick={() =>
-                  officeAdmin.maintenance
-                    .createRecord(maintRecordForm)
-                    .then(() => {
-                      flash('Maintenance recorded.');
-                      loadCore();
-                    })
-                    .catch((e) => setError(e.message))
-                }
-              >
-                Save maintenance record
-              </button>
-            </section>
-            <div className="grid lg:grid-cols-2 gap-6">
-              <div className="app-glass-card p-4">
-                <h3 className="font-medium mb-2">Open reports</h3>
-                <ul className="space-y-2 text-sm">
-                  {maintReports.filter((r) => !['resolved', 'closed'].includes(r.status)).map((r) => (
-                    <li key={r.id} className="border-b pb-2">
-                      <strong>{r.title}</strong>
-                      <span className="text-surface-500"> — {r.asset_name_snapshot || r.asset_name}</span>
-                      <span className="block text-xs">{r.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div className="app-glass-card p-4">
-                <h3 className="font-medium mb-2">Maintenance history</h3>
-                <ul className="space-y-2 text-sm max-h-64 overflow-y-auto">
-                  {maintRecords.map((m) => (
-                    <li key={m.id} className="border-b pb-2">
-                      {m.asset_code} {m.asset_name}: {m.description?.slice(0, 80)}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </div>
+        {MAINTENANCE_TAB_IDS.includes(activeTab) && canSee(activeTab) && (
+          <OfficeAdminMaintenance
+            view={activeTab}
+            assets={assets}
+            reports={maintReports}
+            records={maintRecords}
+            onReload={loadCore}
+            onError={setError}
+            onFlash={flash}
+          />
         )}
 
         {activeTab === 'office_requests' && canSee('office_requests') && (

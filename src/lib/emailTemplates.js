@@ -1220,6 +1220,43 @@ export function companyLibraryDownloadCodeToUploaderHtml({
   });
 }
 
+/** Private library document: colleague requested access — uploader approves in the app. */
+export function companyLibraryAccessRequestToUploaderHtml({
+  uploaderName,
+  requesterName,
+  requesterEmail,
+  documentTitle,
+  requesterNote,
+  appUrl,
+}) {
+  const inner = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(uploaderName || 'there')},</p>
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;"><strong>${escapeHtml(requesterName || 'A colleague')}</strong>${requesterEmail ? ` (${escapeHtml(requesterEmail)})` : ''} requested access to your <strong>private</strong> document in the Company library.</p>
+    ${keyValueTable([['Document', documentTitle || '—']])}
+    ${requesterNote ? `<p style="margin: 12px 0; font-size: 14px; color: #475569;"><strong>Note from requester:</strong> ${escapeHtml(requesterNote)}</p>` : ''}
+    <p style="margin: 0 0 12px 0; font-size: 14px; color: #475569;">Open the library and approve or deny the request. If you approve, they receive live access until you lock the document again. They can view it in the app and email a copy to themselves — there is no public download link.</p>
+    ${appUrl ? `<p style="margin: 16px 0 0 0;"><a href="${escapeHtml(appUrl)}" style="color:#2563eb;font-weight:600;">Review access requests</a></p>` : ''}
+  `;
+  return taskEmailLayout('Company library — access request', inner, 'Company library');
+}
+
+/** Requester notified that live access was granted. */
+export function companyLibraryAccessApprovedToRequesterHtml({
+  requesterName,
+  documentTitle,
+  uploaderName,
+  appUrl,
+}) {
+  const inner = `
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;">Hello ${escapeHtml(requesterName || 'there')},</p>
+    <p style="margin: 0 0 12px 0; font-size: 15px; color: #334155;"><strong>${escapeHtml(uploaderName || 'The document owner')}</strong> approved your request for:</p>
+    <p style="margin: 0 0 16px 0; font-size: 15px; font-weight: 600; color: #0f172a;">${escapeHtml(documentTitle || '—')}</p>
+    <p style="margin: 0; font-size: 14px; color: #475569;">You now have live access in the Company library until the owner locks the document again. Use <strong>View in library</strong> or <strong>Email copy to me</strong> from the document panel.</p>
+    ${appUrl ? `<p style="margin: 16px 0 0 0;"><a href="${escapeHtml(appUrl)}" style="color:#2563eb;font-weight:600;">Open Company library</a></p>` : ''}
+  `;
+  return taskEmailLayout('Company library — access approved', inner, 'Company library');
+}
+
 /** Secured library doc: system-generated PIN emailed to uploader — they share it with the requester out of band. */
 export function companyLibrarySystemPinToUploaderHtml({
   uploaderName,

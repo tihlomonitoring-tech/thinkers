@@ -10,12 +10,22 @@ import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { isWithinLibraryAccessWindow, parsePolicyRow } from '../lib/companyLibraryAccess.js';
 import { extractTextSample, summarizeForLibrary, matchDocumentsByIntent } from '../lib/companyLibraryAi.js';
 import {
+  companyLibraryAccessApprovedToRequesterHtml,
+  companyLibraryAccessRequestToUploaderHtml,
   companyLibraryAttachmentEmailedHtml,
   companyLibraryExpiryReminderHtml,
   companyLibrarySuperAdminDeleteCodeHtml,
   companyLibrarySystemPinToSuperAdminHtml,
   companyLibrarySystemPinToUploaderHtml,
 } from '../lib/emailTemplates.js';
+import {
+  createLiveSession,
+  enrichDocumentAccess,
+  getLiveSession,
+  mapDocumentAccess,
+  revokeAllLiveSessions,
+  scoreDocumentSearch,
+} from '../lib/companyLibraryDocumentAccess.js';
 
 const router = Router();
 const uploadsLib = path.join(process.cwd(), 'uploads', 'company-library');
@@ -384,7 +394,7 @@ router.get('/documents', requirePageAccess('company_library'), async (req, res, 
     const q = (req.query.q && String(req.query.q).trim()) || '';
     const folderId = req.query.folder_id || null;
     let sqlText = `SELECT d.id, d.folder_id, d.display_title, d.file_name, d.mime_type, d.size_bytes, d.created_at,
-      d.ai_summary, d.ai_status, d.is_pin_protected, d.expires_at, d.uploaded_by,
+      d.ai_summary, d.ai_status, d.is_pin_protected, d.is_access_locked, d.expires_at, d.uploaded_by,
       u.full_name AS uploader_name
       FROM company_library_documents d
       LEFT JOIN users u ON u.id = d.uploaded_by
@@ -401,8 +411,31 @@ router.get('/documents', requirePageAccess('company_library'), async (req, res, 
       params.like = `%${q.replace(/[%_]/g, '').slice(0, 200)}%`;
     }
     sqlText += ' ORDER BY d.display_title';
-    const r = await query(sqlText, params);
-    res.json({ documents: r.recordset || [] });
+    let r;
+    try {
+      r = await query(sqlText, params);
+    } catch (err) {
+      if (!String(err.message).includes('is_access_locked')) throw err;
+      sqlText = sqlText.replace(', d.is_access_locked', '');
+      r = await query(sqlText, params);
+    }
+    let docs = r.recordset || [];
+    if (q) {
+      docs = docs
+        .map((row) => ({ row, score: scoreDocumentSearch(row, q) }))
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((x) => ({ ...x.row, relevance_score: x.score }));
+    }
+    const enriched = [];
+    for (const row of docs) {
+      try {
+        enriched.push(await enrichDocumentAccess(row, req));
+      } catch {
+        enriched.push(row);
+      }
+    }
+    res.json({ documents: enriched });
   } catch (err) {
     next(err);
   }
@@ -439,28 +472,37 @@ router.post('/documents/intent-search', requirePageAccess('company_library'), as
     const r = await query(sqlText, params);
     const rows = r.recordset || [];
     const { documents, fallback, message } = await matchDocumentsByIntent({ intent, documents: rows });
-    res.json({ documents, fallback: !!fallback, message: message || null });
+    const enriched = [];
+    for (const row of documents || []) {
+      try {
+        enriched.push(await enrichDocumentAccess(row, req));
+      } catch {
+        enriched.push(row);
+      }
+    }
+    res.json({ documents: enriched, fallback: !!fallback, message: message || null });
   } catch (err) {
     next(err);
   }
 });
 
 /** Must be registered before GET /documents/:id or Express treats "download" as :id. */
-router.get('/documents/:id/download', requirePageAccess('company_library'), async (req, res, next) => {
+router.get('/documents/:id/download', requireSuperAdmin, requirePageAccess('company_library'), async (req, res, next) => {
   try {
+    if (!(await libraryTimeAllowed(req))) {
+      return res.status(403).json({ error: 'Library is only available during scheduled hours.' });
+    }
     const { id } = req.params;
-    await audit(req, {
-      documentId: id,
-      action: 'download_denied_http_disabled',
-      detail: JSON.stringify({
-        reason: 'Library files are delivered by email only.',
-        query_keys: Object.keys(req.query || {}),
-      }).slice(0, 4000),
-    });
-    return res.status(410).json({
-      error:
-        'Direct download is disabled. Use Company library → “Email copy to me” to receive the file as an attachment.',
-    });
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT * FROM company_library_documents WHERE id = @id AND tenant_id = @t`, { id, t: tenantId });
+    const doc = r.recordset?.[0];
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const abs = safeResolveStoredPath(tenantId, getRow(doc, 'stored_rel_path'));
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'File missing' });
+    const fn = getRow(doc, 'file_name') || 'document';
+    if (getRow(doc, 'mime_type')) res.setHeader('Content-Type', getRow(doc, 'mime_type'));
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fn)}"`);
+    res.sendFile(abs);
   } catch (err) {
     next(err);
   }
@@ -468,16 +510,32 @@ router.get('/documents/:id/download', requirePageAccess('company_library'), asyn
 
 router.get('/documents/:id/preview', requirePageAccess('company_library'), async (req, res, next) => {
   try {
+    if (!(await libraryTimeAllowed(req))) {
+      return res.status(403).json({ error: 'Library is only available during scheduled hours.' });
+    }
     const { id } = req.params;
-    await audit(req, {
-      documentId: id,
-      action: 'download_denied_http_disabled',
-      detail: JSON.stringify({ reason: 'Inline preview disabled; email delivery only.' }).slice(0, 4000),
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT * FROM company_library_documents WHERE id = @id AND tenant_id = @t`, { id, t: tenantId });
+    const doc = r.recordset?.[0];
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const access = mapDocumentAccess(doc, {
+      userId: req.user.id,
+      role: req.user.role,
+      liveSession: await getLiveSession(tenantId, id, req.user.id),
     });
-    return res.status(410).json({
-      error:
-        'In-browser preview is disabled. Use “Email copy to me” to receive the file and open it from your inbox.',
-    });
+    if (!access.can_view) {
+      return res.status(403).json({
+        error: access.needs_access_request
+          ? 'This is a private document. Request access from the owner first.'
+          : 'You do not have permission to view this document.',
+      });
+    }
+    const abs = safeResolveStoredPath(tenantId, getRow(doc, 'stored_rel_path'));
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'File missing' });
+    const fn = getRow(doc, 'file_name') || 'document';
+    if (getRow(doc, 'mime_type')) res.setHeader('Content-Type', getRow(doc, 'mime_type'));
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fn)}"`);
+    res.sendFile(abs);
   } catch (err) {
     next(err);
   }
@@ -548,7 +606,93 @@ router.get('/documents/:id', requirePageAccess('company_library'), async (req, r
     );
     const row = r.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
-    res.json({ document: row });
+    try {
+      const enriched = await enrichDocumentAccess(row, req);
+      return res.json({ document: enriched });
+    } catch {
+      return res.json({ document: row });
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/documents/:id', requirePageAccess('company_library'), async (req, res, next) => {
+  try {
+    if (!(await libraryTimeAllowed(req))) {
+      return res.status(403).json({ error: 'Library is only available during scheduled hours.' });
+    }
+    const { id } = req.params;
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT * FROM company_library_documents WHERE id = @id AND tenant_id = @t`, { id, t: tenantId });
+    const doc = r.recordset?.[0];
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const isOwner = String(getRow(doc, 'uploaded_by')) === String(req.user.id);
+    const isSuper = req.user.role === 'super_admin';
+    if (!isOwner && !isSuper) return res.status(403).json({ error: 'Only the uploader can edit this document.' });
+
+    const { display_title, folder_id, expires_at, is_secured, expiry_reminder_lead_days, reminder_user_ids } = req.body || {};
+    const sets = [];
+    const params = { id, t: tenantId };
+    if (display_title != null) {
+      sets.push('display_title = @title');
+      params.title = String(display_title).trim().slice(0, 500) || getRow(doc, 'display_title');
+    }
+    if (folder_id !== undefined) {
+      sets.push('folder_id = @fid');
+      params.fid = folder_id && String(folder_id).trim() ? folder_id : null;
+    }
+    if (expires_at !== undefined) {
+      sets.push('expires_at = @exp');
+      params.exp = expires_at || null;
+    }
+    if (expiry_reminder_lead_days != null) {
+      sets.push('expiry_reminder_lead_days = @lead');
+      params.lead = parseInt(expiry_reminder_lead_days, 10) || 14;
+    }
+    if (reminder_user_ids !== undefined) {
+      let reminderJson = null;
+      if (reminder_user_ids) {
+        const arr = Array.isArray(reminder_user_ids) ? reminder_user_ids : JSON.parse(String(reminder_user_ids));
+        if (Array.isArray(arr)) reminderJson = JSON.stringify(arr.map((x) => String(x)).slice(0, 50));
+      }
+      sets.push('reminder_user_ids = @rem');
+      params.rem = reminderJson;
+    }
+    if (is_secured !== undefined) {
+      const secured =
+        is_secured === true ||
+        is_secured === 1 ||
+        String(is_secured).trim().toLowerCase() === 'true' ||
+        String(is_secured).trim() === '1';
+      sets.push('is_pin_protected = @isPin', 'is_access_locked = @isLock');
+      params.isPin = secured ? 1 : 0;
+      params.isLock = secured ? 1 : 0;
+      if (secured) await revokeAllLiveSessions(id);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
+    sets.push('updated_at = SYSUTCDATETIME()');
+    try {
+      await query(`UPDATE company_library_documents SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @t`, params);
+    } catch (e) {
+      if (String(e.message).includes('is_access_locked')) {
+        const noLock = sets.filter((s) => !s.includes('is_access_locked'));
+        if (noLock.length <= 1) return res.status(503).json({ error: 'Run: npm run db:company-library-access-v2' });
+        await query(`UPDATE company_library_documents SET ${noLock.join(', ')} WHERE id = @id AND tenant_id = @t`, params);
+      } else throw e;
+    }
+    const out = await query(
+      `SELECT d.id, d.folder_id, d.display_title, d.file_name, d.mime_type, d.size_bytes, d.created_at,
+        d.ai_summary, d.ai_status, d.is_pin_protected, d.is_access_locked, d.expires_at, d.expiry_reminder_lead_days,
+        d.reminder_user_ids, d.uploaded_by, u.full_name AS uploader_name
+       FROM company_library_documents d
+       LEFT JOIN users u ON u.id = d.uploaded_by
+       WHERE d.id = @id`,
+      { id }
+    );
+    const row = out.recordset?.[0];
+    const enriched = await enrichDocumentAccess(row, req).catch(() => row);
+    res.json({ document: enriched });
   } catch (err) {
     next(err);
   }
@@ -565,9 +709,13 @@ router.post('/documents', requirePageAccess('company_library'), (req, res, next)
       const tenantId = req.user.tenant_id;
       const file = req.file;
       if (!file) return res.status(400).json({ error: 'file required' });
+      const folder_id = req.body?.folder_id;
+      if (!folder_id || !String(folder_id).trim()) {
+        try { fs.unlinkSync(file.path); } catch {}
+        return res.status(400).json({ error: 'Select or create a folder before uploading.' });
+      }
       const {
         display_title,
-        folder_id,
         is_secured,
         expires_at,
         reminder_user_ids,
@@ -595,31 +743,63 @@ router.post('/documents', requirePageAccess('company_library'), (req, res, next)
           reminderJson = null;
         }
       }
-      const ins = await query(
-        `INSERT INTO company_library_documents (
-          tenant_id, folder_id, display_title, file_name, stored_rel_path, mime_type, size_bytes, uploaded_by,
-          is_pin_protected, pin_hash, expires_at, expiry_reminder_lead_days, reminder_user_ids, ai_status
-        ) OUTPUT INSERTED.id, INSERTED.display_title, INSERTED.created_at, INSERTED.ai_status
-        VALUES (
-          @t, @fid, @title, @fn, @rel, @mime, @size, @uid,
-          @isPin, @pinHash, @exp, @lead, @rem, N'processing'
-        )`,
-        {
-          t: tenantId,
-          fid: folder_id || null,
-          title: title.slice(0, 500),
-          fn: (file.originalname || 'file').slice(0, 500),
-          rel,
-          mime: file.mimetype || null,
-          size: file.size || null,
-          uid: req.user.id,
-          isPin,
-          pinHash: null,
-          exp: expires_at || null,
-          lead: expiry_reminder_lead_days != null ? parseInt(expiry_reminder_lead_days, 10) : 14,
-          rem: reminderJson,
-        }
-      );
+      const isAccessLocked = secured ? 1 : 0;
+      let ins;
+      try {
+        ins = await query(
+          `INSERT INTO company_library_documents (
+            tenant_id, folder_id, display_title, file_name, stored_rel_path, mime_type, size_bytes, uploaded_by,
+            is_pin_protected, is_access_locked, pin_hash, expires_at, expiry_reminder_lead_days, reminder_user_ids, ai_status
+          ) OUTPUT INSERTED.id, INSERTED.display_title, INSERTED.created_at, INSERTED.ai_status, INSERTED.is_pin_protected
+          VALUES (
+            @t, @fid, @title, @fn, @rel, @mime, @size, @uid,
+            @isPin, @isLock, @pinHash, @exp, @lead, @rem, N'processing'
+          )`,
+          {
+            t: tenantId,
+            fid: folder_id || null,
+            title: title.slice(0, 500),
+            fn: (file.originalname || 'file').slice(0, 500),
+            rel,
+            mime: file.mimetype || null,
+            size: file.size || null,
+            uid: req.user.id,
+            isPin,
+            isLock: isAccessLocked,
+            pinHash: null,
+            exp: expires_at || null,
+            lead: expiry_reminder_lead_days != null ? parseInt(expiry_reminder_lead_days, 10) : 14,
+            rem: reminderJson,
+          }
+        );
+      } catch (e) {
+        if (!String(e.message).includes('is_access_locked')) throw e;
+        ins = await query(
+          `INSERT INTO company_library_documents (
+            tenant_id, folder_id, display_title, file_name, stored_rel_path, mime_type, size_bytes, uploaded_by,
+            is_pin_protected, pin_hash, expires_at, expiry_reminder_lead_days, reminder_user_ids, ai_status
+          ) OUTPUT INSERTED.id, INSERTED.display_title, INSERTED.created_at, INSERTED.ai_status, INSERTED.is_pin_protected
+          VALUES (
+            @t, @fid, @title, @fn, @rel, @mime, @size, @uid,
+            @isPin, @pinHash, @exp, @lead, @rem, N'processing'
+          )`,
+          {
+            t: tenantId,
+            fid: folder_id || null,
+            title: title.slice(0, 500),
+            fn: (file.originalname || 'file').slice(0, 500),
+            rel,
+            mime: file.mimetype || null,
+            size: file.size || null,
+            uid: req.user.id,
+            isPin,
+            pinHash: null,
+            exp: expires_at || null,
+            lead: expiry_reminder_lead_days != null ? parseInt(expiry_reminder_lead_days, 10) : 14,
+            rem: reminderJson,
+          }
+        );
+      }
       const docRow = ins.recordset[0];
       const docId = getRow(docRow, 'id');
 
@@ -651,7 +831,7 @@ router.post('/documents', requirePageAccess('company_library'), (req, res, next)
   });
 });
 
-/** Secured docs only: email a system-generated PIN to the uploader (or to super admin’s own email). */
+/** Private docs: request live access from the uploader (email notification). */
 router.post('/documents/:id/request-access', requirePageAccess('company_library'), async (req, res, next) => {
   try {
     if (!(await libraryTimeAllowed(req))) {
@@ -659,6 +839,7 @@ router.post('/documents/:id/request-access', requirePageAccess('company_library'
     }
     const { id } = req.params;
     const tenantId = req.user.tenant_id;
+    const requesterNote = String(req.body?.note || req.body?.requester_note || '').trim().slice(0, 500);
     const r = await query(
       `SELECT d.*, u.email AS uploader_email, u.full_name AS uploader_name
        FROM company_library_documents d
@@ -668,239 +849,196 @@ router.post('/documents/:id/request-access', requirePageAccess('company_library'
     );
     const doc = r.recordset?.[0];
     if (!doc) return res.status(404).json({ error: 'Not found' });
-
     if (!getRow(doc, 'is_pin_protected')) {
-      return res.status(400).json({
-        error:
-          'This document is not secured. Use “Email copy to me” to receive it as an attachment — no PIN is required.',
-      });
+      return res.status(400).json({ error: 'This document is public. Open it directly or email a copy to yourself.' });
     }
-
-    const isSuper = req.user.role === 'super_admin';
-    const plainPin = String(crypto.randomInt(10_000_000, 99_999_999));
-    const pinHash = await bcrypt.hash(plainPin, BCRYPT_ROUNDS);
-    const pinExp = new Date(Date.now() + PIN_CHALLENGE_TTL_MS);
-
-    await query(
-      `DELETE FROM company_library_pin_challenges
-       WHERE document_id = @did AND requester_user_id = @rid AND verified_at IS NULL`,
+    if (String(getRow(doc, 'uploaded_by')) === String(req.user.id)) {
+      return res.status(400).json({ error: 'You own this document.' });
+    }
+    const live = await getLiveSession(tenantId, id, req.user.id);
+    if (live) {
+      return res.json({ ok: true, message: 'You already have live access to this document.' });
+    }
+    const pending = await query(
+      `SELECT TOP 1 id FROM company_library_access_requests
+       WHERE document_id = @did AND requester_user_id = @rid AND status = N'pending'`,
       { did: id, rid: req.user.id }
-    ).catch(() => {});
-
-    const pinMode = isSuper ? 'super_admin' : 'uploader';
+    );
+    if (pending.recordset?.[0]) {
+      return res.json({ ok: true, message: 'Your access request is already pending. The uploader was notified by email.' });
+    }
+    let ins;
     try {
-      await query(
-        `INSERT INTO company_library_pin_challenges (
-          tenant_id, document_id, requester_user_id, pin_hash, pin_sent_mode, expires_at
-        ) VALUES (@t, @did, @rid, @h, @mode, @exp)`,
-        { t: tenantId, did: id, rid: req.user.id, h: pinHash, mode: pinMode, exp: pinExp }
+      ins = await query(
+        `INSERT INTO company_library_access_requests (tenant_id, document_id, requester_user_id, status, requester_note)
+         OUTPUT INSERTED.id VALUES (@t, @did, @rid, N'pending', @note)`,
+        { t: tenantId, did: id, rid: req.user.id, note: requesterNote || null }
       );
     } catch (e) {
-      if (String(e?.message || '').includes('company_library_pin_challenges')) {
-        return res.status(503).json({
-          error:
-            'This server needs a one-time database update. Run: node scripts/run-company-library-email-flow-migration.js',
-        });
-      }
-      throw e;
+      ins = await query(
+        `INSERT INTO company_library_access_requests (tenant_id, document_id, requester_user_id, status)
+         OUTPUT INSERTED.id VALUES (@t, @did, @rid, N'pending')`,
+        { t: tenantId, did: id, rid: req.user.id }
+      );
     }
-
+    const requestId = getRow(ins.recordset?.[0], 'id');
+    const uploaderEmail = String(getRow(doc, 'uploader_email') || '').trim();
     const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || '';
     const libUrl = appUrl ? `${appUrl.replace(/\/$/, '')}/company-library` : '';
-    const emailReady = isEmailConfigured();
-    const recipientEmail = isSuper
-      ? String(req.user.email || '').trim()
-      : String(getRow(doc, 'uploader_email') || '').trim();
-
-    if (!recipientEmail) {
-      if (isSuper) {
-        return res.status(400).json({ error: 'Your account has no email address; the system PIN cannot be sent.' });
-      }
-      return res.status(400).json({
-        error:
-          'This document has no uploader email on file. Ask an administrator to fix the uploader account or re-upload.',
-      });
-    }
-
-    if (!emailReady) {
-      await audit(req, {
-        documentId: id,
-        action: isSuper ? 'library_pin_issued_super_admin' : 'library_pin_issued_uploader',
-        detail: JSON.stringify({
-          outcome: 'email_not_configured',
-          pin_mode: pinMode,
-          recipient_email: recipientEmail,
-          requester_id: req.user.id,
-        }).slice(0, 4000),
-      });
-      return res.status(503).json({
-        error:
-          'Email is not configured on this server. Set EMAIL_USER and EMAIL_PASS — the PIN must be delivered by email.',
-      });
-    }
-
     const title = getRow(doc, 'display_title') || '—';
-    const expMin = Math.round(PIN_CHALLENGE_TTL_MS / 60000);
-    let html;
-    let subject;
-    if (isSuper) {
-      html = companyLibrarySystemPinToSuperAdminHtml({
-        adminName: req.user.full_name,
-        documentTitle: title,
-        pin: plainPin,
-        appUrl: libUrl,
-        expiresMinutes: expMin,
-      });
-      subject = `Company library: your PIN for secured document “${title}”`;
-    } else {
-      html = companyLibrarySystemPinToUploaderHtml({
+    if (uploaderEmail && isEmailConfigured()) {
+      const html = companyLibraryAccessRequestToUploaderHtml({
         uploaderName: getRow(doc, 'uploader_name'),
         requesterName: req.user.full_name,
         requesterEmail: req.user.email,
         documentTitle: title,
-        pin: plainPin,
+        requesterNote,
         appUrl: libUrl,
-        expiresMinutes: expMin,
       });
-      subject = `Company library: system PIN for “${title}” — share with ${req.user.full_name || 'requester'}`;
+      await sendEmail({
+        to: uploaderEmail,
+        subject: `Company library: access request for “${title}”`,
+        body: html,
+        html: true,
+      }).catch((e) => console.error('[company-library] access request email', e?.message));
     }
-
-    try {
-      const info = await sendEmail({ to: recipientEmail, subject, body: html, html: true });
-      if (!info) {
-        return res.status(502).json({
-          error: 'Email was not sent — check EMAIL_USER, EMAIL_PASS, and EMAIL_ENABLED.',
-        });
-      }
-    } catch (e) {
-      console.error('[company-library] PIN email', e?.message);
-      return res.status(502).json({
-        error: e?.message || 'Could not send PIN email. Check SMTP settings.',
-      });
-    }
-
-    await audit(req, {
-      documentId: id,
-      action: isSuper ? 'library_pin_issued_super_admin' : 'library_pin_issued_uploader',
-      detail: JSON.stringify({
-        pin_mode: pinMode,
-        recipient_email: recipientEmail,
-        requester_id: req.user.id,
-        requester_email: req.user.email,
-        requester_name: req.user.full_name,
-        document_title: title,
-        file_name: getRow(doc, 'file_name'),
-        pin_expires_at: pinExp.toISOString(),
-        uploader_id: getRow(doc, 'uploaded_by') || null,
-      }).slice(0, 4000),
-    });
-
     res.json({
       ok: true,
-      email_sent: true,
-      pin_sent_to: isSuper ? 'your_email' : 'uploader',
-      message: isSuper
-        ? `A system-generated PIN was emailed to you. Enter it below, then use “Email copy to me” (you can send multiple copies while the session lasts).`
-        : `A system-generated PIN was emailed to the uploader. They should share it with you. Enter it below, then use “Email copy to me”.`,
+      request_id: requestId,
+      message: uploaderEmail
+        ? 'Access request sent. The uploader will be notified by email to approve or deny.'
+        : 'Access request recorded. Ask the uploader to check their inbox in the Company library.',
     });
   } catch (err) {
     next(err);
   }
 });
 
-/** Verify system PIN → reusable session for emailing the attachment (secured docs). */
-router.post('/documents/:id/verify-code', requirePageAccess('company_library'), async (req, res, next) => {
+router.get('/access-requests/inbox', requirePageAccess('company_library'), async (req, res, next) => {
   try {
-    if (!(await libraryTimeAllowed(req))) {
-      return res.status(403).json({ error: 'Library is only available during scheduled hours.' });
-    }
-    const { id } = req.params;
-    const rawPin = req.body?.pin ?? req.body?.code;
-    const pin = String(rawPin ?? '').trim();
-    if (!pin) return res.status(400).json({ error: 'PIN required' });
     const tenantId = req.user.tenant_id;
-
-    const docR = await query(
-      `SELECT id, is_pin_protected, display_title FROM company_library_documents WHERE id = @id AND tenant_id = @t`,
-      { id, t: tenantId }
+    const r = await query(
+      `SELECT ar.id, ar.document_id, ar.requester_user_id, ar.requester_note, ar.created_at,
+        d.display_title AS document_title, d.is_pin_protected,
+        u.full_name AS requester_name, u.email AS requester_email
+       FROM company_library_access_requests ar
+       INNER JOIN company_library_documents d ON d.id = ar.document_id AND d.tenant_id = @t
+       INNER JOIN users u ON u.id = ar.requester_user_id
+       WHERE ar.tenant_id = @t AND ar.status = N'pending' AND d.uploaded_by = @uid
+       ORDER BY ar.created_at DESC`,
+      { t: tenantId, uid: req.user.id }
     );
-    const docMeta = docR.recordset?.[0];
-    if (!docMeta) return res.status(404).json({ error: 'Not found' });
-    if (!getRow(docMeta, 'is_pin_protected')) {
-      return res.status(400).json({
-        error: 'This document is not secured — no PIN to verify. Use “Email copy to me” directly.',
-      });
-    }
+    res.json({ requests: r.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    let cq;
-    try {
-      cq = await query(
-        `SELECT TOP 1 * FROM company_library_pin_challenges
-         WHERE document_id = @id AND requester_user_id = @uid AND tenant_id = @t
-           AND verified_at IS NULL AND expires_at > SYSUTCDATETIME()
-         ORDER BY created_at DESC`,
-        { id, uid: req.user.id, t: tenantId }
-      );
-    } catch (e) {
-      return res.status(503).json({
-        error:
-          'This server needs a one-time database update. Run: node scripts/run-company-library-email-flow-migration.js',
+router.post('/access-requests/:requestId/approve', requirePageAccess('company_library'), async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const tenantId = req.user.tenant_id;
+    const rq = await query(
+      `SELECT ar.*, d.display_title, d.uploaded_by, d.is_pin_protected,
+        ru.email AS requester_email, ru.full_name AS requester_name
+       FROM company_library_access_requests ar
+       INNER JOIN company_library_documents d ON d.id = ar.document_id
+       INNER JOIN users ru ON ru.id = ar.requester_user_id
+       WHERE ar.id = @rid AND ar.tenant_id = @t AND ar.status = N'pending'`,
+      { rid: requestId, t: tenantId }
+    );
+    const row = rq.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Request not found or already handled' });
+    if (String(getRow(row, 'uploaded_by')) !== String(req.user.id) && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Only the document owner can approve access.' });
+    }
+    const docId = getRow(row, 'document_id');
+    const requesterId = getRow(row, 'requester_user_id');
+    const session = await createLiveSession(tenantId, docId, requesterId);
+    await query(
+      `UPDATE company_library_access_requests
+       SET status = N'fulfilled', fulfilled_at = SYSUTCDATETIME(), responded_by = @by, responded_at = SYSUTCDATETIME()
+       WHERE id = @rid`,
+      { rid: requestId, by: req.user.id }
+    );
+    const title = getRow(row, 'display_title') || '—';
+    const requesterEmail = String(getRow(row, 'requester_email') || '').trim();
+    const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || '';
+    const libUrl = appUrl ? `${appUrl.replace(/\/$/, '')}/company-library` : '';
+    if (requesterEmail && isEmailConfigured()) {
+      const html = companyLibraryAccessApprovedToRequesterHtml({
+        requesterName: getRow(row, 'requester_name'),
+        documentTitle: title,
+        uploaderName: req.user.full_name,
+        appUrl: libUrl,
       });
+      await sendEmail({
+        to: requesterEmail,
+        subject: `Company library: access approved for “${title}”`,
+        body: html,
+        html: true,
+      }).catch(() => {});
     }
-    const ch = cq.recordset?.[0];
-    if (!ch) {
-      return res.status(400).json({ error: 'No active PIN. Use “Email system PIN” first.' });
-    }
-    const chHash = getRow(ch, 'pin_hash');
-    if (!(await bcrypt.compare(pin, String(chHash || '')))) {
-      await audit(req, {
-        documentId: id,
-        action: 'library_pin_verify_fail',
-        detail: JSON.stringify({
-          document_title: getRow(docMeta, 'display_title'),
-          requester_id: req.user.id,
-        }).slice(0, 4000),
-      });
-      return res.status(403).json({ error: 'Incorrect PIN.' });
-    }
+    res.json({
+      ok: true,
+      expires_at: session.expiresAt,
+      message: 'Access approved. The requester has live access until you lock the document again.',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    await query(`DELETE FROM company_library_pin_challenges WHERE id = @cid`, { cid: getRow(ch, 'id') }).catch(() => {});
-    await query(`DELETE FROM company_library_attachment_sessions WHERE document_id = @id AND user_id = @uid`, {
+router.post('/access-requests/:requestId/deny', requirePageAccess('company_library'), async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const tenantId = req.user.tenant_id;
+    const rq = await query(
+      `SELECT ar.id, d.uploaded_by FROM company_library_access_requests ar
+       INNER JOIN company_library_documents d ON d.id = ar.document_id
+       WHERE ar.id = @rid AND ar.tenant_id = @t AND ar.status = N'pending'`,
+      { rid: requestId, t: tenantId }
+    );
+    const row = rq.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Request not found or already handled' });
+    if (String(getRow(row, 'uploaded_by')) !== String(req.user.id) && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Only the document owner can deny access.' });
+    }
+    await query(
+      `UPDATE company_library_access_requests
+       SET status = N'denied', denied_at = SYSUTCDATETIME(), responded_by = @by, responded_at = SYSUTCDATETIME()
+       WHERE id = @rid`,
+      { rid: requestId, by: req.user.id }
+    );
+    res.json({ ok: true, message: 'Access request denied.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/documents/:id/lock', requirePageAccess('company_library'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user.tenant_id;
+    const r = await query(`SELECT uploaded_by, is_pin_protected FROM company_library_documents WHERE id = @id AND tenant_id = @t`, {
       id,
-      uid: req.user.id,
-    }).catch(() => {});
-
-    const sessionToken = crypto.randomBytes(32).toString('base64url');
-    const th = crypto.createHash('sha256').update(sessionToken).digest('hex');
-    const sessExp = new Date(Date.now() + ATTACH_SESSION_TTL_MS);
+      t: tenantId,
+    });
+    const doc = r.recordset?.[0];
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    if (String(getRow(doc, 'uploaded_by')) !== String(req.user.id) && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Only the document owner can lock access.' });
+    }
+    await revokeAllLiveSessions(id);
     try {
       await query(
-        `INSERT INTO company_library_attachment_sessions (tenant_id, document_id, user_id, token_hash, expires_at)
-         VALUES (@t, @id, @uid, @th, @exp)`,
-        { t: tenantId, id, uid: req.user.id, th, exp: sessExp }
+        `UPDATE company_library_documents SET is_access_locked = 1, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        { id }
       );
-    } catch (e) {
-      return res.status(503).json({
-        error:
-          'This server needs a one-time database update. Run: node scripts/run-company-library-email-flow-migration.js',
-      });
+    } catch {
+      /* column may be missing pre-migration */
     }
-
-    await audit(req, {
-      documentId: id,
-      action: 'library_pin_verified',
-      detail: JSON.stringify({
-        document_title: getRow(docMeta, 'display_title'),
-        session_expires_at: sessExp.toISOString(),
-      }).slice(0, 4000),
-    });
-
-    res.json({
-      session_token: sessionToken,
-      grant_token: sessionToken,
-      expires_at: sessExp.toISOString(),
-      message: 'PIN verified. Use “Email copy to me” — you can send multiple emails until the session expires.',
-    });
+    res.json({ ok: true, message: 'Document locked. All live access sessions were ended.' });
   } catch (err) {
     next(err);
   }
@@ -925,54 +1063,20 @@ router.post('/documents/:id/email-attachment', requirePageAccess('company_librar
     const doc = r.recordset?.[0];
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
-    const secured = !!getRow(doc, 'is_pin_protected');
-    const tokenIn = String(req.body?.session_token ?? req.body?.grant_token ?? '').trim();
-
-    if (secured) {
-      if (!tokenIn) {
-        await audit(req, {
-          documentId: id,
-          action: 'library_email_attachment_denied',
-          detail: JSON.stringify({
-            reason: 'missing_session_token',
-            secured: true,
-            recipient_email: requesterEmail,
-          }).slice(0, 4000),
-        });
-        return res.status(403).json({
-          error: 'Verify the system PIN first — then use “Email copy to me” (secured document).',
-        });
-      }
-      const th = crypto.createHash('sha256').update(tokenIn).digest('hex');
-      let sq;
-      try {
-        sq = await query(
-          `SELECT TOP 1 * FROM company_library_attachment_sessions
-           WHERE document_id = @id AND user_id = @uid AND tenant_id = @t AND token_hash = @th AND expires_at > SYSUTCDATETIME()
-           ORDER BY created_at DESC`,
-          { id, uid: req.user.id, t: tenantId, th }
-        );
-      } catch (e) {
-        return res.status(503).json({
-          error:
-            'This server needs a one-time database update. Run: node scripts/run-company-library-email-flow-migration.js',
-        });
-      }
-      if (!sq.recordset?.[0]) {
-        await audit(req, {
-          documentId: id,
-          action: 'library_email_attachment_denied',
-          detail: JSON.stringify({
-            reason: 'invalid_or_expired_session',
-            secured: true,
-            recipient_email: requesterEmail,
-          }).slice(0, 4000),
-        });
-        return res.status(403).json({
-          error: 'Session expired or invalid. Request a new system PIN and verify again.',
-        });
-      }
+    const live = await getLiveSession(tenantId, id, req.user.id);
+    const access = mapDocumentAccess(doc, {
+      userId: req.user.id,
+      role: req.user.role,
+      liveSession: live,
+    });
+    if (!access.can_email) {
+      return res.status(403).json({
+        error: access.needs_access_request
+          ? 'Request access from the document owner before emailing a copy.'
+          : 'You do not have permission to receive this document.',
+      });
     }
+    const secured = access.is_private;
 
     const abs = safeResolveStoredPath(tenantId, getRow(doc, 'stored_rel_path'));
     if (!fs.existsSync(abs)) return res.status(404).json({ error: 'File missing' });
@@ -998,8 +1102,8 @@ router.post('/documents/:id/email-attachment', requirePageAccess('company_librar
       fileName: fn,
       secured,
       note: secured
-        ? 'This copy was sent after PIN verification. You may request additional copies from the library while your access session is valid.'
-        : 'This document is not secured; no PIN was required.',
+        ? 'This copy was sent while your live access is active. The owner can lock the document again at any time.'
+        : 'This document is public in the company library.',
     });
 
     try {
@@ -1017,24 +1121,6 @@ router.post('/documents/:id/email-attachment', requirePageAccess('company_librar
       console.error('[company-library] attachment email', e?.message);
       return res.status(502).json({ error: e?.message || 'Failed to send email with attachment.' });
     }
-
-    const auditAction = secured ? 'library_email_attachment_secured' : 'library_email_attachment_unsecured';
-    await audit(req, {
-      documentId: id,
-      action: auditAction,
-      detail: JSON.stringify({
-        recipient_email: requesterEmail,
-        recipient_user_id: req.user.id,
-        recipient_name: req.user.full_name,
-        document_title: title,
-        file_name: fn,
-        mime_type: getRow(doc, 'mime_type'),
-        size_bytes: buf.length,
-        secured,
-        ip_address: clientIp(req),
-        user_agent: String(req.headers['user-agent'] || '').slice(0, 256),
-      }).slice(0, 4000),
-    });
 
     res.json({
       ok: true,

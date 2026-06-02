@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import { todayYmd, toYmdFromDbOrString } from './lib/appTime.js';
 import { Link } from 'react-router-dom';
 import { useAuth } from './AuthContext';
@@ -493,7 +493,13 @@ export default function Contractor() {
   const [expiryRefSearch, setExpiryRefSearch] = useState('');
   const [expiryRefDropdownOpen, setExpiryRefDropdownOpen] = useState(false);
   const [expiryItemType, setExpiryItemType] = useState('license');
+  const [showExpiryForm, setShowExpiryForm] = useState(false);
+  const [expiryPendingFiles, setExpiryPendingFiles] = useState([]);
+  const [expandedExpiryId, setExpandedExpiryId] = useState(null);
+  const [expandedExpiryAttachments, setExpandedExpiryAttachments] = useState([]);
+  const [expandedExpiryAttachmentsLoading, setExpandedExpiryAttachmentsLoading] = useState(false);
   const expiryRefDropdownRef = useRef(null);
+  const expiryFileInputRef = useRef(null);
   const [complianceRespondRecord, setComplianceRespondRecord] = useState(null);
   const [complianceRespondText, setComplianceRespondText] = useState('');
   const [complianceRespondFiles, setComplianceRespondFiles] = useState([]);
@@ -1608,6 +1614,32 @@ export default function Contractor() {
     }
   };
 
+  const expiryTypeLabel = (type) => {
+    const t = String(type || '').toLowerCase();
+    if (t === 'license') return 'Driver licence';
+    if (t === 'roadworthy') return 'Vehicle roadworthy';
+    if (t === 'permit') return 'Permit / certificate';
+    return type || '—';
+  };
+
+  const toggleExpiryAttachments = async (expiryId) => {
+    if (expandedExpiryId === expiryId) {
+      setExpandedExpiryId(null);
+      setExpandedExpiryAttachments([]);
+      return;
+    }
+    setExpandedExpiryId(expiryId);
+    setExpandedExpiryAttachmentsLoading(true);
+    try {
+      const d = await contractorApi.expiries.listAttachments(expiryId);
+      setExpandedExpiryAttachments(d.attachments || []);
+    } catch {
+      setExpandedExpiryAttachments([]);
+    } finally {
+      setExpandedExpiryAttachmentsLoading(false);
+    }
+  };
+
   const addExpiry = async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -1621,16 +1653,23 @@ export default function Contractor() {
         setError('Please specify the type when selecting Other.');
         return;
       }
-      await contractorApi.expiries.create({
-        item_type: itemType || 'other',
-        item_ref: (form.item_ref?.value ?? expiryRefSearch).trim() || null,
-        issued_date: form.issued_date?.value || null,
-        expiry_date: form.expiry_date.value || null,
-        description: form.description.value.trim() || null,
-      });
+      const fd = new FormData();
+      fd.append('item_type', itemType || 'other');
+      const ref = (form.item_ref?.value ?? expiryRefSearch).trim();
+      if (ref) fd.append('item_ref', ref);
+      if (form.issued_date?.value) fd.append('issued_date', form.issued_date.value);
+      fd.append('expiry_date', form.expiry_date.value);
+      const desc = form.description.value.trim();
+      if (desc) fd.append('description', desc);
+      if (selectedContractorId) fd.append('contractor_id', selectedContractorId);
+      for (const f of expiryPendingFiles) fd.append('files', f);
+      await contractorApi.expiries.create(fd);
       form.reset();
       setExpiryRefSearch('');
       setExpiryItemType('license');
+      setExpiryPendingFiles([]);
+      if (expiryFileInputRef.current) expiryFileInputRef.current.value = '';
+      setShowExpiryForm(false);
       load();
     } catch (err) {
       setError(err.message);
@@ -2140,7 +2179,7 @@ export default function Contractor() {
                     <button type="button" onClick={() => setActiveTab('trucks')} disabled={!pageRestrictions.allow_truck_manual} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100 disabled:opacity-40">Add truck</button>
                     <button type="button" onClick={() => setActiveTab('drivers')} disabled={!pageRestrictions.allow_driver_manual} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100 disabled:opacity-40">Add driver</button>
                     <button type="button" onClick={() => setActiveTab('incidents')} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Report incident</button>
-                    <button type="button" onClick={() => setActiveTab('expiries')} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Add expiry</button>
+                    <button type="button" onClick={() => { setActiveTab('expiries'); setShowExpiryForm(true); }} className="px-3 py-1.5 text-sm rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100">Add expiry</button>
                   </div>
                 </div>
               </div>
@@ -3113,110 +3152,235 @@ export default function Contractor() {
             )}
 
             {activeTab === 'expiries' && (
-              <div className="grid gap-6 lg:grid-cols-2">
+              <div className="space-y-4">
                 <div className="app-glass-card p-4">
-                  <h2 className="font-medium text-surface-900 mb-3">Add expiry (licence, roadworthy, permit)</h2>
-                  <form onSubmit={addExpiry} className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Type</label>
-                      <select
-                        name="item_type"
-                        value={expiryItemType}
-                        onChange={(e) => setExpiryItemType(e.target.value)}
-                        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                      >
-                        <option value="license">Driver licence</option>
-                        <option value="roadworthy">Vehicle roadworthy</option>
-                        <option value="permit">Permit / certificate</option>
-                        <option value="other">Other</option>
-                      </select>
-                    </div>
-                    {expiryItemType === 'other' && (
-                      <div>
-                        <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Please specify type <span className="text-red-600">*</span></label>
-                        <input
-                          name="item_type_other"
-                          type="text"
-                          placeholder="e.g. Customs clearance, Insurance"
-                          required
-                          className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                        />
-                      </div>
-                    )}
-                    <div className="relative" ref={expiryRefDropdownRef}>
-                      <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Reference</label>
-                      <input
-                        name="item_ref"
-                        type="text"
-                        value={expiryRefSearch}
-                        onChange={(e) => { setExpiryRefSearch(e.target.value); setExpiryRefDropdownOpen(true); }}
-                        onFocus={() => setExpiryRefDropdownOpen(true)}
-                        placeholder="Search truck reg, driver name or ID, or type a reference..."
-                        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                        autoComplete="off"
-                      />
-                      {expiryRefDropdownOpen && (expiryRefOptions.length > 0 || expiryRefSearch.trim()) && (
-                        <ul className="absolute z-10 mt-1 w-full max-h-48 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg py-1 text-sm">
-                          {expiryRefOptions.length === 0 ? (
-                            <li className="px-3 py-2 text-surface-500">No matches. You can type a custom reference above.</li>
-                          ) : (
-                            expiryRefOptions.map((opt, idx) => (
-                              <li
-                                key={`${opt.type}-${opt.value}-${idx}`}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => { setExpiryRefSearch(opt.value); setExpiryRefDropdownOpen(false); }}
-                                onKeyDown={(ev) => ev.key === 'Enter' && (setExpiryRefSearch(opt.value), setExpiryRefDropdownOpen(false))}
-                                className="px-3 py-2 hover:bg-surface-100 cursor-pointer"
-                              >
-                                {opt.label}
-                              </li>
-                            ))
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                    <h2 className="font-medium text-surface-900">Expiries</h2>
+                    <button
+                      type="button"
+                      onClick={() => setShowExpiryForm((v) => !v)}
+                      className={`px-4 py-2 text-sm font-semibold rounded-lg border transition-colors ${
+                        showExpiryForm
+                          ? 'border-surface-300 bg-surface-100 text-surface-800 hover:bg-surface-200'
+                          : 'border-brand-200 bg-brand-600 text-white hover:bg-brand-700'
+                      }`}
+                    >
+                      {showExpiryForm ? 'Hide add form' : 'Add expiry (licence, roadworthy, permit)'}
+                    </button>
+                  </div>
+                  {showExpiryForm && (
+                    <form onSubmit={addExpiry} className="mb-4 p-4 rounded-xl border border-brand-200/80 bg-brand-50/30 dark:bg-brand-950/20 space-y-3">
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        <div>
+                          <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Type</label>
+                          <select
+                            name="item_type"
+                            value={expiryItemType}
+                            onChange={(e) => setExpiryItemType(e.target.value)}
+                            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                          >
+                            <option value="license">Driver licence</option>
+                            <option value="roadworthy">Vehicle roadworthy</option>
+                            <option value="permit">Permit / certificate</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        {expiryItemType === 'other' && (
+                          <div>
+                            <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Specify type <span className="text-red-600">*</span></label>
+                            <input
+                              name="item_type_other"
+                              type="text"
+                              placeholder="e.g. Insurance"
+                              required
+                              className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                            />
+                          </div>
+                        )}
+                        <div className="relative sm:col-span-2 lg:col-span-1" ref={expiryRefDropdownRef}>
+                          <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Reference</label>
+                          <input
+                            name="item_ref"
+                            type="text"
+                            value={expiryRefSearch}
+                            onChange={(e) => { setExpiryRefSearch(e.target.value); setExpiryRefDropdownOpen(true); }}
+                            onFocus={() => setExpiryRefDropdownOpen(true)}
+                            placeholder="Truck reg, driver name, or custom ref…"
+                            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                            autoComplete="off"
+                          />
+                          {expiryRefDropdownOpen && (expiryRefOptions.length > 0 || expiryRefSearch.trim()) && (
+                            <ul className="absolute z-10 mt-1 w-full max-h-48 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg py-1 text-sm">
+                              {expiryRefOptions.length === 0 ? (
+                                <li className="px-3 py-2 text-surface-500">No matches — type a custom reference.</li>
+                              ) : (
+                                expiryRefOptions.map((opt, idx) => (
+                                  <li
+                                    key={`${opt.type}-${opt.value}-${idx}`}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => { setExpiryRefSearch(opt.value); setExpiryRefDropdownOpen(false); }}
+                                    onKeyDown={(ev) => ev.key === 'Enter' && (setExpiryRefSearch(opt.value), setExpiryRefDropdownOpen(false))}
+                                    className="px-3 py-2 hover:bg-surface-100 cursor-pointer"
+                                  >
+                                    {opt.label}
+                                  </li>
+                                ))
+                              )}
+                            </ul>
                           )}
-                        </ul>
-                      )}
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Issued date</label>
-                      <input name="issued_date" type="date" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Expiry date</label>
-                      <input name="expiry_date" type="date" required className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    </div>
-                    <input name="description" placeholder="Description" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add expiry</button>
-                  </form>
-                </div>
-                <div className="app-glass-card p-4">
-                  <h2 className="font-medium text-surface-900 mb-3">Expiries</h2>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Issued date</label>
+                          <input name="issued_date" type="date" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Expiry date <span className="text-red-600">*</span></label>
+                          <input name="expiry_date" type="date" required className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                        </div>
+                        <div className="sm:col-span-2 lg:col-span-3">
+                          <input name="description" placeholder="Description (optional)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                        </div>
+                        <div className="sm:col-span-2 lg:col-span-3">
+                          <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Supporting documents</label>
+                          <p className="text-[11px] text-surface-500 mb-1.5">Upload scans or PDFs (licence, roadworthy certificate, permit, etc.). You can select multiple files.</p>
+                          <input
+                            ref={expiryFileInputRef}
+                            type="file"
+                            multiple
+                            accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+                            className="w-full text-sm text-surface-600 file:mr-2 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-brand-100 file:text-brand-800"
+                            onChange={(e) => setExpiryPendingFiles(Array.from(e.target.files || []))}
+                          />
+                          {expiryPendingFiles.length > 0 && (
+                            <ul className="mt-2 text-xs text-surface-600 space-y-1">
+                              {expiryPendingFiles.map((f, i) => (
+                                <li key={`${f.name}-${i}`} className="flex justify-between gap-2">
+                                  <span className="truncate">{f.name}</span>
+                                  <button
+                                    type="button"
+                                    className="text-red-600 hover:underline shrink-0"
+                                    onClick={() => setExpiryPendingFiles((prev) => prev.filter((_, j) => j !== i))}
+                                  >
+                                    Remove
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+                          {saving ? 'Saving…' : 'Save expiry'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowExpiryForm(false);
+                            setExpiryPendingFiles([]);
+                            if (expiryFileInputRef.current) expiryFileInputRef.current.value = '';
+                          }}
+                          className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
                   <input
                     type="search"
                     value={expirySearch}
                     onChange={(e) => setExpirySearch(e.target.value)}
-                    placeholder="Search by type, reference, description or date..."
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-3"
+                    placeholder="Search by type, reference, description or date…"
+                    className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm mb-4"
                     aria-label="Search expiries"
                   />
-                  <ul className="space-y-2 text-sm">
-                    {filteredExpiriesList.length === 0 ? (
-                      <li className="text-surface-500">
-                        {expiriesList.length === 0 ? 'No expiries recorded.' : 'No expiries match your search.'}
-                      </li>
-                    ) : (
-                      filteredExpiriesList.map((e) => (
-                        <li key={e.id} className="py-2 border-b border-surface-100 flex justify-between items-start gap-2">
-                          <span>
-                            {e.item_type} {e.item_ref && `· ${e.item_ref}`}
-                            {(e.issued_date || e.issuedDate) && (
-                              <span className="text-surface-400 text-xs block mt-0.5">Issued {formatDate(e.issued_date ?? e.issuedDate)}</span>
-                            )}
-                          </span>
-                          <span className={new Date(e.expiry_date) < new Date() ? 'text-red-600' : 'text-surface-600'}>{formatDate(e.expiry_date)}</span>
-                        </li>
-                      ))
-                    )}
-                  </ul>
+                  <div className="overflow-x-auto -mx-4 sm:mx-0">
+                    <table className="w-full text-sm min-w-[720px]">
+                      <thead>
+                        <tr className="border-b border-surface-200 text-left bg-surface-50/80">
+                          <th className="px-4 py-3 font-medium text-surface-700">Type</th>
+                          <th className="px-4 py-3 font-medium text-surface-700">Reference</th>
+                          <th className="px-4 py-3 font-medium text-surface-700 whitespace-nowrap">Issued</th>
+                          <th className="px-4 py-3 font-medium text-surface-700 whitespace-nowrap">Expiry</th>
+                          <th className="px-4 py-3 font-medium text-surface-700">Description</th>
+                          <th className="px-4 py-3 font-medium text-surface-700">Files</th>
+                          <th className="px-4 py-3 font-medium text-surface-700 whitespace-nowrap">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredExpiriesList.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="px-4 py-8 text-center text-surface-500">
+                              {expiriesList.length === 0 ? 'No expiries recorded. Use “Add expiry” to create one.' : 'No expiries match your search.'}
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredExpiriesList.map((e) => {
+                            const expired = e.expiry_date && new Date(e.expiry_date) < new Date(new Date().toDateString());
+                            const fileCount = Number(e.attachment_count) || 0;
+                            const isExpanded = expandedExpiryId === e.id;
+                            return (
+                              <Fragment key={e.id}>
+                                <tr className="border-b border-surface-100 hover:bg-surface-50/60">
+                                  <td className="px-4 py-3 font-medium text-surface-900">{expiryTypeLabel(e.item_type)}</td>
+                                  <td className="px-4 py-3 text-surface-800">{e.item_ref || '—'}</td>
+                                  <td className="px-4 py-3 text-surface-600 whitespace-nowrap">{formatDate(e.issued_date ?? e.issuedDate)}</td>
+                                  <td className={`px-4 py-3 whitespace-nowrap font-medium ${expired ? 'text-red-700' : 'text-surface-800'}`}>{formatDate(e.expiry_date)}</td>
+                                  <td className="px-4 py-3 text-surface-600 max-w-[200px] truncate" title={e.description || ''}>{e.description || '—'}</td>
+                                  <td className="px-4 py-3 whitespace-nowrap">
+                                    {fileCount > 0 ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleExpiryAttachments(e.id)}
+                                        className="text-brand-700 hover:underline text-xs font-semibold"
+                                      >
+                                        {isExpanded ? 'Hide' : 'View'} ({fileCount})
+                                      </button>
+                                    ) : (
+                                      <span className="text-surface-400 text-xs">—</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-3 whitespace-nowrap">
+                                    <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full ${expired ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                                      {expired ? 'Expired' : 'Valid'}
+                                    </span>
+                                  </td>
+                                </tr>
+                                {isExpanded && (
+                                  <tr className="border-b border-surface-100 bg-surface-50/50">
+                                    <td colSpan={7} className="px-4 py-3">
+                                      {expandedExpiryAttachmentsLoading ? (
+                                        <p className="text-xs text-surface-500">Loading files…</p>
+                                      ) : expandedExpiryAttachments.length === 0 ? (
+                                        <p className="text-xs text-surface-500">No files found.</p>
+                                      ) : (
+                                        <ul className="flex flex-wrap gap-2">
+                                          {expandedExpiryAttachments.map((att) => (
+                                            <li key={att.id}>
+                                              <a
+                                                href={contractorApi.expiries.attachmentDownloadUrl(att.id)}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 bg-white border border-surface-200 rounded-lg px-2.5 py-1.5 hover:bg-brand-50"
+                                              >
+                                                {att.file_name}
+                                              </a>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )}
+                              </Fragment>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}

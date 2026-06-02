@@ -280,7 +280,19 @@ export const contractor = {
   },
   expiries: {
     list: () => request('/contractor/expiries'),
-    create: (body) => request('/contractor/expiries', { method: 'POST', body: JSON.stringify(body) }),
+    create: (body) => {
+      if (body instanceof FormData) {
+        return fetch(`${API}/contractor/expiries`, { method: 'POST', body, credentials: 'include' }).then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        });
+      }
+      return request('/contractor/expiries', { method: 'POST', body: JSON.stringify(body) });
+    },
+    listAttachments: (expiryId) => request(`/contractor/expiries/${encodeURIComponent(expiryId)}/attachments`),
+    attachmentDownloadUrl: (attachmentId) =>
+      `${API}/contractor/expiries/attachments/${encodeURIComponent(attachmentId)}/download`,
   },
   suspensions: {
     list: (params = {}) => {
@@ -603,10 +615,20 @@ export const workshop = {
     add: (cardId, body) => ws(`/job-cards/${encodeURIComponent(cardId)}/progress`, { method: 'POST', body: JSON.stringify(body) }),
   },
   attachments: {
-    upload: (cardId, formData) =>
-      fetch(`${API}/workshop/job-cards/${encodeURIComponent(cardId)}/attachments`, {
-        method: 'POST', body: formData, credentials: 'include',
-      }).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.statusText); return d; }),
+    upload: (cardId, formData, opts = {}) => {
+      if (opts.attachment_type && formData && !formData.has('attachment_type')) {
+        formData.append('attachment_type', opts.attachment_type);
+      }
+      return fetch(`${API}/workshop/job-cards/${encodeURIComponent(cardId)}/attachments`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      }).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        return d;
+      });
+    },
     downloadUrl: (attId) => `${API}/workshop/attachments/${encodeURIComponent(attId)}/download`,
     remove: (attId) => ws(`/attachments/${encodeURIComponent(attId)}`, { method: 'DELETE' }),
   },
@@ -1053,12 +1075,48 @@ export const officeAdmin = {
       { method: 'DELETE' }
     ),
   dashboard: () => request('/office-admin/dashboard'),
+  assetCategories: {
+    list: () => request('/office-admin/asset-categories'),
+    nextCode: (id) => request(`/office-admin/asset-categories/${encodeURIComponent(id)}/next-code`),
+    create: (body) =>
+      request('/office-admin/asset-categories', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) =>
+      request(`/office-admin/asset-categories/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    delete: (id) =>
+      request(`/office-admin/asset-categories/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
   assets: {
     list: (q) => request(`/office-admin/assets${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    get: (id) => request(`/office-admin/assets/${encodeURIComponent(id)}`),
     create: (body) => request('/office-admin/assets', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) =>
       request(`/office-admin/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/office-admin/assets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    uploadAttachments: (id, files, opts = {}) => {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      if (opts.caption) fd.append('caption', opts.caption);
+      if (opts.file_kind) fd.append('file_kind', opts.file_kind);
+      return fetch(`${API}/office-admin/assets/${encodeURIComponent(id)}/attachments`, {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      }).then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      });
+    },
+    attachmentFileUrl: (assetId, attachmentId) =>
+      `${API}/office-admin/assets/${encodeURIComponent(assetId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
+    deleteAttachment: (assetId, attachmentId) =>
+      request(
+        `/office-admin/assets/${encodeURIComponent(assetId)}/attachments/${encodeURIComponent(attachmentId)}`,
+        { method: 'DELETE' }
+      ),
   },
   consumables: {
     list: () => request('/office-admin/consumables'),
@@ -1069,6 +1127,7 @@ export const officeAdmin = {
   maintenance: {
     reports: (status) =>
       request(`/office-admin/maintenance/reports${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+    getReport: (id) => request(`/office-admin/maintenance/reports/${encodeURIComponent(id)}`),
     createReport: (body) =>
       request('/office-admin/maintenance/reports', { method: 'POST', body: JSON.stringify(body) }),
     updateReport: (id, body) =>
@@ -1076,12 +1135,58 @@ export const officeAdmin = {
         method: 'PATCH',
         body: JSON.stringify(body),
       }),
+    uploadReportAttachments: (id, files) => {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      return fetch(`${API}/office-admin/maintenance/reports/${encodeURIComponent(id)}/attachments`, {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      }).then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      });
+    },
+    reportAttachmentUrl: (reportId, attachmentId) =>
+      `${API}/office-admin/maintenance/reports/${encodeURIComponent(reportId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
+    deleteReportAttachment: (reportId, attachmentId) =>
+      request(
+        `/office-admin/maintenance/reports/${encodeURIComponent(reportId)}/attachments/${encodeURIComponent(attachmentId)}`,
+        { method: 'DELETE' }
+      ),
     records: (assetId) =>
       request(
         `/office-admin/maintenance/records${assetId ? `?asset_id=${encodeURIComponent(assetId)}` : ''}`
       ),
+    getRecord: (id) => request(`/office-admin/maintenance/records/${encodeURIComponent(id)}`),
     createRecord: (body) =>
       request('/office-admin/maintenance/records', { method: 'POST', body: JSON.stringify(body) }),
+    updateRecord: (id, body) =>
+      request(`/office-admin/maintenance/records/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    uploadRecordAttachments: (id, files) => {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      return fetch(`${API}/office-admin/maintenance/records/${encodeURIComponent(id)}/attachments`, {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      }).then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      });
+    },
+    recordAttachmentUrl: (recordId, attachmentId) =>
+      `${API}/office-admin/maintenance/records/${encodeURIComponent(recordId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
+    deleteRecordAttachment: (recordId, attachmentId) =>
+      request(
+        `/office-admin/maintenance/records/${encodeURIComponent(recordId)}/attachments/${encodeURIComponent(attachmentId)}`,
+        { method: 'DELETE' }
+      ),
   },
   requests: {
     list: (mine) => request(`/office-admin/requests${mine ? '?mine=1' : ''}`),
@@ -1986,7 +2091,7 @@ export const orgStructure = {
 
 const cl = (path, options = {}) => request(`/company-library${path}`, options);
 
-/** Company library: AI summaries, secured docs with system PIN + email-only file delivery, audit. */
+/** Company library: folders, private/public access, in-app view, email delivery, super-admin download. */
 export const companyLibrary = {
   access: () => cl('/me/access'),
   adminPolicyGet: (tenantId) => cl(`/admin/policy?tenant_id=${encodeURIComponent(tenantId)}`),
@@ -2005,20 +2110,26 @@ export const companyLibrary = {
     const qs = q.toString();
     return cl(`/documents${qs ? `?${qs}` : ''}`);
   },
-  /** POST { intent, folder_id? } — AI / keyword match across library summaries */
   intentSearch: (body) =>
     cl('/documents/intent-search', { method: 'POST', body: JSON.stringify(body || {}) }),
   document: (id) => cl(`/documents/${encodeURIComponent(id)}`),
+  patchDocument: (id, body) =>
+    cl(`/documents/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body || {}) }),
   deleteDocument: (id, body) =>
     cl(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify(body || {}) }),
-  /** Secured documents: emails system PIN to uploader (or super admin’s own inbox). */
   requestAccess: (id, body) =>
     cl(`/documents/${encodeURIComponent(id)}/request-access`, { method: 'POST', body: JSON.stringify(body || {}) }),
-  verifyCode: (id, pin) =>
-    cl(`/documents/${encodeURIComponent(id)}/verify-code`, { method: 'POST', body: JSON.stringify({ pin }) }),
-  /** Email file as attachment to the signed-in user. Secured docs require session_token from verifyCode. */
+  lockDocument: (id) =>
+    cl(`/documents/${encodeURIComponent(id)}/lock`, { method: 'POST', body: JSON.stringify({}) }),
   emailAttachment: (id, body = {}) =>
     cl(`/documents/${encodeURIComponent(id)}/email-attachment`, { method: 'POST', body: JSON.stringify(body) }),
+  accessInbox: () => cl('/access-requests/inbox'),
+  approveAccessRequest: (requestId) =>
+    cl(`/access-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', body: JSON.stringify({}) }),
+  denyAccessRequest: (requestId) =>
+    cl(`/access-requests/${encodeURIComponent(requestId)}/deny`, { method: 'POST', body: JSON.stringify({}) }),
+  previewUrl: (id) => `${getApiBase()}/company-library/documents/${encodeURIComponent(id)}/preview`,
+  downloadUrl: (id) => `${getApiBase()}/company-library/documents/${encodeURIComponent(id)}/download`,
   upload: (formData) =>
     fetch(`${API}/company-library/documents`, { method: 'POST', body: formData, credentials: 'include' }).then(
       async (res) => {
@@ -2027,7 +2138,6 @@ export const companyLibrary = {
         return data;
       }
     ),
-  auditRecent: (limit = 100) => cl(`/audit/recent?limit=${limit}`),
 };
 
 const sc = (path, options = {}) => request(`/shift-clock${path}`, options);

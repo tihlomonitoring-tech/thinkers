@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from './AuthContext';
 import { companyLibrary as lib, profileManagement as pm } from './api';
+import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import InfoHint from './components/InfoHint.jsx';
 
 function formatDate(d) {
@@ -8,35 +9,12 @@ function formatDate(d) {
   return new Date(d).toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
-function formatDateTime(d) {
-  if (!d) return '—';
-  return new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-function auditRowBadge(action) {
-  const a = String(action || '');
-  if (a === 'document_delete') return 'DEL';
-  if (a.startsWith('library_email_attachment')) return 'EML';
-  if (a.startsWith('library_pin')) return 'PIN';
-  if (a === 'download_super_admin') return 'ADM';
-  if (a === 'download') return 'GET';
-  if (a.includes('denied') || a.includes('invalid')) return '!';
-  return (a.slice(0, 4) || '—').toUpperCase();
-}
-
-function auditBadgeClass(action) {
-  const a = String(action || '');
-  if (a === 'document_delete') return 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200 ring-rose-200/60 dark:ring-rose-800/50';
-  if (a.startsWith('library_email_attachment')) {
-    return 'bg-teal-100 text-teal-900 dark:bg-teal-950/50 dark:text-teal-200 ring-teal-200/60 dark:ring-teal-800/50';
-  }
-  if (a.startsWith('library_pin')) {
-    return 'bg-violet-100 text-violet-900 dark:bg-violet-950/50 dark:text-violet-200 ring-violet-200/60 dark:ring-violet-800/50';
-  }
-  if (a === 'download_super_admin') return 'bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200 ring-amber-200/60 dark:ring-amber-800/50';
-  if (a.includes('denied') || a.includes('invalid')) return 'bg-orange-100 text-orange-900 dark:bg-orange-950/50 dark:text-orange-200 ring-orange-200/60 dark:ring-orange-800/50';
-  if (a.includes('download')) return 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200 ring-emerald-200/60 dark:ring-emerald-800/50';
-  return 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-200 ring-surface-300/60 dark:ring-surface-600/50';
+function formatBytes(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const b = Number(n);
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function LibraryGlyph({ className }) {
@@ -48,49 +26,191 @@ function LibraryGlyph({ className }) {
   );
 }
 
+function DocBadge({ doc }) {
+  if (doc.is_private || doc.is_pin_protected) {
+    return (
+      <span className="inline-flex items-center rounded-md bg-violet-100/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-800 dark:bg-violet-950/60 dark:text-violet-200">
+        Private
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-md bg-emerald-100/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
+      Public
+    </span>
+  );
+}
+
+function expiryStatus(expiresAt) {
+  if (!expiresAt) return { label: 'No expiry', className: 'text-surface-500' };
+  const end = new Date(expiresAt);
+  const now = new Date();
+  const startOfEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  const startOfNow = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.round((startOfEnd - startOfNow) / 86400000);
+  if (diffDays < 0) return { label: `${Math.abs(diffDays)}d overdue`, className: 'text-red-700 dark:text-red-300 font-semibold' };
+  if (diffDays === 0) return { label: 'Expires today', className: 'text-amber-700 dark:text-amber-300 font-semibold' };
+  if (diffDays <= 14) return { label: `${diffDays}d left`, className: 'text-amber-700 dark:text-amber-300 font-semibold' };
+  return { label: `${diffDays}d left`, className: 'text-surface-600 dark:text-surface-400' };
+}
+
+const glassInput =
+  'w-full rounded-lg border border-surface-200/70 dark:border-surface-600/60 bg-white/50 dark:bg-surface-900/35 backdrop-blur-sm px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400';
+const btnPrimary =
+  'px-4 py-2.5 rounded-xl bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 disabled:opacity-50 shadow-sm';
+const btnSecondary =
+  'px-4 py-2.5 rounded-xl border border-surface-200/70 dark:border-surface-600/60 bg-white/50 dark:bg-surface-900/35 backdrop-blur-sm text-sm font-semibold hover:bg-white/70 dark:hover:bg-surface-800/60 disabled:opacity-50';
+const btnDanger =
+  'px-4 py-2.5 rounded-xl border border-red-200/80 dark:border-red-900/60 bg-red-50/80 dark:bg-red-950/40 text-red-800 dark:text-red-200 text-sm font-semibold hover:bg-red-100/90 dark:hover:bg-red-950/60 disabled:opacity-50';
+
+function ReminderUserPicker({ users, selectedIds, onChange }) {
+  const [query, setQuery] = useState('');
+  const selected = useMemo(
+    () => selectedIds.map((id) => users.find((u) => String(u.id) === String(id))).filter(Boolean),
+    [selectedIds, users]
+  );
+  const suggestions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 1) return [];
+    return users
+      .filter((u) => {
+        if (selectedIds.includes(String(u.id))) return false;
+        const hay = `${u.full_name || ''} ${u.email || ''}`.toLowerCase();
+        return hay.includes(q);
+      })
+      .slice(0, 15);
+  }, [query, users, selectedIds]);
+
+  const addUser = (id) => {
+    const s = String(id);
+    if (!selectedIds.includes(s)) onChange([...selectedIds, s]);
+    setQuery('');
+  };
+
+  return (
+    <div className="space-y-3">
+      {selected.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {selected.map((u) => (
+            <span
+              key={u.id}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-brand-200/80 bg-brand-50/80 dark:bg-brand-950/40 dark:border-brand-800/60 px-2.5 py-1 text-xs font-medium text-brand-900 dark:text-brand-100"
+            >
+              <span className="max-w-[12rem] truncate">{u.full_name || u.email}</span>
+              <button
+                type="button"
+                className="text-brand-700 hover:text-brand-900 dark:text-brand-300 leading-none"
+                aria-label={`Remove ${u.full_name || u.email}`}
+                onClick={() => onChange(selectedIds.filter((x) => x !== String(u.id)))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <div className="app-glass-toolbar flex items-center gap-2 px-3 py-1">
+          <svg className="w-4 h-4 shrink-0 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by name or email to add recipients…"
+            className="min-w-0 flex-1 border-0 bg-transparent py-2 text-sm placeholder:text-surface-400 focus:outline-none focus:ring-0"
+            autoComplete="off"
+          />
+        </div>
+        {suggestions.length > 0 && (
+          <ul className="absolute z-20 mt-1 w-full rounded-xl border border-surface-200/80 dark:border-surface-600/60 bg-white/95 dark:bg-surface-900/95 backdrop-blur-xl py-1 shadow-lg max-h-52 overflow-auto">
+            {suggestions.map((u) => (
+              <li key={u.id}>
+                <button
+                  type="button"
+                  className="w-full px-3 py-2.5 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-800/80"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    addUser(u.id);
+                  }}
+                >
+                  <span className="font-medium text-surface-900 dark:text-surface-50">{u.full_name || '—'}</span>
+                  {u.email && <span className="block text-xs text-surface-500 truncate">{u.email}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {query.trim() && suggestions.length === 0 && (
+          <p className="mt-1 text-xs text-surface-500 px-1">No users match &ldquo;{query.trim()}&rdquo;</p>
+        )}
+      </div>
+      <p className="text-xs text-surface-500">
+        {selected.length === 0 ? 'No reminder recipients yet.' : `${selected.length} recipient${selected.length === 1 ? '' : 's'} selected.`}
+      </p>
+    </div>
+  );
+}
+
+const NAV_ITEMS = [
+  { id: 'catalog', label: 'Catalog & search' },
+  { id: 'upload', label: 'Upload document' },
+  { id: 'expiries', label: 'Document expiries' },
+];
+
 export default function CompanyLibrary() {
   const { user } = useAuth();
   const isSuper = user?.role === 'super_admin';
-  const isMgmt = isSuper || (user?.page_roles || []).some((r) => String(r).toLowerCase() === 'management');
+  const [navHidden, setNavHidden] = useSecondaryNavHidden('company-library');
 
   const [access, setAccess] = useState(null);
   const [folders, setFolders] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [searchQ, setSearchQ] = useState('');
-  const [folderId, setFolderId] = useState('');
+  const [folderFilter, setFolderFilter] = useState('');
   const [selected, setSelected] = useState(null);
-  const [sessionToken, setSessionToken] = useState(null);
-  const [sessionExpiresAt, setSessionExpiresAt] = useState(null);
-  const [codeInput, setCodeInput] = useState('');
-  const [emailAttachBusy, setEmailAttachBusy] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('catalog');
   const [tenantUsers, setTenantUsers] = useState([]);
-  const [audit, setAudit] = useState([]);
-  const [tab, setTab] = useState('browse');
+  const [accessInbox, setAccessInbox] = useState([]);
+  const [emailBusy, setEmailBusy] = useState(false);
 
-  const [upTitle, setUpTitle] = useState('');
   const [upFolder, setUpFolder] = useState('');
-  const [upSecured, setUpSecured] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [upTitle, setUpTitle] = useState('');
+  const [upFileName, setUpFileName] = useState('');
+  const [upPrivate, setUpPrivate] = useState(true);
   const [upExpiry, setUpExpiry] = useState('');
   const [upLead, setUpLead] = useState('14');
   const [upReminders, setUpReminders] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  const [toolsOpen, setToolsOpen] = useState(false);
-  const [deleteAuthPin, setDeleteAuthPin] = useState('');
-  const [deleting, setDeleting] = useState(false);
-  const [deleteCodeEmailBusy, setDeleteCodeEmailBusy] = useState(false);
-  const [deleteCodeEmailNotice, setDeleteCodeEmailNotice] = useState(null);
-  const [requestNotice, setRequestNotice] = useState(null);
-  const [auditSearchQ, setAuditSearchQ] = useState('');
-  const [auditKind, setAuditKind] = useState('all');
-  const [aiIntent, setAiIntent] = useState('');
-  const [aiSearchBusy, setAiSearchBusy] = useState(false);
-  const [aiSearchResults, setAiSearchResults] = useState([]);
-  const [aiSearchMessage, setAiSearchMessage] = useState(null);
+  const fileInputRef = useRef(null);
+
   const [expiryDocs, setExpiryDocs] = useState([]);
   const [expiryLoading, setExpiryLoading] = useState(false);
+  const [accessNote, setAccessNote] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [deleteAuthPin, setDeleteAuthPin] = useState('');
+  const [deleteCodeEmailBusy, setDeleteCodeEmailBusy] = useState(false);
+  const [deleteCodeNotice, setDeleteCodeNotice] = useState('');
+  const [deleting, setDeleting] = useState(false);
+
+  const canManageDoc = useCallback(
+    (doc) => {
+      if (!doc) return false;
+      if (doc.is_owner) return true;
+      if (isSuper) return true;
+      return String(doc.uploaded_by) === String(user?.id);
+    },
+    [isSuper, user?.id]
+  );
 
   const refreshFolders = useCallback(async () => {
     try {
@@ -103,22 +223,24 @@ export default function CompanyLibrary() {
 
   const refreshDocs = useCallback(async () => {
     try {
-      const d = await lib.documents({ q: searchQ.trim() || undefined, folder_id: folderId || undefined });
+      const d = await lib.documents({
+        q: searchQ.trim() || undefined,
+        folder_id: folderFilter || undefined,
+      });
       setDocuments(d.documents || []);
     } catch {
       setDocuments([]);
     }
-  }, [searchQ, folderId]);
+  }, [searchQ, folderFilter]);
 
-  const refreshAudit = useCallback(async () => {
-    if (!isMgmt) return;
+  const refreshInbox = useCallback(async () => {
     try {
-      const d = await lib.auditRecent(80);
-      setAudit(d.entries || []);
+      const d = await lib.accessInbox();
+      setAccessInbox(d.requests || []);
     } catch {
-      setAudit([]);
+      setAccessInbox([]);
     }
-  }, [isMgmt]);
+  }, []);
 
   const loadAccess = useCallback(async () => {
     setLoading(true);
@@ -129,15 +251,15 @@ export default function CompanyLibrary() {
       if (a.allowed_now) {
         await refreshFolders();
         await refreshDocs();
+        await refreshInbox();
         pm.tenantUsers().then((d) => setTenantUsers(d.users || [])).catch(() => setTenantUsers([]));
-        if (isMgmt) await refreshAudit();
       }
     } catch (e) {
       setError(e?.message || 'Could not load library');
     } finally {
       setLoading(false);
     }
-  }, [refreshFolders, refreshDocs, refreshAudit, isMgmt]);
+  }, [refreshFolders, refreshDocs, refreshInbox]);
 
   useEffect(() => {
     loadAccess();
@@ -145,14 +267,9 @@ export default function CompanyLibrary() {
 
   useEffect(() => {
     if (!access?.allowed_now) return;
-    const t = setTimeout(() => refreshDocs(), 300);
+    const t = setTimeout(() => refreshDocs(), 280);
     return () => clearTimeout(t);
-  }, [searchQ, folderId, access?.allowed_now, refreshDocs]);
-
-  useEffect(() => {
-    setAiSearchResults([]);
-    setAiSearchMessage(null);
-  }, [folderId]);
+  }, [searchQ, folderFilter, access?.allowed_now, refreshDocs]);
 
   useEffect(() => {
     if (tab !== 'expiries' || !access?.allowed_now) return;
@@ -174,161 +291,111 @@ export default function CompanyLibrary() {
     };
   }, [tab, access?.allowed_now]);
 
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+    };
+  }, [previewBlobUrl]);
+
   const folderLabel = useCallback(
     (fid) => {
       if (!fid) return '—';
-      const f = folders.find((x) => String(x.id) === String(fid));
-      return f?.name || '—';
+      return folders.find((x) => String(x.id) === String(fid))?.name || '—';
     },
     [folders]
   );
 
   const expirySorted = useMemo(() => {
-    const rows = Array.isArray(expiryDocs) ? [...expiryDocs] : [];
+    const rows = [...(expiryDocs || [])];
     const withD = rows.filter((d) => d.expires_at);
     const noD = rows.filter((d) => !d.expires_at);
     withD.sort((a, b) => new Date(a.expires_at) - new Date(b.expires_at));
-    return { withExpiry: withD, noExpiry: noD };
+    const overdue = withD.filter((d) => expiryStatus(d.expires_at).label.includes('overdue'));
+    const soon = withD.filter((d) => {
+      const l = expiryStatus(d.expires_at).label;
+      return !l.includes('overdue') && (l.includes('today') || (l.includes('left') && parseInt(l, 10) <= 14));
+    });
+    const later = withD.filter((d) => !overdue.includes(d) && !soon.includes(d));
+    return { overdue, soon, later, noExpiry: noD };
   }, [expiryDocs]);
 
-  const expiryStatus = useCallback((expiresAt) => {
-    if (!expiresAt) return { label: 'No date', className: 'text-surface-500' };
-    const end = new Date(expiresAt);
-    const now = new Date();
-    const startOfEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-    const startOfNow = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const diffDays = Math.round((startOfEnd - startOfNow) / 86400000);
-    if (diffDays < 0) return { label: `${Math.abs(diffDays)}d overdue`, className: 'text-red-700 dark:text-red-300 font-semibold' };
-    if (diffDays === 0) return { label: 'Today', className: 'text-amber-700 dark:text-amber-300 font-semibold' };
-    if (diffDays <= 14) return { label: `In ${diffDays}d`, className: 'text-amber-700 dark:text-amber-300 font-semibold' };
-    return { label: `In ${diffDays}d`, className: 'text-surface-600 dark:text-surface-400' };
-  }, []);
+  const catalogDocs = useMemo(() => {
+    const list = [...documents];
+    list.sort(
+      (a, b) =>
+        (b.relevance_score || 0) - (a.relevance_score || 0) ||
+        String(a.display_title).localeCompare(String(b.display_title))
+    );
+    return list;
+  }, [documents]);
 
-  const openDetail = async (id) => {
+  const openDetail = async (id, opts = {}) => {
     setError('');
-    setSessionToken(null);
-    setSessionExpiresAt(null);
-    setCodeInput('');
+    setNotice('');
+    setViewerOpen(false);
+    setRenaming(!!opts.startRename);
+    setRenameTitle('');
     setDeleteAuthPin('');
-    setDeleteCodeEmailNotice(null);
-    setRequestNotice(null);
+    setDeleteCodeNotice('');
+    if (previewBlobUrl) {
+      URL.revokeObjectURL(previewBlobUrl);
+      setPreviewBlobUrl(null);
+    }
     try {
       const d = await lib.document(id);
       setSelected(d.document);
+      if (opts.startRename) setRenameTitle(d.document?.display_title || '');
     } catch (e) {
       setError(e?.message || 'Could not open document');
     }
   };
 
-  /** Secured docs: email system PIN to uploader (or super admin’s own email). */
-  const requestSystemPin = async () => {
-    if (!selected || !selected.is_pin_protected) return;
-    setError('');
-    setRequestNotice(null);
-    try {
-      const r = await lib.requestAccess(selected.id, {});
-      setRequestNotice(r.message || 'Check email for the system PIN.');
-    } catch (e) {
-      setError(e?.message || 'Could not send PIN email');
-    }
-  };
-
-  const verifyCode = async () => {
-    if (!selected || !codeInput.trim()) return;
-    setError('');
-    try {
-      const r = await lib.verifyCode(selected.id, codeInput.trim());
-      const tok = r.session_token || r.grant_token;
-      setSessionToken(tok || null);
-      setSessionExpiresAt(r.expires_at || null);
-      setRequestNotice(r.message || 'PIN verified. You can email the file to yourself.');
-    } catch (e) {
-      setError(e?.message || 'Verification failed');
-    }
-  };
-
-  /** Email attachment to the signed-in user’s address (only delivery method). */
-  const emailCopyToMe = async () => {
+  const startRename = () => {
     if (!selected) return;
+    setRenameTitle(selected.display_title || '');
+    setRenaming(true);
     setError('');
-    setEmailAttachBusy(true);
-    try {
-      const body = {};
-      if (selected.is_pin_protected) {
-        if (!sessionToken) {
-          setError('Verify the system PIN first — then you can email the file to yourself.');
-          return;
-        }
-        body.session_token = sessionToken;
-      }
-      const r = await lib.emailAttachment(selected.id, body);
-      setRequestNotice(r.message || `Sent to ${r.to || user?.email || 'your inbox'}.`);
-    } catch (e) {
-      setError(e?.message || 'Could not send email');
-    } finally {
-      setEmailAttachBusy(false);
-    }
   };
 
-  const onUpload = async (e) => {
-    e.preventDefault();
-    const input = e.target.querySelector('input[type=file]');
-    const file = input?.files?.[0];
-    if (!file) {
-      setError('Choose a file');
+  const cancelRename = () => {
+    setRenaming(false);
+    setRenameTitle('');
+  };
+
+  const saveRename = async () => {
+    if (!selected) return;
+    const title = renameTitle.trim();
+    if (!title) {
+      setError('Enter a display name.');
       return;
     }
-    setUploading(true);
+    setRenameBusy(true);
     setError('');
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('display_title', upTitle.trim() || file.name);
-      if (upFolder) fd.append('folder_id', upFolder);
-      if (upSecured) fd.append('is_secured', '1');
-      if (upExpiry) fd.append('expires_at', upExpiry);
-      fd.append('expiry_reminder_lead_days', upLead || '14');
-      if (upReminders.length) fd.append('reminder_user_ids', JSON.stringify(upReminders));
-      await lib.upload(fd);
-      setUpTitle('');
-      setUpSecured(false);
-      setUpExpiry('');
-      input.value = '';
+      const d = await lib.patchDocument(selected.id, { display_title: title });
+      setSelected(d.document);
+      setRenaming(false);
+      setNotice('Document renamed.');
       await refreshDocs();
-      await refreshFolders();
-    } catch (err) {
-      setError(err?.message || 'Upload failed');
+      if (tab === 'expiries') {
+        const all = await lib.documents({});
+        setExpiryDocs(all.documents || []);
+      }
+    } catch (e) {
+      setError(e?.message || 'Could not rename');
     } finally {
-      setUploading(false);
+      setRenameBusy(false);
     }
-  };
-
-  const createFolder = async (e) => {
-    e.preventDefault();
-    if (!newFolderName.trim()) return;
-    setError('');
-    try {
-      await lib.createFolder({ name: newFolderName.trim(), parent_folder_id: null });
-      setNewFolderName('');
-      await refreshFolders();
-    } catch (err) {
-      setError(err?.message || 'Could not create folder');
-    }
-  };
-
-  const toggleReminderUser = (id) => {
-    const s = String(id);
-    setUpReminders((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
   };
 
   const emailDeleteAuthorizationCode = async () => {
     if (!selected || !isSuper) return;
     setError('');
-    setDeleteCodeEmailNotice(null);
+    setDeleteCodeNotice('');
     setDeleteCodeEmailBusy(true);
     try {
       const r = await lib.requestDocumentDeleteCode(selected.id);
-      setDeleteCodeEmailNotice(r.message || 'Check your email for the code.');
+      setDeleteCodeNotice(r.message || 'Check your email for the authorization code.');
     } catch (e) {
       setError(e?.message || 'Could not send email');
     } finally {
@@ -336,56 +403,10 @@ export default function CompanyLibrary() {
     }
   };
 
-  const filteredAudit = useMemo(() => {
-    let rows = audit;
-    if (auditKind === 'downloads') {
-      rows = rows.filter((a) => {
-        const x = String(a.action || '');
-        return x.includes('download') || x.startsWith('library_');
-      });
-    } else if (auditKind === 'deletes') {
-      rows = rows.filter((a) => String(a.action || '') === 'document_delete');
-    }
-    const q = auditSearchQ.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter((a) => {
-        const hay = [a.action, a.user_name, a.document_title, a.detail]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        return hay.includes(q);
-      });
-    }
-    return rows;
-  }, [audit, auditKind, auditSearchQ]);
-
-  const runIntentSearch = async () => {
-    const intent = aiIntent.trim();
-    if (!intent) {
-      setError('Describe what you need the document for.');
-      return;
-    }
-    setAiSearchBusy(true);
-    setError('');
-    setAiSearchMessage(null);
-    try {
-      const body = { intent };
-      if (folderId) body.folder_id = folderId;
-      const d = await lib.intentSearch(body);
-      setAiSearchResults(d.documents || []);
-      setAiSearchMessage(d.message || null);
-    } catch (e) {
-      setError(e?.message || 'AI search failed');
-      setAiSearchResults([]);
-    } finally {
-      setAiSearchBusy(false);
-    }
-  };
-
   const deleteSelectedDocument = async () => {
     if (!selected || !isSuper) return;
     if (!deleteAuthPin.trim()) {
-      setError('Enter the code from your email (or your organisation’s fallback PIN if configured).');
+      setError('Enter the authorization code from your email.');
       return;
     }
     if (!window.confirm(`Permanently delete “${selected.display_title}”? This cannot be undone.`)) return;
@@ -394,16 +415,14 @@ export default function CompanyLibrary() {
     try {
       await lib.deleteDocument(selected.id, { authorization_pin: deleteAuthPin.trim() });
       setSelected(null);
+      setRenaming(false);
       setDeleteAuthPin('');
-      setDeleteCodeEmailNotice(null);
+      setDeleteCodeNotice('');
+      setNotice('Document deleted.');
       await refreshDocs();
       if (tab === 'expiries') {
-        try {
-          const d = await lib.documents({});
-          setExpiryDocs(d.documents || []);
-        } catch {
-          /* ignore */
-        }
+        const all = await lib.documents({});
+        setExpiryDocs(all.documents || []);
       }
     } catch (e) {
       setError(e?.message || 'Delete failed');
@@ -412,8 +431,149 @@ export default function CompanyLibrary() {
     }
   };
 
-  const inputSurface =
-    'rounded-xl border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-900 px-4 py-2.5 text-sm text-surface-900 dark:text-surface-100 shadow-sm placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 dark:focus:border-brand-500';
+  const onFilePicked = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setUpFileName(f.name);
+    if (!upTitle.trim()) setUpTitle(f.name.replace(/\.[^.]+$/, ''));
+  };
+
+  const createFolder = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    setError('');
+    try {
+      const r = await lib.createFolder({ name: newFolderName.trim(), parent_folder_id: null });
+      setNewFolderName('');
+      await refreshFolders();
+      const id = r.folder?.id || r.id;
+      if (id) setUpFolder(String(id));
+    } catch (err) {
+      setError(err?.message || 'Could not create folder');
+    }
+  };
+
+  const onUpload = async (e) => {
+    e.preventDefault();
+    if (!upFolder) {
+      setError('Choose or create a folder first.');
+      return;
+    }
+    const file = fileInputRef.current?.files?.[0];
+    if (!file) {
+      setError('Choose a file to upload.');
+      return;
+    }
+    setUploading(true);
+    setError('');
+    setNotice('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('folder_id', upFolder);
+      fd.append('display_title', (upTitle.trim() || file.name).slice(0, 500));
+      fd.append('is_secured', upPrivate ? '1' : '0');
+      if (upExpiry) fd.append('expires_at', upExpiry);
+      fd.append('expiry_reminder_lead_days', upLead || '14');
+      if (upReminders.length) fd.append('reminder_user_ids', JSON.stringify(upReminders));
+      await lib.upload(fd);
+      setNotice('Document uploaded successfully.');
+      setUpTitle('');
+      setUpFileName('');
+      setUpExpiry('');
+      setUpReminders([]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      await refreshDocs();
+      await refreshFolders();
+      setTab('catalog');
+    } catch (err) {
+      setError(err?.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const requestAccess = async () => {
+    if (!selected) return;
+    setError('');
+    try {
+      const r = await lib.requestAccess(selected.id, { note: accessNote.trim() });
+      setNotice(r.message || 'Request sent.');
+      await openDetail(selected.id);
+    } catch (e) {
+      setError(e?.message || 'Could not send request');
+    }
+  };
+
+  const emailCopyToMe = async () => {
+    if (!selected) return;
+    setEmailBusy(true);
+    setError('');
+    try {
+      const r = await lib.emailAttachment(selected.id, {});
+      setNotice(r.message || `Emailed to ${r.to || user?.email}.`);
+    } catch (e) {
+      setError(e?.message || 'Could not send email');
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const lockDocument = async () => {
+    if (!selected) return;
+    if (!window.confirm('Lock this document? All live access for other users will end immediately.')) return;
+    try {
+      const r = await lib.lockDocument(selected.id);
+      setNotice(r.message || 'Document locked.');
+      await openDetail(selected.id);
+      await refreshInbox();
+    } catch (e) {
+      setError(e?.message || 'Could not lock');
+    }
+  };
+
+  const openViewer = async () => {
+    if (!selected?.can_view && !selected?.is_public && !selected?.has_live_access) {
+      setError('You need access before viewing this document.');
+      return;
+    }
+    setError('');
+    try {
+      const res = await fetch(lib.previewUrl(selected.id), { credentials: 'include' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || res.statusText);
+      }
+      const blob = await res.blob();
+      if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+      const url = URL.createObjectURL(blob);
+      setPreviewBlobUrl(url);
+      setViewerOpen(true);
+    } catch (e) {
+      setError(e?.message || 'Could not open viewer');
+    }
+  };
+
+  const approveRequest = async (requestId) => {
+    try {
+      const r = await lib.approveAccessRequest(requestId);
+      setNotice(r.message || 'Approved.');
+      await refreshInbox();
+      if (selected) await openDetail(selected.id);
+    } catch (e) {
+      setError(e?.message || 'Could not approve');
+    }
+  };
+
+  const denyRequest = async (requestId) => {
+    try {
+      await lib.denyAccessRequest(requestId);
+      setNotice('Request denied.');
+      await refreshInbox();
+    } catch (e) {
+      setError(e?.message || 'Could not deny');
+    }
+  };
 
   if (loading && !access) {
     return (
@@ -426,786 +586,508 @@ export default function CompanyLibrary() {
     );
   }
 
-  const navItems = [
-    { id: 'browse', label: 'Documents' },
-    ...(isMgmt ? [{ id: 'audit', label: 'Audit trail' }] : []),
-    { id: 'expiries', label: 'Monitor document expiries' },
-  ];
-
   return (
-    <div className="flex flex-col min-h-0 w-full -m-4 sm:-m-6 bg-surface-100 dark:bg-surface-950">
-      {error && (
-        <div className="shrink-0 z-10 mx-4 mt-4 sm:mx-6 text-sm text-red-800 dark:text-red-200 bg-red-50 dark:bg-red-950/35 border border-red-200/80 dark:border-red-900/60 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <span className="min-w-0">{error}</span>
-          <button type="button" className="shrink-0 text-sm font-semibold hover:underline" onClick={() => setError('')}>
-            Dismiss
+    <div className="flex flex-1 min-h-0 overflow-hidden relative -m-4 sm:-m-6">
+      {access && !access.allowed_now && (
+        <div className="absolute inset-x-0 top-0 z-10 mx-4 mt-4 sm:mx-6 rounded-lg border border-amber-200/90 bg-amber-50/90 dark:bg-amber-950/35 dark:border-amber-800/80 px-5 py-4 text-sm text-amber-950 dark:text-amber-100">
+          <p className="font-semibold">Library closed</p>
+          <p className="mt-1 opacity-90">{access.message || 'Outside scheduled access hours.'}</p>
+        </div>
+      )}
+
+      <nav
+        className={`shrink-0 app-glass-secondary-nav flex flex-col min-h-0 transition-[width] duration-200 ease-out overflow-hidden ${
+          navHidden ? 'w-0 border-r-0' : 'w-72'
+        }`}
+        aria-label="Company library"
+        aria-hidden={navHidden}
+      >
+        <div className="p-4 border-b border-surface-100 dark:border-surface-800 shrink-0 flex items-start justify-between gap-2 w-72">
+          <div className="min-w-0 flex-1 flex items-start gap-2">
+            <LibraryGlyph className="h-8 w-8 text-brand-600 shrink-0 mt-0.5" />
+            <div>
+              <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-50">Company library</h2>
+              <p className="text-[11px] text-surface-500 mt-0.5 leading-snug">Catalog · upload · expiries</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setNavHidden(true)}
+            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-surface-500 hover:bg-surface-100 hover:text-surface-700 dark:hover:bg-surface-800"
+            aria-label="Hide navigation"
+            title="Hide navigation"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+            </svg>
           </button>
         </div>
-      )}
-
-      {access && !access.allowed_now && (
-        <div className="shrink-0 mx-4 mt-4 sm:mx-6 rounded-lg border border-amber-200/90 bg-amber-50/90 dark:bg-amber-950/35 dark:border-amber-800/80 px-5 py-4 text-sm text-amber-950 dark:text-amber-100">
-          <div className="flex items-center gap-2">
-            <p className="font-semibold text-amber-900 dark:text-amber-50">Library closed</p>
-            <InfoHint
-              title="Access schedule"
-              text={
-                [access.message || 'Outside allowed hours.', access.restricted ? 'Organisation policy limits when the library is open.' : '']
-                  .filter(Boolean)
-                  .join(' ') || '—'
-              }
-            />
-          </div>
-        </div>
-      )}
-
-      {access?.allowed_now && (
-        <div className="flex flex-1 min-h-0 flex-col md:flex-row">
-          <div className="flex md:hidden shrink-0 border-b border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 px-2 py-2 gap-1 overflow-x-auto">
-            {navItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  setTab(item.id);
-                  if (item.id === 'audit') setSelected(null);
-                }}
-                className={`shrink-0 px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap ${
-                  tab === item.id
-                    ? 'bg-brand-600 text-white'
-                    : 'bg-surface-100 dark:bg-surface-800 text-surface-700 dark:text-surface-200'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-
-          <aside className="hidden md:flex w-56 shrink-0 flex-col border-r border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900">
-            <div className="p-4 border-b border-surface-200 dark:border-surface-700">
-              <div className="flex items-start gap-2">
-                <LibraryGlyph className="h-9 w-9 text-brand-600 shrink-0 mt-0.5" />
-                <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
-                  <h1 className="text-sm font-bold text-surface-900 dark:text-surface-50 leading-tight">Company library</h1>
-                  <InfoHint
-                    title="About this library"
-                    bullets={[
-                      'AI summaries for search; originals by email attachment only (no browser download).',
-                      'Secured uploads: system PIN by email (uploader, or super admin’s own inbox).',
-                      'Audit: PIN steps, emails sent, blocks, deletions.',
-                    ]}
-                  />
-                </div>
-              </div>
-            </div>
-            <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5" aria-label="Library sections">
-              {navItems.map((item) => (
+        <div className="flex-1 overflow-y-auto py-2 scrollbar-thin min-h-0 w-72">
+          <ul className="space-y-0.5">
+            {NAV_ITEMS.map((item) => (
+              <li key={item.id}>
                 <button
-                  key={item.id}
                   type="button"
                   onClick={() => {
                     setTab(item.id);
-                    if (item.id === 'audit') setSelected(null);
+                    if (item.id !== 'catalog') setSelected(null);
                   }}
-                  className={`flex w-full items-center gap-2 text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
                     tab === item.id
-                      ? 'bg-brand-50 text-brand-900 border border-brand-200 dark:bg-brand-950/40 dark:text-brand-100 dark:border-brand-800'
-                      : 'text-surface-700 hover:bg-surface-50 dark:text-surface-300 dark:hover:bg-surface-800/80 border border-transparent'
+                      ? 'bg-brand-50 text-brand-700 border-l-2 border-l-brand-500 font-medium dark:bg-brand-950/40 dark:text-brand-100'
+                      : 'text-surface-600 hover:bg-surface-50 hover:text-surface-900 border-l-2 border-l-transparent dark:text-surface-300 dark:hover:bg-surface-800/50'
                   }`}
                 >
-                  <span className="truncate">{item.label}</span>
+                  {item.label}
                 </button>
-              ))}
-            </nav>
-          </aside>
-
-          <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-surface-50/80 dark:bg-surface-900/40">
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-            {tab === 'audit' && isMgmt && (
-              <div className="space-y-5">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-                  <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center min-w-0">
-                    <label className="sr-only" htmlFor="lib-audit-search">
-                      Search audit log
-                    </label>
-                    <input
-                      id="lib-audit-search"
-                      type="search"
-                      value={auditSearchQ}
-                      onChange={(e) => setAuditSearchQ(e.target.value)}
-                      placeholder="Search title, user, action, or detail…"
-                      className={`w-full sm:max-w-xl min-w-0 ${inputSurface}`}
-                    />
-                    <label className="sr-only" htmlFor="lib-audit-kind">
-                      Event type
-                    </label>
-                    <select
-                      id="lib-audit-kind"
-                      value={auditKind}
-                      onChange={(e) => setAuditKind(e.target.value)}
-                      className={`w-full sm:w-56 shrink-0 ${inputSurface}`}
-                    >
-                      <option value="all">All events</option>
-                      <option value="downloads">Email &amp; access only</option>
-                      <option value="deletes">File removals only</option>
-                    </select>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <InfoHint
-                      title="What this log shows"
-                      bullets={[
-                        'Email deliveries, PIN workflow, blocked access, legacy download attempts.',
-                        'Super-admin file removals.',
-                        'Not logged: search, uploads, opening panels.',
-                      ]}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => refreshAudit()}
-                      className="px-4 py-2.5 rounded-xl border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-900 text-sm font-semibold hover:bg-surface-50 dark:hover:bg-surface-800 shadow-sm"
-                    >
-                      Refresh list
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-surface-200/90 dark:border-surface-700 bg-surface-50/40 dark:bg-surface-950/30 shadow-sm overflow-hidden">
-                  <div className="px-5 py-4 border-b border-surface-200/80 dark:border-surface-800 flex flex-wrap items-center justify-between gap-3 bg-white/70 dark:bg-surface-900/50">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <p className="text-lg font-bold text-surface-900 dark:text-surface-50">
-                        {filteredAudit.length} event{filteredAudit.length === 1 ? '' : 's'}
-                        {auditSearchQ.trim() || auditKind !== 'all' ? ' · filtered' : ''}
-                      </p>
-                      <InfoHint
-                        title="Reading the log"
-                        text="Each row is one event. Expand detail in the list for recipient, file name, size, and JSON metadata where recorded."
-                      />
+              </li>
+            ))}
+          </ul>
+          {accessInbox.length > 0 && (
+            <div className="mt-4 px-4">
+              <p className="text-xs font-medium text-surface-400 uppercase tracking-wider mb-2">
+                Pending access ({accessInbox.length})
+              </p>
+              <ul className="space-y-2 text-xs">
+                {accessInbox.slice(0, 4).map((r) => (
+                  <li key={r.id} className="app-glass-card p-2">
+                    <p className="font-medium truncate">{r.document_title}</p>
+                    <p className="text-surface-500 truncate">{r.requester_name}</p>
+                    <div className="flex gap-2 mt-1">
+                      <button type="button" className="text-brand-600 font-semibold" onClick={() => approveRequest(r.id)}>
+                        Approve
+                      </button>
+                      <button type="button" className="text-surface-500" onClick={() => denyRequest(r.id)}>
+                        Deny
+                      </button>
                     </div>
-                  </div>
-                  <ul className="divide-y divide-surface-100 dark:divide-surface-800/90 max-h-[min(55vh,520px)] overflow-y-auto bg-white dark:bg-surface-900">
-                    {filteredAudit.map((a) => (
-                      <li key={a.id}>
-                        <div className="w-full text-left px-4 sm:px-5 py-4 flex gap-4 transition-colors hover:bg-surface-50/90 dark:hover:bg-surface-800/30">
-                          <div
-                            className={`shrink-0 w-11 h-11 rounded-xl flex items-center justify-center text-[10px] font-bold leading-tight text-center ring-1 ${auditBadgeClass(a.action)}`}
-                          >
-                            {auditRowBadge(a.action)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-semibold text-surface-900 dark:text-surface-50 leading-snug">{a.document_title || a.action || 'Event'}</p>
-                            <p className="text-xs text-surface-500 mt-1 truncate">
-                              <span className="font-mono text-[11px] text-surface-600 dark:text-surface-400">{a.action}</span>
-                              {' · '}
-                              {a.user_name || '—'} · {formatDateTime(a.created_at)}
-                            </p>
-                            {a.detail ? (
-                              <p className="text-sm text-surface-600 dark:text-surface-400 mt-2 line-clamp-3 leading-relaxed">{a.detail}</p>
-                            ) : null}
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                  {filteredAudit.length === 0 && (
-                    <p className="p-12 text-center text-surface-500 text-sm bg-white dark:bg-surface-900">
-                      {audit.length === 0
-                        ? 'No events yet.'
-                        : 'No matches — adjust search or filters.'}
-                    </p>
-                  )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </nav>
+
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-auto p-4 sm:p-6 scrollbar-thin flex flex-col">
+          {navHidden && (
+            <button
+              type="button"
+              onClick={() => setNavHidden(false)}
+              className="self-start flex items-center gap-2 px-3 py-2 mb-3 rounded-lg border border-surface-200 bg-white/80 backdrop-blur-md text-surface-700 hover:bg-white text-sm font-medium shadow-sm dark:bg-surface-900/80 dark:border-surface-600 dark:text-surface-200"
+              aria-label="Show navigation"
+            >
+              <svg className="w-5 h-5 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+              Show navigation
+            </button>
+          )}
+
+          <div className="w-full min-h-full flex-1 flex flex-col max-w-none">
+            {(error || notice) && (
+              <div
+                className={`mb-4 text-sm rounded-lg px-4 py-3 border ${
+                  error
+                    ? 'text-red-800 dark:text-red-200 bg-red-50/90 dark:bg-red-950/35 border-red-200/80'
+                    : 'text-emerald-900 dark:text-emerald-100 bg-emerald-50/90 dark:bg-emerald-950/35 border-emerald-200/80'
+                }`}
+              >
+                <div className="flex justify-between gap-3">
+                  <span>{error || notice}</span>
+                  <button type="button" className="shrink-0 font-semibold hover:underline" onClick={() => { setError(''); setNotice(''); }}>
+                    Dismiss
+                  </button>
                 </div>
               </div>
             )}
 
-            {tab === 'browse' && (
-              <div className="space-y-6 max-w-6xl">
-                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 shadow-sm">
-                  <div className="flex flex-col gap-4">
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs font-semibold uppercase tracking-wide text-surface-500 dark:text-surface-400" htmlFor="lib-search">
-                          Search
-                        </label>
-                        <InfoHint title="Search" text="Matches title, file name, and AI summary text." />
-                      </div>
-                      <input
-                        id="lib-search"
-                        type="search"
-                        value={searchQ}
-                        onChange={(e) => setSearchQ(e.target.value)}
-                        placeholder="Search by title, file name, or summary text…"
-                        className={`w-full min-w-0 py-3 px-4 text-sm ${inputSurface}`}
-                      />
+            {!access?.allowed_now ? (
+              <div className="app-glass-card p-8 text-center text-surface-600 dark:text-surface-400">
+                <p>The library is not available right now. Check back during scheduled hours.</p>
+              </div>
+            ) : (
+              <>
+                {tab === 'upload' && (
+                  <div className="w-full space-y-5 flex-1">
+                    <div>
+                      <h2 className="text-lg font-bold text-surface-900 dark:text-surface-50">Upload document</h2>
+                      <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
+                        Select a folder, then upload. Private documents require owner approval for others to view or email.
+                      </p>
                     </div>
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <label className="sr-only" htmlFor="lib-folder">
-                        Folder
-                      </label>
-                      <select
-                        id="lib-folder"
-                        value={folderId}
-                        onChange={(e) => setFolderId(e.target.value)}
-                        className={`w-full sm:max-w-xs shrink-0 ${inputSurface}`}
-                      >
-                        <option value="">All folders</option>
-                        {folders.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="flex flex-wrap gap-2 sm:justify-end">
-                        <button
-                          type="button"
-                          onClick={() => setToolsOpen((o) => !o)}
-                          className={`px-4 py-2 rounded-lg text-sm font-semibold border ${
-                            toolsOpen
-                              ? 'border-brand-400 bg-brand-50 text-brand-800 dark:bg-brand-950/50 dark:text-brand-200 dark:border-brand-600'
-                              : 'border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-800 hover:bg-surface-100 dark:hover:bg-surface-700'
-                          }`}
-                        >
-                          {toolsOpen ? 'Close add panel' : 'Add files or folder'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => loadAccess()}
-                          className="px-4 py-2 rounded-lg border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-900 text-sm font-semibold hover:bg-surface-50 dark:hover:bg-surface-800"
-                        >
-                          Refresh
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
 
-                  {toolsOpen && (
-                    <div className="grid gap-4 md:grid-cols-1 rounded-2xl border border-surface-200/90 dark:border-surface-700 bg-gradient-to-b from-surface-50/90 to-white dark:from-surface-800/30 dark:to-surface-900/40 p-4 sm:p-5 shadow-inner">
-                      <div className="rounded-2xl border border-surface-200/80 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 sm:p-5 shadow-sm">
-                        <div className="flex items-center gap-2 mb-4">
-                          <p className="text-sm font-bold text-surface-900 dark:text-surface-50">Upload</p>
-                          <InfoHint
-                            title="AI analysis"
-                            text="PDF, Word (.docx), Excel (.xlsx), CSV, and plain text are read for summaries. Other types use the file name only."
-                          />
-                        </div>
-                        <form onSubmit={onUpload} className="space-y-3">
+                    <div className="grid lg:grid-cols-2 gap-5 w-full">
+                      <section className="app-glass-card p-5 space-y-4 h-fit">
+                        <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">1. Folder</h3>
+                        <select value={upFolder} onChange={(e) => setUpFolder(e.target.value)} className={glassInput} required>
+                          <option value="">Select folder…</option>
+                          {folders.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.name}
+                            </option>
+                          ))}
+                        </select>
+                        <form onSubmit={createFolder} className="flex gap-2">
                           <input
-                            type="file"
-                            className="text-sm w-full file:mr-3 file:rounded-xl file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-semibold dark:file:bg-brand-950"
-                            required
+                            type="text"
+                            value={newFolderName}
+                            onChange={(e) => setNewFolderName(e.target.value)}
+                            placeholder="New folder name"
+                            className={glassInput}
                           />
+                          <button type="submit" className={btnSecondary}>
+                            Create
+                          </button>
+                        </form>
+                      </section>
+
+                      <form onSubmit={onUpload} className="app-glass-card p-5 space-y-4 lg:col-span-1">
+                        <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">2. File & details</h3>
+                        <input ref={fileInputRef} type="file" className="text-sm w-full" onChange={onFilePicked} />
+                        {upFileName && <p className="text-xs text-surface-500">Selected: {upFileName}</p>}
+                        <div>
+                          <label className="block text-xs font-semibold uppercase text-surface-500 mb-1">Display name</label>
                           <input
                             type="text"
                             value={upTitle}
                             onChange={(e) => setUpTitle(e.target.value)}
-                            placeholder="Title shown in the library"
-                            className={`w-full ${inputSurface}`}
+                            placeholder="How it appears in the catalog"
+                            className={glassInput}
                           />
-                          <select
-                            value={upFolder}
-                            onChange={(e) => setUpFolder(e.target.value)}
-                            className={`w-full ${inputSurface}`}
-                          >
-                            <option value="">Folder (optional)</option>
-                            {folders.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {f.name}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="flex items-center gap-3 rounded-xl border border-surface-200 dark:border-surface-600 bg-surface-50/80 dark:bg-surface-950/30 px-4 py-3">
-                            <input
-                              id="lib-up-secured"
-                              type="checkbox"
-                              checked={upSecured}
-                              onChange={(e) => setUpSecured(e.target.checked)}
-                              className="rounded border-surface-300 text-brand-600"
-                            />
-                            <label htmlFor="lib-up-secured" className="text-sm font-semibold text-surface-900 dark:text-surface-50 cursor-pointer">
-                              Secured
-                            </label>
-                            <InfoHint
-                              title="Secured uploads"
-                              text="Recipients need the system PIN (emailed to the uploader, or to a super admin’s own address) before they can email themselves the file. No direct download."
-                            />
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                              <label className="text-xs font-medium text-surface-600 dark:text-surface-400">Expiry date (optional)</label>
-                              <input
-                                type="date"
-                                value={upExpiry}
-                                onChange={(e) => setUpExpiry(e.target.value)}
-                                className={`mt-1 w-full ${inputSurface}`}
-                              />
-                            </div>
-                            <div>
-                              <label className="text-xs font-medium text-surface-600 dark:text-surface-400">Remind N days before</label>
-                              <input
-                                type="number"
-                                min={1}
-                                max={90}
-                                value={upLead}
-                                onChange={(e) => setUpLead(e.target.value)}
-                                className={`mt-1 w-full ${inputSurface}`}
-                              />
-                            </div>
-                          </div>
-                          <div className="max-h-28 overflow-y-auto rounded-xl border border-surface-200 dark:border-surface-700 p-3 text-xs space-y-1 bg-surface-50/50 dark:bg-surface-950/20">
-                            <p className="text-surface-600 dark:text-surface-400 mb-1 font-semibold">Expiry email recipients</p>
-                            {tenantUsers.map((u) => (
-                              <label key={u.id} className="flex items-center gap-2 cursor-pointer py-0.5">
-                                <input type="checkbox" checked={upReminders.includes(String(u.id))} onChange={() => toggleReminderUser(u.id)} />
-                                <span>{u.full_name || u.email}</span>
-                              </label>
-                            ))}
-                          </div>
-                          <button
-                            type="submit"
-                            disabled={uploading}
-                            className="w-full py-3 rounded-xl bg-brand-600 text-white text-sm font-bold hover:bg-brand-700 disabled:opacity-50 shadow-md shadow-brand-900/20"
-                          >
-                            {uploading ? 'Uploading…' : 'Upload and analyse'}
-                          </button>
-                        </form>
-                      </div>
-                      <div className="rounded-2xl border border-surface-200/80 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 sm:p-5 shadow-sm flex flex-col">
-                        <div className="flex items-center gap-2 mb-4">
-                          <p className="text-sm font-bold text-surface-900 dark:text-surface-50">New folder</p>
-                          <InfoHint title="Folders" text="Optional grouping for filtering the catalogue." />
                         </div>
-                        <form onSubmit={createFolder} className="flex flex-col gap-3 flex-1">
-                          <input
-                            value={newFolderName}
-                            onChange={(e) => setNewFolderName(e.target.value)}
-                            placeholder="Folder name"
-                            className={`w-full ${inputSurface}`}
-                          />
-                          <button
-                            type="submit"
-                            className="w-full py-3 rounded-xl bg-surface-800 dark:bg-surface-200 dark:text-surface-900 text-white text-sm font-bold"
-                          >
-                            Create folder
-                          </button>
-                        </form>
+                        <fieldset className="space-y-2">
+                          <legend className="text-xs font-semibold uppercase text-surface-500">Visibility</legend>
+                          <label className="flex items-center gap-2 text-sm">
+                            <input type="radio" checked={upPrivate} onChange={() => setUpPrivate(true)} />
+                            Private — colleagues request access from you
+                          </label>
+                          <label className="flex items-center gap-2 text-sm">
+                            <input type="radio" checked={!upPrivate} onChange={() => setUpPrivate(false)} />
+                            Public — anyone in the library can view and email a copy
+                          </label>
+                        </fieldset>
+                        <div className="grid sm:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-xs font-semibold uppercase text-surface-500 mb-1">Expiry date</label>
+                            <input type="date" value={upExpiry} onChange={(e) => setUpExpiry(e.target.value)} className={glassInput} />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold uppercase text-surface-500 mb-1">Reminder lead (days)</label>
+                            <input type="number" min={1} max={90} value={upLead} onChange={(e) => setUpLead(e.target.value)} className={glassInput} />
+                          </div>
+                        </div>
+                        {tenantUsers.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <p className="text-xs font-semibold uppercase text-surface-500">Expiry reminders</p>
+                              <InfoHint title="Reminders" text="Search for colleagues by name or email. They receive an email before the document expires." />
+                            </div>
+                            <ReminderUserPicker users={tenantUsers} selectedIds={upReminders} onChange={setUpReminders} />
+                          </div>
+                        )}
+                        <button type="submit" disabled={uploading || !upFolder} className={btnPrimary}>
+                          {uploading ? 'Uploading…' : 'Upload to library'}
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
+                {tab === 'catalog' && (
+                  <div className="w-full flex-1 flex flex-col min-h-0 gap-5">
+                    <div className="app-glass-toolbar p-4 flex flex-col sm:flex-row gap-3">
+                      <div className="flex-1 min-w-0">
+                        <label className="text-xs font-semibold uppercase text-surface-500">Search catalog</label>
+                        <input
+                          type="search"
+                          value={searchQ}
+                          onChange={(e) => setSearchQ(e.target.value)}
+                          placeholder="Title or file name…"
+                          className={`mt-1 ${glassInput}`}
+                        />
+                      </div>
+                      <div className="sm:w-56 shrink-0">
+                        <label className="text-xs font-semibold uppercase text-surface-500">Folder</label>
+                        <select value={folderFilter} onChange={(e) => setFolderFilter(e.target.value)} className={`mt-1 ${glassInput}`}>
+                          <option value="">All folders</option>
+                          {folders.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
-                  )}
 
-                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 shadow-sm">
-                  <div className="flex items-center gap-2 mb-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-surface-500 dark:text-surface-400">AI search</p>
-                    <InfoHint title="AI search" text="Describe what you need; ranking uses library summaries and metadata." />
-                  </div>
-                  <label className="sr-only" htmlFor="lib-ai-intent">
-                    What you need the document for
-                  </label>
-                  <textarea
-                    id="lib-ai-intent"
-                    value={aiIntent}
-                    onChange={(e) => setAiIntent(e.target.value)}
-                    rows={4}
-                    placeholder="What do you need the document for?"
-                    className={`w-full min-h-[100px] resize-y text-sm leading-relaxed ${inputSurface}`}
-                  />
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => runIntentSearch()}
-                      disabled={aiSearchBusy}
-                      className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 disabled:opacity-50"
-                    >
-                      {aiSearchBusy ? 'Searching…' : 'Find relevant documents'}
-                    </button>
-                    {aiSearchResults.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAiSearchResults([]);
-                          setAiSearchMessage(null);
-                        }}
-                        className="text-sm font-medium text-surface-600 dark:text-surface-400 hover:text-brand-700"
-                      >
-                        Clear results
-                      </button>
-                    )}
-                  </div>
-                  {aiSearchMessage && (
-                    <p className="mt-2 text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 rounded-lg px-3 py-2">
-                      {aiSearchMessage}
-                    </p>
-                  )}
-                  {aiSearchResults.length > 0 && (
-                    <div className="mt-4 border-t border-surface-200 dark:border-surface-700 pt-4">
-                      <p className="text-xs font-semibold text-surface-500 mb-2">Matches ({aiSearchResults.length})</p>
-                      <div className="max-h-48 overflow-y-auto space-y-1">
-                        {aiSearchResults.map((doc) => (
-                          <button
-                            key={doc.id}
-                            type="button"
-                            onClick={() => openDetail(doc.id)}
-                            className="w-full text-left rounded border border-surface-200 dark:border-surface-600 px-3 py-2 text-sm hover:bg-surface-50 dark:hover:bg-surface-800/60"
-                          >
-                            <span className="font-medium text-surface-900 dark:text-surface-50">{doc.display_title}</span>
-                            {doc.relevance_score != null && (
-                              <span className="ml-2 text-xs text-brand-700 dark:text-brand-300">{Math.round(doc.relevance_score)}%</span>
-                            )}
-                            {doc.match_reason && (
-                              <span className="block text-xs text-surface-500 mt-0.5 line-clamp-2">{doc.match_reason}</span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-sm overflow-hidden">
-                  <div className="px-4 py-3 border-b border-surface-200 dark:border-surface-700 flex flex-wrap items-center justify-between gap-2 bg-surface-50/80 dark:bg-surface-800/40">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <p className="text-sm font-semibold text-surface-900 dark:text-surface-50 truncate">
-                        {documents.length} document{documents.length === 1 ? '' : 's'}
-                        {folderId ? ' · folder' : ''}
-                      </p>
-                      <InfoHint title="Catalogue" text="Select a row to open the side panel — email copy and secured flow." />
-                    </div>
-                  </div>
-                  <div className="overflow-x-auto max-h-[min(65vh,640px)] overflow-y-auto">
-                    <table className="w-full text-sm text-left">
-                      <thead className="sticky top-0 z-[1] bg-surface-100 dark:bg-surface-800 border-b border-surface-200 dark:border-surface-600">
-                        <tr>
-                          <th className="px-4 py-2.5 font-semibold text-surface-700 dark:text-surface-300">Title</th>
-                          <th className="px-4 py-2.5 font-semibold text-surface-700 dark:text-surface-300 hidden sm:table-cell">File</th>
-                          <th className="px-4 py-2.5 font-semibold text-surface-700 dark:text-surface-300 hidden md:table-cell">Folder</th>
-                          <th className="px-4 py-2.5 font-semibold text-surface-700 dark:text-surface-300 hidden lg:table-cell">Uploaded by</th>
-                          <th className="px-4 py-2.5 font-semibold text-surface-700 dark:text-surface-300">Expires</th>
-                          <th className="px-4 py-2.5 font-semibold text-surface-700 dark:text-surface-300 w-24">Secured</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-surface-100 dark:divide-surface-800">
-                        {documents.map((doc) => {
-                          const active = selected?.id === doc.id;
-                          return (
-                            <tr
-                              key={doc.id}
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => openDetail(doc.id)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  openDetail(doc.id);
-                                }
-                              }}
-                              className={`cursor-pointer transition-colors ${
-                                active ? 'bg-brand-50/90 dark:bg-brand-950/25' : 'hover:bg-surface-50 dark:hover:bg-surface-800/40'
-                              }`}
+                    {accessInbox.length > 0 && (
+                      <div className="app-glass-card p-4 border-violet-200/60 dark:border-violet-800/50">
+                        <h3 className="text-sm font-bold text-violet-900 dark:text-violet-100 mb-3">Access requests for your documents</h3>
+                        <ul className="space-y-3">
+                          {accessInbox.map((r) => (
+                            <li
+                              key={r.id}
+                              className="flex flex-wrap items-center justify-between gap-2 text-sm app-glass-toolbar px-4 py-3"
                             >
-                              <td className="px-4 py-3 font-medium text-surface-900 dark:text-surface-50 max-w-[220px] truncate">{doc.display_title}</td>
-                              <td className="px-4 py-3 text-surface-600 dark:text-surface-400 hidden sm:table-cell max-w-[180px] truncate">{doc.file_name}</td>
-                              <td className="px-4 py-3 text-surface-600 dark:text-surface-400 hidden md:table-cell">{folderLabel(doc.folder_id)}</td>
-                              <td className="px-4 py-3 text-surface-600 dark:text-surface-400 hidden lg:table-cell truncate max-w-[140px]">
-                                {doc.uploader_name || '—'}
-                              </td>
-                              <td className="px-4 py-3 text-surface-600 dark:text-surface-400 whitespace-nowrap">
-                                {doc.expires_at ? formatDate(doc.expires_at) : '—'}
-                              </td>
-                              <td className="px-4 py-3">{doc.is_pin_protected ? <span className="text-xs font-medium text-violet-700 dark:text-violet-300">Yes</span> : <span className="text-surface-400">—</span>}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  {documents.length === 0 && (
-                    <p className="p-8 text-center text-surface-500 text-sm">No documents match your search or folder filter.</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {tab === 'expiries' && (
-              <div className="space-y-4 max-w-5xl">
-                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 shadow-sm">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold text-surface-900 dark:text-surface-50">Document expiries</h2>
-                    <InfoHint
-                      title="Expiry monitor"
-                      text="All folders, sorted by expiry. Items without a date are listed below the table."
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setExpiryLoading(true);
-                      lib
-                        .documents({})
-                        .then((d) => setExpiryDocs(d.documents || []))
-                        .catch(() => setExpiryDocs([]))
-                        .finally(() => setExpiryLoading(false));
-                    }}
-                    className="mt-3 px-3 py-1.5 rounded-lg border border-surface-200 dark:border-surface-600 text-sm font-medium hover:bg-surface-50 dark:hover:bg-surface-800"
-                  >
-                    Refresh list
-                  </button>
-                </div>
-                {expiryLoading ? (
-                  <p className="text-sm text-surface-500 px-1">Loading…</p>
-                ) : (
-                  <>
-                    <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-sm overflow-hidden">
-                      <div className="px-4 py-2 border-b border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-800/40 text-xs font-semibold uppercase tracking-wide text-surface-500">
-                        With expiry date ({expirySorted.withExpiry.length})
-                      </div>
-                      <div className="overflow-x-auto max-h-[min(50vh,480px)] overflow-y-auto">
-                        <table className="w-full text-sm text-left">
-                          <thead className="sticky top-0 bg-surface-100 dark:bg-surface-800 border-b border-surface-200 dark:border-surface-600">
-                            <tr>
-                              <th className="px-4 py-2 font-semibold">Title</th>
-                              <th className="px-4 py-2 font-semibold hidden sm:table-cell">File</th>
-                              <th className="px-4 py-2 font-semibold hidden md:table-cell">Folder</th>
-                              <th className="px-4 py-2 font-semibold">Expires</th>
-                              <th className="px-4 py-2 font-semibold">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-surface-100 dark:divide-surface-800">
-                            {expirySorted.withExpiry.map((doc) => {
-                              const st = expiryStatus(doc.expires_at);
-                              const active = selected?.id === doc.id;
-                              return (
-                                <tr
-                                  key={doc.id}
-                                  role="button"
-                                  tabIndex={0}
-                                  onClick={() => openDetail(doc.id)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
-                                      e.preventDefault();
-                                      openDetail(doc.id);
-                                    }
-                                  }}
-                                  className={`cursor-pointer ${active ? 'bg-brand-50/90 dark:bg-brand-950/25' : 'hover:bg-surface-50 dark:hover:bg-surface-800/40'}`}
-                                >
-                                  <td className="px-4 py-2.5 font-medium text-surface-900 dark:text-surface-50 max-w-[200px] truncate">{doc.display_title}</td>
-                                  <td className="px-4 py-2.5 text-surface-600 hidden sm:table-cell truncate max-w-[160px]">{doc.file_name}</td>
-                                  <td className="px-4 py-2.5 text-surface-600 hidden md:table-cell">{folderLabel(doc.folder_id)}</td>
-                                  <td className="px-4 py-2.5 whitespace-nowrap">{formatDate(doc.expires_at)}</td>
-                                  <td className={`px-4 py-2.5 text-xs font-medium ${st.className}`}>{st.label}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      {expirySorted.withExpiry.length === 0 && (
-                        <p className="p-6 text-center text-surface-500 text-sm">No documents have an expiry date set.</p>
-                      )}
-                    </div>
-                    {expirySorted.noExpiry.length > 0 && (
-                      <div className="rounded-lg border border-dashed border-surface-300 dark:border-surface-600 bg-white/60 dark:bg-surface-900/40 p-4">
-                        <p className="text-xs font-semibold uppercase text-surface-500 mb-2">No expiry ({expirySorted.noExpiry.length})</p>
-                        <ul className="text-sm text-surface-600 dark:text-surface-400 space-y-1 max-h-32 overflow-y-auto">
-                          {expirySorted.noExpiry.map((d) => (
-                            <li key={d.id}>
-                              <button type="button" className="text-left hover:text-brand-700 dark:hover:text-brand-300 underline-offset-2 hover:underline" onClick={() => openDetail(d.id)}>
-                                {d.display_title}
-                              </button>
+                              <div>
+                                <p className="font-semibold">{r.document_title}</p>
+                                <p className="text-surface-500">
+                                  {r.requester_name} · {r.requester_email}
+                                </p>
+                                {r.requester_note && <p className="text-xs mt-1 italic">&ldquo;{r.requester_note}&rdquo;</p>}
+                              </div>
+                              <div className="flex gap-2">
+                                <button type="button" className={btnPrimary} onClick={() => approveRequest(r.id)}>
+                                  Approve
+                                </button>
+                                <button type="button" className={btnSecondary} onClick={() => denyRequest(r.id)}>
+                                  Deny
+                                </button>
+                              </div>
                             </li>
                           ))}
                         </ul>
                       </div>
                     )}
-                  </>
+
+                    <ul className="app-glass-table flex-1 min-h-0 overflow-auto">
+                      {catalogDocs.map((doc) => (
+                        <li key={doc.id} className="app-glass-data-row last:border-b-0">
+                          <div className="flex gap-2 items-stretch hover:bg-white/40 dark:hover:bg-surface-800/40">
+                            <button
+                              type="button"
+                              onClick={() => openDetail(doc.id)}
+                              className="flex-1 min-w-0 text-left px-4 py-4 flex gap-4 items-start"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-semibold text-surface-900 dark:text-surface-50">{doc.display_title}</span>
+                                  <DocBadge doc={doc} />
+                                </div>
+                                <p className="text-xs text-surface-500 mt-1">
+                                  {folderLabel(doc.folder_id)} · {doc.uploader_name || '—'} · {formatDate(doc.created_at)}
+                                  {doc.expires_at ? ` · Expires ${formatDate(doc.expires_at)}` : ''}
+                                </p>
+                              </div>
+                              <span className="text-xs text-surface-400 shrink-0">{formatBytes(doc.size_bytes)}</span>
+                            </button>
+                            {(canManageDoc(doc) || isSuper) && (
+                              <div className="flex flex-col justify-center gap-1 pr-3 py-2 shrink-0">
+                                {canManageDoc(doc) && (
+                                  <button
+                                    type="button"
+                                    className="text-xs font-semibold text-brand-600 hover:text-brand-800 dark:text-brand-400 px-2 py-1 rounded-md hover:bg-brand-50/80 dark:hover:bg-brand-950/40"
+                                    onClick={() => openDetail(doc.id, { startRename: true })}
+                                  >
+                                    Rename
+                                  </button>
+                                )}
+                                {isSuper && (
+                                  <button
+                                    type="button"
+                                    className="text-xs font-semibold text-red-700 hover:text-red-900 dark:text-red-400 px-2 py-1 rounded-md hover:bg-red-50/80 dark:hover:bg-red-950/40"
+                                    onClick={() => openDetail(doc.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                      {catalogDocs.length === 0 && (
+                        <li className="p-12 text-center text-surface-500 text-sm">No documents match your search.</li>
+                      )}
+                    </ul>
+                  </div>
                 )}
-              </div>
+
+                {tab === 'expiries' && (
+                  <div className="w-full space-y-5 flex-1">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-lg font-bold text-surface-900 dark:text-surface-50">Document expiries</h2>
+                      <InfoHint title="Expiry monitoring" text="Overdue and upcoming items are grouped. Set expiry and reminder recipients when uploading." />
+                    </div>
+                    {expiryLoading ? (
+                      <p className="text-sm text-surface-500">Loading…</p>
+                    ) : (
+                      <>
+                        {['overdue', 'soon', 'later'].map((bucket) => {
+                          const rows = expirySorted[bucket];
+                          if (!rows?.length) return null;
+                          const titles = { overdue: 'Overdue', soon: 'Expiring within 14 days', later: 'Later' };
+                          return (
+                            <section key={bucket} className="app-glass-table overflow-hidden">
+                              <h3 className="px-4 py-3 text-sm font-bold app-glass-thead-row">{titles[bucket]} ({rows.length})</h3>
+                              <ul>
+                                {rows.map((doc) => {
+                                  const st = expiryStatus(doc.expires_at);
+                                  return (
+                                    <li key={doc.id} className="app-glass-data-row last:border-b-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setTab('catalog');
+                                          openDetail(doc.id);
+                                        }}
+                                        className="w-full text-left px-4 py-3 flex justify-between gap-3"
+                                      >
+                                        <span className="font-medium">{doc.display_title}</span>
+                                        <span className={`text-sm shrink-0 ${st.className}`}>
+                                          {formatDate(doc.expires_at)} · {st.label}
+                                        </span>
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </section>
+                          );
+                        })}
+                        {expirySorted.noExpiry.length > 0 && (
+                          <p className="text-sm text-surface-500">{expirySorted.noExpiry.length} document(s) have no expiry date.</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
 
-        {selected && (tab === 'browse' || tab === 'expiries') && (
-          <div className="fixed inset-0 z-50 flex items-stretch" aria-modal="true" role="dialog" aria-label="Document details">
-            <button
-              type="button"
-              className="flex-1 cursor-default border-0 bg-black/45 p-0"
-              aria-label="Close document panel"
-              onClick={() => setSelected(null)}
-            />
-            <div className="relative flex h-full w-full max-w-md flex-col overflow-hidden border-l border-surface-200 bg-white shadow-2xl dark:border-surface-700 dark:bg-surface-900">
-              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-surface-200 px-4 py-3 dark:border-surface-700">
-                <h2 className="min-w-0 truncate text-base font-semibold text-surface-900 dark:text-surface-50">{selected.display_title}</h2>
-                <button
-                  type="button"
-                  onClick={() => setSelected(null)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg leading-none text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
-                  aria-label="Close"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="shrink-0 space-y-1 border-b border-surface-100 px-4 py-3 text-xs text-surface-600 dark:border-surface-800 dark:text-surface-400">
-                <p>
-                  <span className="font-semibold text-surface-800 dark:text-surface-200">File</span> {selected.file_name}
-                </p>
-                <p>
-                  <span className="font-semibold text-surface-800 dark:text-surface-200">Uploaded by</span> {selected.uploader_name || '—'}
-                </p>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                <div className="rounded-lg border border-surface-200 bg-surface-50/80 p-4 dark:border-surface-700 dark:bg-surface-800/30 space-y-4">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">Email copy</p>
-                    <InfoHint
-                      title="How delivery works"
-                      text={
-                        <>
-                          <p>No browser download — attachment only.</p>
-                          <p className="mt-2 font-medium text-surface-800 dark:text-surface-200 break-all">{user?.email || 'Your login email'}</p>
-                          {selected.is_pin_protected ? (
-                            <p className="mt-2">Secured: system PIN first (uploader inbox, or yours if super admin).</p>
-                          ) : (
-                            <p className="mt-2">Open: use the button below — no PIN.</p>
-                          )}
-                        </>
-                      }
+        {selected && (tab === 'catalog' || tab === 'expiries') && access?.allowed_now && (
+          <div className="shrink-0 border-t border-surface-200/70 dark:border-surface-700/70 app-glass-card rounded-none border-x-0 border-b-0 p-4 sm:p-5 max-h-[min(45vh,400px)] overflow-y-auto">
+            <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+              <div className="min-w-0 flex-1">
+                {renaming && canManageDoc(selected) ? (
+                  <div className="space-y-2 max-w-xl">
+                    <label className="text-xs font-semibold uppercase text-surface-500">Display name</label>
+                    <input
+                      type="text"
+                      value={renameTitle}
+                      onChange={(e) => setRenameTitle(e.target.value)}
+                      className={glassInput}
+                      autoFocus
                     />
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className={btnPrimary} disabled={renameBusy} onClick={saveRename}>
+                        {renameBusy ? 'Saving…' : 'Save name'}
+                      </button>
+                      <button type="button" className={btnSecondary} disabled={renameBusy} onClick={cancelRename}>
+                        Cancel
+                      </button>
+                    </div>
                   </div>
-
-                  {!selected.is_pin_protected && (
-                    <button
-                      type="button"
-                      onClick={emailCopyToMe}
-                      disabled={emailAttachBusy}
-                      className="w-full rounded-lg bg-brand-600 px-4 py-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
-                    >
-                      {emailAttachBusy ? 'Sending…' : 'Email copy to me'}
-                    </button>
-                  )}
-
-                  {selected.is_pin_protected && (
-                    <div className="space-y-3">
-                      <div className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900">
-                        <div className="flex items-center gap-2 mb-2">
-                          <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">1 · PIN</p>
-                          <InfoHint
-                            title="Request PIN"
-                            text={
-                              isSuper
-                                ? 'PIN is sent to your email. No uploader handoff.'
-                                : `PIN is sent to the uploader (${selected.uploader_email || '—'}). They share it with you. If nothing arrives, check SMTP settings.`
-                            }
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={requestSystemPin}
-                          className="w-full rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-white dark:bg-slate-200 dark:text-slate-900"
-                        >
-                          {isSuper ? 'Send PIN to me' : 'Send PIN to uploader'}
-                        </button>
-                      </div>
-                      <div className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900">
-                        <div className="flex items-center gap-2 mb-2">
-                          <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">2 · Verify</p>
-                          <InfoHint title="Verify PIN" text="Unlocks a timed session for multiple attachment emails." />
-                        </div>
-                        <div className="flex flex-col gap-2 sm:flex-row">
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            autoComplete="one-time-code"
-                            value={codeInput}
-                            onChange={(e) => setCodeInput(e.target.value)}
-                            placeholder="System PIN from email"
-                            className="min-w-0 flex-1 rounded-lg border border-surface-300 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-950"
-                          />
-                          <button
-                            type="button"
-                            onClick={verifyCode}
-                            className="rounded-lg border border-surface-300 px-3 py-2 text-sm font-semibold dark:border-surface-600 dark:hover:bg-surface-800"
-                          >
-                            Verify
-                          </button>
-                        </div>
-                        {sessionExpiresAt && (
-                          <p className="mt-2 text-[11px] text-surface-500 tabular-nums">
-                            Until {formatDateTime(sessionExpiresAt)}
-                          </p>
-                        )}
-                      </div>
-                      <div className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900">
-                        <div className="flex items-center gap-2 mb-2">
-                          <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">3 · Attach</p>
-                          <InfoHint title="Email attachment" text="Each send is logged. Repeat until the session expires." />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={emailCopyToMe}
-                          disabled={emailAttachBusy || !sessionToken}
-                          className="mt-2 w-full rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
-                        >
-                          {emailAttachBusy ? 'Sending…' : 'Email copy to me'}
-                        </button>
-                      </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-lg font-bold text-surface-900 dark:text-surface-50">{selected.display_title}</h3>
+                      <DocBadge doc={selected} />
                     </div>
-                  )}
-
-                  {requestNotice && (
-                    <p className="rounded-lg border border-surface-200 bg-white px-3 py-2 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-400">
-                      {requestNotice}
+                    <p className="text-xs text-surface-500 mt-1">
+                      {selected.file_name} · {folderLabel(selected.folder_id)} · {selected.uploader_name}
                     </p>
-                  )}
-
-                  {isSuper && (
-                    <div className="space-y-3 rounded-lg border border-red-200 bg-red-50/70 p-4 dark:border-red-900/50 dark:bg-red-950/20">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold text-red-900 dark:text-red-200">Delete file</p>
-                        <InfoHint
-                          title="Delete authorization"
-                          text="One-time code by email, or server fallback PIN if configured. Permanent removal."
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={emailDeleteAuthorizationCode}
-                        disabled={deleteCodeEmailBusy}
-                        className="w-full rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-900 disabled:opacity-50 dark:border-red-800 dark:bg-surface-900 dark:text-red-100"
-                      >
-                        {deleteCodeEmailBusy ? 'Sending…' : 'Email delete code'}
-                      </button>
-                      {deleteCodeEmailNotice && (
-                        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
-                          {deleteCodeEmailNotice}
-                        </p>
-                      )}
-                      <div>
-                        <label className="text-xs font-medium text-red-900 dark:text-red-200">Code</label>
-                        <input
-                          type="password"
-                          autoComplete="one-time-code"
-                          inputMode="numeric"
-                          value={deleteAuthPin}
-                          onChange={(e) => setDeleteAuthPin(e.target.value)}
-                          placeholder="8-digit code from email"
-                          className="mt-1 w-full rounded-lg border border-red-200 px-3 py-2 text-sm dark:border-red-800 dark:bg-surface-900"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={deleteSelectedDocument}
-                        disabled={deleting}
-                        className="w-full rounded-lg bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
-                      >
-                        {deleting ? 'Removing…' : 'Delete permanently'}
-                      </button>
-                    </div>
-                  )}
-                </div>
+                    {selected.has_live_access && (
+                      <p className="text-xs text-brand-600 mt-1 font-medium">Live access active until owner locks the document.</p>
+                    )}
+                  </>
+                )}
               </div>
+              <button type="button" className="text-sm text-surface-500 hover:underline shrink-0" onClick={() => setSelected(null)}>
+                Close
+              </button>
             </div>
+            <div className="flex flex-wrap gap-2">
+              {canManageDoc(selected) && !renaming && (
+                <button type="button" className={btnSecondary} onClick={startRename}>
+                  Rename
+                </button>
+              )}
+              {selected.can_view && (
+                <button type="button" className={btnPrimary} onClick={openViewer}>
+                  View in library
+                </button>
+              )}
+              {selected.can_email && (
+                <button type="button" className={btnSecondary} disabled={emailBusy} onClick={emailCopyToMe}>
+                  {emailBusy ? 'Sending…' : 'Email copy to me'}
+                </button>
+              )}
+              {selected.needs_access_request && (
+                <>
+                  <input
+                    type="text"
+                    value={accessNote}
+                    onChange={(e) => setAccessNote(e.target.value)}
+                    placeholder="Optional note to owner"
+                    className={`min-w-[12rem] flex-1 ${glassInput}`}
+                  />
+                  <button type="button" className={btnSecondary} onClick={requestAccess}>
+                    Request access
+                  </button>
+                </>
+              )}
+              {selected.is_owner && selected.is_private && (
+                <button type="button" className={btnSecondary} onClick={lockDocument}>
+                  Lock document
+                </button>
+              )}
+              {isSuper && selected.can_download && (
+                <a href={lib.downloadUrl(selected.id)} className={btnSecondary} download>
+                  Download (admin)
+                </a>
+              )}
+            </div>
+            {isSuper && (
+              <div className="mt-4 pt-4 border-t border-surface-200/70 dark:border-surface-700/70 space-y-3">
+                <p className="text-xs font-semibold uppercase text-surface-500">Delete document (super admin)</p>
+                <p className="text-xs text-surface-600 dark:text-surface-400">
+                  Request an email authorization code, then enter it below to permanently remove this file.
+                </p>
+                <div className="flex flex-wrap gap-2 items-end">
+                  <button
+                    type="button"
+                    className={btnSecondary}
+                    disabled={deleteCodeEmailBusy}
+                    onClick={emailDeleteAuthorizationCode}
+                  >
+                    {deleteCodeEmailBusy ? 'Sending…' : 'Email me a code'}
+                  </button>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={deleteAuthPin}
+                    onChange={(e) => setDeleteAuthPin(e.target.value)}
+                    placeholder="Authorization code"
+                    className={`w-40 ${glassInput}`}
+                  />
+                  <button type="button" className={btnDanger} disabled={deleting} onClick={deleteSelectedDocument}>
+                    {deleting ? 'Deleting…' : 'Delete permanently'}
+                  </button>
+                </div>
+                {deleteCodeNotice && <p className="text-xs text-emerald-700 dark:text-emerald-300">{deleteCodeNotice}</p>}
+              </div>
+            )}
+            {viewerOpen && previewBlobUrl && (
+              <div className="mt-4 rounded-xl border border-surface-200/70 overflow-hidden bg-surface-100/50 dark:bg-surface-950/50 min-h-[240px]">
+                {String(selected.mime_type || '').includes('pdf') ? (
+                  <iframe title="Document preview" src={previewBlobUrl} className="w-full h-[min(40vh,380px)]" />
+                ) : String(selected.mime_type || '').startsWith('image/') ? (
+                  <img src={previewBlobUrl} alt="" className="max-w-full max-h-[min(40vh,380px)] mx-auto block" />
+                ) : (
+                  <p className="p-6 text-sm text-surface-600 text-center">
+                    Preview not available for this file type. Use &ldquo;Email copy to me&rdquo; to open from your inbox.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

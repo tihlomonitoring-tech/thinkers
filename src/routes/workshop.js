@@ -32,6 +32,28 @@ const upload = multer({
 
 function getTenantId(req) { return req.user?.tenant_id || null; }
 
+const ATTACHMENT_TYPES = new Set(['general', 'inspection', 'resolution_proof']);
+
+function normalizeAttachmentType(raw) {
+  const v = String(raw || 'general').trim().toLowerCase();
+  return ATTACHMENT_TYPES.has(v) ? v : 'general';
+}
+
+async function countJobCardAttachments(jobCardId, attachmentType) {
+  try {
+    const r = await query(
+      `SELECT COUNT(*) AS cnt FROM workshop_job_card_attachments WHERE job_card_id = @id AND attachment_type = @t`,
+      { id: jobCardId, t: attachmentType }
+    );
+    const row = r.recordset?.[0];
+    const key = row && Object.keys(row).find((k) => String(k).toLowerCase() === 'cnt');
+    return Number(key ? row[key] : 0) || 0;
+  } catch (e) {
+    if (String(e?.message || '').includes('attachment_type')) return attachmentType === 'resolution_proof' ? 0 : 1;
+    throw e;
+  }
+}
+
 function nextJobCardNumber() {
   const d = new Date();
   const y = d.getFullYear().toString().slice(-2);
@@ -204,8 +226,23 @@ router.patch('/job-cards/:id', async (req, res, next) => {
     const b = req.body || {};
     const sets = [];
     const params = { id: req.params.id, tenantId };
-    if (b.status === 'completed' && !b.linked_inspection_id) {
-      return res.status(400).json({ error: 'An inspection must be linked before closing this work order. Please complete an inspection and link it.' });
+    if (b.status === 'completed') {
+      if (!b.linked_inspection_id) {
+        return res.status(400).json({
+          error: 'An inspection must be linked before closing this work order. Please complete an inspection and link it.',
+        });
+      }
+      const resText = b.final_resolution != null ? String(b.final_resolution).trim() : '';
+      if (!resText) {
+        return res.status(400).json({ error: 'Final resolution is required before closing the job card.' });
+      }
+      const proofCount = await countJobCardAttachments(req.params.id, 'resolution_proof');
+      if (proofCount < 1) {
+        return res.status(400).json({
+          error:
+            'Upload the physical invoice or mechanic record (required) before closing. Use “Invoice / mechanic record” on the close form.',
+        });
+      }
     }
     const allowed = [
       'description', 'provider_type', 'provider_company_name', 'provider_contact_name',
@@ -322,22 +359,43 @@ router.post('/job-cards/:id/attachments', upload, async (req, res, next) => {
   try {
     const files = req.files || [];
     const itemId = req.body?.item_id || null;
+    const attachmentType = normalizeAttachmentType(req.body?.attachment_type);
     const results = [];
     for (const f of files) {
-      const r = await query(
-        `INSERT INTO workshop_job_card_attachments (job_card_id, item_id, file_name, file_path, file_size, mime_type, uploaded_by_user_id)
-         OUTPUT INSERTED.*
-         VALUES (@jcId, @itemId, @fileName, @filePath, @fileSize, @mime, @uid)`,
-        {
-          jcId: req.params.id,
-          itemId,
-          fileName: f.originalname,
-          filePath: f.path,
-          fileSize: f.size,
-          mime: f.mimetype,
-          uid: req.user?.id || null,
-        }
-      );
+      let r;
+      try {
+        r = await query(
+          `INSERT INTO workshop_job_card_attachments (job_card_id, item_id, file_name, file_path, file_size, mime_type, uploaded_by_user_id, attachment_type)
+           OUTPUT INSERTED.*
+           VALUES (@jcId, @itemId, @fileName, @filePath, @fileSize, @mime, @uid, @atype)`,
+          {
+            jcId: req.params.id,
+            itemId,
+            fileName: f.originalname,
+            filePath: f.path,
+            fileSize: f.size,
+            mime: f.mimetype,
+            uid: req.user?.id || null,
+            atype: attachmentType,
+          }
+        );
+      } catch (e) {
+        if (!String(e?.message || '').includes('attachment_type')) throw e;
+        r = await query(
+          `INSERT INTO workshop_job_card_attachments (job_card_id, item_id, file_name, file_path, file_size, mime_type, uploaded_by_user_id)
+           OUTPUT INSERTED.*
+           VALUES (@jcId, @itemId, @fileName, @filePath, @fileSize, @mime, @uid)`,
+          {
+            jcId: req.params.id,
+            itemId,
+            fileName: f.originalname,
+            filePath: f.path,
+            fileSize: f.size,
+            mime: f.mimetype,
+            uid: req.user?.id || null,
+          }
+        );
+      }
       if (r.recordset?.[0]) results.push(r.recordset[0]);
     }
     res.status(201).json({ attachments: results });

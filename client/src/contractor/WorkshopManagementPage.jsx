@@ -24,6 +24,16 @@ function statusBadge(s) {
 function formatDate(d) { if (!d) return '—'; return new Date(d).toLocaleDateString(undefined, { dateStyle: 'medium' }); }
 function formatDateTime(d) { if (!d) return '—'; return new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
 
+const ATTACHMENT_TYPE_LABELS = {
+  general: 'General',
+  inspection: 'Inspection file',
+  resolution_proof: 'Invoice / mechanic record',
+};
+
+function attachmentTypeLabel(type) {
+  return ATTACHMENT_TYPE_LABELS[type] || ATTACHMENT_TYPE_LABELS.general;
+}
+
 const fc = 'w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 bg-white';
 
 // ─── Maintenance queue tab ───
@@ -163,7 +173,11 @@ function JobCardDetail({ cardId, onBack, users }) {
   const [nextDate, setNextDate] = useState('');
   const [linkedInspectionId, setLinkedInspectionId] = useState('');
   const [inspections, setInspections] = useState([]);
+  const [closeInspectionFile, setCloseInspectionFile] = useState(null);
+  const [closeResolutionFile, setCloseResolutionFile] = useState(null);
   const fileRef = useRef(null);
+  const closeInspectionFileRef = useRef(null);
+  const closeResolutionFileRef = useRef(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -230,13 +244,39 @@ function JobCardDetail({ cardId, onBack, users }) {
     try { await api.attachments.remove(attId); load(); } catch (e) { setError(e?.message || 'Failed'); }
   };
 
+  const hasResolutionProof = attachments.some((a) => a.attachment_type === 'resolution_proof');
+
   const closeJobCard = async () => {
     if (!finalRes.trim()) { setError('Final resolution is required.'); return; }
     if (!linkedInspectionId) { setError('You must link an inspection before closing this work order.'); return; }
+    if (!closeResolutionFile && !hasResolutionProof) {
+      setError('Upload the physical invoice or mechanic record — this is required to close the job card.');
+      return;
+    }
     setSaving(true);
+    setError('');
     try {
-      await api.jobCards.update(cardId, { status: 'completed', final_resolution: finalRes.trim(), next_maintenance_date: nextDate || null, linked_inspection_id: linkedInspectionId });
+      if (closeResolutionFile) {
+        const fd = new FormData();
+        fd.append('files', closeResolutionFile);
+        await api.attachments.upload(cardId, fd, { attachment_type: 'resolution_proof' });
+      }
+      if (closeInspectionFile) {
+        const fd = new FormData();
+        fd.append('files', closeInspectionFile);
+        await api.attachments.upload(cardId, fd, { attachment_type: 'inspection' });
+      }
+      await api.jobCards.update(cardId, {
+        status: 'completed',
+        final_resolution: finalRes.trim(),
+        next_maintenance_date: nextDate || null,
+        linked_inspection_id: linkedInspectionId,
+      });
       setCloseForm(false);
+      setCloseInspectionFile(null);
+      setCloseResolutionFile(null);
+      if (closeInspectionFileRef.current) closeInspectionFileRef.current.value = '';
+      if (closeResolutionFileRef.current) closeResolutionFileRef.current.value = '';
       load();
     } catch (e) { setError(e?.message || 'Failed'); }
     finally { setSaving(false); }
@@ -403,7 +443,10 @@ function JobCardDetail({ cardId, onBack, users }) {
           <ul className="space-y-2">
             {attachments.map((att) => (
               <li key={att.id} className="flex justify-between items-center gap-2 text-sm border-b border-surface-100 pb-2">
-                <a href={api.attachments.downloadUrl(att.id)} target="_blank" rel="noopener noreferrer" className="text-brand-700 hover:underline truncate">{att.file_name}</a>
+                <div className="min-w-0 flex-1">
+                  <span className="text-[10px] font-semibold uppercase text-surface-500 mr-2">{attachmentTypeLabel(att.attachment_type)}</span>
+                  <a href={api.attachments.downloadUrl(att.id)} target="_blank" rel="noopener noreferrer" className="text-brand-700 hover:underline truncate">{att.file_name}</a>
+                </div>
                 <div className="flex items-center gap-3 shrink-0 text-xs text-surface-500">
                   <span>{att.file_size ? `${(att.file_size / 1024).toFixed(0)} KB` : ''}</span>
                   <span>{formatDateTime(att.created_at)}</span>
@@ -464,12 +507,58 @@ function JobCardDetail({ cardId, onBack, users }) {
             <textarea value={finalRes} onChange={(e) => setFinalRes(e.target.value)} rows={3} className={fc} placeholder="Describe the final outcome and what was done…" required />
           </div>
           <div>
+            <label className="block text-xs font-medium text-surface-500 mb-1">
+              Invoice / mechanic record (physical copy) <span className="text-red-600">*</span>
+            </label>
+            <p className="text-[10px] text-surface-500 mb-1.5">Required — upload a scan or photo of the invoice or workshop record.</p>
+            <input
+              ref={closeResolutionFileRef}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+              className="text-sm w-full"
+              onChange={(e) => setCloseResolutionFile(e.target.files?.[0] || null)}
+            />
+            {closeResolutionFile && <p className="text-xs text-emerald-700 mt-1">Selected: {closeResolutionFile.name}</p>}
+            {hasResolutionProof && !closeResolutionFile && (
+              <p className="text-xs text-emerald-700 mt-1">A resolution document is already attached to this job card.</p>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-surface-500 mb-1">Inspection file (optional)</label>
+            <p className="text-[10px] text-surface-500 mb-1.5">Optional — attach a copy of the completed inspection report (PDF or image).</p>
+            <input
+              ref={closeInspectionFileRef}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+              className="text-sm w-full"
+              onChange={(e) => setCloseInspectionFile(e.target.files?.[0] || null)}
+            />
+            {closeInspectionFile && <p className="text-xs text-surface-600 mt-1">Selected: {closeInspectionFile.name}</p>}
+          </div>
+          <div>
             <label className="block text-xs font-medium text-surface-500 mb-1">Suggested next maintenance date</label>
             <input type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} className={fc} />
           </div>
           <div className="flex gap-2">
-            <button type="button" onClick={closeJobCard} disabled={saving || !linkedInspectionId} className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50">{saving ? 'Closing…' : 'Close job card'}</button>
-            <button type="button" onClick={() => setCloseForm(false)} className="px-4 py-2.5 rounded-lg border border-surface-200 text-sm font-medium hover:bg-surface-50">Cancel</button>
+            <button
+              type="button"
+              onClick={closeJobCard}
+              disabled={saving || !linkedInspectionId || !finalRes.trim() || (!closeResolutionFile && !hasResolutionProof)}
+              className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {saving ? 'Closing…' : 'Close job card'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCloseForm(false);
+                setCloseInspectionFile(null);
+                setCloseResolutionFile(null);
+              }}
+              className="px-4 py-2.5 rounded-lg border border-surface-200 text-sm font-medium hover:bg-surface-50"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
@@ -597,7 +686,7 @@ export default function WorkshopManagementPage() {
           <h1 className="text-xl font-semibold text-surface-900 tracking-tight">Workshop management</h1>
           <InfoHint
             title="Workshop management"
-            text="View trucks scheduled for maintenance and create job cards. Each job card tracks parts, labour, costs, attachments, and timestamped progress notes. Service can be performed internally (select a user) or externally (provide company, contact, and phone). When work is complete, close the job card with a final resolution and suggest the next maintenance date. Download individual work order reports as PDF or Excel from the job card detail. Download blank templates below."
+            text="View trucks scheduled for maintenance and create job cards. Each job card tracks parts, labour, costs, attachments, and timestamped progress notes. When closing a job card, link a completed inspection, enter a final resolution, and upload the physical invoice or mechanic record (required). You may also attach an optional inspection file copy. Download work order reports as PDF or Excel from the job card detail."
           />
         </div>
         <div className="flex gap-2">

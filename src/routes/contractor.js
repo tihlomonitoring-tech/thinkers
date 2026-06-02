@@ -70,6 +70,22 @@ const messageUpload = multer({
 
 const contractorLibraryDir = path.join(process.cwd(), 'uploads', 'contractor-library');
 const messageAttachmentsDir = path.join(process.cwd(), 'uploads', 'contractor-messages');
+const contractorExpiryDir = path.join(process.cwd(), 'uploads', 'contractor-expiries');
+const expiryUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tenantId = String(req.user?.tenant_id || 'anon');
+      const dir = path.join(contractorExpiryDir, tenantId);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname) || '';
+      cb(null, `${Date.now()}-${randomUUID().slice(0, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 15 * 1024 * 1024 },
+}).array('files', 20);
 const contractorLibraryUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -1862,24 +1878,142 @@ router.get('/incidents/:id/attachments/:type', async (req, res, next) => {
 });
 
 // Expiries
-router.get('/expiries', listHandler('contractor_expiries', 'expiry_date'));
-router.post('/expiries', async (req, res, next) => {
+router.get('/expiries', async (req, res, next) => {
   try {
-    const { item_type, item_ref, issued_date, expiry_date, description } = req.body || {};
-    const result = await query(
-      `INSERT INTO contractor_expiries (tenant_id, item_type, item_ref, issued_date, expiry_date, description)
-       OUTPUT INSERTED.* VALUES (@tenantId, @item_type, @item_ref, @issued_date, @expiry_date, @description)`,
-      {
-        tenantId: req.user.tenant_id,
-        item_type: item_type || 'license',
-        item_ref: item_ref || null,
-        issued_date: issued_date || null,
-        expiry_date: expiry_date || null,
-        description: description || null,
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
+    const allowed = await getAllowedContractorIds(req);
+    if (allowed && allowed.length === 0) {
+      return res.json({ expiries: [] });
+    }
+    let sql = `SELECT e.*,
+      (SELECT COUNT(*) FROM contractor_expiry_attachments a WHERE a.expiry_id = e.id) AS attachment_count
+      FROM contractor_expiries e WHERE e.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (allowed && allowed.length > 0) {
+      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+      sql += ` AND e.contractor_id IN (${placeholders})`;
+      allowed.forEach((id, i) => {
+        params[`c${i}`] = id;
+      });
+    }
+    sql += ' ORDER BY e.expiry_date DESC';
+    let result;
+    try {
+      result = await query(sql, params);
+    } catch (err) {
+      if (String(err?.message || '').includes('contractor_expiry_attachments')) {
+        result = await query(
+          `SELECT e.* FROM contractor_expiries e WHERE e.tenant_id = @tenantId${allowed?.length ? ` AND e.contractor_id IN (${allowed.map((_, i) => `@c${i}`).join(',')})` : ''} ORDER BY e.expiry_date DESC`,
+          params
+        );
+        const rows = (result.recordset || []).map((r) => ({ ...r, attachment_count: 0 }));
+        return res.json({ expiries: rows });
       }
-    );
-    res.status(201).json({ expiry: result.recordset[0] });
+      throw err;
+    }
+    res.json({ expiries: result.recordset || [] });
   } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/expiries', expiryUpload, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const { item_type, item_ref, issued_date, expiry_date, description } = b;
+    if (!expiry_date) return res.status(400).json({ error: 'Expiry date is required.' });
+    const contractorId = await resolveContractorIdForCreate(req, b.contractor_id);
+    let insSql = `INSERT INTO contractor_expiries (tenant_id, item_type, item_ref, issued_date, expiry_date, description)
+       OUTPUT INSERTED.* VALUES (@tenantId, @item_type, @item_ref, @issued_date, @expiry_date, @description)`;
+    const insParams = {
+      tenantId: req.user.tenant_id,
+      item_type: item_type || 'license',
+      item_ref: item_ref || null,
+      issued_date: issued_date || null,
+      expiry_date: expiry_date || null,
+      description: description || null,
+    };
+    if (contractorId) {
+      insSql = `INSERT INTO contractor_expiries (tenant_id, contractor_id, item_type, item_ref, issued_date, expiry_date, description)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @item_type, @item_ref, @issued_date, @expiry_date, @description)`;
+      insParams.contractorId = contractorId;
+    }
+    const result = await query(insSql, insParams);
+    const expiry = result.recordset?.[0];
+    if (!expiry) return res.status(500).json({ error: 'Could not create expiry.' });
+    const expiryId = getRow(expiry, 'id');
+    const tenantId = req.user.tenant_id;
+    const attachments = [];
+    const files = req.files || [];
+    for (const f of files) {
+      const rel = path.relative(path.join(contractorExpiryDir, String(tenantId)), f.path).replace(/\\/g, '/');
+      try {
+        const ar = await query(
+          `INSERT INTO contractor_expiry_attachments (tenant_id, expiry_id, file_name, stored_rel_path, mime_type, file_size, uploaded_by_user_id)
+           OUTPUT INSERTED.*
+           VALUES (@tenantId, @eid, @fn, @rel, @mime, @size, @uid)`,
+          {
+            tenantId,
+            eid: expiryId,
+            fn: f.originalname,
+            rel,
+            mime: f.mimetype || null,
+            size: f.size || null,
+            uid: req.user?.id || null,
+          }
+        );
+        if (ar.recordset?.[0]) attachments.push(ar.recordset[0]);
+      } catch (e) {
+        if (String(e?.message || '').includes('contractor_expiry_attachments')) {
+          return res.status(503).json({ error: 'Run: npm run db:contractor-expiry-attachments' });
+        }
+        throw e;
+      }
+    }
+    res.status(201).json({ expiry, attachments });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/expiries/attachments/:id/download', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const r = await query(
+      `SELECT a.* FROM contractor_expiry_attachments a
+       INNER JOIN contractor_expiries e ON e.id = a.expiry_id
+       WHERE a.id = @id AND a.tenant_id = @tenantId`,
+      { id: req.params.id, tenantId }
+    );
+    const att = r.recordset?.[0];
+    if (!att) return res.status(404).json({ error: 'Not found' });
+    const rel = getRow(att, 'stored_rel_path');
+    const abs = path.join(contractorExpiryDir, String(tenantId), rel);
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'File missing' });
+    const fn = getRow(att, 'file_name') || 'document';
+    res.download(abs, fn);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/expiries/:id/attachments', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const r = await query(
+      `SELECT a.id, a.file_name, a.mime_type, a.file_size, a.created_at
+       FROM contractor_expiry_attachments a
+       INNER JOIN contractor_expiries e ON e.id = a.expiry_id AND e.tenant_id = @tenantId
+       WHERE a.expiry_id = @eid
+       ORDER BY a.created_at`,
+      { eid: req.params.id, tenantId }
+    );
+    res.json({ attachments: r.recordset || [] });
+  } catch (err) {
+    if (String(err?.message || '').includes('contractor_expiry_attachments')) {
+      return res.json({ attachments: [] });
+    }
     next(err);
   }
 });
