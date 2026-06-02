@@ -1206,6 +1206,8 @@ export const officeAdmin = {
   accounting: {
     items: () => request('/office-admin/accounting/items'),
     suppliers: () => request('/office-admin/accounting/suppliers'),
+    budgetsForLinking: () => request('/office-admin/accounting/budgets-for-linking'),
+    getBudget: (id) => request(`/office-admin/accounting/budgets/${encodeURIComponent(id)}`),
   },
 };
 
@@ -1984,6 +1986,36 @@ export const profileManagement = {
   },
   warnings: { list: () => pm('/warnings'), listAll: () => pm('/warnings/all'), create: (body) => pm('/warnings', { method: 'POST', body: JSON.stringify(body) }) },
   rewards: { list: () => pm('/rewards'), listAll: () => pm('/rewards/all'), create: (body) => pm('/rewards', { method: 'POST', body: JSON.stringify(body) }) },
+  creditDemeritCategories: {
+    list: (kind) => pm(`/credit-demerit-categories${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
+    listAll: () => pm('/credit-demerit-categories/all'),
+    create: (body) => pm('/credit-demerit-categories', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => pm(`/credit-demerit-categories/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  },
+  teamPointPools: {
+    list: () => pm('/team-point-pools'),
+    allocate: (body) => pm('/team-point-pools/allocate', { method: 'POST', body: JSON.stringify(body) }),
+  },
+  graceCredits: {
+    list: () => pm('/grace-credits'),
+    listAll: () => pm('/grace-credits/all'),
+    summary: () => pm('/grace-credits/summary'),
+  },
+  debtorSanctions: {
+    list: () => pm('/debtor-sanctions'),
+    listAll: () => pm('/debtor-sanctions/all'),
+  },
+  creditApplications: {
+    list: () => pm('/credit-applications'),
+    listAll: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', params.status);
+      const qs = q.toString();
+      return pm(`/credit-applications/all${qs ? `?${qs}` : ''}`);
+    },
+    create: (body) => pm('/credit-applications', { method: 'POST', body: JSON.stringify(body) }),
+    review: (id, body) => pm(`/credit-applications/${encodeURIComponent(id)}/review`, { method: 'PATCH', body: JSON.stringify(body) }),
+  },
   queries: {
     list: () => pm('/queries'),
     create: (body) => pm('/queries', { method: 'POST', body: JSON.stringify(body) }),
@@ -2274,6 +2306,25 @@ export const teamGoals = {
     const qs = q.toString();
     return tg(`/team-leader/questionnaires${qs ? `?${qs}` : ''}`);
   },
+  leaderCreditWallet: (work_date) => {
+    const q = new URLSearchParams();
+    if (work_date) q.set('work_date', work_date);
+    const qs = q.toString();
+    return tg(`/team-leader/credit-wallet${qs ? `?${qs}` : ''}`);
+  },
+  issueMemberCredit: (body) => tg('/team-leader/issue-credit', { method: 'POST', body: JSON.stringify(body) }),
+  issueMemberDemerit: (body) => tg('/team-leader/issue-demerit', { method: 'POST', body: JSON.stringify(body) }),
+  memberCreditApplications: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set('status', params.status);
+    const qs = q.toString();
+    return tg(`/team-leader/member-credit-applications${qs ? `?${qs}` : ''}`);
+  },
+  reviewMemberCreditApplication: (id, body) =>
+    tg(`/team-leader/member-credit-applications/${encodeURIComponent(id)}/review`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
 };
 
 const pev = (path, options = {}) => request(`/performance-evaluations${path}`, options);
@@ -2517,6 +2568,48 @@ export const accounting = {
       formData.append('file', file);
       return fetch(`${API}/accounting/documentation/figures/upload`, { method: 'POST', body: formData, credentials: 'include' })
         .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
+    },
+  },
+  accountTypes: {
+    list: () => acc('/account-types'),
+    create: (body) => acc('/account-types', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => acc(`/account-types/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => acc(`/account-types/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    updateDefaults: (body) => acc('/account-types/defaults', { method: 'PATCH', body: JSON.stringify(body) }),
+    journalEntries: (params = {}) => {
+      const q = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/journal-entries${q ? `?${q}` : ''}`);
+    },
+    getJournal: (id) => acc(`/journal-entries/${encodeURIComponent(id)}`),
+  },
+  generalLedger: {
+    summary: (params = {}) => {
+      const p = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/journal-entries/summary${p ? `?${p}` : ''}`);
+    },
+    entries: (params = {}) => {
+      const p = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/journal-entries${p ? `?${p}` : ''}`);
+    },
+    lines: (params = {}) => {
+      const p = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/journal-lines${p ? `?${p}` : ''}`);
+    },
+    get: (id) => acc(`/journal-entries/${encodeURIComponent(id)}`),
+    create: (body) => acc('/journal-entries', { method: 'POST', body: JSON.stringify(body) }),
+  },
+  reports: {
+    trialBalance: (params = {}) => {
+      const p = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/reports/trial-balance${p ? `?${p}` : ''}`);
+    },
+    profitLoss: (params = {}) => {
+      const p = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/reports/profit-loss${p ? `?${p}` : ''}`);
+    },
+    accountLedger: (accountId, params = {}) => {
+      const p = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString();
+      return acc(`/reports/account-ledger/${encodeURIComponent(accountId)}${p ? `?${p}` : ''}`);
     },
   },
   budgets: {

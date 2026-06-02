@@ -29,6 +29,7 @@ import {
 } from '../lib/appTime.js';
 import { SA_LEAVE_TYPES } from '../lib/saLeaveTypes.js';
 import { registerEmployeeOnboardingRoutes } from '../lib/employeeOnboardingRoutes.js';
+import { registerEmployeeGraceCreditsRoutes } from './employeeGraceCredits.js';
 
 const router = Router();
 const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
@@ -2324,5 +2325,6 @@ router.get('/users/command-centre-peers', async (req, res, next) => {
 });
 
 registerEmployeeOnboardingRoutes(router, { uploadsBase, canAccessTenant });
+registerEmployeeGraceCreditsRoutes(router);
 
 export default router;

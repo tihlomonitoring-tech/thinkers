@@ -1108,13 +1108,38 @@ router.post('/invoices/:id/mark-paid', async (req, res, next) => {
         payment_reference: String(payment_reference).trim().slice(0, 500),
       }
     );
+    const invRow = await query(
+      `SELECT i.* FROM accounting_invoices i WHERE i.id = @id AND i.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    const invForJournal = invRow.recordset?.[0];
+    const linesForJournal = await query(
+      `SELECT id, description, quantity, unit_price, discount_percent, tax_percent, sort_order FROM accounting_invoice_lines WHERE invoice_id = @id ORDER BY sort_order`,
+      { id }
+    );
+    let journal = null;
+    if (invForJournal) {
+      try {
+        const { postInvoicePaymentJournal } = await import('../lib/accountingLedger.js');
+        journal = await postInvoicePaymentJournal({
+          tenantId,
+          userId: req.user.id,
+          invoice: invForJournal,
+          lines: linesForJournal.recordset || [],
+          paymentDate: String(payment_date).trim().slice(0, 10),
+          paymentReference: String(payment_reference).trim(),
+        });
+      } catch (je) {
+        journal = { error: je.message };
+      }
+    }
     const getResult = await query(
       `SELECT i.*, c.name AS customer_name_from_book, c.address AS customer_address_from_book, c.email AS customer_email_from_book, c.vat_number AS customer_vat, c.company_registration AS customer_registration
        FROM accounting_invoices i LEFT JOIN accounting_customers c ON c.id = i.customer_id WHERE i.id = @id`,
       { id }
     );
     const linesResult = await query(`SELECT id, description, quantity, unit_price, discount_percent, tax_percent, sort_order FROM accounting_invoice_lines WHERE invoice_id = @id ORDER BY sort_order`, { id });
-    res.json({ invoice: { ...getResult.recordset?.[0], lines: linesResult.recordset || [] } });
+    res.json({ invoice: { ...getResult.recordset?.[0], lines: linesResult.recordset || [] }, journal });
   } catch (err) {
     next(err);
   }
@@ -2832,7 +2857,13 @@ router.get('/budgets/:id', requireAuth, loadUser, async (req, res, next) => {
     );
     const budget = r.recordset?.[0];
     if (!budget) return res.status(404).json({ error: 'Budget not found' });
-    const cats = await query(`SELECT * FROM budget_categories WHERE budget_id = @id ORDER BY sort_order, category_name`, { id: req.params.id });
+    const cats = await query(
+      `SELECT bc.*, a.account_code, a.account_name AS gl_account_name
+       FROM budget_categories bc
+       LEFT JOIN accounting_account_types a ON a.id = bc.account_type_id
+       WHERE bc.budget_id = @id ORDER BY bc.sort_order, bc.category_name`,
+      { id: req.params.id }
+    );
     const items = await query(`SELECT li.*, bc.category_name FROM budget_line_items li LEFT JOIN budget_categories bc ON bc.id = li.category_id WHERE li.budget_id = @id ORDER BY bc.sort_order, li.description`, { id: req.params.id });
     const txns = await query(`SELECT t.*, u.full_name AS recorded_by_name, bc.category_name FROM budget_transactions t LEFT JOIN users u ON u.id = t.recorded_by_user_id LEFT JOIN budget_categories bc ON bc.id = t.category_id WHERE t.budget_id = @id ORDER BY t.transaction_date DESC`, { id: req.params.id });
     res.json({ budget, categories: cats.recordset || [], lineItems: items.recordset || [], transactions: txns.recordset || [] });
@@ -2910,8 +2941,16 @@ router.post('/budgets/:budgetId/categories', requireAuth, loadUser, async (req, 
     const b = req.body || {};
     if (!b.category_name) return res.status(400).json({ error: 'category_name is required' });
     const r = await query(
-      `INSERT INTO budget_categories (budget_id, category_name, allocated_amount, sort_order, notes) OUTPUT INSERTED.* VALUES (@bid, @name, @amount, @sort, @notes)`,
-      { bid: req.params.budgetId, name: b.category_name, amount: Number(b.allocated_amount) || 0, sort: Number(b.sort_order) || 0, notes: b.notes || null }
+      `INSERT INTO budget_categories (budget_id, category_name, allocated_amount, sort_order, notes, account_type_id)
+       OUTPUT INSERTED.* VALUES (@bid, @name, @amount, @sort, @notes, @accountTypeId)`,
+      {
+        bid: req.params.budgetId,
+        name: b.category_name,
+        amount: Number(b.allocated_amount) || 0,
+        sort: Number(b.sort_order) || 0,
+        notes: b.notes || null,
+        accountTypeId: b.account_type_id || null,
+      }
     );
     res.status(201).json({ category: r.recordset?.[0] || null });
   } catch (err) { next(err); }
@@ -2922,12 +2961,18 @@ router.patch('/budgets/categories/:id', requireAuth, loadUser, async (req, res, 
     const b = req.body || {};
     const sets = [];
     const params = { id: req.params.id };
-    for (const k of ['category_name', 'allocated_amount', 'sort_order', 'notes']) {
-      if (b[k] !== undefined) { params[k] = b[k]; sets.push(`[${k}] = @${k}`); }
+    for (const k of ['category_name', 'allocated_amount', 'sort_order', 'notes', 'account_type_id']) {
+      if (b[k] !== undefined) { params[k] = b[k] || null; sets.push(`[${k}] = @${k}`); }
     }
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
     await query(`UPDATE budget_categories SET ${sets.join(', ')} WHERE id = @id`, params);
-    const updated = await query(`SELECT * FROM budget_categories WHERE id = @id`, { id: req.params.id });
+    const updated = await query(
+      `SELECT bc.*, a.account_code, a.account_name AS gl_account_name
+       FROM budget_categories bc
+       LEFT JOIN accounting_account_types a ON a.id = bc.account_type_id
+       WHERE bc.id = @id`,
+      { id: req.params.id }
+    );
     res.json({ category: updated.recordset?.[0] || null });
   } catch (err) { next(err); }
 });
@@ -3018,5 +3063,8 @@ router.get('/budgets/:id/summary', requireAuth, loadUser, async (req, res, next)
     res.json({ budget: budget.recordset[0], categories: cats.recordset || [], monthlySpend: monthlySpend.recordset || [] });
   } catch (err) { next(err); }
 });
+
+import accountingChartRoutes from './accountingChartRoutes.js';
+router.use(accountingChartRoutes);
 
 export default router;

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { officeAdmin } from '../../api';
 import { CONSUMABLE_CATEGORIES } from '../../lib/officeAdminTabs.js';
 import {
@@ -58,6 +58,10 @@ export function emptyConsumableForm() {
     is_perishable: false,
     batch_number: '',
     notes: '',
+    budget_id: '',
+    budget_category_id: '',
+    budget_line_item_id: '',
+    post_purchase_to_journal: true,
   };
 }
 
@@ -87,6 +91,10 @@ function itemToForm(c) {
     is_perishable: Boolean(c.is_perishable),
     batch_number: c.batch_number || '',
     notes: c.notes || '',
+    budget_id: c.budget_id != null ? String(c.budget_id) : '',
+    budget_category_id: c.budget_category_id != null ? String(c.budget_category_id) : '',
+    budget_line_item_id: c.budget_line_item_id != null ? String(c.budget_line_item_id) : '',
+    post_purchase_to_journal: true,
   };
 }
 
@@ -100,10 +108,14 @@ function buildPayload(form) {
   ['last_purchase_date', 'restock_date', 'expiry_date', 'opened_date'].forEach((k) => {
     if (!p[k]) p[k] = null;
   });
+  ['budget_id', 'budget_category_id', 'budget_line_item_id', 'accounting_item_id'].forEach((k) => {
+    if (!p[k]) p[k] = null;
+  });
   p.is_perishable = Boolean(p.is_perishable);
   if (!p.capacity && p.capacity_amount && p.capacity_unit) {
     p.capacity = `${p.capacity_amount} ${p.capacity_unit}`.trim();
   }
+  p.post_purchase_to_journal = Boolean(p.post_purchase_to_journal);
   return p;
 }
 
@@ -136,10 +148,92 @@ function isExpired(c) {
 export default function OfficeAdminConsumables({ consumables, onReload, onError, onFlash }) {
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
-  const [form, setForm] = useState(emptyConsumableForm);
+  const [form, setForm] = useState(emptyConsumableForm());
   const [selectedId, setSelectedId] = useState(null);
   const [detailForm, setDetailForm] = useState(emptyConsumableForm());
   const [saving, setSaving] = useState(false);
+  const [budgets, setBudgets] = useState([]);
+  const [budgetCategories, setBudgetCategories] = useState([]);
+  const [budgetLineItems, setBudgetLineItems] = useState([]);
+  const [budgetsLoading, setBudgetsLoading] = useState(false);
+  const [budgetsError, setBudgetsError] = useState('');
+
+  const loadBudgets = useCallback(() => {
+    setBudgetsLoading(true);
+    setBudgetsError('');
+    return officeAdmin.accounting
+      .budgetsForLinking()
+      .then((d) => {
+        const list = (d.budgets || []).map((b) => ({
+          ...b,
+          id: b.id != null ? String(b.id) : '',
+          department_name: b.department_name ?? b.Department_name ?? '',
+          fiscal_year: b.fiscal_year ?? b.Fiscal_year,
+          status: b.status ?? b.Status ?? '',
+        }));
+        setBudgets(list);
+        return list;
+      })
+      .catch((e) => {
+        setBudgets([]);
+        setBudgetsError(e.message || 'Could not load department budgets.');
+        onError(e.message || 'Could not load department budgets.');
+        return [];
+      })
+      .finally(() => setBudgetsLoading(false));
+  }, [onError]);
+
+  useEffect(() => {
+    loadBudgets();
+  }, [loadBudgets]);
+
+  useEffect(() => {
+    if (showAddForm) loadBudgets();
+  }, [showAddForm, loadBudgets]);
+
+  const loadBudgetDetails = useCallback(async (budgetId) => {
+    if (!budgetId) {
+      setBudgetCategories([]);
+      setBudgetLineItems([]);
+      return;
+    }
+    try {
+      const det = await officeAdmin.accounting.getBudget(budgetId);
+      setBudgetCategories(
+        (det.categories || []).map((c) => ({
+          ...c,
+          id: c.id != null ? String(c.id) : '',
+          category_name: c.category_name ?? c.Category_name ?? '',
+        }))
+      );
+      setBudgetLineItems(
+        (det.lineItems || []).map((l) => ({
+          ...l,
+          id: l.id != null ? String(l.id) : '',
+          category_id: l.category_id != null ? String(l.category_id) : '',
+          description: l.description ?? l.Description ?? '',
+        }))
+      );
+    } catch {
+      setBudgetCategories([]);
+      setBudgetLineItems([]);
+    }
+  }, []);
+
+  const handleBudgetChange = (budgetId, setValues) => {
+    setValues((f) => ({
+      ...f,
+      budget_id: budgetId,
+      budget_category_id: '',
+      budget_line_item_id: '',
+    }));
+    loadBudgetDetails(budgetId);
+  };
+
+  useEffect(() => {
+    const budgetId = selectedId ? detailForm.budget_id : showAddForm ? form.budget_id : '';
+    if (budgetId) loadBudgetDetails(budgetId);
+  }, [selectedId, detailForm.budget_id, showAddForm, form.budget_id, loadBudgetDetails]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -173,7 +267,11 @@ export default function OfficeAdminConsumables({ consumables, onReload, onError,
     try {
       const r = await officeAdmin.consumables.update(selectedId, buildPayload(detailForm));
       if (r.consumable) setDetailForm(itemToForm(r.consumable));
-      onFlash('Item updated.');
+      onFlash(
+        r.journal?.journalPosted
+          ? 'Item updated and purchase posted to expense journal.'
+          : 'Item updated.'
+      );
       onReload();
     } catch (e) {
       onError(e.message);
@@ -187,7 +285,11 @@ export default function OfficeAdminConsumables({ consumables, onReload, onError,
     setSaving(true);
     try {
       const r = await officeAdmin.consumables.create(buildPayload(form));
-      onFlash(`Added ${r.consumable?.name || 'item'}.`);
+      onFlash(
+        r.journal?.journalPosted
+          ? `Added ${r.consumable?.name || 'item'} and posted purchase to expense journal.`
+          : `Added ${r.consumable?.name || 'item'}.`
+      );
       setForm(emptyConsumableForm());
       setShowAddForm(false);
       onReload();
@@ -397,6 +499,82 @@ export default function OfficeAdminConsumables({ consumables, onReload, onError,
         onChange={(e) => setValues((f) => ({ ...f, notes: e.target.value }))}
       />
     </Field>
+
+    <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide pt-2">Department budget & journal</p>
+    <p className="text-xs text-surface-500 -mt-1">
+      Link this item to a department budget from Accounting Management. When you record a purchase date and amount, it can
+      appear on the expense journal against that budget and category.
+    </p>
+    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <Field label="Department budget">
+        <select
+          className={inputClass}
+          value={values.budget_id}
+          onChange={(e) => handleBudgetChange(e.target.value, setValues)}
+          disabled={budgetsLoading}
+        >
+          <option value="">{budgetsLoading ? 'Loading budgets…' : '— Not linked —'}</option>
+          {budgets.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.department_name} ({b.fiscal_year}{b.status ? ` · ${b.status}` : ''})
+            </option>
+          ))}
+        </select>
+        {budgetsError ? <span className="text-xs text-red-600 mt-1 block">{budgetsError}</span> : null}
+        {!budgetsLoading && !budgetsError && budgets.length === 0 ? (
+          <span className="text-xs text-amber-700 mt-1 block">
+            No department budgets found. Create one under Accounting Management → Department budget, then refresh this
+            page.
+          </span>
+        ) : null}
+      </Field>
+      {values.budget_id && budgetCategories.length > 0 && (
+        <Field label="Budget category">
+          <select
+            className={inputClass}
+            value={values.budget_category_id}
+            onChange={(e) => setValues((f) => ({ ...f, budget_category_id: e.target.value, budget_line_item_id: '' }))}
+          >
+            <option value="">— Select category —</option>
+            {budgetCategories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.category_name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {values.budget_id && budgetLineItems.length > 0 && (
+        <Field label="Budget line item (optional)">
+          <select
+            className={inputClass}
+            value={values.budget_line_item_id}
+            onChange={(e) => setValues((f) => ({ ...f, budget_line_item_id: e.target.value }))}
+          >
+            <option value="">— None —</option>
+            {budgetLineItems
+              .filter((l) => !values.budget_category_id || l.category_id === values.budget_category_id)
+              .map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.description}
+                </option>
+              ))}
+          </select>
+        </Field>
+      )}
+      {values.budget_id && (
+        <Field label="Post purchase to journal">
+          <label className="flex items-center gap-2 mt-2 text-sm">
+            <input
+              type="checkbox"
+              checked={values.post_purchase_to_journal !== false}
+              onChange={(e) => setValues((f) => ({ ...f, post_purchase_to_journal: e.target.checked }))}
+            />
+            Auto-post when purchase date &amp; price are saved
+          </label>
+        </Field>
+      )}
+    </div>
   </>
   );
 
@@ -459,6 +637,7 @@ export default function OfficeAdminConsumables({ consumables, onReload, onError,
               <th className="p-3">Reorder</th>
               <th className="p-3">Unit cost</th>
               <th className="p-3">Purchased at</th>
+              <th className="p-3">Budget</th>
               <th className="p-3">Restock</th>
               <th className="p-3">Expiry</th>
               <th className="p-3 w-20" />
@@ -489,6 +668,22 @@ export default function OfficeAdminConsumables({ consumables, onReload, onError,
                   <td className="p-3 text-xs max-w-[8rem] truncate" title={c.purchase_location || ''}>
                     {c.purchase_location || '—'}
                   </td>
+                  <td className="p-3 text-xs max-w-[10rem]">
+                    {c.budget_department ? (
+                      <>
+                        <span className="block truncate" title={c.budget_department}>
+                          {c.budget_department}
+                        </span>
+                        {c.budget_category_name ? (
+                          <span className="block text-surface-500 truncate" title={c.budget_category_name}>
+                            {c.budget_category_name}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td className="p-3 whitespace-nowrap">{fmtDate(c.restock_date)}</td>
                   <td className={`p-3 whitespace-nowrap ${expSoon || expired ? 'text-red-700 font-medium' : ''}`}>
                     {fmtDate(c.expiry_date)}
@@ -510,7 +705,7 @@ export default function OfficeAdminConsumables({ consumables, onReload, onError,
             })}
             {!filtered.length && (
               <tr>
-                <td colSpan={10} className="p-6 text-center text-surface-500">
+                <td colSpan={11} className="p-6 text-center text-surface-500">
                   No items found. Click &quot;Add supply item&quot; to register stock.
                 </td>
               </tr>

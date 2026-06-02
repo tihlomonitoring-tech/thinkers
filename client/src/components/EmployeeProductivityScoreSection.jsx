@@ -11,7 +11,7 @@ const CAT_LABELS = {
   dailyPulse: 'Daily pulse',
 };
 
-export default function EmployeeProductivityScoreSection() {
+export default function EmployeeProductivityScoreSection({ onError }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -25,7 +25,11 @@ export default function EmployeeProductivityScoreSection() {
         if (!c) setData(r);
       })
       .catch((e) => {
-        if (!c) setError(e?.message || 'Could not load tenant scores');
+        if (!c) {
+          const msg = e?.message || 'Could not load tenant scores';
+          setError(msg);
+          onError?.(msg);
+        }
       })
       .finally(() => {
         if (!c) setLoading(false);
@@ -33,7 +37,7 @@ export default function EmployeeProductivityScoreSection() {
     return () => {
       c = true;
     };
-  }, []);
+  }, [onError]);
 
   if (loading) {
     return (
@@ -44,7 +48,7 @@ export default function EmployeeProductivityScoreSection() {
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return <div className="rounded-xl border border-red-200 bg-red-50 text-red-800 text-sm p-4">{error}</div>;
   }
 
@@ -59,7 +63,7 @@ export default function EmployeeProductivityScoreSection() {
           <h1 className="text-xl font-semibold text-surface-900">Employee productivity score</h1>
           <InfoHint
             title="Management insights"
-            text="Scores aggregate Command Centre team members only (page or tab access). Each row is a rolling total from clock punctuality, telematics specialist evaluations on authored shift reports (standard and single-operations), assigned tasks, shift-report submission timing for both report types, and team progress (achieved measurable objectives plus management 1–5 ratings). Use this to spot coaching opportunities — not as the sole measure of performance."
+            text="Scores aggregate Command Centre team members only. Grace credits and debtor sanctions are issued by team leaders (Daily pulse) from team pools that management allocates under Warnings & rewards → Team points."
           />
         </div>
         <p className="text-sm text-surface-500">

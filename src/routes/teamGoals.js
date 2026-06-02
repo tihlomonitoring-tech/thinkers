@@ -11,6 +11,8 @@ import {
   preferredThinkersAfricaTenantId,
   defaultActiveTenantId,
 } from '../lib/tenantPrimaryPreference.js';
+import { maybeGrantWeeklyLeaderCredits } from '../lib/teamLeaderCredits.js';
+import { registerTeamLeaderCreditsRoutes } from './teamLeaderCreditsRoutes.js';
 
 const router = Router();
 
@@ -407,7 +409,8 @@ router.post('/team-leader/questionnaire', requirePageAccess('team_leader_admin')
         }
       );
     }
-    res.json({ ok: true, tenant_id: tenantId });
+    const weeklyGrant = await maybeGrantWeeklyLeaderCredits(tenantId, req.user.id, workDate);
+    res.json({ ok: true, tenant_id: tenantId, weekly_credit_grant: weeklyGrant });
   } catch (err) {
     next(err);
   }
@@ -879,5 +882,7 @@ router.get('/team-scores/summary', requirePageAccess(['profile', 'management', '
     next(err);
   }
 });
+
+registerTeamLeaderCreditsRoutes(router);
 
 export default router;

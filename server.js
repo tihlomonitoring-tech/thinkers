@@ -192,13 +192,19 @@ app.use('/api', (req, res) => {
   const logisticsFinanceHint =
     pathLower.includes('logistics-finance') &&
     'Logistics finance requires this API version (routes under /api/logistics-finance). Run: npm run db:logistics-finance && npm run db:logistics-finance-page-role — then restart the Node server (npm run server). Ping: GET /api/logistics-finance/ping should return 200.';
+  const creditsHint =
+    (pathLower.includes('team-leader/credit') ||
+      pathLower.includes('team-leader/issue-') ||
+      pathLower.includes('member-credit-applications') ||
+      pathLower.includes('team-point-pools')) &&
+    'Team leader / team credit routes need a restarted API (npm run server). Paths: /api/team-goals/team-leader/* and /api/profile-management/team-point-pools/*. Run npm run db:employee-grace-credits && npm run db:team-credit-pools if tables are missing.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || logisticsFinanceHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || creditsHint || genericHint,
   });
 });
 

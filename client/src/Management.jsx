@@ -8,6 +8,7 @@ import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange
 import InfoHint from './components/InfoHint.jsx';
 import { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
 import EmployeeProductivityScoreSection from './components/EmployeeProductivityScoreSection.jsx';
+import WarningsRewardsManagement from './components/WarningsRewardsManagement.jsx';
 import TeamGoalsManagementSection from './components/TeamGoalsManagementSection.jsx';
 import PerformanceEvaluationTrendsSection from './components/PerformanceEvaluationTrendsSection.jsx';
 import PerformanceEvaluationQuestionsEditor from './components/PerformanceEvaluationQuestionsEditor.jsx';
@@ -571,6 +572,8 @@ export default function Management() {
   const [scheduleEvents, setScheduleEvents] = useState([]);
   const [warningsHistory, setWarningsHistory] = useState([]);
   const [rewardsHistory, setRewardsHistory] = useState([]);
+  const [graceCreditsHistory, setGraceCreditsHistory] = useState([]);
+  const [sanctionsHistory, setSanctionsHistory] = useState([]);
   const [libraryDocs, setLibraryDocs] = useState([]);
   const [queries, setQueries] = useState([]);
   const [evaluations, setEvaluations] = useState([]);
@@ -632,8 +635,15 @@ export default function Management() {
     if (activeSection === 'warnings-rewards') {
       pm.warnings.listAll().then((d) => setWarningsHistory(d.warnings || [])).catch(() => setWarningsHistory([]));
       pm.rewards.listAll().then((d) => setRewardsHistory(d.rewards || [])).catch(() => setRewardsHistory([]));
+      pm.graceCredits.listAll().then((d) => setGraceCreditsHistory(d.credits || [])).catch(() => setGraceCreditsHistory([]));
+      pm.debtorSanctions.listAll().then((d) => setSanctionsHistory(d.sanctions || [])).catch(() => setSanctionsHistory([]));
     }
   }, [activeSection, leaveBalanceYear]);
+
+  const refreshGraceLedger = useCallback(() => {
+    pm.graceCredits.listAll().then((d) => setGraceCreditsHistory(d.credits || [])).catch(() => {});
+    pm.debtorSanctions.listAll().then((d) => setSanctionsHistory(d.sanctions || [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (activeSection === 'documents') pm.documents.library().then((d) => setLibraryDocs(d.documents || [])).catch(() => setLibraryDocs([]));
@@ -749,7 +759,7 @@ export default function Management() {
 
           {activeSection === 'team_leader_audit' && <TeamLeaderAuditSection onError={setError} />}
 
-          {activeSection === 'employee_productivity_score' && <EmployeeProductivityScoreSection />}
+          {activeSection === 'employee_productivity_score' && <EmployeeProductivityScoreSection onError={setError} />}
 
           {activeSection === 'shift_activity' && (
             <div className="space-y-6">
@@ -892,13 +902,16 @@ export default function Management() {
           )}
 
           {activeSection === 'warnings-rewards' && (
-            <WarningsRewardsSection
+            <WarningsRewardsManagement
               tenantUsers={tenantUsers}
               warnings={warningsHistory}
               rewards={rewardsHistory}
+              graceCredits={graceCreditsHistory}
+              sanctions={sanctionsHistory}
               onRefresh={() => {
                 pm.warnings.listAll().then((d) => setWarningsHistory(d.warnings || []));
                 pm.rewards.listAll().then((d) => setRewardsHistory(d.rewards || []));
+                refreshGraceLedger();
               }}
               onError={setError}
             />
@@ -2014,136 +2027,6 @@ function LeaveSection({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function WarningsRewardsSection({ tenantUsers, warnings = [], rewards = [], onRefresh, onError }) {
-  const [warningUser, setWarningUser] = useState('');
-  const [warningType, setWarningType] = useState('');
-  const [warningDesc, setWarningDesc] = useState('');
-  const [rewardUser, setRewardUser] = useState('');
-  const [rewardType, setRewardType] = useState('');
-  const [rewardDesc, setRewardDesc] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const submitWarning = async (e) => {
-    e.preventDefault();
-    if (!warningUser || !warningType) {
-      onError('Select employee and enter warning type');
-      return;
-    }
-    setSaving(true);
-    onError('');
-    try {
-      await pm.warnings.create({ user_id: warningUser, warning_type: warningType.trim(), description: warningDesc.trim() || undefined });
-      setWarningUser('');
-      setWarningType('');
-      setWarningDesc('');
-      onRefresh?.();
-    } catch (err) {
-      onError(err?.message || 'Failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const submitReward = async (e) => {
-    e.preventDefault();
-    if (!rewardUser || !rewardType) {
-      onError('Select employee and enter reward type');
-      return;
-    }
-    setSaving(true);
-    onError('');
-    try {
-      await pm.rewards.create({ user_id: rewardUser, reward_type: rewardType.trim(), description: rewardDesc.trim() || undefined });
-      setRewardUser('');
-      setRewardType('');
-      setRewardDesc('');
-      onRefresh?.();
-    } catch (err) {
-      onError(err?.message || 'Failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-surface-900">Warnings & rewards</h1>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="app-glass-card p-4">
-          <p className="text-sm font-medium text-surface-700 mb-2">Issue warning</p>
-          <form onSubmit={submitWarning} className="space-y-2">
-            <select value={warningUser} onChange={(e) => setWarningUser(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
-              <option value="">Select employee</option>
-              {tenantUsers.map((u) => (
-                <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
-              ))}
-            </select>
-            <input type="text" value={warningType} onChange={(e) => setWarningType(e.target.value)} placeholder="Warning type" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required />
-            <textarea value={warningDesc} onChange={(e) => setWarningDesc(e.target.value)} placeholder="Description (optional)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-            <button type="submit" disabled={saving} className="px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800 text-sm font-medium hover:bg-amber-200 disabled:opacity-50">
-              Submit warning
-            </button>
-          </form>
-        </div>
-        <div className="app-glass-card p-4">
-          <p className="text-sm font-medium text-surface-700 mb-2">Issue reward</p>
-          <form onSubmit={submitReward} className="space-y-2">
-            <select value={rewardUser} onChange={(e) => setRewardUser(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required>
-              <option value="">Select employee</option>
-              {tenantUsers.map((u) => (
-                <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
-              ))}
-            </select>
-            <input type="text" value={rewardType} onChange={(e) => setRewardType(e.target.value)} placeholder="Reward type" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" required />
-            <textarea value={rewardDesc} onChange={(e) => setRewardDesc(e.target.value)} placeholder="Description (optional)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-            <button type="submit" disabled={saving} className="px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 text-sm font-medium hover:bg-emerald-200 disabled:opacity-50">
-              Submit reward
-            </button>
-          </form>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="app-glass-card overflow-hidden">
-          <p className="px-4 py-2 text-sm font-medium text-surface-700 border-b border-surface-100">Warnings & cases (history)</p>
-          {warnings.length === 0 ? (
-            <p className="p-4 text-sm text-surface-500">No warnings on record.</p>
-          ) : (
-            <ul className="divide-y divide-surface-100 max-h-80 overflow-y-auto">
-              {warnings.map((w) => (
-                <li key={w.id} className="px-4 py-3 text-sm">
-                  <span className="font-medium">{w.user_name || w.user_email || w.user_id}</span>
-                  <span className="text-amber-700 ml-1">— {w.warning_type}</span>
-                  <span className="text-surface-400 text-xs ml-1">{formatDate(w.created_at)}</span>
-                  {w.description && <p className="text-surface-600 mt-0.5">{w.description}</p>}
-                  {w.issued_by_name && <p className="text-xs text-surface-400">Issued by {w.issued_by_name}</p>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div className="app-glass-card overflow-hidden">
-          <p className="px-4 py-2 text-sm font-medium text-surface-700 border-b border-surface-100">Rewards (history)</p>
-          {rewards.length === 0 ? (
-            <p className="p-4 text-sm text-surface-500">No rewards on record.</p>
-          ) : (
-            <ul className="divide-y divide-surface-100 max-h-80 overflow-y-auto">
-              {rewards.map((r) => (
-                <li key={r.id} className="px-4 py-3 text-sm">
-                  <span className="font-medium">{r.user_name || r.user_email || r.user_id}</span>
-                  <span className="text-emerald-700 ml-1">— {r.reward_type}</span>
-                  <span className="text-surface-400 text-xs ml-1">{formatDate(r.created_at)}</span>
-                  {r.description && <p className="text-surface-600 mt-0.5">{r.description}</p>}
-                  {r.issued_by_name && <p className="text-xs text-surface-400">Issued by {r.issued_by_name}</p>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
     </div>
   );
 }

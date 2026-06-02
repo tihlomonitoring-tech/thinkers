@@ -10,7 +10,7 @@ const VALID_PAGES = ['accounting', 'management', 'contractor'];
 const PAGE_TABS = {
   accounting: [
     'company-settings', 'customer-book', 'supplier-book', 'items-library',
-    'quotations', 'invoices', 'purchase-orders', 'statements', 'library',
+    'quotations', 'invoices', 'purchase-orders', 'account-types', 'general-ledger', 'statements', 'financial-reports', 'library',
     'department-budget', 'expense-management',
   ],
   management: [
@@ -40,9 +40,15 @@ router.get('/my-tabs/:pageKey', async (req, res, next) => {
       `SELECT tab_id FROM tab_access_grants WHERE user_id = @userId AND page_key = @pageKey`,
       { userId: req.user.id, pageKey }
     );
-    let tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => PAGE_TABS[pageKey].includes(id));
-    if (tabs.length === 0) tabs = PAGE_TABS[pageKey];
-    else if (pageKey === 'contractor') tabs = [...new Set([...tabs, 'onboarding'])];
+    const canonical = PAGE_TABS[pageKey];
+    let tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => canonical.includes(id));
+    if (tabs.length === 0) {
+      tabs = [...canonical];
+    } else {
+      // Users with explicit grants still receive newly added tabs (e.g. general-ledger)
+      tabs = [...new Set([...tabs, ...canonical])];
+      if (pageKey === 'contractor') tabs = [...new Set([...tabs, 'onboarding'])];
+    }
     res.json({ tabs });
   } catch (err) { next(err); }
 });

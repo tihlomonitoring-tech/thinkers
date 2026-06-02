@@ -728,6 +728,66 @@ export function rewardIssuedHtml({ rewardType, description, issuedByName, appUrl
   return taskEmailLayout('Reward issued', content);
 }
 
+export function graceCreditIssuedHtml({ points, justification, issuedByName, appUrl }) {
+  const rows = [
+    ['Points', String(points)],
+    ['Justification', justification],
+    ...(issuedByName ? [['Recorded by', issuedByName]] : []),
+  ];
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A <strong>grace credit</strong> has been added to your disciplinary record.</p>
+    ${taskSectionBar('Grace credit')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/profile?tab=disciplinary')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View in Profile →</a></p>
+  `;
+  return taskEmailLayout('Grace credit recorded', content);
+}
+
+export function debtorSanctionIssuedHtml({ points, justification, issuedByName, appUrl }) {
+  const rows = [
+    ['Points', String(points)],
+    ['Justification', justification],
+    ...(issuedByName ? [['Recorded by', issuedByName]] : []),
+  ];
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A <strong>debtor sanction</strong> (demerit) has been recorded on your profile.</p>
+    ${taskSectionBar('Debtor sanction')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/profile?tab=disciplinary')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View in Profile →</a></p>
+  `;
+  return taskEmailLayout('Debtor sanction recorded', content);
+}
+
+export function creditApplicationSubmittedHtml({ applicantName, points, justification, appUrl }) {
+  const rows = [
+    ['Employee', applicantName],
+    ['Requested points', String(points)],
+    ['Justification', justification],
+  ];
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A new <strong>grace credit application</strong> is pending review.</p>
+    ${taskSectionBar('Application')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/management')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Review in Management →</a></p>
+  `;
+  return taskEmailLayout('Credit application submitted', content);
+}
+
+export function creditApplicationReviewedHtml({ status, reviewNotes, appUrl }) {
+  const approved = status === 'approved';
+  const rows = [
+    ['Outcome', approved ? 'Approved — grace credit issued' : 'Declined'],
+    ...(reviewNotes ? [['Management notes', reviewNotes]] : []),
+  ];
+  const content = `
+    <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">Your grace credit application has been <strong>${approved ? 'approved' : 'declined'}</strong>.</p>
+    ${taskSectionBar('Outcome')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/profile?tab=disciplinary')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View in Profile →</a></p>
+  `;
+  return taskEmailLayout(approved ? 'Credit application approved' : 'Credit application declined', content);
+}
+
 function shiftLabelForEmail(shiftType) {
   return String(shiftType).toLowerCase() === 'night' ? 'Night' : 'Day';
 }

@@ -4,12 +4,14 @@ import { useAuth } from './AuthContext';
 import InfoHint from './components/InfoHint.jsx';
 import ShiftObjectivesTab from './components/ShiftObjectivesTab.jsx';
 import TeamPunctualityTab from './components/TeamPunctualityTab.jsx';
+import { TeamLeaderCreditWalletBar, TeamLeaderIssueCreditsOnPulse, TeamLeaderMemberCreditRequests } from './components/TeamLeaderMemberCredits.jsx';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { todayYmd } from './lib/appTime.js';
 
 const MAIN_TABS = [
   { id: 'pulse', label: 'Daily pulse' },
+  { id: 'member_credit_requests', label: 'Members credit requests' },
   { id: 'punctuality', label: 'Team punctuality' },
   { id: 'submissions', label: 'Recent submissions' },
   { id: 'objectives', label: 'Shift & team objectives' },
@@ -225,6 +227,7 @@ function PulsePanel({
   pulseTenantId,
   setPulseTenantId,
   defaultTenantId,
+  onError,
 }) {
   const [formHidden, setFormHidden] = useState(false);
   const [shiftRosterMode, setShiftRosterMode] = useState('auto');
@@ -309,7 +312,8 @@ function PulsePanel({
     'w-full px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 dark:border-surface-700 dark:bg-surface-950 dark:text-surface-100';
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-3xl space-y-4">
+      <TeamLeaderCreditWalletBar workDate={workDate} onError={onError} />
       <div className="rounded-xl border border-surface-200 bg-white shadow-sm dark:border-surface-800 dark:bg-surface-900 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-5 border-b border-surface-200 dark:border-surface-800 bg-surface-50/40 dark:bg-surface-950/40">
           <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Today&apos;s questionnaire</h2>
@@ -494,6 +498,7 @@ function PulsePanel({
           </form>
         )}
       </div>
+      <TeamLeaderIssueCreditsOnPulse workDate={workDate} roster={cohort} onError={onError} />
     </div>
   );
 }
@@ -746,7 +751,13 @@ export default function TeamLeaderAdmin() {
             {mainTab === 'pulse' && (
               <InfoHint
                 title="Daily pulse"
-                text="Submit one questionnaire per work day for your team. If you belong to more than one company, choose the company on the form (defaults to Thinkers Afrika). Individual touchpoints are optional rows for member-level notes. Past reports are under Recent submissions."
+                text="Submit one questionnaire per work day. Complete 6 pulses in a week to earn 10 credits for issuing to members (not yourself). Grant credits or demerits below using management categories. Past reports are under Recent submissions."
+              />
+            )}
+            {mainTab === 'member_credit_requests' && (
+              <InfoHint
+                title="Members credit requests"
+                text="Employee credit applications from Profile are routed to you as their team leader. Approve or reject here; approval uses your wallet and team pool and grants you a 15-point leader bonus."
               />
             )}
             {mainTab === 'objectives' && (
@@ -799,8 +810,10 @@ export default function TeamLeaderAdmin() {
                 pulseTenantId={pulseTenantId}
                 setPulseTenantId={setPulseTenantId}
                 defaultTenantId={defaultPulseTenantId}
+                onError={setError}
               />
             )}
+            {mainTab === 'member_credit_requests' && <TeamLeaderMemberCreditRequests onError={setError} />}
             {mainTab === 'punctuality' && <TeamPunctualityTab />}
             {mainTab === 'submissions' && <RecentSubmissionsPanel entries={entries} />}
             {mainTab === 'objectives' && <ShiftObjectivesTab userId={user?.id} tenantUsers={tenantUsers} leadershipMode />}

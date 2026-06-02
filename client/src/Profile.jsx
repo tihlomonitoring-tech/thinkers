@@ -10,6 +10,7 @@ import {
   AUTO_HIDE_NAV_PREF_CHANGED,
 } from './lib/autoHideNav.js';
 import InfoHint from './components/InfoHint.jsx';
+import DisciplinaryRewardsProfile from './components/DisciplinaryRewardsProfile.jsx';
 import OvertimeClaimFields, { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
 import { calculateSaOvertimeClaim } from './lib/saOvertimeClaim.js';
 import ShiftClockPanel from './components/ShiftClockPanel.jsx';
@@ -552,6 +553,11 @@ export default function Profile() {
   const [documents, setDocuments] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [rewards, setRewards] = useState([]);
+  const [graceCredits, setGraceCredits] = useState([]);
+  const [debtorSanctions, setDebtorSanctions] = useState([]);
+  const [creditApplications, setCreditApplications] = useState([]);
+  const [graceSummary, setGraceSummary] = useState(null);
+  const [creditCategories, setCreditCategories] = useState([]);
   const [queries, setQueries] = useState([]);
   const [evaluations, setEvaluations] = useState([]);
   const [pipPlans, setPipPlans] = useState([]);
@@ -843,6 +849,11 @@ export default function Profile() {
     if (activeTab === 'disciplinary') {
       pm.warnings.list().then((d) => setWarnings(d.warnings || [])).catch(() => setWarnings([]));
       pm.rewards.list().then((d) => setRewards(d.rewards || [])).catch(() => setRewards([]));
+      pm.graceCredits.list().then((d) => setGraceCredits(d.credits || [])).catch(() => setGraceCredits([]));
+      pm.debtorSanctions.list().then((d) => setDebtorSanctions(d.sanctions || [])).catch(() => setDebtorSanctions([]));
+      pm.creditApplications.list().then((d) => setCreditApplications(d.applications || [])).catch(() => setCreditApplications([]));
+      pm.graceCredits.summary().then(setGraceSummary).catch(() => setGraceSummary(null));
+      pm.creditDemeritCategories.list('credit').then((d) => setCreditCategories(d.categories || [])).catch(() => setCreditCategories([]));
     }
   }, [activeTab, activeTenantId]);
 
@@ -1425,49 +1436,24 @@ export default function Profile() {
           )}
 
           {activeTab === 'disciplinary' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Disciplinary & rewards</h1>
-                <InfoHint
-                  title="Disciplinary and rewards"
-                  text="Warnings and disciplinary cases appear alongside formal rewards recorded for you. Contact HR if something looks incorrect."
-                />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="app-glass-card p-4">
-                  <p className="text-sm font-medium text-surface-700 mb-2">Warnings & cases</p>
-                  {warnings.length === 0 ? (
-                    <p className="text-sm text-surface-500">None on record.</p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {warnings.map((w) => (
-                        <li key={w.id} className="text-sm border-l-2 border-amber-200 pl-2">
-                          <span className="font-medium">{w.warning_type}</span>
-                          <span className="text-surface-500 text-xs ml-1">{formatDate(w.created_at)}</span>
-                          {w.description && <p className="text-surface-600 mt-0.5">{w.description}</p>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="app-glass-card p-4">
-                  <p className="text-sm font-medium text-surface-700 mb-2">Rewards</p>
-                  {rewards.length === 0 ? (
-                    <p className="text-sm text-surface-500">None yet.</p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {rewards.map((r) => (
-                        <li key={r.id} className="text-sm border-l-2 border-emerald-200 pl-2">
-                          <span className="font-medium">{r.reward_type}</span>
-                          <span className="text-surface-500 text-xs ml-1">{formatDate(r.created_at)}</span>
-                          {r.description && <p className="text-surface-600 mt-0.5">{r.description}</p>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            </div>
+            <DisciplinaryRewardsProfile
+              warnings={warnings}
+              rewards={rewards}
+              graceCredits={graceCredits}
+              sanctions={debtorSanctions}
+              applications={creditApplications}
+              summary={graceSummary}
+              creditCategories={creditCategories}
+              onRefresh={() => {
+                pm.warnings.list().then((d) => setWarnings(d.warnings || []));
+                pm.rewards.list().then((d) => setRewards(d.rewards || []));
+                pm.graceCredits.list().then((d) => setGraceCredits(d.credits || []));
+                pm.debtorSanctions.list().then((d) => setDebtorSanctions(d.sanctions || []));
+                pm.creditApplications.list().then((d) => setCreditApplications(d.applications || []));
+                pm.graceCredits.summary().then(setGraceSummary);
+              }}
+              onError={setError}
+            />
           )}
 
           {activeTab === 'queries' && (

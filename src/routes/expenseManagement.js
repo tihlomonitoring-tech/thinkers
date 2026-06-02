@@ -192,8 +192,31 @@ router.patch('/entries/:id', async (req, res, next) => {
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
     sets.push(`updated_at = SYSUTCDATETIME()`);
     await query(`UPDATE expense_entries SET ${sets.join(', ')} WHERE id = @id`, params);
-    const r = await query(`SELECT e.*, c.name AS category_name FROM expense_entries e LEFT JOIN expense_categories c ON c.id = e.category_id WHERE e.id = @id`, { id: req.params.id });
-    res.json({ entry: r.recordset?.[0] || null });
+    const r = await query(
+      `SELECT e.*, c.name AS category_name, c.account_type_id AS category_account_type_id,
+              bc.account_type_id AS budget_category_account_type_id
+       FROM expense_entries e
+       LEFT JOIN expense_categories c ON c.id = e.category_id
+       LEFT JOIN budget_categories bc ON bc.id = e.budget_category_id
+       WHERE e.id = @id`,
+      { id: req.params.id }
+    );
+    const entry = r.recordset?.[0] || null;
+    let journal = null;
+    if (entry && ['approved', 'paid'].includes(String(b.status || entry.status)) && !entry.journal_entry_id) {
+      try {
+        const { postExpenseJournal } = await import('../lib/accountingLedger.js');
+        journal = await postExpenseJournal({
+          tenantId: entry.tenant_id,
+          userId: req.user.id,
+          expenseEntry: entry,
+          categoryAccountId: entry.category_account_type_id,
+        });
+      } catch (je) {
+        journal = { error: je.message };
+      }
+    }
+    res.json({ entry, journal });
   } catch (err) { next(err); }
 });
 
@@ -538,7 +561,7 @@ router.get('/budgets-for-linking', async (req, res, next) => {
     const r = await query(
       `SELECT b.id, b.department_name, b.fiscal_year, b.total_budget, b.[status],
               (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt WHERE bt.budget_id = b.id AND bt.transaction_type = N'expense') AS spent
-       FROM department_budgets b WHERE b.tenant_id = @t AND b.[status] IN (N'active', N'approved')
+       FROM department_budgets b WHERE b.tenant_id = @t AND b.[status] NOT IN (N'closed', N'cancelled')
        ORDER BY b.fiscal_year DESC, b.department_name`,
       { t }
     );

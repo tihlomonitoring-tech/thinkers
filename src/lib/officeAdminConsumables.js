@@ -1,5 +1,21 @@
 /** Shared consumable field lists for Office Admin supplies */
 
+import { toYmdFromDbOrString } from './appTime.js';
+
+export const CONSUMABLE_DATE_FIELDS = [
+  'last_purchase_date',
+  'restock_date',
+  'expiry_date',
+  'opened_date',
+];
+
+export const CONSUMABLE_UUID_FIELDS = [
+  'accounting_item_id',
+  'budget_id',
+  'budget_category_id',
+  'budget_line_item_id',
+];
+
 export const CONSUMABLE_WRITABLE_FIELDS = [
   'name',
   'category',
@@ -8,6 +24,9 @@ export const CONSUMABLE_WRITABLE_FIELDS = [
   'reorder_level',
   'unit_cost',
   'accounting_item_id',
+  'budget_id',
+  'budget_category_id',
+  'budget_line_item_id',
   'notes',
   'brand',
   'sku',
@@ -27,12 +46,33 @@ export const CONSUMABLE_WRITABLE_FIELDS = [
   'batch_number',
 ];
 
+export function normalizeConsumableDate(v) {
+  if (v == null || v === '') return null;
+  const ymd = toYmdFromDbOrString(v);
+  return ymd || null;
+}
+
+export function normalizeConsumableUuid(v) {
+  if (v == null || v === undefined) return null;
+  const s = String(v).trim();
+  return s || null;
+}
+
+export function normalizeConsumableField(col, value) {
+  if (CONSUMABLE_DATE_FIELDS.includes(col)) return normalizeConsumableDate(value);
+  if (CONSUMABLE_UUID_FIELDS.includes(col)) return normalizeConsumableUuid(value);
+  return value;
+}
+
 export function pickConsumableBody(b) {
   const out = {};
   for (const col of CONSUMABLE_WRITABLE_FIELDS) {
     const camel = col.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-    if (b[col] !== undefined) out[col] = b[col];
-    else if (b[camel] !== undefined) out[col] = b[camel];
+    let val;
+    if (b[col] !== undefined) val = b[col];
+    else if (b[camel] !== undefined) val = b[camel];
+    else continue;
+    out[col] = normalizeConsumableField(col, val);
   }
   if (out.is_perishable !== undefined) {
     out.is_perishable = out.is_perishable === true || out.is_perishable === 1 || out.is_perishable === '1';

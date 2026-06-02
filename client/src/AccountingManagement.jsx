@@ -7,7 +7,16 @@ import { accounting as accountingApi, expenseManagement as emApi, tabAccess as t
 import { getApiBase } from './lib/apiBase.js';
 import { buildAccountingPdfFilename, buildCustomerStatementPdfFilename } from './lib/accountingDocumentPdfFilename.js';
 import InfoHint from './components/InfoHint.jsx';
+import AccountTypesTab from './components/accounting/AccountTypesTab.jsx';
+import GeneralLedgerTab from './components/accounting/GeneralLedgerTab.jsx';
+import FinancialReportsTab from './components/accounting/FinancialReportsTab.jsx';
 import { computeLineItem, computeDocumentTotals, formatZar, formatZarDisplay } from './lib/accountingLineTotals.js';
+
+const ALL_ACCOUNTING_TAB_IDS = [
+  'company-settings', 'customer-book', 'supplier-book', 'items-library',
+  'quotations', 'invoices', 'purchase-orders', 'account-types', 'general-ledger',
+  'statements', 'financial-reports', 'library', 'department-budget', 'expense-management',
+];
 
 const NAV_SECTIONS = [
   {
@@ -20,7 +29,10 @@ const NAV_SECTIONS = [
       { id: 'quotations', label: 'Quotations', icon: 'document' },
       { id: 'invoices', label: 'Invoices', icon: 'document' },
       { id: 'purchase-orders', label: 'Purchase orders', icon: 'document' },
-      { id: 'statements', label: 'Customer statements & other statements', icon: 'statement' },
+      { id: 'account-types', label: 'Account types', icon: 'statement' },
+      { id: 'general-ledger', label: 'General ledger', icon: 'statement' },
+      { id: 'statements', label: 'Customer statements', icon: 'statement' },
+      { id: 'financial-reports', label: 'Financial statements', icon: 'statement' },
       { id: 'library', label: 'Library', icon: 'folder' },
       { id: 'department-budget', label: 'Department budget', icon: 'statement' },
       { id: 'expense-management', label: 'Income and expense management', icon: 'statement' },
@@ -1445,12 +1457,15 @@ function InvoicesTab() {
         payment_date: markPaidForm.payment_date,
         payment_reference: markPaidForm.payment_reference.trim(),
       })
-      .then(() => {
+      .then((res) => {
         setMarkPaidModal(null);
         load();
         if (viewId === paidInvoiceId) {
           accountingApi.invoices.get(viewId).then((d) => setViewInvoice(d.invoice)).catch(() => {});
         }
+        const j = res?.journal;
+        if (j?.error) alert(`Invoice marked paid, but ledger posting failed: ${j.error}`);
+        else if (j?.journalNumber) alert(`Invoice marked paid. Journal ${j.journalNumber} posted to the general ledger.`);
       })
       .catch((err) => alert(err?.message || 'Could not record payment'))
       .finally(() => setMarkPaidSaving(false));
@@ -4725,9 +4740,10 @@ function DepartmentBudgetTab() {
   const [creating, setCreating] = useState(false);
 
   // category form
-  const [catForm, setCatForm] = useState({ category_name: '', allocated_amount: '', notes: '' });
+  const [catForm, setCatForm] = useState({ category_name: '', allocated_amount: '', notes: '', account_type_id: '' });
   const [catSaving, setCatSaving] = useState(false);
   const [editingCatId, setEditingCatId] = useState(null);
+  const [glAccounts, setGlAccounts] = useState([]);
 
   // line item form
   const [liForm, setLiForm] = useState({ category_id: '', description: '', estimated_amount: '', actual_amount: '', vendor: '', month: '', quarter: '', notes: '' });
@@ -4751,6 +4767,14 @@ function DepartmentBudgetTab() {
   }, [filterYear, filterDept, filterStatus]);
 
   useEffect(() => { loadBudgets(); }, [loadBudgets]);
+
+  useEffect(() => {
+    accountingApi.accountTypes.list()
+      .then((d) => setGlAccounts((d.accounts || []).filter((a) => a.is_active !== false)))
+      .catch(() => setGlAccounts([]));
+  }, []);
+
+  const emptyCatForm = { category_name: '', allocated_amount: '', notes: '', account_type_id: '' };
 
   const loadDetail = useCallback((id) => {
     setDetailLoading(true);
@@ -4804,19 +4828,28 @@ function DepartmentBudgetTab() {
   const handleSaveCat = (e) => {
     e.preventDefault();
     setCatSaving(true);
-    const body = { ...catForm, allocated_amount: Number(catForm.allocated_amount) || 0 };
+    const body = {
+      ...catForm,
+      allocated_amount: Number(catForm.allocated_amount) || 0,
+      account_type_id: catForm.account_type_id || null,
+    };
     const promise = editingCatId
       ? accountingApi.budgets.updateCategory(editingCatId, body)
       : accountingApi.budgets.addCategory(selectedId, body);
     promise
-      .then(() => { setCatForm({ category_name: '', allocated_amount: '', notes: '' }); setEditingCatId(null); loadDetail(selectedId); })
+      .then(() => { setCatForm({ ...emptyCatForm }); setEditingCatId(null); loadDetail(selectedId); })
       .catch(() => {})
       .finally(() => setCatSaving(false));
   };
 
   const editCat = (cat) => {
     setEditingCatId(cat.id);
-    setCatForm({ category_name: cat.category_name || '', allocated_amount: cat.allocated_amount ?? '', notes: cat.notes || '' });
+    setCatForm({
+      category_name: cat.category_name || '',
+      allocated_amount: cat.allocated_amount ?? '',
+      notes: cat.notes || '',
+      account_type_id: cat.account_type_id || '',
+    });
   };
 
   const deleteCat = (id) => {
@@ -5130,14 +5163,33 @@ function DepartmentBudgetTab() {
 
               {/* ── Categories ── */}
               <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
-                <div className="px-5 py-3 bg-surface-50 border-b border-surface-200">
+                <div className="px-5 py-3 bg-surface-50 border-b border-surface-200 flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-sm font-semibold text-surface-800">Categories</h4>
+                  <InfoHint
+                    title="Budget categories"
+                    text="Add categories here after creating the budget (not on the create form). Link each category to a GL account from Account types so expenses post to the right ledger account."
+                  />
                 </div>
                 <div className="p-5 space-y-4">
                   <form onSubmit={handleSaveCat} className="flex flex-wrap items-end gap-3">
                     <div className="flex-1 min-w-[160px]">
                       <label className="block text-xs font-medium text-surface-600 mb-1">Category name</label>
                       <input value={catForm.category_name} onChange={(e) => setCatForm((f) => ({ ...f, category_name: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="e.g. Software licences" />
+                    </div>
+                    <div className="min-w-[200px] flex-1">
+                      <label className="block text-xs font-medium text-surface-600 mb-1">GL account (account type)</label>
+                      <select
+                        value={catForm.account_type_id}
+                        onChange={(e) => setCatForm((f) => ({ ...f, account_type_id: e.target.value }))}
+                        className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm"
+                      >
+                        <option value="">— Use posting default —</option>
+                        {glAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.account_code ? `${a.account_code} — ` : ''}{a.account_name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="w-40">
                       <label className="block text-xs font-medium text-surface-600 mb-1">Allocated (ZAR)</label>
@@ -5147,7 +5199,7 @@ function DepartmentBudgetTab() {
                       {catSaving ? 'Saving…' : editingCatId ? 'Update' : 'Add'}
                     </button>
                     {editingCatId && (
-                      <button type="button" onClick={() => { setEditingCatId(null); setCatForm({ category_name: '', allocated_amount: '', notes: '' }); }} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">
+                      <button type="button" onClick={() => { setEditingCatId(null); setCatForm({ ...emptyCatForm }); }} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">
                         Cancel
                       </button>
                     )}
@@ -5166,6 +5218,11 @@ function DepartmentBudgetTab() {
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-medium text-surface-900">{c.category_name}</p>
                             <p className="text-xs text-surface-500 tabular-nums">{formatZarDisplay(Number(c.allocated_amount || 0))}</p>
+                            {(c.account_code || c.gl_account_name) && (
+                              <p className="text-xs text-surface-500 mt-0.5">
+                                GL: {c.account_code ? `${c.account_code} — ` : ''}{c.gl_account_name || '—'}
+                              </p>
+                            )}
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <button type="button" onClick={() => editCat(c)} className="text-brand-600 hover:text-brand-700 text-sm font-medium">Edit</button>
@@ -5439,8 +5496,14 @@ export default function AccountingManagement() {
 
   useEffect(() => {
     tabAccessApi.myTabs('accounting')
-      .then((d) => setAllowedTabs(d.tabs || []))
-      .catch(() => setAllowedTabs([]))
+      .then((d) => {
+        const tabs = d.tabs?.length ? d.tabs : ALL_ACCOUNTING_TAB_IDS;
+        setAllowedTabs(tabs);
+        if (!tabs.includes(activeTab) && activeTab !== 'manage-tab-access') {
+          setActiveTab(tabs[0] || 'company-settings');
+        }
+      })
+      .catch(() => setAllowedTabs(ALL_ACCOUNTING_TAB_IDS))
       .finally(() => setTabAccessLoading(false));
   }, []);
 
@@ -5540,7 +5603,10 @@ export default function AccountingManagement() {
           {activeTab === 'quotations' && <QuotationsTab />}
           {activeTab === 'invoices' && <InvoicesTab />}
           {activeTab === 'purchase-orders' && <PurchaseOrdersTab />}
+          {activeTab === 'account-types' && <AccountTypesTab />}
+          {activeTab === 'general-ledger' && <GeneralLedgerTab />}
           {activeTab === 'statements' && <StatementsTab />}
+          {activeTab === 'financial-reports' && <FinancialReportsTab />}
           {activeTab === 'library' && <LibraryTab />}
           {activeTab === 'department-budget' && <DepartmentBudgetTab />}
           {activeTab === 'expense-management' && <ExpenseManagementTab />}

@@ -19,7 +19,8 @@ import {
   mapMaintAttachmentRow,
   normalizeOaTabs,
 } from '../lib/officeAdminMaintenance.js';
-import { CONSUMABLE_WRITABLE_FIELDS, pickConsumableBody } from '../lib/officeAdminConsumables.js';
+import { CONSUMABLE_WRITABLE_FIELDS, pickConsumableBody, normalizeConsumableDate } from '../lib/officeAdminConsumables.js';
+import { createExpenseJournalEntry } from '../lib/expenseJournalEntry.js';
 import { safeResolveUnderRoot } from '../lib/fuelStatementExport.js';
 
 const router = Router();
@@ -293,6 +294,58 @@ router.get('/accounting/suppliers', async (req, res, next) => {
       { tenantId }
     ).catch(() => ({ recordset: [] }));
     res.json({ suppliers: r.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/accounting/budgets-for-linking', async (req, res, next) => {
+  try {
+    const tenantId = requireTenant(req, res);
+    if (!tenantId) return;
+    const r = await query(
+      `SELECT b.id, b.department_name, b.fiscal_year, b.total_budget, b.[status],
+              (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt WHERE bt.budget_id = b.id AND bt.transaction_type = N'expense') AS spent
+       FROM department_budgets b
+       WHERE b.tenant_id = @tenantId AND b.[status] NOT IN (N'closed', N'cancelled')
+       ORDER BY b.fiscal_year DESC, b.department_name`,
+      { tenantId }
+    );
+    res.json({ budgets: r.recordset || [] });
+  } catch (err) {
+    if (String(err.message).includes('department_budgets')) {
+      return res.status(503).json({ error: 'Department budgets not installed. Run: npm run db:department-budget' });
+    }
+    next(err);
+  }
+});
+
+router.get('/accounting/budgets/:id', async (req, res, next) => {
+  try {
+    const tenantId = requireTenant(req, res);
+    if (!tenantId) return;
+    const budget = await query(
+      `SELECT id, department_name, fiscal_year, total_budget, [status]
+       FROM department_budgets WHERE id = @id AND tenant_id = @tenantId`,
+      { id: req.params.id, tenantId }
+    );
+    if (!budget.recordset?.[0]) return res.status(404).json({ error: 'Budget not found.' });
+    const cats = await query(
+      `SELECT id, category_name, allocated_amount, sort_order FROM budget_categories WHERE budget_id = @id ORDER BY sort_order, category_name`,
+      { id: req.params.id }
+    );
+    const items = await query(
+      `SELECT li.id, li.category_id, li.description, li.estimated_amount, bc.category_name
+       FROM budget_line_items li
+       LEFT JOIN budget_categories bc ON bc.id = li.category_id
+       WHERE li.budget_id = @id ORDER BY bc.sort_order, li.description`,
+      { id: req.params.id }
+    );
+    res.json({
+      budget: budget.recordset[0],
+      categories: cats.recordset || [],
+      lineItems: items.recordset || [],
+    });
   } catch (err) {
     next(err);
   }
@@ -702,16 +755,99 @@ router.delete('/assets/:id', async (req, res, next) => {
 });
 
 /** Consumables */
+const CONSUMABLE_SELECT = `
+  SELECT c.*,
+         b.department_name AS budget_department,
+         b.fiscal_year AS budget_year,
+         bc.category_name AS budget_category_name,
+         bli.description AS budget_line_item_name
+  FROM office_admin_consumables c
+  LEFT JOIN department_budgets b ON b.id = c.budget_id
+  LEFT JOIN budget_categories bc ON bc.id = c.budget_category_id
+  LEFT JOIN budget_line_items bli ON bli.id = c.budget_line_item_id`;
+
+function ymd(v) {
+  return normalizeConsumableDate(v);
+}
+
+async function maybePostConsumablePurchase({ tenantId, userId, consumable, prevRow, postToJournal = true }) {
+  if (!postToJournal || !consumable?.budget_id) return { journalPosted: false };
+
+  const purchaseDate = ymd(consumable.last_purchase_date);
+  const purchaseAmount = Number(consumable.last_purchase_price);
+  if (!purchaseDate || !Number.isFinite(purchaseAmount) || purchaseAmount <= 0) {
+    return { journalPosted: false };
+  }
+
+  const postedDate = ymd(prevRow?.last_posted_purchase_date);
+  const postedAmount = prevRow?.last_posted_purchase_amount != null ? Number(prevRow.last_posted_purchase_amount) : null;
+  if (postedDate === purchaseDate && postedAmount === purchaseAmount) {
+    return { journalPosted: false, expenseEntryId: prevRow?.last_expense_entry_id || null };
+  }
+
+  const budgetRow = await query(
+    `SELECT department_name FROM department_budgets WHERE id = @id AND tenant_id = @tenantId`,
+    { id: consumable.budget_id, tenantId }
+  );
+  const departmentName = budgetRow.recordset?.[0]?.department_name || null;
+
+  const entry = await createExpenseJournalEntry({
+    tenantId,
+    userId,
+    entryDate: purchaseDate,
+    description: `Office supplies: ${consumable.name}`,
+    amount: purchaseAmount,
+    departmentName,
+    budgetId: consumable.budget_id,
+    budgetCategoryId: consumable.budget_category_id || null,
+    budgetLineItemId: consumable.budget_line_item_id || null,
+    vendorSupplier: consumable.supplier_name || consumable.purchase_location || null,
+    referenceNumber: consumable.sku || null,
+    notes: `Auto-posted from Office Admin supplies (${consumable.id})`,
+    status: 'draft',
+  });
+
+  if (entry?.id) {
+    await query(
+      `UPDATE office_admin_consumables
+       SET last_expense_entry_id = @entryId,
+           last_posted_purchase_date = @purchaseDate,
+           last_posted_purchase_amount = @purchaseAmount,
+           updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      {
+        entryId: entry.id,
+        purchaseDate,
+        purchaseAmount,
+        id: consumable.id,
+        tenantId,
+      }
+    );
+    return { journalPosted: true, expenseEntryId: entry.id, entryNumber: entry.entry_number };
+  }
+  return { journalPosted: false };
+}
+
 router.get('/consumables', async (req, res, next) => {
   try {
     const tenantId = requireTenant(req, res);
     if (!tenantId) return;
     const r = await query(
-      `SELECT * FROM office_admin_consumables WHERE tenant_id = @tenantId ORDER BY category, name`,
+      `${CONSUMABLE_SELECT} WHERE c.tenant_id = @tenantId ORDER BY c.category, c.name`,
       { tenantId }
     );
     res.json({ consumables: r.recordset || [] });
   } catch (err) {
+    if (String(err.message).includes('budget_id') || String(err.message).includes('department_budgets')) {
+      try {
+        const tenantId = req.user?.tenant_id;
+        const r = await query(
+          `SELECT * FROM office_admin_consumables WHERE tenant_id = @tenantId ORDER BY category, name`,
+          { tenantId }
+        );
+        return res.json({ consumables: r.recordset || [] });
+      } catch (_) {}
+    }
     next(err);
   }
 });
@@ -727,6 +863,9 @@ function consumableParams(tenantId, raw) {
     reorder_level: b.reorder_level ?? 0,
     unit_cost: b.unit_cost ?? null,
     accounting_item_id: b.accounting_item_id || null,
+    budget_id: b.budget_id || null,
+    budget_category_id: b.budget_category_id || null,
+    budget_line_item_id: b.budget_line_item_id || null,
     notes: b.notes || null,
     brand: b.brand || null,
     sku: b.sku || null,
@@ -736,11 +875,11 @@ function consumableParams(tenantId, raw) {
     capacity: b.capacity || null,
     capacity_amount: b.capacity_amount ?? null,
     capacity_unit: b.capacity_unit || null,
-    last_purchase_date: b.last_purchase_date || null,
+    last_purchase_date: normalizeConsumableDate(b.last_purchase_date),
     last_purchase_price: b.last_purchase_price ?? null,
-    restock_date: b.restock_date || null,
-    expiry_date: b.expiry_date || null,
-    opened_date: b.opened_date || null,
+    restock_date: normalizeConsumableDate(b.restock_date),
+    expiry_date: normalizeConsumableDate(b.expiry_date),
+    opened_date: normalizeConsumableDate(b.opened_date),
     max_stock_level: b.max_stock_level ?? null,
     is_perishable: b.is_perishable ? 1 : 0,
     batch_number: b.batch_number || null,
@@ -755,21 +894,41 @@ router.post('/consumables', async (req, res, next) => {
     if (!p.name) return res.status(400).json({ error: 'name is required.' });
     const ins = await query(
       `INSERT INTO office_admin_consumables (
-        tenant_id, name, category, unit, quantity_on_hand, reorder_level, unit_cost, accounting_item_id, notes,
+        tenant_id, name, category, unit, quantity_on_hand, reorder_level, unit_cost, accounting_item_id,
+        budget_id, budget_category_id, budget_line_item_id, notes,
         brand, sku, storage_location, purchase_location, supplier_name, capacity, capacity_amount, capacity_unit,
         last_purchase_date, last_purchase_price, restock_date, expiry_date, opened_date, max_stock_level, is_perishable, batch_number
       ) OUTPUT INSERTED.* VALUES (
-        @tenantId, @name, @category, @unit, @quantity_on_hand, @reorder_level, @unit_cost, @accounting_item_id, @notes,
+        @tenantId, @name, @category, @unit, @quantity_on_hand, @reorder_level, @unit_cost, @accounting_item_id,
+        @budget_id, @budget_category_id, @budget_line_item_id, @notes,
         @brand, @sku, @storage_location, @purchase_location, @supplier_name, @capacity, @capacity_amount, @capacity_unit,
         @last_purchase_date, @last_purchase_price, @restock_date, @expiry_date, @opened_date, @max_stock_level, @is_perishable, @batch_number
       )`,
       p
     );
-    res.status(201).json({ consumable: ins.recordset?.[0] });
+    let consumable = ins.recordset?.[0];
+    const postToJournal = req.body?.post_purchase_to_journal !== false;
+    const journal = consumable
+      ? await maybePostConsumablePurchase({
+          tenantId,
+          userId: req.user.id,
+          consumable,
+          prevRow: null,
+          postToJournal,
+        })
+      : { journalPosted: false };
+    if (journal.journalPosted) {
+      const refreshed = await query(`${CONSUMABLE_SELECT} WHERE c.id = @id AND c.tenant_id = @tenantId`, {
+        id: consumable.id,
+        tenantId,
+      });
+      consumable = refreshed.recordset?.[0] || consumable;
+    }
+    res.status(201).json({ consumable, journal });
   } catch (err) {
     if (String(err.message).includes('Invalid column name')) {
       return res.status(503).json({
-        error: 'Supplies database needs an update. Run: npm run db:office-admin-consumables-expand',
+        error: 'Supplies database needs an update. Run: npm run db:office-admin-consumables-expand && npm run db:office-admin-consumables-budget-link',
       });
     }
     next(err);
@@ -780,6 +939,13 @@ router.patch('/consumables/:id', async (req, res, next) => {
   try {
     const tenantId = requireTenant(req, res);
     if (!tenantId) return;
+    const prev = await query(`SELECT * FROM office_admin_consumables WHERE id = @id AND tenant_id = @tenantId`, {
+      id: req.params.id,
+      tenantId,
+    });
+    const prevRow = prev.recordset?.[0];
+    if (!prevRow) return res.status(404).json({ error: 'Item not found.' });
+
     const b = pickConsumableBody(req.body || {});
     const sets = ['updated_at = SYSUTCDATETIME()'];
     const params = { id: req.params.id, tenantId };
@@ -791,16 +957,33 @@ router.patch('/consumables/:id', async (req, res, next) => {
     }
     if (sets.length < 2) return res.status(400).json({ error: 'No fields to update.' });
     await query(`UPDATE office_admin_consumables SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
-    const r = await query(`SELECT * FROM office_admin_consumables WHERE id = @id AND tenant_id = @tenantId`, {
+    const r = await query(`${CONSUMABLE_SELECT} WHERE c.id = @id AND c.tenant_id = @tenantId`, {
       id: req.params.id,
       tenantId,
     });
-    if (!r.recordset?.[0]) return res.status(404).json({ error: 'Item not found.' });
-    res.json({ consumable: r.recordset[0] });
+    let consumable = r.recordset?.[0];
+    if (!consumable) return res.status(404).json({ error: 'Item not found.' });
+
+    const postToJournal = req.body?.post_purchase_to_journal !== false;
+    const journal = await maybePostConsumablePurchase({
+      tenantId,
+      userId: req.user.id,
+      consumable,
+      prevRow,
+      postToJournal,
+    });
+    if (journal.journalPosted) {
+      const refreshed = await query(`${CONSUMABLE_SELECT} WHERE c.id = @id AND c.tenant_id = @tenantId`, {
+        id: req.params.id,
+        tenantId,
+      });
+      consumable = refreshed.recordset?.[0] || consumable;
+    }
+    res.json({ consumable, journal });
   } catch (err) {
     if (String(err.message).includes('Invalid column name')) {
       return res.status(503).json({
-        error: 'Supplies database needs an update. Run: npm run db:office-admin-consumables-expand',
+        error: 'Supplies database needs an update. Run: npm run db:office-admin-consumables-expand && npm run db:office-admin-consumables-budget-link',
       });
     }
     next(err);
