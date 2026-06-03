@@ -93,6 +93,118 @@ function userHasManagement(req) {
   return (req.user?.page_roles || []).some((r) => String(r).toLowerCase() === 'management');
 }
 
+function assertManagementForClaim(req, claim) {
+  if (!userHasManagement(req)) return { error: 'Management access required', status: 403 };
+  const t = tid(req);
+  if (req.user?.role !== 'super_admin' && claim?.tenant_id && t && String(claim.tenant_id) !== String(t)) {
+    return { error: 'Forbidden', status: 403 };
+  }
+  return null;
+}
+
+async function createExpenseForApprovedClaim(claim, userId) {
+  const catResult = await query(
+    `SELECT TOP 1 id FROM expense_categories WHERE tenant_id = @t AND LOWER(name) = N'claims' AND is_active = 1`,
+    { t: claim.tenant_id }
+  );
+  let categoryId = catResult.recordset?.[0]?.id || null;
+  if (!categoryId) {
+    const newCat = await query(
+      `INSERT INTO expense_categories (tenant_id, name, code, description, category_type, created_by_user_id) OUTPUT INSERTED.id VALUES (@t, N'Claims', N'CLM', N'Auto-created for approved claims', N'expense', @userId)`,
+      { t: claim.tenant_id, userId }
+    );
+    categoryId = newCat.recordset?.[0]?.id || null;
+  }
+
+  const counterResult = await query(
+    `MERGE expense_entry_counter AS t USING (SELECT @tid AS tenant_id) AS s ON t.tenant_id = s.tenant_id
+     WHEN MATCHED THEN UPDATE SET last_number = t.last_number + 1
+     WHEN NOT MATCHED THEN INSERT (tenant_id, last_number) VALUES (s.tenant_id, 1)
+     OUTPUT INSERTED.last_number;`,
+    { tid: claim.tenant_id }
+  );
+  const entryNum = `EXP-${String(counterResult.recordset?.[0]?.last_number || 1).padStart(5, '0')}`;
+
+  const expResult = await query(
+    `INSERT INTO expense_entries (tenant_id, entry_number, entry_date, category_id, department_name, is_budgeted, entry_type, description, amount, tax_amount, currency, payment_method, reference_number, vendor_supplier, [status], notes, recorded_by_user_id)
+     OUTPUT INSERTED.id
+     VALUES (@t, @entryNum, @date, @catId, @dept, 0, N'expense', @desc, @amount, 0, @currency, N'reimbursement', @ref, @vendor, N'approved', @notes, @userId)`,
+    {
+      t: claim.tenant_id,
+      entryNum,
+      date: claim.claim_date,
+      catId: categoryId,
+      dept: claim.department_name,
+      desc: `Claim ${claim.reference_number}: ${claim.description}`,
+      amount: claim.amount,
+      currency: claim.currency || 'ZAR',
+      ref: claim.reference_number,
+      vendor: claim.account_holder || null,
+      notes: `Auto-created from approved claim ${claim.reference_number}`,
+      userId,
+    }
+  );
+  const expenseId = expResult.recordset?.[0]?.id;
+  if (expenseId) {
+    await query(`UPDATE claims SET expense_entry_id = @expId WHERE id = @id`, { expId: expenseId, id: claim.id });
+  }
+  return expenseId;
+}
+
+async function voidLinkedExpenseForClaim(claim) {
+  if (!claim.expense_entry_id) return;
+  const noteSuffix = `\nVoided: claim ${claim.reference_number} decision changed to declined.`;
+  await query(
+    `UPDATE expense_entries SET [status] = N'voided',
+      notes = CASE WHEN notes IS NULL OR LEN(notes) = 0 THEN @note ELSE notes + @note END,
+      updated_at = SYSUTCDATETIME()
+     WHERE id = @id AND tenant_id = @t AND [status] NOT IN (N'voided', N'paid')`,
+    { id: claim.expense_entry_id, t: claim.tenant_id, note: noteSuffix }
+  );
+  await query(`UPDATE claims SET expense_entry_id = NULL WHERE id = @id`, { id: claim.id });
+}
+
+async function notifyClaimantOfReview(claim, action, req, { review_notes, rejection_reason, previousStatus }) {
+  if (!isEmailConfigured()) return;
+  try {
+    const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
+    const claimantResult = await query(`SELECT full_name, email FROM users WHERE id = @id`, { id: claim.claimant_user_id });
+    const claimant = claimantResult.recordset?.[0];
+    if (!claimant?.email) return;
+
+    const changed = previousStatus && previousStatus !== 'pending' && previousStatus !== (action === 'approve' ? 'approved' : 'declined');
+    const title = changed
+      ? (action === 'approve' ? 'Claim decision updated — approved' : 'Claim decision updated — declined')
+      : (action === 'approve' ? 'Claim approved' : 'Claim declined');
+    const eventType = changed
+      ? `decision_changed_${action}_${previousStatus}`
+      : (action === 'approve' ? 'reviewed_approved' : 'reviewed_declined');
+
+    const html = claimEmailHtml({
+      title,
+      claimRef: claim.reference_number,
+      claimant: claimant.full_name || claimant.email,
+      claimType: CLAIM_TYPE_LABELS[claim.claim_type] || claim.claim_type,
+      amount: claim.amount,
+      description: claim.description,
+      department: claim.department_name,
+      appUrl: `${appUrl}/profile`,
+      actionHtml: action === 'approve'
+        ? `<div style="margin-top:16px;padding:12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;"><p style="margin:0;color:#065f46;font-weight:600;">Your claim has been ${changed ? 'updated to approved' : 'approved'} by ${req.user.full_name || 'management'}.</p>${review_notes ? `<p style="margin:8px 0 0;color:#065f46;font-size:13px;">Notes: ${review_notes}</p>` : ''}</div>`
+        : `<div style="margin-top:16px;padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;"><p style="margin:0;color:#991b1b;font-weight:600;">Your claim has been ${changed ? 'updated to declined' : 'declined'} by ${req.user.full_name || 'management'}.</p>${rejection_reason ? `<p style="margin:8px 0 0;color:#991b1b;font-size:13px;">Reason: ${rejection_reason}</p>` : ''}</div>`,
+    });
+    await sendClaimEmailOnce({
+      claimId: claim.id,
+      eventType,
+      to: claimant.email,
+      subject: `${title}: ${claim.reference_number}`,
+      html,
+    });
+  } catch (e) {
+    console.error('[claims] Review email error:', e?.message);
+  }
+}
+
 /** Send at most one email per claim + event + recipient (requires claim_email_log table). */
 async function sendClaimEmailOnce({ claimId, eventType, to, subject, html }) {
   if (!to || !isEmailConfigured() || !claimId) return false;
@@ -412,87 +524,90 @@ router.post('/:id/review', async (req, res, next) => {
     const existing = await query(`SELECT * FROM claims WHERE id = @id`, { id: req.params.id });
     const claim = existing.recordset?.[0];
     if (!claim) return res.status(404).json({ error: 'Claim not found' });
-    if (claim.status !== 'pending') return res.status(400).json({ error: 'Claim is not pending review' });
 
-    const newStatus = action === 'approve' ? 'approved' : 'declined';
+    const authErr = assertManagementForClaim(req, claim);
+    if (authErr) return res.status(authErr.status).json({ error: authErr.error });
+
+    const previousStatus = claim.status;
+    const reviewable = ['pending', 'approved', 'declined'];
+    if (!reviewable.includes(previousStatus)) {
+      return res.status(400).json({ error: `Cannot change decision for a claim with status "${previousStatus}"` });
+    }
+
+    const targetStatus = action === 'approve' ? 'approved' : 'declined';
+    const flipping = previousStatus !== 'pending' && previousStatus !== targetStatus;
+
+    if (action === 'decline' && flipping && !String(rejection_reason || '').trim()) {
+      return res.status(400).json({ error: 'Rejection reason is required when declining' });
+    }
+    if (previousStatus === 'pending' && action === 'decline' && !String(rejection_reason || '').trim()) {
+      return res.status(400).json({ error: 'Rejection reason is required when declining' });
+    }
+
+    const notesOnly =
+      (previousStatus === 'approved' && action === 'approve') ||
+      (previousStatus === 'declined' && action === 'decline');
+
+    if (!notesOnly) {
+      if (action === 'approve' && previousStatus === 'declined') {
+        try {
+          await createExpenseForApprovedClaim(claim, req.user.id);
+        } catch (e) {
+          console.error('[claims] Auto-expense creation error:', e?.message);
+        }
+      }
+      if (action === 'decline' && previousStatus === 'approved') {
+        await voidLinkedExpenseForClaim(claim);
+      }
+    }
+
+    const newStatus = notesOnly ? previousStatus : targetStatus;
     await query(
-      `UPDATE claims SET [status] = @status, reviewed_by_user_id = @reviewerId, reviewed_at = SYSUTCDATETIME(), review_notes = @notes, rejection_reason = @reason, updated_at = SYSUTCDATETIME() WHERE id = @id`,
-      { id: req.params.id, status: newStatus, reviewerId: req.user.id, notes: review_notes || null, reason: rejection_reason || null }
+      `UPDATE claims SET [status] = @status, reviewed_by_user_id = @reviewerId, reviewed_at = SYSUTCDATETIME(),
+        review_notes = @notes,
+        rejection_reason = CASE WHEN @status = N'approved' THEN NULL ELSE @reason END,
+        updated_at = SYSUTCDATETIME()
+       WHERE id = @id`,
+      {
+        id: req.params.id,
+        status: newStatus,
+        reviewerId: req.user.id,
+        notes: review_notes || null,
+        reason: action === 'decline' ? (rejection_reason || null) : null,
+      }
     );
 
-    if (action === 'approve') {
+    if (action === 'approve' && previousStatus === 'pending') {
       try {
-        const catResult = await query(
-          `SELECT TOP 1 id FROM expense_categories WHERE tenant_id = @t AND LOWER(name) = N'claims' AND is_active = 1`,
-          { t: claim.tenant_id }
-        );
-        let categoryId = catResult.recordset?.[0]?.id || null;
-        if (!categoryId) {
-          const newCat = await query(
-            `INSERT INTO expense_categories (tenant_id, name, code, description, category_type, created_by_user_id) OUTPUT INSERTED.id VALUES (@t, N'Claims', N'CLM', N'Auto-created for approved claims', N'expense', @userId)`,
-            { t: claim.tenant_id, userId: req.user.id }
-          );
-          categoryId = newCat.recordset?.[0]?.id || null;
-        }
-
-        const counterResult = await query(
-          `MERGE expense_entry_counter AS t USING (SELECT @tid AS tenant_id) AS s ON t.tenant_id = s.tenant_id
-           WHEN MATCHED THEN UPDATE SET last_number = t.last_number + 1
-           WHEN NOT MATCHED THEN INSERT (tenant_id, last_number) VALUES (s.tenant_id, 1)
-           OUTPUT INSERTED.last_number;`,
-          { tid: claim.tenant_id }
-        );
-        const entryNum = `EXP-${String(counterResult.recordset?.[0]?.last_number || 1).padStart(5, '0')}`;
-
-        const expResult = await query(
-          `INSERT INTO expense_entries (tenant_id, entry_number, entry_date, category_id, department_name, is_budgeted, entry_type, description, amount, tax_amount, currency, payment_method, reference_number, vendor_supplier, [status], notes, recorded_by_user_id)
-           OUTPUT INSERTED.id
-           VALUES (@t, @entryNum, @date, @catId, @dept, 0, N'expense', @desc, @amount, 0, @currency, N'reimbursement', @ref, @vendor, N'approved', @notes, @userId)`,
-          {
-            t: claim.tenant_id, entryNum, date: claim.claim_date, catId: categoryId,
-            dept: claim.department_name, desc: `Claim ${claim.reference_number}: ${claim.description}`,
-            amount: claim.amount, currency: claim.currency || 'ZAR',
-            ref: claim.reference_number, vendor: claim.account_holder || null,
-            notes: `Auto-created from approved claim ${claim.reference_number}`, userId: req.user.id,
-          }
-        );
-        const expenseId = expResult.recordset?.[0]?.id;
-        if (expenseId) {
-          await query(`UPDATE claims SET expense_entry_id = @expId WHERE id = @id`, { expId: expenseId, id: req.params.id });
-        }
-      } catch (e) { console.error('[claims] Auto-expense creation error:', e?.message); }
+        const fresh = await query(`SELECT * FROM claims WHERE id = @id`, { id: req.params.id });
+        const row = fresh.recordset?.[0];
+        if (row && !row.expense_entry_id) await createExpenseForApprovedClaim(row, req.user.id);
+      } catch (e) {
+        console.error('[claims] Auto-expense creation error:', e?.message);
+      }
     }
 
-    if (isEmailConfigured()) {
-      try {
-        const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
-        const claimantResult = await query(`SELECT full_name, email FROM users WHERE id = @id`, { id: claim.claimant_user_id });
-        const claimant = claimantResult.recordset?.[0];
-        if (claimant?.email) {
-          const eventType = action === 'approve' ? 'reviewed_approved' : 'reviewed_declined';
-          const html = claimEmailHtml({
-            title: action === 'approve' ? 'Claim approved' : 'Claim declined',
-            claimRef: claim.reference_number, claimant: claimant.full_name || claimant.email,
-            claimType: CLAIM_TYPE_LABELS[claim.claim_type] || claim.claim_type,
-            amount: claim.amount, description: claim.description,
-            department: claim.department_name, appUrl: `${appUrl}/profile`,
-            actionHtml: action === 'approve'
-              ? `<div style="margin-top:16px;padding:12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;"><p style="margin:0;color:#065f46;font-weight:600;">Your claim has been approved by ${req.user.full_name || 'management'}.</p>${review_notes ? `<p style="margin:8px 0 0;color:#065f46;font-size:13px;">Notes: ${review_notes}</p>` : ''}</div>`
-              : `<div style="margin-top:16px;padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;"><p style="margin:0;color:#991b1b;font-weight:600;">Your claim has been declined by ${req.user.full_name || 'management'}.</p>${rejection_reason ? `<p style="margin:8px 0 0;color:#991b1b;font-size:13px;">Reason: ${rejection_reason}</p>` : ''}</div>`,
-          });
-          sendClaimEmailOnce({
-            claimId: claim.id,
-            eventType,
-            to: claimant.email,
-            subject: `Claim ${action === 'approve' ? 'approved' : 'declined'}: ${claim.reference_number}`,
-            html,
-          }).catch((e) => console.error('[claims] Review email error:', e?.message));
-        }
-      } catch (e) { console.error('[claims] Review email error:', e?.message); }
+    const notify =
+      previousStatus === 'pending' ||
+      flipping ||
+      (notesOnly && (String(review_notes || '').trim() || String(rejection_reason || '').trim()));
+    if (notify) {
+      await notifyClaimantOfReview(claim, action, req, {
+        review_notes,
+        rejection_reason,
+        previousStatus: flipping ? previousStatus : notesOnly ? previousStatus : 'pending',
+      });
     }
 
-    const updated = await query(`SELECT * FROM claims WHERE id = @id`, { id: req.params.id });
-    res.json({ claim: updated.recordset?.[0] || null });
+    const updated = await query(
+      `SELECT c.*, u.full_name AS claimant_name, u.email AS claimant_email, ru.full_name AS reviewed_by_name
+       FROM claims c
+       LEFT JOIN users u ON u.id = c.claimant_user_id
+       LEFT JOIN users ru ON ru.id = c.reviewed_by_user_id
+       WHERE c.id = @id`,
+      { id: req.params.id }
+    );
+    res.json({ claim: updated.recordset?.[0] || null, changed: flipping || previousStatus === 'pending' });
   } catch (err) { next(err); }
 });
 
