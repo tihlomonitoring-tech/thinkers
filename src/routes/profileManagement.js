@@ -30,6 +30,7 @@ import {
 import { SA_LEAVE_TYPES } from '../lib/saLeaveTypes.js';
 import { registerEmployeeOnboardingRoutes } from '../lib/employeeOnboardingRoutes.js';
 import { registerEmployeeGraceCreditsRoutes } from './employeeGraceCredits.js';
+import { registerWrittenWarningsRoutes } from './writtenWarnings.js';
 
 const router = Router();
 const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
@@ -2142,7 +2143,9 @@ router.get('/evaluations/controller-evaluations/:id', requirePageAccess('managem
 router.get('/pip', requirePageAccess('profile'), async (req, res, next) => {
   try {
     const result = await query(
-      `SELECT id, title, goals, status, start_date, end_date, created_at FROM performance_improvement_plans WHERE user_id = @userId ORDER BY created_at DESC`,
+      `SELECT id, title, goals, approaches, interventions, status, start_date, end_date, written_warning_id,
+              employee_signed_at, management_signed_at, closed_at, created_at
+       FROM performance_improvement_plans WHERE user_id = @userId ORDER BY created_at DESC`,
       { userId: req.user.id }
     );
     res.json({ plans: result.recordset || [] });
@@ -2326,5 +2329,6 @@ router.get('/users/command-centre-peers', async (req, res, next) => {
 
 registerEmployeeOnboardingRoutes(router, { uploadsBase, canAccessTenant });
 registerEmployeeGraceCreditsRoutes(router);
+registerWrittenWarningsRoutes(router, { query, canAccessTenant, requirePageAccess });
 
 export default router;

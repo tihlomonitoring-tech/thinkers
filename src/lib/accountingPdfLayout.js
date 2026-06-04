@@ -27,6 +27,30 @@ export function pdfPageWidth() {
   return PAGE.w - PAGE.margin * 2;
 }
 
+/** Embed company logo in PDFKit — prefers file path (more reliable), then buffer. */
+export function embedPdfLogo(doc, { logoBuffer, logoPath }, x, y, fitW, fitH) {
+  try {
+    if (logoPath) {
+      doc.image(logoPath, x, y, { fit: [fitW, fitH] });
+      return true;
+    }
+    if (logoBuffer?.length) {
+      doc.image(logoBuffer, x, y, { fit: [fitW, fitH] });
+      return true;
+    }
+  } catch {
+    try {
+      if (logoBuffer?.length) {
+        doc.image(logoBuffer, x, y, { fit: [fitW, fitH] });
+        return true;
+      }
+    } catch {
+      /* unsupported image format */
+    }
+  }
+  return false;
+}
+
 /** @deprecated Use formatZar — kept as alias for PDF amounts */
 export function formatMoney(n) {
   return formatZar(n);

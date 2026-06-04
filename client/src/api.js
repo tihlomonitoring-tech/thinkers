@@ -2033,8 +2033,28 @@ export const profileManagement = {
     list: () => pm('/pip'),
     listAll: () => pm('/pip/all'),
     create: (body) => pm('/pip', { method: 'POST', body: JSON.stringify(body) }),
-    getProgress: (id) => pm(`/pip/${id}/progress`),
-    addProgress: (id, body) => pm(`/pip/${id}/progress`, { method: 'POST', body: JSON.stringify(body) }),
+    getProgress: (id) => pm(`/pip/${encodeURIComponent(id)}/progress`),
+    addProgress: (id, body) => pm(`/pip/${encodeURIComponent(id)}/progress`, { method: 'POST', body: JSON.stringify(body) }),
+    getFull: (id) => pm(`/pip/${encodeURIComponent(id)}/full`),
+    pdfUrl: (id) => `${API}/profile-management/pip/${encodeURIComponent(id)}/pdf`,
+    addObjective: (id, body) => pm(`/pip/${encodeURIComponent(id)}/objectives`, { method: 'POST', body: JSON.stringify(body) }),
+    addWeeklyReport: (id, body) => pm(`/pip/${encodeURIComponent(id)}/weekly-reports`, { method: 'POST', body: JSON.stringify(body) }),
+    managementSign: (id, body) => pm(`/pip/${encodeURIComponent(id)}/management-sign`, { method: 'POST', body: JSON.stringify(body) }),
+    close: (id) => pm(`/pip/${encodeURIComponent(id)}/close`, { method: 'POST' }),
+  },
+  writtenWarnings: {
+    types: () => pm('/written-warnings/types'),
+    createType: (body) => pm('/written-warnings/types', { method: 'POST', body: JSON.stringify(body) }),
+    updateType: (id, body) => pm(`/written-warnings/types/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    policies: () => pm('/written-warnings/policies'),
+    listAll: () => pm('/written-warnings/all'),
+    listMine: () => pm('/written-warnings/mine'),
+    get: (id) => pm(`/written-warnings/${encodeURIComponent(id)}`),
+    create: (body) => pm('/written-warnings', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => pm(`/written-warnings/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    publish: (id) => pm(`/written-warnings/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
+    pdfUrl: (id) => `${API}/profile-management/written-warnings/${encodeURIComponent(id)}/pdf`,
+    sign: (id, body) => pm(`/written-warnings/${encodeURIComponent(id)}/sign`, { method: 'POST', body: JSON.stringify(body) }),
   },
   onboarding: {
     my: () => pm('/onboarding/my'),
@@ -2170,6 +2190,50 @@ export const companyLibrary = {
         return data;
       }
     ),
+};
+
+const cp = (path, options = {}) => request(`/company-policies${path}`, options);
+
+/** Company policies — development and employee acknowledgement. */
+export const companyPolicies = {
+  dev: {
+    seedGovernmentLabour: () =>
+      cp('/development/seed-government-labour', { method: 'POST', body: JSON.stringify({}) }),
+    list: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', params.status);
+      const s = q.toString();
+      return cp(`/development/policies${s ? `?${s}` : ''}`);
+    },
+    get: (id) => cp(`/development/policies/${encodeURIComponent(id)}`),
+    create: (body) => cp('/development/policies', { method: 'POST', body: JSON.stringify(body || {}) }),
+    update: (id, body) =>
+      cp(`/development/policies/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body || {}) }),
+    saveSections: (id, sections) =>
+      cp(`/development/policies/${encodeURIComponent(id)}/sections`, {
+        method: 'PUT',
+        body: JSON.stringify({ sections }),
+      }),
+    publish: (id, body) =>
+      cp(`/development/policies/${encodeURIComponent(id)}/publish`, {
+        method: 'POST',
+        body: JSON.stringify(body || {}),
+      }),
+    archive: (id) => cp(`/development/policies/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
+    duplicate: (id) => cp(`/development/policies/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }),
+    delete: (id) => cp(`/development/policies/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    pdfUrl: (id) => `${getApiBase()}/company-policies/development/policies/${encodeURIComponent(id)}/pdf`,
+  },
+  employee: {
+    list: () => cp('/employee/published'),
+    get: (id) => cp(`/employee/published/${encodeURIComponent(id)}`),
+    pdfUrl: (id) => `${getApiBase()}/company-policies/employee/published/${encodeURIComponent(id)}/pdf`,
+    acknowledge: (id, body) =>
+      cp(`/employee/published/${encodeURIComponent(id)}/acknowledge`, {
+        method: 'POST',
+        body: JSON.stringify(body || {}),
+      }),
+  },
 };
 
 const sc = (path, options = {}) => request(`/shift-clock${path}`, options);

@@ -34,6 +34,7 @@ const PAGE_ROLES = [
   { id: 'performance_evaluations', label: 'Performance evaluations' },
   { id: 'auditor', label: 'Auditor' },
   { id: 'company_library', label: 'Company library' },
+  { id: 'policy_development', label: 'Bill drafting' },
   { id: 'quick_sign', label: 'Quick Sign' },
 ];
 

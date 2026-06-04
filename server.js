@@ -41,6 +41,7 @@ import quickSignRoutes from './src/routes/quickSign.js';
 import operatorManagementRoutes from './src/routes/operatorManagement.js';
 import expenseManagementRoutes from './src/routes/expenseManagement.js';
 import logisticsFinanceRoutes from './src/routes/logisticsFinance.js';
+import companyPoliciesRoutes from './src/routes/companyPolicies.js';
 import tabAccessRoutes from './src/routes/tabAccess.js';
 import claimsRoutes from './src/routes/claims.js';
 import orgStructureRoutes from './src/routes/orgStructure.js';
@@ -180,6 +181,7 @@ app.use('/api/user-career', userCareerRoutes);
 app.use('/api/case-management', caseManagementRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/company-library', companyLibraryRoutes);
+app.use('/api/company-policies', companyPoliciesRoutes);
 app.use('/api/quick-sign', quickSignRoutes);
 app.use('/api/operator-management', operatorManagementRoutes);
 
@@ -192,6 +194,9 @@ app.use('/api', (req, res) => {
   const logisticsFinanceHint =
     pathLower.includes('logistics-finance') &&
     'Logistics finance requires this API version (routes under /api/logistics-finance). Run: npm run db:logistics-finance && npm run db:logistics-finance-page-role — then restart the Node server (npm run server). Ping: GET /api/logistics-finance/ping should return 200.';
+  const companyPoliciesHint =
+    pathLower.includes('company-policies') &&
+    'Company policies requires this API version (routes under /api/company-policies). Run: npm run db:company-policies && npm run db:user-page-roles-policy-development — then restart the Node server (npm run server). Ping: GET /api/company-policies/ping should return 200.';
   const creditsHint =
     (pathLower.includes('team-leader/credit') ||
       pathLower.includes('team-leader/issue-') ||
@@ -204,7 +209,7 @@ app.use('/api', (req, res) => {
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || logisticsFinanceHint || creditsHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || genericHint,
   });
 });
 

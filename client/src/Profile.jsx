@@ -22,6 +22,7 @@ import ColleagueEvaluationResultsTab from './components/ColleagueEvaluationResul
 import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
 import EmployeeOnboardmentTab from './components/EmployeeOnboardmentTab.jsx';
 import OrgStructureView from './components/OrgStructureView.jsx';
+import CompanyPoliciesProfileTab from './components/CompanyPoliciesProfileTab.jsx';
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import {
@@ -48,6 +49,7 @@ const TABS = [
   { id: 'employee_details', label: 'Employee details' },
   { id: 'employee_onboardment', label: 'Employee onboardment' },
   { id: 'documents', label: 'Employee documents' },
+  { id: 'company_policies', label: 'Company policies' },
   { id: 'disciplinary', label: 'Disciplinary & rewards' },
   { id: 'queries', label: 'Queries' },
   { id: 'growth', label: 'Growth' },
@@ -1435,8 +1437,13 @@ export default function Profile() {
             />
           )}
 
+          {activeTab === 'company_policies' && (
+            <CompanyPoliciesProfileTab user={user} onError={setError} />
+          )}
+
           {activeTab === 'disciplinary' && (
             <DisciplinaryRewardsProfile
+              user={user}
               warnings={warnings}
               rewards={rewards}
               graceCredits={graceCredits}
@@ -1520,14 +1527,17 @@ export default function Profile() {
 
 function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
   const [pipProgress, setPipProgress] = useState({});
+  const [pipFull, setPipFull] = useState({});
   const [addingProgress, setAddingProgress] = useState(null);
   const [progressDate, setProgressDate] = useState('');
   const [progressNotes, setProgressNotes] = useState('');
+  const [weeklyReport, setWeeklyReport] = useState({ week_number: 1, objective_id: '', employee_response: '', progress_summary: '' });
   const [downloading, setDownloading] = useState(null);
 
   useEffect(() => {
     (pipPlans || []).forEach((p) => {
       pm.pip.getProgress(p.id).then((d) => setPipProgress((prev) => ({ ...prev, [p.id]: d.progress || [] }))).catch(() => {});
+      pm.pip.getFull(p.id).then((d) => setPipFull((prev) => ({ ...prev, [p.id]: d }))).catch(() => {});
     });
   }, [pipPlans]);
 
@@ -1546,6 +1556,30 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
     } finally {
       setAddingProgress(null);
     }
+  };
+
+  const submitWeeklyReport = async (pipId) => {
+    if (!weeklyReport.week_number) return;
+    setAddingProgress(pipId);
+    onError('');
+    try {
+      await pm.pip.addWeeklyReport(pipId, weeklyReport);
+      setWeeklyReport({ week_number: weeklyReport.week_number + 1, objective_id: '', employee_response: '', progress_summary: '' });
+      const d = await pm.pip.getFull(pipId);
+      setPipFull((prev) => ({ ...prev, [pipId]: d }));
+      onRefreshPip();
+    } catch (err) {
+      onError(err?.message || 'Failed to submit report');
+    } finally {
+      setAddingProgress(null);
+    }
+  };
+
+  const downloadPipPdfServer = (p) => {
+    setDownloading(`pdf-${p.id}`);
+    downloadAttachmentWithAuth(pm.pip.pdfUrl(p.id), `pip-${(p.title || 'plan').replace(/[^a-z0-9]/gi, '-')}.pdf`)
+      .catch((err) => onError(err?.message || 'PDF failed'))
+      .finally(() => setDownloading(null));
   };
 
   const downloadPipPdf = (p) => {
@@ -1632,7 +1666,7 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
         <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Growth</h1>
         <InfoHint
           title="Growth help"
-          text="View evaluation summaries and any performance improvement plan (PIP) assigned to you, including progress updates and exports."
+          text="View evaluations and your performance improvement plan (PIP). Respond to weekly objectives set by management, submit progress reports, and download official PDFs."
         />
       </div>
       <div className="space-y-4">
@@ -1666,8 +1700,82 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
                     <span className="text-surface-500 text-xs">{p.status} · {formatDate(p.start_date)} – {formatDate(p.end_date)}</span>
                   </div>
                   {p.goals && <p className="text-surface-600 mt-1 text-sm whitespace-pre-wrap">{p.goals}</p>}
+                  {(pipFull[p.id]?.plan?.approaches) && (
+                    <div className="mt-2 text-xs text-surface-600">
+                      <p className="font-medium text-surface-700">Approaches</p>
+                      <p className="whitespace-pre-wrap">{pipFull[p.id].plan.approaches}</p>
+                      <p className="font-medium text-surface-700 mt-1">Interventions</p>
+                      <p className="whitespace-pre-wrap">{pipFull[p.id].plan.interventions}</p>
+                    </div>
+                  )}
+                  {(pipFull[p.id]?.objectives || []).length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs font-medium text-surface-700 mb-1">Weekly objectives (management)</p>
+                      <ul className="text-xs space-y-2">
+                        {pipFull[p.id].objectives.map((o) => (
+                          <li key={o.id} className="border-l-2 border-brand-200 pl-2">
+                            <span className="font-medium">Week {o.week_number}: {o.title}</span>
+                            {o.target_outcome && <p className="text-surface-500">Target: {o.target_outcome}</p>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {p.status !== 'closed' && (
+                    <div className="mt-3 p-3 rounded-lg bg-surface-50 dark:bg-surface-900/30 space-y-2">
+                      <p className="text-xs font-medium text-surface-700">Submit weekly progress report</p>
+                      <input
+                        type="number"
+                        min={1}
+                        value={weeklyReport.week_number}
+                        onChange={(e) => setWeeklyReport((r) => ({ ...r, week_number: Number(e.target.value) }))}
+                        className="w-20 rounded border px-2 py-1 text-xs"
+                      />
+                      <select
+                        value={weeklyReport.objective_id}
+                        onChange={(e) => setWeeklyReport((r) => ({ ...r, objective_id: e.target.value }))}
+                        className="w-full rounded border px-2 py-1 text-xs"
+                      >
+                        <option value="">Link to objective (optional)</option>
+                        {(pipFull[p.id]?.objectives || []).map((o) => (
+                          <option key={o.id} value={o.id}>Week {o.week_number}: {o.title}</option>
+                        ))}
+                      </select>
+                      <textarea
+                        value={weeklyReport.progress_summary}
+                        onChange={(e) => setWeeklyReport((r) => ({ ...r, progress_summary: e.target.value }))}
+                        placeholder="Progress summary against objectives"
+                        rows={2}
+                        className="w-full rounded border px-2 py-1 text-xs"
+                      />
+                      <textarea
+                        value={weeklyReport.employee_response}
+                        onChange={(e) => setWeeklyReport((r) => ({ ...r, employee_response: e.target.value }))}
+                        placeholder="Your response / actions taken"
+                        rows={2}
+                        className="w-full rounded border px-2 py-1 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => submitWeeklyReport(p.id)}
+                        disabled={addingProgress === p.id}
+                        className="px-3 py-1 rounded bg-brand-600 text-white text-xs disabled:opacity-50"
+                      >
+                        Submit week report
+                      </button>
+                    </div>
+                  )}
+                  {(pipFull[p.id]?.reports || []).length > 0 && (
+                    <ul className="text-xs mt-2 space-y-1">
+                      {(pipFull[p.id].reports || []).map((r) => (
+                        <li key={r.id} className="text-surface-600">
+                          Week {r.week_number}: {r.progress_summary || r.employee_response || '—'}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div className="mt-2">
-                    <p className="text-xs font-medium text-surface-600 mb-1">Progress report</p>
+                    <p className="text-xs font-medium text-surface-600 mb-1">Legacy progress notes</p>
                     {(pipProgress[p.id] || []).length === 0 ? (
                       <p className="text-surface-500 text-xs">No progress entries yet.</p>
                     ) : (
@@ -1682,8 +1790,8 @@ function GrowthTab({ evaluations, pipPlans, onRefreshPip, onError }) {
                       <input type="text" value={progressNotes} onChange={(e) => setProgressNotes(e.target.value)} placeholder="Notes" className="rounded border border-surface-300 px-2 py-1 text-xs w-40" />
                       <button type="button" onClick={() => addProgress(p.id)} disabled={addingProgress === p.id || !progressDate} className="px-2 py-1 rounded bg-brand-600 text-white text-xs disabled:opacity-50">Add progress</button>
                     </div>
-                    <div className="flex gap-2 mt-2">
-                      <button type="button" onClick={() => downloadPipPdf(p)} disabled={downloading === `pdf-${p.id}`} className="text-xs text-brand-600 hover:underline disabled:opacity-50">Download PDF</button>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <button type="button" onClick={() => downloadPipPdfServer(p)} disabled={downloading === `pdf-${p.id}`} className="text-xs text-brand-600 hover:underline disabled:opacity-50 font-medium">Download official PDF</button>
                       <button type="button" onClick={() => downloadPipExcel(p)} disabled={downloading === `excel-${p.id}`} className="text-xs text-brand-600 hover:underline disabled:opacity-50">Download Excel</button>
                     </div>
                   </div>

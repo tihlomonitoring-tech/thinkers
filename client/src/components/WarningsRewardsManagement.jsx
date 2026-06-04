@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { profileManagement as pm } from '../api';
 import InfoHint from './InfoHint.jsx';
+import WrittenWarningsManagement from './WrittenWarningsManagement.jsx';
 
 function formatDate(d) {
   if (!d) return '';
@@ -261,7 +262,8 @@ export default function WarningsRewardsManagement({
   };
 
   const subTabs = [
-    { id: 'warnings', label: 'Warnings & rewards' },
+    { id: 'warnings', label: 'Quick warnings & rewards' },
+    { id: 'written', label: 'Written warnings & PIP' },
     { id: 'teams', label: 'Team points' },
     { id: 'categories', label: 'Categories' },
     { id: 'ledger', label: 'Member ledger' },
@@ -293,6 +295,10 @@ export default function WarningsRewardsManagement({
           </button>
         ))}
       </div>
+
+      {subTab === 'written' && (
+        <WrittenWarningsManagement tenantUsers={tenantUsers} onError={onError} />
+      )}
 
       {subTab === 'warnings' && (
         <>

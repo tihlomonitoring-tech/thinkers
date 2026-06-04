@@ -267,6 +267,7 @@ const navSections = [
       { to: '/tasks', label: 'Tasks', icon: IconTasks, shortcut: '⌘7', pageId: 'tasks' },
       { to: '/case-management', label: 'Case management', icon: IconCaseManagement, shortcut: '', pageId: 'case_management' },
       { to: '/company-library', label: 'Company library', icon: IconLibrary, shortcut: '', pageId: 'company_library' },
+      { to: '/policy-development', label: 'Bill drafting', icon: IconLetters, shortcut: '', pageId: 'policy_development' },
     ],
   },
   {

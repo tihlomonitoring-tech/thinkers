@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { profileManagement as pm } from '../api';
 import InfoHint from './InfoHint.jsx';
 import GraceCreditsChart from './GraceCreditsChart.jsx';
+import WrittenWarningsProfileTab from './WrittenWarningsProfileTab.jsx';
 
 function formatDate(d) {
   if (!d) return '';
@@ -13,6 +14,7 @@ function formatDate(d) {
 }
 
 export default function DisciplinaryRewardsProfile({
+  user,
   warnings = [],
   rewards = [],
   graceCredits = [],
@@ -23,6 +25,7 @@ export default function DisciplinaryRewardsProfile({
   onRefresh,
   onError,
 }) {
+  const [disciplinaryTab, setDisciplinaryTab] = useState('overview');
   const [justification, setJustification] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [requestedPoints, setRequestedPoints] = useState(1);
@@ -78,6 +81,28 @@ export default function DisciplinaryRewardsProfile({
         />
       </div>
 
+      <div className="flex gap-1 border-b border-surface-200 overflow-x-auto">
+        {[
+          { id: 'overview', label: 'Overview' },
+          { id: 'written_warnings', label: 'Written warnings' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setDisciplinaryTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px ${
+              disciplinaryTab === t.id ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-500'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {disciplinaryTab === 'written_warnings' && <WrittenWarningsProfileTab user={user} onError={onError} />}
+
+      {disciplinaryTab === 'overview' && (
+      <>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="app-glass-card p-4">
           <p className="text-xs font-medium text-surface-500 uppercase">Grace credits</p>
@@ -262,6 +287,8 @@ export default function DisciplinaryRewardsProfile({
           )}
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

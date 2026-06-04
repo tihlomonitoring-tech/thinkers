@@ -2,7 +2,7 @@ import { query } from '../db.js';
 import { resolveUserTenantContext } from '../lib/tenantPrimaryPreference.js';
 
 /** Page IDs for app pages — keep in sync with `src/routes/users.js` `PAGE_IDS`. Used for super_admin page_roles. */
-const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'onboarding_admin', 'access_management', 'rector', 'tasks', 'case_management', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'fuel_data', 'team_leader_admin', 'performance_evaluations', 'auditor', 'company_library', 'quick_sign', 'report_generation', 'office_admin', 'logistics_finance_management'];
+const PAGE_IDS = ['profile', 'management', 'users', 'tenants', 'contractor', 'command_centre', 'onboarding_admin', 'access_management', 'rector', 'tasks', 'case_management', 'transport_operations', 'recruitment', 'letters', 'accounting_management', 'tracking_integration', 'fuel_supply_management', 'fuel_customer_orders', 'fuel_data', 'team_leader_admin', 'performance_evaluations', 'auditor', 'company_library', 'quick_sign', 'report_generation', 'office_admin', 'logistics_finance_management', 'policy_development'];
 
 /** Only platform super_admin skips page assignments (full app). Everyone else needs user_page_roles rows. */
 export function isPageAccessExempt(user) {
