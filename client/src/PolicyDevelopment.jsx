@@ -484,7 +484,7 @@ export default function PolicyDevelopment() {
             {policyId && (
               <div className="flex flex-col lg:flex-row gap-4">
                 {showOutline && (
-                  <aside className="lg:w-56 shrink-0 app-glass-card p-3 max-h-[70vh] overflow-y-auto sticky top-4">
+                  <aside className="lg:w-56 shrink-0 app-glass-card p-3 max-h-[calc(100vh-8rem)] overflow-y-auto lg:sticky lg:top-4 lg:self-start">
                     <p className="text-xs font-bold uppercase text-surface-500 mb-2">Outline</p>
                     <ol className="text-xs space-y-1 font-mono">
                       {outline.map((o) => (
@@ -503,35 +503,55 @@ export default function PolicyDevelopment() {
                 )}
 
                 <div className="flex-1 min-w-0 space-y-4">
-                  <div className="flex flex-wrap gap-2 items-center justify-between">
-                    <h2 className="font-semibold text-lg">Provisions</h2>
-                    <button type="button" onClick={() => setShowOutline((v) => !v)} className="text-xs text-surface-500 lg:hidden">
-                      {showOutline ? 'Hide' : 'Show'} outline
-                    </button>
-                  </div>
-
-                  {!readOnly && (
-                    <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-slate-50 dark:bg-slate-900/50 border">
-                      <button type="button" onClick={applyGovernmentTemplate} className="text-xs px-3 py-1.5 rounded-lg border bg-white dark:bg-surface-900 font-medium">
-                        Government bill template
-                      </button>
-                      <button type="button" onClick={runAutoNumber} className="text-xs px-3 py-1.5 rounded-lg border font-medium">
-                        Auto-number all
-                      </button>
-                      <button type="button" onClick={() => addProvision('section')} className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 text-white">
-                        + Section
-                      </button>
-                      <button type="button" onClick={() => addProvision('part')} className="text-xs px-3 py-1.5 rounded-lg border">
-                        + PART
-                      </button>
-                      <button type="button" onClick={() => addProvision('preamble')} className="text-xs px-3 py-1.5 rounded-lg border">
-                        + WHEREAS
-                      </button>
-                      <button type="button" onClick={() => addProvision('schedule')} className="text-xs px-3 py-1.5 rounded-lg border">
-                        + Schedule
-                      </button>
+                  <div
+                    className={
+                      !readOnly
+                        ? 'sticky top-0 z-30 -mt-2 pt-2 pb-3 mb-1 bg-white/95 dark:bg-surface-950/95 backdrop-blur-md border-b border-surface-200 dark:border-surface-700 shadow-sm space-y-2'
+                        : 'space-y-2'
+                    }
+                  >
+                    <div className="flex flex-wrap gap-2 items-center justify-between">
+                      <h2 className="font-semibold text-lg">Provisions</h2>
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => setShowOutline((v) => !v)} className="text-xs text-surface-500 lg:hidden">
+                          {showOutline ? 'Hide' : 'Show'} outline
+                        </button>
+                        {!readOnly && sections.length > 0 && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={saveSections}
+                            className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 text-white font-medium disabled:opacity-50"
+                          >
+                            {busy ? 'Saving…' : 'Save provisions'}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  )}
+
+                    {!readOnly && (
+                      <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-surface-200 dark:border-surface-700">
+                        <button type="button" onClick={applyGovernmentTemplate} className="text-xs px-3 py-1.5 rounded-lg border bg-white dark:bg-surface-900 font-medium hover:bg-slate-50 dark:hover:bg-surface-800">
+                          Government bill template
+                        </button>
+                        <button type="button" onClick={runAutoNumber} className="text-xs px-3 py-1.5 rounded-lg border font-medium hover:bg-white dark:hover:bg-surface-800">
+                          Auto-number all
+                        </button>
+                        <button type="button" onClick={() => addProvision('section')} className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 text-white hover:bg-slate-900">
+                          + Section
+                        </button>
+                        <button type="button" onClick={() => addProvision('part')} className="text-xs px-3 py-1.5 rounded-lg border hover:bg-white dark:hover:bg-surface-800">
+                          + PART
+                        </button>
+                        <button type="button" onClick={() => addProvision('preamble')} className="text-xs px-3 py-1.5 rounded-lg border hover:bg-white dark:hover:bg-surface-800">
+                          + WHEREAS
+                        </button>
+                        <button type="button" onClick={() => addProvision('schedule')} className="text-xs px-3 py-1.5 rounded-lg border hover:bg-white dark:hover:bg-surface-800">
+                          + Schedule
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                   {sections.map((s, idx) => (
                     <div key={s.id || idx} id={`provision-${idx}`}>

@@ -27,7 +27,16 @@ function parseBillBody(body) {
 
 export function stripPolicyHtml(html) {
   if (!html) return '';
-  return String(html)
+  const raw = String(html).trim();
+  if (raw.startsWith('{')) {
+    try {
+      const j = JSON.parse(raw);
+      if (j?.format === 'bill_v1') return '';
+    } catch (_) {
+      /* not JSON bill */
+    }
+  }
+  return raw
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
     .replace(/<\/li>/gi, '\n')
@@ -337,7 +346,8 @@ export function buildCompanyPolicyPdfBuffer({
         renderSectionHeading(doc, s, bill);
 
         const wroteClauses = renderClauses(doc, s.body, st);
-        if (!wroteClauses) {
+        // Bill JSON with empty clauses (e.g. part/chapter headings only) must not print raw JSON
+        if (!wroteClauses && !bill) {
           const plain = stripPolicyHtml(s.body);
           if (plain) {
             ensureSpace(doc, 36);
