@@ -170,6 +170,16 @@ export const SA_INSPECTION_CHECKLIST = [
   },
 ];
 
+/** Governing bodies and standards referenced by the national side-tipper inspection checklist. */
+export const SA_INSPECTION_GOVERNING_BODIES = [
+  { body: 'Department of Transport (DoT)', role: 'National road traffic policy & heavy vehicle regulation' },
+  { body: 'National Road Traffic Act 93 of 1996 (NRT Act)', role: 'Primary roadworthiness & vehicle fitness legislation' },
+  { body: 'Road Traffic Management Corporation (RTMC)', role: 'National road safety & traffic law enforcement coordination' },
+  { body: 'National Regulator for Compulsory Specifications (NRCS)', role: 'Roadworthiness & compulsory vehicle specifications' },
+  { body: 'Administrative Adjudication of Road Traffic Offences (AARTO)', role: 'Traffic offence adjudication & demerit system' },
+  { body: 'SANS 10400 / SANS 1329 / SANS 1910', role: 'Building, retro-reflective markings & fire extinguisher standards' },
+];
+
 export function flatChecklist() {
   let sort = 0;
   const items = [];

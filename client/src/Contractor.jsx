@@ -18,6 +18,7 @@ import LogisticsFlowPage from './components/LogisticsFlowPage.jsx';
 import FleetMaintenancePage from './contractor/FleetMaintenancePage.jsx';
 import WorkshopManagementPage from './contractor/WorkshopManagementPage.jsx';
 import TruckInspectionPage from './contractor/TruckInspectionPage.jsx';
+import ExternalInspectionsPage from './contractor/ExternalInspectionsPage.jsx';
 import ContractorOnboardingTab from './contractor/ContractorOnboardingTab.jsx';
 import { parsePendingChangeJson } from './lib/fleetChangeDiff.js';
 
@@ -104,6 +105,7 @@ const CONTRACTOR_NAV = [
       { id: 'fleet-maintenance', label: 'Fleet maintenance', icon: 'wrench' },
       { id: 'workshop', label: 'Workshop management', icon: 'cog' },
       { id: 'truck-inspection', label: 'Truck inspection', icon: 'clipboard-check' },
+      { id: 'external-inspections', label: 'External inspections', icon: 'clipboard-list' },
       { id: 'incidents', label: 'Report breakdown / incidents', icon: 'alert' },
       { id: 'expiries', label: 'Expiries', icon: 'calendar' },
       { id: 'suspensions', label: 'Suspensions and appeals', icon: 'ban' },
@@ -263,6 +265,12 @@ function ContractorNavIcon({ name, className }) {
       return (
         <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+        </svg>
+      );
+    case 'clipboard-list':
+      return (
+        <svg className={c} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h.01M9 16h.01M9 12h6" />
         </svg>
       );
     case 'settings':
@@ -2708,6 +2716,7 @@ export default function Contractor() {
 
             {activeTab === 'workshop' && <WorkshopManagementPage />}
             {activeTab === 'truck-inspection' && <TruckInspectionPage />}
+            {activeTab === 'external-inspections' && <ExternalInspectionsPage />}
 
             {activeTab === 'incidents' && (
               <div className="grid gap-6 lg:grid-cols-2">

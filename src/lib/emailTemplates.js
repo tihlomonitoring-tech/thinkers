@@ -348,6 +348,38 @@ export function truckSuspendedToRectorHtml({ truckRegistration, tenantName, reas
   return wrap(content, 'Truck suspended', { charcoal: true });
 }
 
+/** Vehicle compliance alert: to haulier with rectors CC'd. */
+export function vehicleComplianceAlertHtml({
+  truckRegistration,
+  contractorName,
+  tenantName,
+  inspectionScore,
+  inspectionRating,
+  lastInspectionDate,
+  riskLevel,
+  reasons,
+  note,
+  senderName,
+}) {
+  const reasonList = (reasons || []).length
+    ? `<ul style="margin:12px 0 0;padding-left:20px;">${reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
+    : '<p style="margin:12px 0 0;">Please review this vehicle\'s inspection and breakdown history.</p>';
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">Vehicle compliance notice</h1>
+    <p style="margin:0 0 12px;">A compliance review has flagged truck <strong>${escapeHtml(truckRegistration || 'Unknown')}</strong> (${escapeHtml(contractorName || tenantName || 'haulier')}).</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
+      <tr><td style="padding:6px 0;color:#a0aec0;">Risk level</td><td style="padding:6px 0;font-weight:600;text-transform:uppercase;">${escapeHtml(riskLevel || '—')}</td></tr>
+      <tr><td style="padding:6px 0;color:#a0aec0;">Inspection score</td><td style="padding:6px 0;">${inspectionScore != null ? `${inspectionScore}% (${escapeHtml(inspectionRating || '')})` : 'No score on record'}</td></tr>
+      <tr><td style="padding:6px 0;color:#a0aec0;">Last inspection</td><td style="padding:6px 0;">${escapeHtml(lastInspectionDate || 'Never inspected')}</td></tr>
+    </table>
+    ${sectionBar('Issues identified')}
+    ${reasonList}
+    ${note ? `<p style="margin:16px 0 0;"><strong>Note from ${escapeHtml(senderName || 'compliance team')}:</strong> ${escapeHtml(note)}</p>` : ''}
+    <p style="margin:20px 0 0;color:#a0aec0;font-size:14px;">Please arrange re-inspection or corrective action promptly. Continued non-compliance may result in suspension from route lists.</p>
+  `;
+  return wrap(content, 'Vehicle compliance notice', { charcoal: true });
+}
+
 /** Truck reinstated: to contractor – grey template. */
 export function truckReinstatedToContractorHtml({ truckRegistration, tenantName, appUrl }) {
   const content = `

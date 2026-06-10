@@ -24,7 +24,7 @@ const PAGE_TABS = {
     'dashboard', 'trucks', 'fleet', 'fleet-access-summary', 'subcontractor-fleets',
     'drivers', 'driver-register', 'import-all', 'enrollment', 'onboarding',
     'contractor-details', 'subcontract-details', 'library',
-    'fleet-maintenance', 'workshop', 'truck-inspection',
+    'fleet-maintenance', 'workshop', 'truck-inspection', 'external-inspections',
     'incidents', 'expiries', 'suspensions', 'messages',
   ],
 };

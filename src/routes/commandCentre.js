@@ -124,6 +124,8 @@ export const CC_TAB_IDS = [
   'compliance',
   'inspected',
   'inspection_records',
+  'vehicle_inspection',
+  'vehicle_inspection_results',
   'contractor_block',
   'applications',
   'delivery',

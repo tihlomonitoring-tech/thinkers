@@ -28,6 +28,7 @@ const HandedOverAnalysisTab = lazy(() => import('./components/HandedOverAnalysis
 const TabAtomicFleetVerification = lazy(() => import('./commandCentre/TabAtomicFleetVerification.jsx'));
 const FleetTruckApprovalSummaryPanel = lazy(() => import('./components/FleetTruckApprovalSummaryPanel.jsx'));
 const FleetPendingChangesTab = lazy(() => import('./components/FleetPendingChangesTab.jsx'));
+const VehicleCompliancePanel = lazy(() => import('./components/vehicleCompliance/VehicleCompliancePanel.jsx'));
 
 function TabPanelFallback({ label = 'tab' }) {
   return <div className="p-6 text-sm text-surface-500 animate-pulse">Loading {label}…</div>;
@@ -114,6 +115,8 @@ const CC_TABS = [
   { id: 'compliance', label: 'Fleet and driver compliance', icon: 'shield', section: 'Operations' },
   { id: 'inspected', label: 'Inspected trucks & drivers', icon: 'clipboard', section: 'Operations' },
   { id: 'inspection_records', label: 'Truck inspection records', icon: 'list', section: 'Operations' },
+  { id: 'vehicle_inspection', label: 'Vehicle inspection', icon: 'truck', section: 'Operations' },
+  { id: 'vehicle_inspection_results', label: 'Vehicle inspection and results', icon: 'clipboard', section: 'Operations' },
   { id: 'contractor_block', label: 'Contractor block', icon: 'ban', section: 'Operations' },
   { id: 'applications', label: 'Fleet & driver applications', icon: 'tick', section: 'Operations' },
   { id: 'delivery', label: 'Delivery management', icon: 'truck', section: 'Operations' },
@@ -575,6 +578,26 @@ export default function CommandCentre() {
           {activeTab === 'compliance' && canSeeTab('compliance') && <TabCompliance user={user} inspections={inspections} setInspections={setInspections} />}
           {activeTab === 'inspected' && canSeeTab('inspected') && <TabInspected inspections={inspections} setInspections={setInspections} />}
           {activeTab === 'inspection_records' && canSeeTab('inspection_records') && <TabInspectionRecords inspections={inspections} setInspections={setInspections} />}
+          {activeTab === 'vehicle_inspection' && canSeeTab('vehicle_inspection') && (
+            <Suspense fallback={<TabPanelFallback label="vehicle inspection" />}>
+              <VehicleCompliancePanel
+                mode="dashboard"
+                showTenantFilter
+                title="Vehicle inspection dashboard"
+                subtitle="Inspection coverage and risk summary by haulier across the fleet."
+              />
+            </Suspense>
+          )}
+          {activeTab === 'vehicle_inspection_results' && canSeeTab('vehicle_inspection_results') && (
+            <Suspense fallback={<TabPanelFallback label="vehicle inspection results" />}>
+              <VehicleCompliancePanel
+                mode="results"
+                showTenantFilter
+                title="Vehicle inspection and results"
+                subtitle="Last inspection, scores, breakdown history, and high-risk recommendations per truck."
+              />
+            </Suspense>
+          )}
           {activeTab === 'contractor_block' && canSeeTab('contractor_block') && <TabContractorBlock />}
           {activeTab === 'applications' && canSeeTab('applications') && <TabApplications />}
           {activeTab === 'delivery' && canSeeTab('delivery') && <TabDelivery />}

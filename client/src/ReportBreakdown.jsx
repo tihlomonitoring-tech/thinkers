@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { getApiBase } from './lib/apiBase.js';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
+import ReportExternalInspection from './ReportExternalInspection.jsx';
 
 const API_BASE = getApiBase();
 
@@ -19,7 +20,8 @@ function CameraIcon({ className }) {
 }
 
 export default function ReportBreakdown() {
-  const [step, setStep] = useState('id'); // 'id' | 'form'
+  const [step, setStep] = useState('id'); // 'id' | 'choose' | 'breakdown' | 'inspection'
+  const [portalMode, setPortalMode] = useState(null); // 'breakdown' | 'inspection'
   const [idNumber, setIdNumber] = useState('');
   const [driverName, setDriverName] = useState('');
   const [error, setError] = useState('');
@@ -105,7 +107,7 @@ export default function ReportBreakdown() {
   };
 
   useEffect(() => {
-    if (step !== 'form') return;
+    if (step !== 'breakdown') return;
     setRoutesLoading(true);
     setTrucksLoading(true);
     fetch(`${API_BASE}/report-breakdown/routes`, { credentials: 'include' })
@@ -120,17 +122,19 @@ export default function ReportBreakdown() {
       .finally(() => setTrucksLoading(false));
   }, [step]);
 
-  const filteredTrucks = trucks.filter((t) => {
+  const filteredTrucks = useMemo(() => {
     const q = truckSearch.trim().toLowerCase();
-    if (!q) return true;
-    const reg = (t.registration || '').toLowerCase();
-    const fleet = (t.fleet_no || '').toLowerCase();
-    const make = (t.make_model || '').toLowerCase();
-    return reg.includes(q) || fleet.includes(q) || make.includes(q);
-  });
+    if (!q) return trucks.slice(0, 25);
+    return trucks.filter((t) => {
+      const reg = (t.registration || '').toLowerCase();
+      const fleet = (t.fleet_no || '').toLowerCase();
+      const make = (t.make_model || '').toLowerCase();
+      return reg.includes(q) || fleet.includes(q) || make.includes(q);
+    }).slice(0, 25);
+  }, [trucks, truckSearch]);
 
   useEffect(() => {
-    if (step !== 'form' || !truckDropdownOpen) return;
+    if (step !== 'breakdown' || !truckDropdownOpen) return;
     const onMouseDown = (e) => {
       if (truckDropdownRef.current && !truckDropdownRef.current.contains(e.target)) setTruckDropdownOpen(false);
     };
@@ -160,7 +164,8 @@ export default function ReportBreakdown() {
         return;
       }
       setDriverName(data.driverName || 'Driver');
-      setStep('form');
+      setStep('choose');
+      setPortalMode(null);
     } catch (err) {
       setError(err?.message || 'Something went wrong. Please try again.');
     } finally {
@@ -225,15 +230,25 @@ export default function ReportBreakdown() {
 
   const startOver = () => {
     setStep('id');
+    setPortalMode(null);
     setDriverName('');
     setIdNumber('');
     setSuccess(false);
     setError('');
   };
 
+  const backToChoose = () => {
+    setPortalMode(null);
+    setStep('choose');
+    setSuccess(false);
+    setError('');
+  };
+
+  const pageTitle = 'Report breakdown / incident/inspection';
+
   return (
     <div className="min-h-screen bg-surface-100 flex flex-col">
-      <div className="flex-1 max-w-md w-full mx-auto px-4 py-6 sm:py-8">
+      <div className={`flex-1 ${step === 'inspection' ? 'max-w-2xl' : 'max-w-md'} w-full mx-auto px-4 py-6 sm:py-8`}>
         <div className="mb-4">
           <Link
             to="/login"
@@ -245,7 +260,7 @@ export default function ReportBreakdown() {
         </div>
         <div className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
           <div className="bg-brand-600 text-white px-5 py-6 text-center">
-            <h1 className="text-xl font-bold tracking-tight">Report breakdown</h1>
+            <h1 className="text-xl font-bold tracking-tight">{pageTitle}</h1>
             <p className="text-brand-100 text-sm mt-1">For drivers without system access</p>
           </div>
 
@@ -256,12 +271,48 @@ export default function ReportBreakdown() {
                 <p className="text-surface-600 text-sm mt-2">Thank you. You may close this page or report another.</p>
                 <button
                   type="button"
-                  onClick={startOver}
+                  onClick={backToChoose}
                   className="mt-6 w-full py-3 px-4 rounded-xl text-sm font-medium bg-surface-200 text-surface-800 hover:bg-surface-300"
                 >
-                  Report another breakdown
+                  Report another breakdown / incident
                 </button>
               </div>
+            ) : step === 'choose' ? (
+              <>
+                <div className="flex items-center justify-between mb-5 pb-3 border-b border-surface-200">
+                  <p className="text-sm text-surface-600">Reporting as</p>
+                  <p className="font-medium text-surface-900">{driverName}</p>
+                  <button type="button" onClick={startOver} className="text-sm text-brand-600 hover:text-brand-700">Use different ID</button>
+                </div>
+                <p className="text-sm text-surface-600 mb-4">Choose what you want to report:</p>
+                <div className="grid gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setPortalMode('breakdown'); setStep('breakdown'); setError(''); }}
+                    className="w-full text-left rounded-xl border-2 border-surface-200 hover:border-brand-500 bg-white p-4 transition-colors"
+                  >
+                    <p className="font-semibold text-surface-900">Breakdown / incident</p>
+                    <p className="text-sm text-surface-500 mt-1">Report a breakdown, accident, delay, or other incident with photos.</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setPortalMode('inspection'); setStep('inspection'); setError(''); }}
+                    className="w-full text-left rounded-xl border-2 border-surface-200 hover:border-brand-500 bg-white p-4 transition-colors"
+                  >
+                    <p className="font-semibold text-surface-900">Inspection</p>
+                    <p className="text-sm text-surface-500 mt-1">Side tipper truck national road safety inspection with photo evidence per item.</p>
+                  </button>
+                </div>
+              </>
+            ) : step === 'inspection' ? (
+              <>
+                <div className="flex items-center justify-between mb-5 pb-3 border-b border-surface-200">
+                  <p className="text-sm text-surface-600">Inspector</p>
+                  <p className="font-medium text-surface-900">{driverName}</p>
+                  <button type="button" onClick={backToChoose} className="text-sm text-brand-600 hover:text-brand-700">Change</button>
+                </div>
+                <ReportExternalInspection driverName={driverName} onBack={backToChoose} />
+              </>
             ) : step === 'id' ? (
               <form onSubmit={handleVerifyId} className="space-y-5">
                 <p className="text-surface-600 text-sm">Enter your ID number to continue. You must be registered as a driver in the system.</p>
@@ -304,7 +355,7 @@ export default function ReportBreakdown() {
                 <div className="flex items-center justify-between mb-5 pb-3 border-b border-surface-200">
                   <p className="text-sm text-surface-600">Reporting as</p>
                   <p className="font-medium text-surface-900">{driverName}</p>
-                  <button type="button" onClick={startOver} className="text-sm text-brand-600 hover:text-brand-700">Use different ID</button>
+                  <button type="button" onClick={backToChoose} className="text-sm text-brand-600 hover:text-brand-700">Change</button>
                 </div>
 
                 <form onSubmit={handleSubmitBreakdown} className="space-y-4">
@@ -328,14 +379,19 @@ export default function ReportBreakdown() {
                     <label className="block text-sm font-medium text-surface-700 mb-1.5">Truck</label>
                     <input
                       type="text"
-                      placeholder="Search and select truck..."
+                      placeholder="Type registration to search…"
                       value={truckSearch}
-                      onChange={(e) => { setTruckSearch(e.target.value); setTruckDropdownOpen(true); }}
+                      onChange={(e) => {
+                        setTruckSearch(e.target.value);
+                        setSelectedTruck(null);
+                        setTruckDropdownOpen(true);
+                      }}
                       onFocus={() => setTruckDropdownOpen(true)}
+                      autoComplete="off"
                       className="w-full rounded-xl border border-surface-300 px-4 py-3 text-base"
                     />
                     {selectedTruck && (
-                      <p className="text-xs text-surface-500 mt-1.5">
+                      <p className="text-xs text-emerald-700 mt-1.5">
                         Selected: {selectedTruck.registration}
                         {selectedTruck.fleet_no ? ` · Fleet ${selectedTruck.fleet_no}` : ''}
                         {selectedTruck.make_model ? ` · ${selectedTruck.make_model}` : ''}
@@ -346,7 +402,9 @@ export default function ReportBreakdown() {
                         {trucksLoading ? (
                           <li className="px-4 py-3 text-surface-500">Loading trucks…</li>
                         ) : filteredTrucks.length === 0 ? (
-                          <li className="px-4 py-3 text-surface-500">No trucks match</li>
+                          <li className="px-4 py-3 text-surface-500">
+                            {truckSearch.trim() ? 'No trucks match — keep typing or check registration' : 'Type a letter or number to search fleet'}
+                          </li>
                         ) : (
                           filteredTrucks.map((t) => (
                             <li
@@ -359,9 +417,9 @@ export default function ReportBreakdown() {
                                 setTruckDropdownOpen(false);
                               }}
                               onKeyDown={(ev) => ev.key === 'Enter' && (setSelectedTruck(t), setTruckSearch(t.registration), setTruckDropdownOpen(false))}
-                              className="px-4 py-3 hover:bg-surface-100 cursor-pointer border-b border-surface-100 last:border-0"
+                              className="px-4 py-3 hover:bg-brand-50 cursor-pointer border-b border-surface-100 last:border-0"
                             >
-                              {t.registration}
+                              <span className="font-medium">{t.registration}</span>
                               {t.fleet_no ? ` · Fleet ${t.fleet_no}` : ''}
                               {t.make_model ? ` · ${t.make_model}` : ''}
                             </li>
@@ -536,7 +594,7 @@ export default function ReportBreakdown() {
                         Submitting…
                       </>
                     ) : (
-                      'Submit breakdown report'
+                      'Submit breakdown / incident report'
                     )}
                   </button>
                 </form>

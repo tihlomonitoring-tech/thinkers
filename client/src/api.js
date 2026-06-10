@@ -657,6 +657,9 @@ export const truckInspection = {
   attachmentDownloadUrl: (attId) => `${API}/truck-inspection/attachments/${encodeURIComponent(attId)}/download`,
   removeAttachment: (attId) => ti(`/attachments/${encodeURIComponent(attId)}`, { method: 'DELETE' }),
   exportPdfUrl: (id) => `${API}/truck-inspection/${encodeURIComponent(id)}/export/pdf`,
+  signInspector: (id, body) => ti(`/${encodeURIComponent(id)}/sign/inspector`, { method: 'POST', body: JSON.stringify(body) }),
+  signSupervisor: (id, body) => ti(`/${encodeURIComponent(id)}/sign/supervisor`, { method: 'POST', body: JSON.stringify(body) }),
+  signatureImageUrl: (id, role) => `${API}/truck-inspection/${encodeURIComponent(id)}/signature/${role}/image`,
 };
 
 export const commandCentre = {
@@ -2940,6 +2943,33 @@ export const tabAccess = {
   grant: (pageKey, userId, tabId) => request(`/tab-access/permissions/${pageKey}`, { method: 'POST', body: JSON.stringify({ user_id: userId, tab_id: tabId }) }),
   revoke: (pageKey, userId, tabId) => request(`/tab-access/permissions/${pageKey}?user_id=${userId}&tab_id=${tabId}`, { method: 'DELETE' }),
   bulkSet: (pageKey, userId, tabIds) => request(`/tab-access/permissions/${pageKey}/bulk`, { method: 'POST', body: JSON.stringify({ user_id: userId, tab_ids: tabIds }) }),
+};
+
+export const vehicleCompliance = {
+  dashboard: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.tenantId) q.set('tenantId', params.tenantId);
+    if (params.contractorId) q.set('contractorId', params.contractorId);
+    return request(`/vehicle-compliance/dashboard${q.toString() ? `?${q.toString()}` : ''}`);
+  },
+  trucks: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.tenantId) q.set('tenantId', params.tenantId);
+    if (params.contractorId) q.set('contractorId', params.contractorId);
+    if (params.riskLevel) q.set('riskLevel', params.riskLevel);
+    if (params.suspended) q.set('suspended', '1');
+    if (params.overdue) q.set('overdue', '1');
+    if (params.forceSuspend) q.set('forceSuspend', '1');
+    return request(`/vehicle-compliance/trucks${q.toString() ? `?${q.toString()}` : ''}`);
+  },
+  notify: (truckId, body = {}) => request('/vehicle-compliance/notify', {
+    method: 'POST',
+    body: JSON.stringify({ truck_id: truckId, ...body }),
+  }),
+  suspend: (truckId, reason) => request('/vehicle-compliance/suspend', {
+    method: 'POST',
+    body: JSON.stringify({ truck_id: truckId, reason }),
+  }),
 };
 
 export const quickSignPublic = {

@@ -12,6 +12,7 @@ import { generateMonthlyPerformanceReportPdf } from './lib/monthlyPerformanceRep
 import { jsPDF } from 'jspdf';
 import InfoHint from './components/InfoHint.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
+import VehicleCompliancePanel from './components/vehicleCompliance/VehicleCompliancePanel.jsx';
 
 const TABS = [
   { id: 'fleet', label: 'Approved fleet & drivers', icon: 'truck', section: 'Data' },
@@ -21,6 +22,7 @@ const TABS = [
   { id: 'incidents', label: 'Breakdowns & incidents', icon: 'alert', section: 'Data' },
   { id: 'suspensions', label: 'Suspensions', icon: 'ban', section: 'Data' },
   { id: 'compliance', label: 'Compliance inspections', icon: 'shield', section: 'Data' },
+  { id: 'vehicle_compliance', label: 'Vehicle inspection compliance', icon: 'truck', section: 'Data' },
   { id: 'progress-reports', label: 'Progress reports', icon: 'chart', section: 'Reports' },
   { id: 'action-plan-timelines', label: 'View Project timelines and action plan', icon: 'calendar', section: 'Reports' },
   { id: 'monthly-performance-reports', label: 'Monthly Performance reports', icon: 'chart', section: 'Reports' },
@@ -1274,6 +1276,15 @@ export default function Rector() {
                 </div>
               </div>
             </div>
+          )}
+
+          {activeTab === 'vehicle_compliance' && (
+            <VehicleCompliancePanel
+              mode="compliance"
+              readOnly
+              title="Vehicle inspection compliance"
+              subtitle="View-only — inspection scores, breakdown trends, and risk recommendations for trucks on your routes."
+            />
           )}
 
           {activeTab === 'compliance' && (

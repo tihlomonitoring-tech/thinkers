@@ -110,6 +110,8 @@
     "db:workshop": "node scripts/run-workshop-schema.js",
     "db:workshop-attachment-types": "node scripts/run-workshop-attachment-types.js",
     "db:truck-inspection": "node scripts/run-truck-inspection-schema.js",
+    "db:external-driver-inspection": "node scripts/run-external-driver-inspection-schema.js",
+    "db:truck-inspection-signatures": "node scripts/run-truck-inspection-signatures-schema.js",
     "db:operator-management": "node scripts/run-operator-management-schema.js",
     "db:operator-page-roles": "node scripts/run-add-operator-page-roles.js",
     "db:department-budget": "node scripts/run-department-budget-schema.js",

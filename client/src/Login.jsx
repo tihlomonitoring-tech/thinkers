@@ -273,7 +273,7 @@ export default function Login() {
                     to="/report-breakdown"
                     className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-xs font-semibold uppercase tracking-wider text-white/90 border border-white/25 bg-white/5 hover:bg-white/10 transition"
                   >
-                    No access? Report a breakdown
+                    No access? Report a breakdown/inspection
                   </Link>
                 </form>
 

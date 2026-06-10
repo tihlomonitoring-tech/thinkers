@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { truckInspection as api, contractor as contractorApi } from '../api';
 import InfoHint from '../components/InfoHint.jsx';
+import InspectionItemMedia from '../components/InspectionItemMedia.jsx';
+import InspectionSignaturesPanel from '../components/InspectionSignaturesPanel.jsx';
+import SignaturePad from '../components/SignaturePad.jsx';
 import { todayYmd } from '../lib/appTime.js';
 
 const INSPECTION_TYPES = [
@@ -49,7 +52,7 @@ function InspectionForm({ checklist, trucks, users, onSubmit, saving }) {
     truck_id: '', fleet_registration: '', trailer_registration: '', odometer_reading: '',
     inspection_date: todayYmd(), inspection_type: 'pre_trip',
     inspector_role: 'driver', inspector_user_id: '', inspector_name: '', inspector_company: '',
-    general_comments: '', signed_off: false,
+    general_comments: '',
   });
   const m = (k, v) => setMeta((p) => ({ ...p, [k]: v }));
 
@@ -62,10 +65,12 @@ function InspectionForm({ checklist, trucks, users, onSubmit, saving }) {
     }
     return map;
   });
+  const [itemPhotos, setItemPhotos] = useState({});
+  const [inspectorSignature, setInspectorSignature] = useState('');
+  const [formError, setFormError] = useState('');
 
   const [expandedCat, setExpandedCat] = useState(checklist[0]?.category || '');
   const [commentOpen, setCommentOpen] = useState({});
-  const fileRefs = useRef({});
 
   const setResult = (code, result) => setItemResults((p) => ({ ...p, [code]: { ...p[code], result } }));
   const setComment = (code, comment) => setItemResults((p) => ({ ...p, [code]: { ...p[code], comment } }));
@@ -99,6 +104,11 @@ function InspectionForm({ checklist, trucks, users, onSubmit, saving }) {
   const autoDetectedFailures = allItems.filter((it) => itemResults[it.code]?.result === 'fail');
 
   const submit = () => {
+    if (!inspectorSignature) {
+      setFormError('Draw your inspector signature before submitting.');
+      return;
+    }
+    setFormError('');
     const items = allItems.map((it, idx) => ({
       category: it.category,
       item_code: it.code,
@@ -108,7 +118,10 @@ function InspectionForm({ checklist, trucks, users, onSubmit, saving }) {
       comment: itemResults[it.code]?.comment || null,
       sort_order: idx,
     }));
-    onSubmit({ ...meta, items, odometer_reading: meta.odometer_reading ? Number(meta.odometer_reading) : null });
+    onSubmit(
+      { ...meta, items, odometer_reading: meta.odometer_reading ? Number(meta.odometer_reading) : null, signed_off: true },
+      { itemPhotos, inspectorSignature }
+    );
   };
 
   return (
@@ -256,6 +269,14 @@ function InspectionForm({ checklist, trucks, users, onSubmit, saving }) {
                             <textarea value={ir.comment || ''} onChange={(e) => setComment(it.code, e.target.value)} rows={2} placeholder="Add comment or observation…" className={`${fc} text-xs`} />
                           </div>
                         )}
+                        <div className="mt-2 ml-14">
+                          <InspectionItemMedia
+                            itemCode={it.code}
+                            photo={itemPhotos[it.code]}
+                            onPhotoChange={(f) => setItemPhotos((p) => ({ ...p, [it.code]: f }))}
+                            compact
+                          />
+                        </div>
                       </div>
                     );
                   })}
@@ -266,19 +287,23 @@ function InspectionForm({ checklist, trucks, users, onSubmit, saving }) {
         })}
       </div>
 
-      {/* General comments & submit */}
+      {/* General comments, inspector signature & submit */}
       <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
         <div>
           <label className="block text-xs font-medium text-surface-500 mb-1">General comments</label>
           <textarea value={meta.general_comments} onChange={(e) => m('general_comments', e.target.value)} rows={3} className={fc} />
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={meta.signed_off} onChange={(e) => m('signed_off', e.target.checked)} className="rounded border-surface-300" />
-          I confirm this inspection has been completed accurately
-        </label>
+        <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4 space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-surface-900">Inspector signature *</p>
+            <p className="text-xs text-surface-500 mt-0.5">Sign below to confirm this inspection was completed accurately.</p>
+          </div>
+          <SignaturePad onChange={setInspectorSignature} className="max-w-md" />
+        </div>
+        {formError && <p className="text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">{formError}</p>}
         <button type="button" onClick={submit} disabled={saving || !meta.inspector_name || !meta.inspection_date}
           className="px-6 py-2.5 rounded-lg bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 disabled:opacity-50">
-          {saving ? 'Submitting…' : 'Submit inspection'}
+          {saving ? 'Submitting…' : 'Submit signed inspection'}
         </button>
       </div>
     </div>
@@ -290,6 +315,10 @@ function InspectionDetail({ inspectionId, onBack }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const fileRef = useRef(null);
+
+  const reload = useCallback(() => {
+    api.get(inspectionId).then(setData).catch(() => {});
+  }, [inspectionId]);
 
   useEffect(() => {
     setLoading(true);
@@ -303,13 +332,20 @@ function InspectionDetail({ inspectionId, onBack }) {
   const items = data.items || [];
   const attachments = data.attachments || [];
   const categories = [...new Set(items.map((it) => it.category))];
+  const attByItem = attachments.reduce((acc, a) => {
+    if (a.item_id) {
+      if (!acc[a.item_id]) acc[a.item_id] = [];
+      acc[a.item_id].push(a);
+    }
+    return acc;
+  }, {});
 
   const uploadFiles = async (e) => {
     const files = e.target.files;
     if (!files?.length) return;
     const fd = new FormData();
     for (const f of files) fd.append('files', f);
-    try { await api.uploadAttachments(inspectionId, fd); const d = await api.get(inspectionId); setData(d); } catch (err) { alert(err?.message || 'Upload failed'); }
+    try { await api.uploadAttachments(inspectionId, fd); reload(); } catch (err) { alert(err?.message || 'Upload failed'); }
     if (fileRef.current) fileRef.current.value = '';
   };
 
@@ -335,7 +371,8 @@ function InspectionDetail({ inspectionId, onBack }) {
           <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">Company</span>{insp.inspector_company || '—'}</div>
           <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">ODO</span>{insp.odometer_reading != null ? `${Number(insp.odometer_reading).toLocaleString()} km` : '—'}</div>
           <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">Score</span>{insp.passed_items} pass / {insp.failed_items} fail / {insp.na_items} N/A of {insp.total_items}</div>
-          <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">Signed off</span>{insp.signed_off ? `Yes — ${formatDateTime(insp.signed_off_at)}` : 'No'}</div>
+          <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">Inspector signed</span>{insp.inspector_signed_at ? formatDateTime(insp.inspector_signed_at) : 'No'}</div>
+          <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">Supervisor signed</span>{insp.supervisor_signed_at ? `${insp.supervisor_name} — ${formatDateTime(insp.supervisor_signed_at)}` : 'Pending'}</div>
           <div><span className="text-[10px] uppercase text-surface-500 font-semibold block">Created by</span>{insp.created_by_name || '—'}</div>
         </div>
         {insp.general_comments && <p className="text-sm text-surface-700 whitespace-pre-wrap border-t border-surface-100 pt-3">{insp.general_comments}</p>}
@@ -360,12 +397,27 @@ function InspectionDetail({ inspectionId, onBack }) {
               </div>
               <div className="divide-y divide-surface-100">
                 {catItems.map((it) => (
-                  <div key={it.id} className={`px-5 py-2.5 flex flex-wrap items-center gap-2 ${it.result === 'fail' ? 'bg-red-50/50' : ''}`}>
-                    <span className="text-[10px] font-mono text-surface-400 w-12 shrink-0">{it.item_code}</span>
-                    <span className="text-sm text-surface-800 flex-1 min-w-0">{it.item_label}</span>
-                    {resultBadge(it.result)}
-                    {it.severity && <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-800">{it.severity}</span>}
-                    {it.comment && <p className="w-full ml-14 text-xs text-surface-600 italic mt-0.5">{it.comment}</p>}
+                  <div key={it.id} className={`px-5 py-2.5 ${it.result === 'fail' ? 'bg-red-50/50' : ''}`}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-mono text-surface-400 w-12 shrink-0">{it.item_code}</span>
+                      <span className="text-sm text-surface-800 flex-1 min-w-0">{it.item_label}</span>
+                      {resultBadge(it.result)}
+                      {it.severity && <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-800">{it.severity}</span>}
+                    </div>
+                    {it.comment && <p className="ml-14 text-xs text-surface-600 italic mt-0.5">{it.comment}</p>}
+                    {(attByItem[it.id] || []).length > 0 && (
+                      <div className="ml-14 mt-2 flex flex-wrap gap-2">
+                        {attByItem[it.id].map((att) => (
+                          att.mime_type?.startsWith('image/') ? (
+                            <a key={att.id} href={api.attachmentDownloadUrl(att.id)} target="_blank" rel="noopener noreferrer" className="block">
+                              <img src={api.attachmentDownloadUrl(att.id)} alt={att.file_name} className="h-16 w-auto rounded border border-surface-200 object-cover" />
+                            </a>
+                          ) : (
+                            <a key={att.id} href={api.attachmentDownloadUrl(att.id)} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-700 underline">{att.file_name}</a>
+                          )
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -396,6 +448,15 @@ function InspectionDetail({ inspectionId, onBack }) {
           <p className="text-xs text-surface-500">No attachments.</p>
         )}
       </div>
+
+      <InspectionSignaturesPanel
+        inspection={insp}
+        inspectionId={inspectionId}
+        signatureImageUrl={api.signatureImageUrl}
+        signSupervisorApi={api.signSupervisor}
+        formatDateTime={formatDateTime}
+        onSupervisorSigned={reload}
+      />
     </div>
   );
 }
@@ -487,16 +548,33 @@ export default function TruckInspectionPage() {
     api.users().then((d) => setUsers(d.users || [])).catch(() => {});
   }, []);
 
-  const handleSubmit = async (body) => {
+  const handleSubmit = async (body, { itemPhotos = {}, inspectorSignature } = {}) => {
     setSaving(true);
     setError('');
     setSuccess('');
     try {
       const result = await api.create(body);
+      const inspId = result.inspection?.id;
+      if (inspId) {
+        const detail = await api.get(inspId);
+        const codeToId = Object.fromEntries((detail.items || []).map((i) => [i.item_code, i.id]));
+        for (const [code, file] of Object.entries(itemPhotos)) {
+          if (!file) continue;
+          const itemId = codeToId[code];
+          if (!itemId) continue;
+          const fd = new FormData();
+          fd.append('files', file);
+          fd.append('item_id', itemId);
+          await api.uploadAttachments(inspId, fd);
+        }
+        if (inspectorSignature) {
+          await api.signInspector(inspId, { signature_data: inspectorSignature });
+        }
+      }
       const ref = result.inspection?.reference_number ? ` (${result.inspection.reference_number})` : '';
       const autoMsg = result.autoSchedule ? ' — URGENT maintenance schedule auto-created.' : '';
       setSuccess(`Inspection submitted${ref} — result: ${(result.inspection?.overall_result || 'pending').toUpperCase()}${autoMsg}`);
-      if (result.inspection?.id) { setOpenInspId(result.inspection.id); setTab('history'); }
+      if (inspId) { setOpenInspId(inspId); setTab('history'); }
     } catch (e) { setError(e?.message || 'Submit failed'); }
     finally { setSaving(false); }
   };
