@@ -24,6 +24,7 @@ export default function PerformanceEvaluations() {
   const [saving, setSaving] = useState(false);
   const [mySubmissions, setMySubmissions] = useState([]);
   const [currentPeriod, setCurrentPeriod] = useState(null);
+  const [participationScore, setParticipationScore] = useState(null);
 
   const activeQuestions = useMemo(() => questions.filter((q) => q.is_active !== false && q.is_active !== 0), [questions]);
 
@@ -45,13 +46,15 @@ export default function PerformanceEvaluations() {
       performanceEvaluations.listQuestions(),
       performanceEvaluations.listMySubmissions(),
       performanceEvaluations.getCurrentEvaluationPeriod().catch(() => ({ period: null })),
+      performanceEvaluations.getMyParticipationScore().catch(() => ({ score: null, period: null })),
     ])
-      .then(([u, q, s, per]) => {
+      .then(([u, q, s, per, part]) => {
         const raw = u.users || [];
         setTenantUsers(raw.map(normalizeUser).filter(Boolean));
         setQuestions(q.questions || []);
         setMySubmissions(s.submissions || []);
         setCurrentPeriod(per?.period || null);
+        setParticipationScore(part?.score ? { ...part.score, period: part.period, rules: part.rules } : null);
         const aq = (q.questions || []).filter((x) => x.is_active !== false && x.is_active !== 0);
         setAnswers((prev) => {
           const next = { ...prev };
@@ -130,7 +133,7 @@ export default function PerformanceEvaluations() {
           <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">Performance evaluations</h1>
           <InfoHint
             title="How this works"
-            text="Evaluations run inside an evaluation period opened by management. Choose the evaluation type, then the person you are evaluating. Answer every active question with a score (1 = needs improvement, 3 = strong) and a required comment. You can submit only one evaluation per person and type in each open period. Colleagues you receive feedback from appear under Profile → Colleagues evaluation results."
+            text="Each evaluation period you must evaluate at least 5 different colleagues (+5 points) or lose 10 points. You also need at least 5 evaluations received about you (+5 points) or lose 5 points. You cannot evaluate yourself. Evaluator names stay confidential on Profile. One submission per person and type per period."
           />
         </div>
         <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
@@ -156,6 +159,51 @@ export default function PerformanceEvaluations() {
           {currentPeriod.title ? ` — ${currentPeriod.title}` : ''}
           <span className="text-surface-500"> (since {String(currentPeriod.opened_at || '').slice(0, 10)})</span>
         </div>
+      )}
+
+      {participationScore && (
+        <section className="rounded-xl border border-surface-200 bg-white shadow-sm p-5 dark:border-surface-800 dark:bg-surface-900">
+          <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Your evaluation participation score</h2>
+              <p className="text-xs text-surface-500 mt-0.5">
+                {participationScore.period?.title || 'Current period'}
+                {participationScore.period?.is_open ? ' · open' : ' · closed'}
+              </p>
+            </div>
+            <div className={`text-3xl font-bold tabular-nums ${participationScore.total_points >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              {participationScore.total_points > 0 ? '+' : ''}{participationScore.total_points}
+              <span className="text-sm font-medium text-surface-500 ml-1">pts</span>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className={`rounded-lg border p-3 ${participationScore.given_met ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20' : 'border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20'}`}>
+              <p className="text-xs font-semibold uppercase text-surface-500">Evaluations you gave</p>
+              <p className="text-lg font-semibold mt-1">
+                {participationScore.evaluations_given} / {participationScore.min_required} colleagues
+              </p>
+              <p className="text-xs text-surface-600 dark:text-surface-400 mt-1">
+                {participationScore.given_met
+                  ? `+${participationScore.rules?.given_complete_points ?? 5} points — requirement met`
+                  : `${participationScore.given_remaining} more needed · ${participationScore.given_points} points if period ends now`}
+              </p>
+            </div>
+            <div className={`rounded-lg border p-3 ${participationScore.received_met ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20' : 'border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20'}`}>
+              <p className="text-xs font-semibold uppercase text-surface-500">Evaluations you received</p>
+              <p className="text-lg font-semibold mt-1">
+                {participationScore.evaluations_received} / {participationScore.min_required} received
+              </p>
+              <p className="text-xs text-surface-600 dark:text-surface-400 mt-1">
+                {participationScore.received_met
+                  ? `+${participationScore.rules?.received_complete_points ?? 5} points — requirement met`
+                  : `${participationScore.received_remaining} more needed · ${participationScore.received_points} points if period ends now`}
+              </p>
+            </div>
+          </div>
+          <p className="text-[11px] text-surface-500 mt-3">
+            Rule: evaluate at least 5 different colleagues (+5 or −10). Receive at least 5 evaluations about you (+5 or −5). Self-evaluation is not allowed.
+          </p>
+        </section>
       )}
 
       <form onSubmit={submit} className="rounded-xl border border-surface-200 bg-white shadow-sm p-5 space-y-5 dark:border-surface-800 dark:bg-surface-900">

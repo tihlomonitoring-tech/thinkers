@@ -2016,8 +2016,8 @@ router.patch('/queries/:id/respond', requirePageAccess('management'), async (req
 router.get('/evaluations', requirePageAccess('profile'), async (req, res, next) => {
   try {
     const result = await query(
-      `SELECT e.id, e.period, e.rating, e.notes, e.created_at, u.full_name AS evaluator_name
-       FROM evaluations e LEFT JOIN users u ON u.id = e.evaluator_id
+      `SELECT e.id, e.period, e.rating, e.notes, e.created_at
+       FROM evaluations e
        WHERE e.user_id = @userId ORDER BY e.created_at DESC`,
       { userId: req.user.id }
     );

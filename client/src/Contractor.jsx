@@ -1351,6 +1351,8 @@ export default function Contractor() {
         tracking_password: form.tracking_password?.value || null,
         commodity_type: form.commodity_type?.value || null,
         capacity_tonnes: form.capacity_tonnes?.value ? parseFloat(form.capacity_tonnes.value) : null,
+        fuel_tank_capacity_litres: form.fuel_tank_capacity_litres?.value ? parseFloat(form.fuel_tank_capacity_litres.value) : null,
+        fuel_consumption_litres_per_100km: form.fuel_consumption_litres_per_100km?.value ? parseFloat(form.fuel_consumption_litres_per_100km.value) : null,
         status: 'active',
       });
       form.reset();
@@ -1422,6 +1424,8 @@ export default function Contractor() {
         tracking_username: form.tracking_username?.value?.trim() || null,
         commodity_type: form.commodity_type?.value || null,
         capacity_tonnes: form.capacity_tonnes?.value ? parseFloat(form.capacity_tonnes.value) : null,
+        fuel_tank_capacity_litres: form.fuel_tank_capacity_litres?.value ? parseFloat(form.fuel_tank_capacity_litres.value) : null,
+        fuel_consumption_litres_per_100km: form.fuel_consumption_litres_per_100km?.value ? parseFloat(form.fuel_consumption_litres_per_100km.value) : null,
         status: form.status?.value || 'active',
       };
       if (newPassword) body.tracking_password = newPassword;
@@ -2251,6 +2255,12 @@ export default function Contractor() {
                       {COMMODITY_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                     <input name="capacity_tonnes" type="number" step="0.01" placeholder="Capacity (tonnes)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                    <div className="rounded-lg border border-dashed border-brand-200 bg-brand-50/40 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-brand-800">Fuel profile (Logistics finance)</p>
+                      <p className="text-[10px] text-brand-700/80">Used to estimate diesel per completed delivery when imported from Command Centre.</p>
+                      <input name="fuel_tank_capacity_litres" type="number" min="0" step="1" placeholder="Fuel tank capacity (litres) e.g. 800" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                      <input name="fuel_consumption_litres_per_100km" type="number" min="0" step="0.1" placeholder="Fuel consumption (L/100 km) e.g. 42" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                    </div>
                     <button type="submit" disabled={saving || !pageRestrictions.allow_truck_manual} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Add truck</button>
                   </form>
                 </div>
@@ -2436,6 +2446,17 @@ export default function Contractor() {
                           <div>
                             <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Capacity (tonnes)</label>
                             <input name="capacity_tonnes" type="number" step="0.01" min="0" defaultValue={t.capacity_tonnes ?? t.capacityTonnes ?? ''} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                          </div>
+                          <div className="rounded-lg border border-dashed border-brand-200 bg-brand-50/40 p-3 space-y-2">
+                            <p className="text-xs font-semibold text-brand-800">Fuel profile (Logistics finance)</p>
+                            <div>
+                              <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Fuel tank capacity (L)</label>
+                              <input name="fuel_tank_capacity_litres" type="number" min="0" step="1" defaultValue={t.fuel_tank_capacity_litres ?? t.fuelTankCapacityLitres ?? ''} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Fuel consumption (L/100 km)</label>
+                              <input name="fuel_consumption_litres_per_100km" type="number" min="0" step="0.1" defaultValue={t.fuel_consumption_litres_per_100km ?? t.fuelConsumptionLitresPer100km ?? ''} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                            </div>
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Status</label>

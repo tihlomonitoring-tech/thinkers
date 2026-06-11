@@ -13,6 +13,7 @@ import { jsPDF } from 'jspdf';
 import InfoHint from './components/InfoHint.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 import VehicleCompliancePanel from './components/vehicleCompliance/VehicleCompliancePanel.jsx';
+import RouteTargetRegulationsPanel from './components/RouteTargetRegulationsPanel.jsx';
 
 const TABS = [
   { id: 'fleet', label: 'Approved fleet & drivers', icon: 'truck', section: 'Data' },
@@ -175,8 +176,6 @@ export default function Rector() {
   const [selectedMonthlyPerfId, setSelectedMonthlyPerfId] = useState(null);
   const [monthlyPerfPdfDownloading, setMonthlyPerfPdfDownloading] = useState(false);
   const [targetRegulations, setTargetRegulations] = useState([]);
-  const [targetSavingRouteId, setTargetSavingRouteId] = useState('');
-  const [targetInputs, setTargetInputs] = useState({});
 
   const hasTenant = user?.tenant_id;
 
@@ -448,43 +447,6 @@ export default function Rector() {
   // When user is assigned as rector to specific routes, only show those routes and fleet enrolled on them
   const isRectorScoped = rectorRouteIds.length > 0;
   const routesToShow = isRectorScoped ? routes.filter((r) => rectorRouteIds.includes(r.id)) : routes;
-  const saveTargetRegulation = async (routeId) => {
-    const current = targetRegByRouteId[String(routeId)];
-    const rawTarget = targetInputs[`target:${routeId}`] ?? current?.deliveries_per_truck_target ?? '';
-    const rawNotes = targetInputs[`notes:${routeId}`] ?? current?.notes ?? '';
-    const target = Number(rawTarget);
-    if (!Number.isFinite(target) || target <= 0) {
-      setError('Please enter a positive deliveries-per-truck target.');
-      return;
-    }
-    setTargetSavingRouteId(String(routeId));
-    try {
-      const resp = await contractorApi.routeTargetRegulations.upsert(routeId, {
-        deliveries_per_truck_target: target,
-        notes: rawNotes,
-      });
-      const saved = resp?.regulation;
-      if (saved) {
-        setTargetRegulations((prev) => {
-          const existingIdx = prev.findIndex((x) => String(x.route_id) === String(routeId));
-          if (existingIdx >= 0) {
-            const next = prev.slice();
-            next[existingIdx] = saved;
-            return next;
-          }
-          return [...prev, saved];
-        });
-      }
-    } catch (e) {
-      setError(e?.message || 'Failed to save route target regulation');
-    } finally {
-      setTargetSavingRouteId('');
-    }
-  };
-  const targetRegByRouteId = useMemo(
-    () => Object.fromEntries((targetRegulations || []).map((x) => [String(x.route_id), x])),
-    [targetRegulations]
-  );
   let rectorRouteTruckIds = new Set();
   let rectorRouteDriverIds = new Set();
   if (isRectorScoped) {
@@ -904,78 +866,16 @@ export default function Rector() {
           )}
 
           {activeTab === 'targets-regulations' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-lg font-semibold text-surface-900">Targets regulations per route</h3>
-                <InfoHint
-                  title="Targets regulations per route"
-                  text="Define how many deliveries each truck should complete per route to achieve expected operational targets."
-                />
-              </div>
-              <div className="app-glass-card overflow-hidden">
-                <div className="overflow-x-auto max-h-[560px] overflow-y-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-surface-50 sticky top-0">
-                      <tr>
-                        <th className="text-left p-2">Route</th>
-                        <th className="text-left p-2">Deliveries per truck target</th>
-                        <th className="text-left p-2">Notes</th>
-                        <th className="text-left p-2">Updated</th>
-                        <th className="text-left p-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {routesToShow.map((r) => {
-                        const reg = targetRegByRouteId[String(r.id)];
-                        const targetVal = targetInputs[`target:${r.id}`] ?? (reg?.deliveries_per_truck_target ?? '');
-                        const notesVal = targetInputs[`notes:${r.id}`] ?? (reg?.notes ?? '');
-                        return (
-                          <tr key={r.id} className="border-t border-surface-100">
-                            <td className="p-2 font-medium">{r.name || 'Unnamed route'}</td>
-                            <td className="p-2 min-w-[210px]">
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.1"
-                                value={targetVal}
-                                onChange={(e) => setTargetInputs((prev) => ({ ...prev, [`target:${r.id}`]: e.target.value }))}
-                                className="w-full rounded border border-surface-300 px-2 py-1.5"
-                                placeholder="e.g. 3"
-                              />
-                            </td>
-                            <td className="p-2 min-w-[280px]">
-                              <input
-                                type="text"
-                                value={notesVal}
-                                onChange={(e) => setTargetInputs((prev) => ({ ...prev, [`notes:${r.id}`]: e.target.value }))}
-                                className="w-full rounded border border-surface-300 px-2 py-1.5"
-                                placeholder="Optional regulation notes"
-                              />
-                            </td>
-                            <td className="p-2 text-surface-600">{reg?.updated_at ? formatDateTime(reg.updated_at) : '—'}</td>
-                            <td className="p-2">
-                              <button
-                                type="button"
-                                onClick={() => saveTargetRegulation(r.id)}
-                                disabled={targetSavingRouteId === String(r.id)}
-                                className="rounded bg-brand-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-brand-700 disabled:opacity-60"
-                              >
-                                {targetSavingRouteId === String(r.id) ? 'Saving…' : 'Save'}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {routesToShow.length === 0 && (
-                        <tr>
-                          <td className="p-3 text-surface-500" colSpan={5}>No routes available for your current scope.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+            <RouteTargetRegulationsPanel
+              routes={routesToShow}
+              regulations={targetRegulations}
+              setRegulations={setTargetRegulations}
+              routeEnrollments={routeEnrollments}
+              onError={setError}
+              onRouteUpdated={(updated) => {
+                setRoutes((prev) => prev.map((r) => (String(r.id) === String(updated.id) ? { ...r, ...updated } : r)));
+              }}
+            />
           )}
 
           {activeTab === 'contractors-details' && (

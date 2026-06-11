@@ -362,6 +362,9 @@ export const contractor = {
     create: (body) => request('/contractor/routes', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => request(`/contractor/routes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/contractor/routes/${id}`, { method: 'DELETE' }),
+    getRiskAssessment: (id) => request(`/contractor/routes/${encodeURIComponent(id)}/risk-assessment`),
+    saveRiskAssessment: (id, body) =>
+      request(`/contractor/routes/${encodeURIComponent(id)}/risk-assessment`, { method: 'PUT', body: JSON.stringify(body) }),
     enrollTrucks: (routeId, truckIds) => request(`/contractor/routes/${routeId}/trucks?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ truckIds }) }),
     enrollDrivers: (routeId, driverIds) => request(`/contractor/routes/${routeId}/drivers?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
     unenrollTruck: (routeId, truckId) => request(`/contractor/routes/${routeId}/trucks/${truckId}?enrollmentPortal=1`, { method: 'DELETE' }),
@@ -1504,7 +1507,46 @@ export const fuelVehicleExpenses = {
 
 const lf = (path, options = {}) => request(`/logistics-finance${path}`, options);
 
+const lfLedger = (path, options = {}) => lf(`/ledger${path}`, options);
+
 export const logisticsFinance = {
+  ledger: {
+    context: () => lfLedger('/context'),
+    listDiesel: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, String(v)); });
+      const s = q.toString();
+      return lfLedger(`/diesel${s ? `?${s}` : ''}`);
+    },
+    createDiesel: (body) => lfLedger('/diesel', { method: 'POST', body: JSON.stringify(body) }),
+    deleteDiesel: (id) => lfLedger(`/diesel/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    listExpenses: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, String(v)); });
+      const s = q.toString();
+      return lfLedger(`/expenses${s ? `?${s}` : ''}`);
+    },
+    createExpense: (body) => lfLedger('/expenses', { method: 'POST', body: JSON.stringify(body) }),
+    listDeliveries: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, String(v)); });
+      const s = q.toString();
+      return lfLedger(`/deliveries${s ? `?${s}` : ''}`);
+    },
+    previewCommandCentre: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, String(v)); });
+      const s = q.toString();
+      return lfLedger(`/command-centre/preview${s ? `?${s}` : ''}`);
+    },
+    importCommandCentre: (body) => lfLedger('/deliveries/import-command-centre', { method: 'POST', body: JSON.stringify(body) }),
+    trialBalance: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, String(v)); });
+      const s = q.toString();
+      return lfLedger(`/trial-balance${s ? `?${s}` : ''}`);
+    },
+  },
   dashboard: (params = {}) => {
     const q = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
@@ -2409,6 +2451,12 @@ export const performanceEvaluations = {
   patchQuestion: (id, body) => pev(`/questions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteQuestion: (id) => pev(`/questions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listMySubmissions: () => pev('/my-submissions'),
+  getMyParticipationScore: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.period_id) q.set('period_id', String(params.period_id));
+    const qs = q.toString();
+    return pev(`/my-participation-score${qs ? `?${qs}` : ''}`);
+  },
   aboutMe: () => pev('/about-me'),
   submissionDetail: (id, fetchOpts = {}) => pev(`/submissions/${encodeURIComponent(id)}/detail`, fetchOpts),
   submit: (body) => pev('/submissions', { method: 'POST', body: JSON.stringify(body) }),

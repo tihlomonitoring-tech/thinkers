@@ -11,6 +11,14 @@ import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRout
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
+import { computeRouteEconomics } from '../lib/routeEconomics.js';
+import { computeRiskAssessment, parseRiskAssessmentJson, defaultRiskAssessment } from '../lib/routeRiskAssessment.js';
+import {
+  parseCorridorFields,
+  updateRouteCorridor,
+  syncDistanceToRegulations,
+  effectiveDistanceKm,
+} from '../lib/routeCorridorSync.js';
 import {
   EXCEL_TEMPLATE,
   EXCEL_INFO_FONT,
@@ -698,6 +706,20 @@ router.get('/fleet-truck-approval-summary', async (req, res, next) => {
   }
 });
 
+function parseOptionalFuelDecimal(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function parseTruckFuelFields(body) {
+  const b = body || {};
+  return {
+    fuel_tank_capacity_litres: parseOptionalFuelDecimal(b.fuel_tank_capacity_litres),
+    fuel_consumption_litres_per_100km: parseOptionalFuelDecimal(b.fuel_consumption_litres_per_100km),
+  };
+}
+
 // Trucks (expanded: main/sub contractor, year, ownership, fleet, trailers, tracking)
 router.get('/trucks', async (req, res, next) => {
   try {
@@ -890,6 +912,7 @@ router.post('/trucks', async (req, res, next) => {
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
       commodity_type, capacity_tonnes, status, contractor_id: bodyContractorId,
     } = req.body || {};
+    const fuelFields = parseTruckFuelFields(req.body);
     const subResolved = await resolveSubcontractorForCreate(req, req.body?.subcontractor_id);
     if (subResolved?.error) return res.status(subResolved.error.status).json({ error: subResolved.error.message });
 
@@ -912,8 +935,8 @@ router.post('/trucks', async (req, res, next) => {
       return res.status(409).json({ error: 'A truck with this registration already exists under this contractor.' });
     }
     const result = await query(
-      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status], contractor_approval_status, added_by_user_id)
-       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status, @contractor_approval_status, @added_by_user_id)`,
+      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, fuel_tank_capacity_litres, fuel_consumption_litres_per_100km, [status], contractor_approval_status, added_by_user_id)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @fuel_tank_capacity_litres, @fuel_consumption_litres_per_100km, @status, @contractor_approval_status, @added_by_user_id)`,
       {
         tenantId: req.user.tenant_id,
         contractorId: contractorId || null,
@@ -932,6 +955,8 @@ router.post('/trucks', async (req, res, next) => {
         tracking_password: tracking_password || null,
         commodity_type: commodity_type || null,
         capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
+        fuel_tank_capacity_litres: fuelFields.fuel_tank_capacity_litres,
+        fuel_consumption_litres_per_100km: fuelFields.fuel_consumption_litres_per_100km,
         status: status || 'active',
         contractor_approval_status: contractorApprovalStatus,
         added_by_user_id: req.user?.id || null,
@@ -958,6 +983,7 @@ router.patch('/trucks/:id', async (req, res, next) => {
       main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
       commodity_type, capacity_tonnes, status,
+      fuel_tank_capacity_litres, fuel_consumption_litres_per_100km,
     } = body;
     const existingResult = await query(
       `SELECT t.* FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId`,
@@ -1026,7 +1052,10 @@ router.patch('/trucks/:id', async (req, res, next) => {
         trailer_1_reg_no = @trailer_1_reg_no, trailer_2_reg_no = @trailer_2_reg_no,
         tracking_provider = @tracking_provider, tracking_username = @tracking_username,
         tracking_password = CASE WHEN @tracking_password_keep = 1 THEN tracking_password ELSE @tracking_password END,
-        commodity_type = @commodity_type, capacity_tonnes = @capacity_tonnes, [status] = @status,
+        commodity_type = @commodity_type, capacity_tonnes = @capacity_tonnes,
+        fuel_tank_capacity_litres = @fuel_tank_capacity_litres,
+        fuel_consumption_litres_per_100km = @fuel_consumption_litres_per_100km,
+        [status] = @status,
         updated_at = SYSUTCDATETIME()
        OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
       {
@@ -1047,6 +1076,12 @@ router.patch('/trucks/:id', async (req, res, next) => {
         tracking_password_keep: body.tracking_password === undefined || body.tracking_password === '' ? 1 : 0,
         commodity_type: commodity_type ?? null,
         capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
+        fuel_tank_capacity_litres: body.fuel_tank_capacity_litres !== undefined
+          ? parseOptionalFuelDecimal(body.fuel_tank_capacity_litres)
+          : (existingRow.fuel_tank_capacity_litres ?? existingRow.Fuel_Tank_Capacity_Litres ?? null),
+        fuel_consumption_litres_per_100km: body.fuel_consumption_litres_per_100km !== undefined
+          ? parseOptionalFuelDecimal(body.fuel_consumption_litres_per_100km)
+          : (existingRow.fuel_consumption_litres_per_100km ?? existingRow.Fuel_Consumption_Litres_Per_100km ?? null),
         status: status || 'active',
       }
     );
@@ -1092,9 +1127,10 @@ router.post('/trucks/bulk', async (req, res, next) => {
         continue;
       }
       const subName = isSubCreate ? subResolved.companyName : (sub_contractor || null);
+      const rowFuel = parseTruckFuelFields(row);
       const result = await query(
-        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, [status], contractor_approval_status, added_by_user_id)
-         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @status, @contractor_approval_status, @added_by_user_id)`,
+        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, fuel_tank_capacity_litres, fuel_consumption_litres_per_100km, [status], contractor_approval_status, added_by_user_id)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @fuel_tank_capacity_litres, @fuel_consumption_litres_per_100km, @status, @contractor_approval_status, @added_by_user_id)`,
         {
           tenantId: req.user.tenant_id,
           contractorId: contractorId || null,
@@ -1113,6 +1149,8 @@ router.post('/trucks/bulk', async (req, res, next) => {
           tracking_password: tracking_password || null,
           commodity_type: commodity_type || null,
           capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
+          fuel_tank_capacity_litres: rowFuel.fuel_tank_capacity_litres,
+          fuel_consumption_litres_per_100km: rowFuel.fuel_consumption_litres_per_100km,
           status: status || 'active',
           contractor_approval_status: isSubCreate ? 'pending_contractor' : 'approved_contractor',
           added_by_user_id: req.user?.id || null,
@@ -2456,16 +2494,84 @@ router.patch('/suspensions/:id', async (req, res, next) => {
   }
 });
 
+async function ensureRouteRiskColumns() {
+  await query(`
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'loading_address')
+      ALTER TABLE contractor_routes ADD loading_address NVARCHAR(500) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'destination_address')
+      ALTER TABLE contractor_routes ADD destination_address NVARCHAR(500) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'distance_km')
+      ALTER TABLE contractor_routes ADD distance_km DECIMAL(10,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'risk_assessment_json')
+      ALTER TABLE contractor_routes ADD risk_assessment_json NVARCHAR(MAX) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'risk_assessment_score')
+      ALTER TABLE contractor_routes ADD risk_assessment_score DECIMAL(5,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'risk_assessment_level')
+      ALTER TABLE contractor_routes ADD risk_assessment_level NVARCHAR(20) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'risk_assessed_at')
+      ALTER TABLE contractor_routes ADD risk_assessed_at DATETIME2 NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'risk_assessed_by_user_id')
+      ALTER TABLE contractor_routes ADD risk_assessed_by_user_id UNIQUEIDENTIFIER NULL;
+  `);
+}
+
+function mapRouteRow(row) {
+  if (!row) return row;
+  const assessment = parseRiskAssessmentJson(row.risk_assessment_json);
+  const summary = assessment ? computeRiskAssessment(assessment) : null;
+  const min_tons = effectiveMinTons(row);
+  return {
+    ...row,
+    min_tons,
+    risk_assessment: assessment,
+    risk_summary: summary,
+  };
+}
+
+const DEFAULT_ROUTE_MIN_TONS = 36;
+
+function parseRouteBodyFields(body) {
+  const b = body || {};
+  return {
+    loading_address: b.loading_address != null ? String(b.loading_address).trim() || null : undefined,
+    destination_address: b.destination_address != null ? String(b.destination_address).trim() || null : undefined,
+    distance_km: b.distance_km != null && b.distance_km !== '' && !Number.isNaN(Number(b.distance_km)) && Number(b.distance_km) >= 0
+      ? Number(b.distance_km) : (b.distance_km === null || b.distance_km === '' ? null : undefined),
+  };
+}
+
+function parseMinTons(body, fallback = DEFAULT_ROUTE_MIN_TONS) {
+  const b = body || {};
+  const raw = b.min_tons !== undefined ? b.min_tons : b.max_tons;
+  if (raw == null || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function effectiveMinTons(row) {
+  if (!row) return DEFAULT_ROUTE_MIN_TONS;
+  const min = row.min_tons ?? row.min_Tons;
+  if (min != null && min !== '' && Number.isFinite(Number(min))) return Number(min);
+  const legacy = row.max_tons ?? row.max_Tons;
+  if (legacy != null && legacy !== '' && Number.isFinite(Number(legacy))) return Number(legacy);
+  return DEFAULT_ROUTE_MIN_TONS;
+}
+
 // --- Fleet and driver enrollment (routes; only approved, non-suspended) ---
-/** GET routes for tenant (includes capacity, max_tons, route_expiration for Access management) */
+/** GET routes for tenant (includes capacity, min_tons, route_expiration for Access management) */
 router.get('/routes', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
+    await ensureRouteRiskColumns();
     const result = await query(
-      `SELECT id, tenant_id, name, [order], starting_point, destination, capacity, max_tons, route_expiration, created_at, updated_at FROM contractor_routes WHERE tenant_id = @tenantId ORDER BY [order] ASC, name ASC`,
+      `SELECT id, tenant_id, name, [order], starting_point, destination, loading_address, destination_address,
+              distance_km, capacity, min_tons, max_tons, route_expiration,
+              risk_assessment_json, risk_assessment_score, risk_assessment_level, risk_assessed_at, risk_assessed_by_user_id,
+              created_at, updated_at
+       FROM contractor_routes WHERE tenant_id = @tenantId ORDER BY [order] ASC, name ASC`,
       { tenantId }
     );
-    res.json({ routes: result.recordset });
+    res.json({ routes: (result.recordset || []).map(mapRouteRow) });
   } catch (err) {
     next(err);
   }
@@ -2479,7 +2585,9 @@ router.post('/routes', async (req, res, next) => {
       return res.status(403).json({ error: 'Only Access Management can create routes. Create routes in Access Management; they will appear here for enrollment.' });
     }
     const tenantId = getTenantId(req);
-    const { name, starting_point, destination, capacity, max_tons, route_expiration } = req.body || {};
+    await ensureRouteRiskColumns();
+    const { name, starting_point, destination, capacity, min_tons, route_expiration } = req.body || {};
+    const extra = parseRouteBodyFields(req.body);
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'Route name is required' });
     const maxOrder = await query(
       `SELECT ISNULL(MAX([order]), 0) + 1 AS nextOrder FROM contractor_routes WHERE tenant_id = @tenantId`,
@@ -2489,14 +2597,31 @@ router.post('/routes', async (req, res, next) => {
     const startPt = starting_point ? String(starting_point).trim() : null;
     const dest = destination ? String(destination).trim() : null;
     const cap = capacity != null && Number.isInteger(Number(capacity)) ? Number(capacity) : null;
-    const tons = max_tons != null && !Number.isNaN(Number(max_tons)) ? Number(max_tons) : null;
+    const minTons = parseMinTons(req.body);
     const exp = route_expiration ? new Date(route_expiration) : null;
     const expStr = exp && !Number.isNaN(exp.getTime()) ? toYmdFromDbOrString(exp) : null;
     const result = await query(
-      `INSERT INTO contractor_routes (tenant_id, name, [order], starting_point, destination, capacity, max_tons, route_expiration) OUTPUT INSERTED.* VALUES (@tenantId, @name, @order, @starting_point, @destination, @capacity, @max_tons, @route_expiration)`,
-      { tenantId, name: String(name).trim(), order, starting_point: startPt, destination: dest, capacity: cap, max_tons: tons, route_expiration: expStr }
+      `INSERT INTO contractor_routes (tenant_id, name, [order], starting_point, destination, loading_address, destination_address, distance_km, capacity, min_tons, route_expiration)
+       OUTPUT INSERTED.* VALUES (@tenantId, @name, @order, @starting_point, @destination, @loading_address, @destination_address, @distance_km, @capacity, @min_tons, @route_expiration)`,
+      {
+        tenantId,
+        name: String(name).trim(),
+        order,
+        starting_point: startPt,
+        destination: dest,
+        loading_address: extra.loading_address ?? null,
+        destination_address: extra.destination_address ?? null,
+        distance_km: extra.distance_km ?? null,
+        capacity: cap,
+        min_tons: minTons,
+        route_expiration: expStr,
+      }
     );
-    res.status(201).json({ route: result.recordset[0] });
+    const created = result.recordset[0];
+    if (extra.distance_km !== undefined) {
+      await syncDistanceToRegulations(query, tenantId, created.id, extra.distance_km);
+    }
+    res.status(201).json({ route: mapRouteRow(created) });
   } catch (err) {
     next(err);
   }
@@ -2511,7 +2636,9 @@ router.patch('/routes/:id', async (req, res, next) => {
     }
     const tenantId = getTenantId(req);
     const { id } = req.params;
-    const { name, order, starting_point, destination, capacity, max_tons, route_expiration } = req.body || {};
+    await ensureRouteRiskColumns();
+    const { name, order, starting_point, destination, capacity, min_tons, route_expiration } = req.body || {};
+    const extra = parseRouteBodyFields(req.body);
     const updates = [];
     const params = { id, tenantId };
     if (name !== undefined && String(name).trim()) {
@@ -2534,14 +2661,27 @@ router.patch('/routes/:id', async (req, res, next) => {
       updates.push('capacity = @capacity');
       params.capacity = capacity != null && Number.isInteger(Number(capacity)) ? Number(capacity) : null;
     }
-    if (max_tons !== undefined) {
-      updates.push('max_tons = @max_tons');
-      params.max_tons = max_tons != null && !Number.isNaN(Number(max_tons)) ? Number(max_tons) : null;
+    if (min_tons !== undefined || req.body?.max_tons !== undefined) {
+      updates.push('min_tons = @min_tons');
+      params.min_tons = parseMinTons(req.body, null);
+      if (params.min_tons == null) params.min_tons = DEFAULT_ROUTE_MIN_TONS;
     }
     if (route_expiration !== undefined) {
       updates.push('route_expiration = @route_expiration');
       const exp = route_expiration ? new Date(route_expiration) : null;
       params.route_expiration = exp && !Number.isNaN(exp.getTime()) ? toYmdFromDbOrString(exp) : null;
+    }
+    if (extra.loading_address !== undefined) {
+      updates.push('loading_address = @loading_address');
+      params.loading_address = extra.loading_address;
+    }
+    if (extra.destination_address !== undefined) {
+      updates.push('destination_address = @destination_address');
+      params.destination_address = extra.destination_address;
+    }
+    if (extra.distance_km !== undefined) {
+      updates.push('distance_km = @distance_km');
+      params.distance_km = extra.distance_km;
     }
     if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
     updates.push('updated_at = SYSUTCDATETIME()');
@@ -2549,9 +2689,81 @@ router.patch('/routes/:id', async (req, res, next) => {
       `UPDATE contractor_routes SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`,
       params
     );
+    if (extra.distance_km !== undefined) {
+      await syncDistanceToRegulations(query, tenantId, id, extra.distance_km);
+    }
     const getResult = await query(`SELECT * FROM contractor_routes WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
     if (!getResult.recordset?.[0]) return res.status(404).json({ error: 'Not found' });
-    res.json({ route: getResult.recordset[0] });
+    res.json({ route: mapRouteRow(getResult.recordset[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET route risk assessment */
+router.get('/routes/:id/risk-assessment', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    await ensureRouteRiskColumns();
+    const result = await query(
+      `SELECT r.*, u.full_name AS risk_assessed_by_name
+       FROM contractor_routes r
+       LEFT JOIN users u ON u.id = r.risk_assessed_by_user_id
+       WHERE r.id = @id AND r.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    if (!result.recordset?.[0]) return res.status(404).json({ error: 'Route not found' });
+    res.json({ route: mapRouteRow(result.recordset[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PUT save route risk assessment – Access Management only */
+router.put('/routes/:id/risk-assessment', async (req, res, next) => {
+  try {
+    const pageRoles = req.user?.page_roles || [];
+    if (!pageRoles.includes('access_management') && req.user?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Only Access Management can save route risk assessments.' });
+    }
+    const tenantId = getTenantId(req);
+    const { id } = req.params;
+    await ensureRouteRiskColumns();
+    const exists = await query(`SELECT id FROM contractor_routes WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId });
+    if (!exists.recordset?.[0]) return res.status(404).json({ error: 'Route not found' });
+
+    const raw = req.body?.assessment || req.body || {};
+    const assessment = { ...defaultRiskAssessment(), ...raw, scores: { ...defaultRiskAssessment().scores, ...(raw.scores || {}) } };
+    const summary = computeRiskAssessment(assessment);
+    const json = JSON.stringify(assessment);
+
+    await query(
+      `UPDATE contractor_routes SET
+         risk_assessment_json = @json,
+         risk_assessment_score = @score,
+         risk_assessment_level = @level,
+         risk_assessed_at = SYSUTCDATETIME(),
+         risk_assessed_by_user_id = @userId,
+         updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      {
+        id,
+        tenantId,
+        json,
+        score: summary.average_score,
+        level: summary.level,
+        userId: req.user?.id || null,
+      }
+    );
+
+    const getResult = await query(
+      `SELECT r.*, u.full_name AS risk_assessed_by_name
+       FROM contractor_routes r LEFT JOIN users u ON u.id = r.risk_assessed_by_user_id
+       WHERE r.id = @id AND r.tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    res.json({ route: mapRouteRow(getResult.recordset[0]) });
   } catch (err) {
     next(err);
   }
@@ -3135,6 +3347,49 @@ router.get('/rector-my-routes', async (req, res, next) => {
   }
 });
 
+async function assertCanEditRouteTargets(req, tenantId, routeId) {
+  const pageRoles = req.user?.page_roles || [];
+  if (pageRoles.includes('access_management') || pageRoles.includes('command_centre') || req.user?.role === 'super_admin') {
+    return;
+  }
+  if (pageRoles.includes('rector')) {
+    const assigned = await query(
+      `SELECT TOP 1 1 AS ok FROM access_route_factors
+       WHERE tenant_id = @tenantId AND user_id = @userId AND route_id = @routeId`,
+      { tenantId, routeId, userId: req.user?.id }
+    );
+    if (assigned.recordset?.[0]) return;
+    const err = new Error('You can only edit targets for routes assigned to you as rector.');
+    err.status = 403;
+    throw err;
+  }
+}
+
+function mapRegulationRow(row, routeRow) {
+  const enrolled = Number(row.enrolled_trucks ?? row.Enrolled_Trucks) || 1;
+  const distanceKm = effectiveDistanceKm(routeRow, row);
+  const economicsInput = {
+    ...row,
+    distance_km: distanceKm,
+    loading_site: routeRow?.starting_point ?? row.starting_point,
+    destination: routeRow?.destination ?? row.destination,
+    min_tons: effectiveMinTons(routeRow ?? row),
+    max_tons: effectiveMinTons(routeRow ?? row),
+    enrolled_trucks: enrolled,
+  };
+  const rso = computeRouteEconomics(economicsInput);
+  return {
+    ...row,
+    distance_km: distanceKm,
+    starting_point: routeRow?.starting_point ?? row.starting_point,
+    destination: routeRow?.destination ?? row.destination,
+    loading_address: routeRow?.loading_address ?? null,
+    destination_address: routeRow?.destination_address ?? null,
+    enrolled_trucks: enrolled,
+    rso,
+  };
+}
+
 async function ensureRouteTargetRegulationsTable() {
   await query(`
     IF OBJECT_ID(N'dbo.access_route_target_regulations', N'U') IS NULL
@@ -3154,6 +3409,30 @@ async function ensureRouteTargetRegulationsTable() {
       CREATE INDEX IX_access_route_target_reg_tenant ON dbo.access_route_target_regulations(tenant_id);
       CREATE INDEX IX_access_route_target_reg_route ON dbo.access_route_target_regulations(route_id);
     END
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'distance_km')
+      ALTER TABLE access_route_target_regulations ADD distance_km DECIMAL(10,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'rate_per_ton')
+      ALTER TABLE access_route_target_regulations ADD rate_per_ton DECIMAL(12,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'revenue_target')
+      ALTER TABLE access_route_target_regulations ADD revenue_target DECIMAL(14,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'avg_payload_tons')
+      ALTER TABLE access_route_target_regulations ADD avg_payload_tons DECIMAL(10,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'fuel_litres_per_100km')
+      ALTER TABLE access_route_target_regulations ADD fuel_litres_per_100km DECIMAL(8,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'fuel_price_per_litre')
+      ALTER TABLE access_route_target_regulations ADD fuel_price_per_litre DECIMAL(10,4) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'driver_cost_per_trip')
+      ALTER TABLE access_route_target_regulations ADD driver_cost_per_trip DECIMAL(12,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'maintenance_cost_per_km')
+      ALTER TABLE access_route_target_regulations ADD maintenance_cost_per_km DECIMAL(10,4) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'toll_cost_per_trip')
+      ALTER TABLE access_route_target_regulations ADD toll_cost_per_trip DECIMAL(12,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'other_cost_per_trip')
+      ALTER TABLE access_route_target_regulations ADD other_cost_per_trip DECIMAL(12,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'overhead_percent')
+      ALTER TABLE access_route_target_regulations ADD overhead_percent DECIMAL(5,2) NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('access_route_target_regulations') AND name = 'target_period_days')
+      ALTER TABLE access_route_target_regulations ADD target_period_days INT NULL;
   `);
 }
 
@@ -3162,8 +3441,12 @@ router.get('/route-target-regulations', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     await ensureRouteTargetRegulationsTable();
+    await ensureRouteRiskColumns();
     const result = await query(
-      `SELECT t.*, r.name AS route_name, u.full_name AS updated_by_name
+      `SELECT t.*, r.name AS route_name, r.starting_point, r.destination, r.loading_address, r.destination_address,
+              r.distance_km AS route_distance_km, r.min_tons, r.max_tons,
+              u.full_name AS updated_by_name,
+              (SELECT COUNT(*) FROM contractor_route_trucks crt WHERE crt.route_id = t.route_id) AS enrolled_trucks
        FROM access_route_target_regulations t
        LEFT JOIN contractor_routes r ON r.id = t.route_id AND r.tenant_id = t.tenant_id
        LEFT JOIN users u ON u.id = t.updated_by_user_id
@@ -3171,54 +3454,144 @@ router.get('/route-target-regulations', async (req, res, next) => {
        ORDER BY r.name ASC, t.created_at DESC`,
       { tenantId }
     );
-    res.json({ regulations: result.recordset || [] });
+    const regulations = (result.recordset || []).map((row) => {
+      const routeRow = {
+        starting_point: row.starting_point,
+        destination: row.destination,
+        loading_address: row.loading_address,
+        destination_address: row.destination_address,
+        distance_km: row.route_distance_km,
+        min_tons: effectiveMinTons(row),
+        max_tons: effectiveMinTons(row),
+      };
+      return mapRegulationRow(row, routeRow);
+    });
+    res.json({ regulations });
   } catch (err) {
     next(err);
   }
 });
+
+function parseOptionalDecimal(body, key) {
+  if (body?.[key] == null || body[key] === '') return null;
+  const n = Number(body[key]);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
 
 /** PUT upsert route target regulation */
 router.put('/route-target-regulations/:routeId', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const routeId = req.params.routeId;
-    const targetRaw = req.body?.deliveries_per_truck_target;
-    const notes = req.body?.notes != null ? String(req.body.notes).trim() : null;
+    const b = req.body || {};
+    const targetRaw = b.deliveries_per_truck_target;
+    const notes = b.notes != null ? String(b.notes).trim() : null;
     const target = Number(targetRaw);
     if (!routeId) return res.status(400).json({ error: 'routeId required' });
     if (!Number.isFinite(target) || target <= 0) {
       return res.status(400).json({ error: 'deliveries_per_truck_target must be a positive number' });
     }
 
+    await assertCanEditRouteTargets(req, tenantId, routeId);
+
+    const corridor = parseCorridorFields(b);
+    const economics = {
+      distance_km: corridor.distance_km !== undefined ? corridor.distance_km : parseOptionalDecimal(b, 'distance_km'),
+      rate_per_ton: parseOptionalDecimal(b, 'rate_per_ton'),
+      revenue_target: parseOptionalDecimal(b, 'revenue_target'),
+      avg_payload_tons: parseOptionalDecimal(b, 'avg_payload_tons'),
+      fuel_litres_per_100km: parseOptionalDecimal(b, 'fuel_litres_per_100km'),
+      fuel_price_per_litre: parseOptionalDecimal(b, 'fuel_price_per_litre'),
+      driver_cost_per_trip: parseOptionalDecimal(b, 'driver_cost_per_trip'),
+      maintenance_cost_per_km: parseOptionalDecimal(b, 'maintenance_cost_per_km'),
+      toll_cost_per_trip: parseOptionalDecimal(b, 'toll_cost_per_trip'),
+      other_cost_per_trip: parseOptionalDecimal(b, 'other_cost_per_trip'),
+      overhead_percent: parseOptionalDecimal(b, 'overhead_percent'),
+      target_period_days: b.target_period_days != null && b.target_period_days !== ''
+        ? Math.max(1, parseInt(b.target_period_days, 10) || 30)
+        : null,
+    };
+
     await ensureRouteTargetRegulationsTable();
+    await ensureRouteRiskColumns();
     const routeCheck = await query(
-      `SELECT id FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
+      `SELECT id, starting_point, destination, loading_address, destination_address, distance_km, min_tons, max_tons
+       FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
       { routeId, tenantId }
     );
     if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
+
+    if (Object.keys(corridor).length > 0) {
+      await updateRouteCorridor(query, tenantId, routeId, corridor);
+    }
 
     await query(
       `MERGE access_route_target_regulations AS tgt
        USING (SELECT @tenantId AS tenant_id, @routeId AS route_id) AS src
        ON tgt.tenant_id = src.tenant_id AND tgt.route_id = src.route_id
        WHEN MATCHED THEN
-         UPDATE SET deliveries_per_truck_target = @target, notes = @notes, updated_by_user_id = @userId, updated_at = SYSUTCDATETIME()
+         UPDATE SET deliveries_per_truck_target = @target, notes = @notes,
+           distance_km = @distance_km, rate_per_ton = @rate_per_ton, revenue_target = @revenue_target,
+           avg_payload_tons = @avg_payload_tons, fuel_litres_per_100km = @fuel_litres_per_100km,
+           fuel_price_per_litre = @fuel_price_per_litre, driver_cost_per_trip = @driver_cost_per_trip,
+           maintenance_cost_per_km = @maintenance_cost_per_km, toll_cost_per_trip = @toll_cost_per_trip,
+           other_cost_per_trip = @other_cost_per_trip, overhead_percent = @overhead_percent,
+           target_period_days = @target_period_days,
+           updated_by_user_id = @userId, updated_at = SYSUTCDATETIME()
        WHEN NOT MATCHED THEN
-         INSERT (tenant_id, route_id, deliveries_per_truck_target, notes, created_by_user_id, updated_by_user_id)
-         VALUES (@tenantId, @routeId, @target, @notes, @userId, @userId);`,
-      { tenantId, routeId, target, notes: notes || null, userId: req.user?.id || null }
+         INSERT (tenant_id, route_id, deliveries_per_truck_target, notes,
+           distance_km, rate_per_ton, revenue_target, avg_payload_tons,
+           fuel_litres_per_100km, fuel_price_per_litre, driver_cost_per_trip,
+           maintenance_cost_per_km, toll_cost_per_trip, other_cost_per_trip,
+           overhead_percent, target_period_days,
+           created_by_user_id, updated_by_user_id)
+         VALUES (@tenantId, @routeId, @target, @notes,
+           @distance_km, @rate_per_ton, @revenue_target, @avg_payload_tons,
+           @fuel_litres_per_100km, @fuel_price_per_litre, @driver_cost_per_trip,
+           @maintenance_cost_per_km, @toll_cost_per_trip, @other_cost_per_trip,
+           @overhead_percent, @target_period_days,
+           @userId, @userId);`,
+      {
+        tenantId,
+        routeId,
+        target,
+        notes: notes || null,
+        userId: req.user?.id || null,
+        ...economics,
+      }
     );
 
     const saved = await query(
-      `SELECT t.*, r.name AS route_name, u.full_name AS updated_by_name
+      `SELECT t.*, r.name AS route_name, r.starting_point, r.destination, r.loading_address, r.destination_address,
+              r.distance_km AS route_distance_km, r.min_tons, r.max_tons, u.full_name AS updated_by_name,
+              (SELECT COUNT(*) FROM contractor_route_trucks crt WHERE crt.route_id = t.route_id) AS enrolled_trucks
        FROM access_route_target_regulations t
        LEFT JOIN contractor_routes r ON r.id = t.route_id AND r.tenant_id = t.tenant_id
        LEFT JOIN users u ON u.id = t.updated_by_user_id
        WHERE t.tenant_id = @tenantId AND t.route_id = @routeId`,
       { tenantId, routeId }
     );
-    res.json({ regulation: saved.recordset?.[0] || null });
+    const row = saved.recordset?.[0] || null;
+    if (!row) return res.json({ regulation: null, route: null });
+    const routeRow = {
+      starting_point: row.starting_point,
+      destination: row.destination,
+      loading_address: row.loading_address,
+      destination_address: row.destination_address,
+      distance_km: row.route_distance_km,
+      min_tons: effectiveMinTons(row),
+      max_tons: effectiveMinTons(row),
+    };
+    const routeResult = await query(
+      `SELECT id, tenant_id, name, [order], starting_point, destination, loading_address, destination_address,
+              distance_km, capacity, min_tons, max_tons, route_expiration, created_at, updated_at
+       FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
+      { routeId, tenantId }
+    );
+    const updatedRoute = routeResult.recordset?.[0] ? mapRouteRow(routeResult.recordset[0]) : null;
+    res.json({ regulation: mapRegulationRow(row, routeRow), route: updatedRoute });
   } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message });
     next(err);
   }
 });

@@ -1,12 +1,15 @@
 -- Access management: route capacity/max tons/expiration + route factors (contacts/stakeholders).
 -- Run: node scripts/run-access-management-schema.js
 
--- Extend contractor_routes for Route management (capacity, max tons, expiration)
+-- Extend contractor_routes for Route management (capacity, min/max tons legacy, expiration)
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'capacity')
   ALTER TABLE contractor_routes ADD capacity INT NULL;
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'max_tons')
   ALTER TABLE contractor_routes ADD max_tons DECIMAL(12,2) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'min_tons')
+  ALTER TABLE contractor_routes ADD min_tons DECIMAL(12,2) NULL;
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('contractor_routes') AND name = 'route_expiration')
   ALTER TABLE contractor_routes ADD route_expiration DATE NULL;

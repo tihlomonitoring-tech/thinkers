@@ -76,7 +76,7 @@ export default function ColleagueEvaluationResultsTab() {
         <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">Colleagues evaluation results</h1>
         <InfoHint
           title="Your feedback"
-          text="Evaluations where you were the person being assessed. Read scores and comments, then record how you will address feedback and what you will do differently. This plan is visible to management for follow-up."
+          text="Evaluations where you were the person being assessed. Evaluator names are confidential — only management can see who submitted feedback. Read scores and comments, then record how you will address feedback and what you will do differently."
         />
       </div>
       {error && (
@@ -99,7 +99,7 @@ export default function ColleagueEvaluationResultsTab() {
                   <span className="font-medium">{String(r.submitted_at || '').slice(0, 10)}</span>
                   <span className="text-surface-500 mx-1">·</span>
                   <span className="text-surface-700 dark:text-surface-300">{r.relationship_type}</span>
-                  <span className="block text-xs text-surface-500">From {r.evaluator_name || '—'}</span>
+                  <span className="block text-xs text-surface-500 italic">Confidential feedback</span>
                   {(r.evaluation_period_title || r.Evaluation_period_title) && (
                     <span className="block text-xs text-surface-400">Period: {r.evaluation_period_title || r.Evaluation_period_title}</span>
                   )}

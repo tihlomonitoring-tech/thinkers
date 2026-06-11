@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { computeParticipationPoints, PE_SCORE_RULES } from '../lib/peParticipationScore.js';
 
 const router = Router();
 
@@ -36,6 +37,23 @@ function handlePeRouteError(err, res, next) {
     return res.status(503).json({ error: PE_MISSING_TABLES_MSG });
   }
   next(err);
+}
+
+/** Evaluator identity is confidential — hidden from the person being evaluated. */
+function stripEvaluatorIdentity(record) {
+  if (!record || typeof record !== 'object') return record;
+  const out = { ...record };
+  for (const key of Object.keys(out)) {
+    const k = String(key).toLowerCase();
+    if (k === 'evaluator_name' || k === 'evaluator_user_id' || k === 'evaluator_email') {
+      delete out[key];
+    }
+  }
+  return out;
+}
+
+function isSubmissionAboutUser(sub, userId) {
+  return String(getRow(sub, 'evaluatee_user_id')) === String(userId);
 }
 
 const DEFAULT_QUESTIONS = [
@@ -269,24 +287,94 @@ router.get('/my-submissions', requirePageAccess('performance_evaluations'), asyn
   }
 });
 
+/** Participation score for the current (or selected) evaluation period. */
+router.get('/my-participation-score', requirePageAccess('performance_evaluations'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    const uid = req.user.id;
+    if (!tenantId) return res.json({ period: null, score: null, rules: PE_SCORE_RULES });
+
+    let periodId = String(req.query.period_id || '').trim() || null;
+    let period = null;
+
+    if (periodId) {
+      const pr = await query(
+        `SELECT id, tenant_id, title, is_open, opened_at, closed_at
+         FROM pe_evaluation_periods WHERE id = @id AND tenant_id = @tenantId`,
+        { id: periodId, tenantId }
+      );
+      period = pr.recordset?.[0] || null;
+    } else {
+      const openR = await query(
+        `SELECT TOP 1 id, tenant_id, title, is_open, opened_at, closed_at
+         FROM pe_evaluation_periods WHERE tenant_id = @tenantId AND is_open = 1 ORDER BY opened_at DESC`,
+        { tenantId }
+      );
+      period = openR.recordset?.[0] || null;
+      if (!period) {
+        const recentR = await query(
+          `SELECT TOP 1 id, tenant_id, title, is_open, opened_at, closed_at
+           FROM pe_evaluation_periods WHERE tenant_id = @tenantId ORDER BY opened_at DESC`,
+          { tenantId }
+        );
+        period = recentR.recordset?.[0] || null;
+      }
+    }
+
+    if (!period) {
+      return res.json({ period: null, score: null, rules: PE_SCORE_RULES });
+    }
+
+    periodId = getRow(period, 'id');
+    const givenR = await query(
+      `SELECT COUNT(DISTINCT evaluatee_user_id) AS n
+       FROM pe_submissions
+       WHERE tenant_id = @tenantId AND evaluator_user_id = @uid AND evaluation_period_id = @periodId`,
+      { tenantId, uid, periodId }
+    );
+    const receivedR = await query(
+      `SELECT COUNT(*) AS n
+       FROM pe_submissions
+       WHERE tenant_id = @tenantId AND evaluatee_user_id = @uid AND evaluation_period_id = @periodId`,
+      { tenantId, uid, periodId }
+    );
+    const givenCount = parseInt(String(getRow(givenR.recordset?.[0], 'n') ?? '0'), 10) || 0;
+    const receivedCount = parseInt(String(getRow(receivedR.recordset?.[0], 'n') ?? '0'), 10) || 0;
+    const score = computeParticipationPoints(givenCount, receivedCount);
+
+    res.json({
+      period: {
+        id: periodId,
+        title: getRow(period, 'title'),
+        is_open: !!getRow(period, 'is_open'),
+        opened_at: getRow(period, 'opened_at'),
+        closed_at: getRow(period, 'closed_at'),
+      },
+      score,
+      rules: PE_SCORE_RULES,
+    });
+  } catch (err) {
+    handlePeRouteError(err, res, next);
+  }
+});
+
 /** Evaluations where the current user was evaluated (for Profile + improvement plans). */
 router.get('/about-me', requirePageAccess('profile'), async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     const uid = req.user.id;
     const r = await query(
-      `SELECT TOP 80 s.*, ev.full_name AS evaluator_name, p.id AS improvement_plan_id,
+      `SELECT TOP 80 s.*, p.id AS improvement_plan_id,
               p.addressing_feedback AS plan_addressing_feedback, p.will_do_differently AS plan_will_do_differently,
               ep.title AS evaluation_period_title
        FROM pe_submissions s
-       INNER JOIN users ev ON ev.id = s.evaluator_user_id
        INNER JOIN pe_evaluation_periods ep ON ep.id = s.evaluation_period_id
        LEFT JOIN pe_evaluatee_improvement_plans p ON p.submission_id = s.id
        WHERE s.tenant_id = @tenantId AND s.evaluatee_user_id = @uid
        ORDER BY s.submitted_at DESC`,
       { tenantId, uid }
     );
-    res.json({ evaluations: r.recordset || [] });
+    res.json({ evaluations: (r.recordset || []).map(stripEvaluatorIdentity) });
   } catch (err) {
     handlePeRouteError(err, res, next);
   }
@@ -333,14 +421,18 @@ router.get('/submissions/:id/detail', requirePageAccess(['performance_evaluation
     );
     const planR = await query(`SELECT TOP 1 * FROM pe_evaluatee_improvement_plans WHERE submission_id = @id`, { id });
     const plan = planR.recordset?.[0];
+    const viewerIsEvaluatee = isSubmissionAboutUser(sub, req.user.id);
+    let submission = {
+      ...sub,
+      improvement_plan: plan || null,
+      plan_addressing_feedback: plan ? getRow(plan, 'addressing_feedback') : null,
+      plan_will_do_differently: plan ? getRow(plan, 'will_do_differently') : null,
+    };
+    if (viewerIsEvaluatee) submission = stripEvaluatorIdentity(submission);
     res.json({
-      submission: {
-        ...sub,
-        improvement_plan: plan || null,
-        plan_addressing_feedback: plan ? getRow(plan, 'addressing_feedback') : null,
-        plan_will_do_differently: plan ? getRow(plan, 'will_do_differently') : null,
-      },
+      submission,
       answers: ans.recordset || [],
+      evaluator_confidential: viewerIsEvaluatee,
     });
   } catch (err) {
     handlePeRouteError(err, res, next);
@@ -470,7 +562,8 @@ router.get('/trends', requirePageAccess('management'), async (req, res, next) =>
       { tenantId, days }
     );
     const recent = await query(
-      `SELECT TOP 40 s.id, s.submitted_at, s.relationship_type, er.full_name AS evaluator_name, ev.full_name AS evaluatee_name,
+      `SELECT TOP 40 s.id, s.submitted_at, s.relationship_type, s.evaluatee_user_id,
+              er.full_name AS evaluator_name, ev.full_name AS evaluatee_name,
               ep.title AS evaluation_period_title
        FROM pe_submissions s
        INNER JOIN users er ON er.id = s.evaluator_user_id
@@ -480,7 +573,11 @@ router.get('/trends', requirePageAccess('management'), async (req, res, next) =>
        ORDER BY s.submitted_at DESC`,
       { tenantId, days }
     );
-    res.json({ by_category: avg.recordset || [], recent_submissions: recent.recordset || [], days });
+    const uid = req.user.id;
+    const recentSubmissions = (recent.recordset || []).map((row) =>
+      isSubmissionAboutUser(row, uid) ? stripEvaluatorIdentity(row) : row
+    );
+    res.json({ by_category: avg.recordset || [], recent_submissions: recentSubmissions, days });
   } catch (err) {
     handlePeRouteError(err, res, next);
   }

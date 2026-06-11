@@ -96,6 +96,14 @@ function rowToSingleOpsReport(mainRow, deliveries = [], routeTotals = []) {
     completed_deliveries: getR(d, 'completed_deliveries') ?? '',
     remarks: getR(d, 'remarks') ?? '',
     sort_order: getR(d, 'sort_order') ?? 0,
+    route_allocations: Array.isArray(d.route_allocations) ? d.route_allocations.map((a) => ({
+      id: getR(a, 'id'),
+      route_id: getR(a, 'route_id') ?? null,
+      route_name: getR(a, 'route_name') ?? '',
+      completed_deliveries: getR(a, 'completed_deliveries') ?? '',
+      tons_loaded: getR(a, 'tons_loaded') ?? '',
+      sort_order: getR(a, 'sort_order') ?? 0,
+    })) : [],
   }));
   out.route_load_totals = (routeTotals || []).map((t) => ({
     id: getR(t, 'id'),
@@ -145,6 +153,17 @@ function bodyToMainPayload(b, userId, isUpdate) {
   };
 }
 
+function parseAllocationInt(v) {
+  const n = parseInt(String(v ?? '').replace(/[^\d.-]/g, ''), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseAllocationDecimal(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function replaceChildren(reportId, truckDeliveries, routeLoadTotals) {
   await query(`DELETE FROM command_centre_single_ops_truck_deliveries WHERE report_id = @rid`, { rid: reportId });
   await query(`DELETE FROM command_centre_single_ops_route_load_totals WHERE report_id = @rid`, { rid: reportId });
@@ -155,12 +174,37 @@ async function replaceChildren(reportId, truckDeliveries, routeLoadTotals) {
     const dr = String(row.driver_name || '').trim();
     const cd = String(row.completed_deliveries ?? '').trim();
     const rm = String(row.remarks || '').trim();
-    if (!tr && !dr && !cd && !rm) continue;
-    await query(
+    const allocs = Array.isArray(row.route_allocations) ? row.route_allocations : [];
+    const hasAlloc = allocs.some((a) => String(a.route_name || '').trim() || a.route_id);
+    if (!tr && !dr && !cd && !rm && !hasAlloc) continue;
+    const ins = await query(
       `INSERT INTO command_centre_single_ops_truck_deliveries (report_id, sort_order, truck_registration, driver_name, completed_deliveries, remarks)
-       VALUES (@rid, @so, @tr, @dr, @cd, @rm)`,
+       OUTPUT INSERTED.id VALUES (@rid, @so, @tr, @dr, @cd, @rm)`,
       { rid: reportId, so: si++, tr: tr || null, dr: dr || null, cd: cd || null, rm: rm || null }
     );
+    const deliveryId = getR(ins.recordset?.[0], 'id');
+    if (!deliveryId) continue;
+    let ai = 0;
+    for (const alloc of allocs) {
+      const routeName = String(alloc.route_name || '').trim();
+      const routeId = alloc.route_id || null;
+      const loads = parseAllocationInt(alloc.completed_deliveries);
+      const tons = parseAllocationDecimal(alloc.tons_loaded);
+      if (!routeName && !routeId && loads == null && tons == null) continue;
+      await query(
+        `INSERT INTO command_centre_single_ops_truck_delivery_routes
+         (delivery_id, sort_order, route_id, route_name, completed_deliveries, tons_loaded)
+         VALUES (@did, @so, @routeId, @routeName, @loads, @tons)`,
+        {
+          did: deliveryId,
+          so: ai++,
+          routeId,
+          routeName: routeName || null,
+          loads,
+          tons,
+        }
+      );
+    }
   }
   const rt = Array.isArray(routeLoadTotals) ? routeLoadTotals : [];
   let ti = 0;
@@ -182,11 +226,37 @@ async function loadChildren(reportId) {
      FROM command_centre_single_ops_truck_deliveries WHERE report_id = @rid ORDER BY sort_order`,
     { rid: reportId }
   );
+  const deliveries = d.recordset || [];
+  let allocRows = [];
+  if (deliveries.length) {
+    try {
+      const a = await query(
+        `SELECT id, delivery_id, sort_order, route_id, route_name, completed_deliveries, tons_loaded
+         FROM command_centre_single_ops_truck_delivery_routes
+         WHERE delivery_id IN (SELECT id FROM command_centre_single_ops_truck_deliveries WHERE report_id = @rid)
+         ORDER BY sort_order`,
+        { rid: reportId }
+      );
+      allocRows = a.recordset || [];
+    } catch {
+      allocRows = [];
+    }
+  }
+  const allocByDelivery = new Map();
+  for (const row of allocRows) {
+    const did = String(getR(row, 'delivery_id'));
+    if (!allocByDelivery.has(did)) allocByDelivery.set(did, []);
+    allocByDelivery.get(did).push(row);
+  }
+  const enriched = deliveries.map((del) => ({
+    ...del,
+    route_allocations: allocByDelivery.get(String(getR(del, 'id'))) || [],
+  }));
   const t = await query(
     `SELECT id, sort_order, route_name, total_loads_delivered FROM command_centre_single_ops_route_load_totals WHERE report_id = @rid ORDER BY sort_order`,
     { rid: reportId }
   );
-  return { deliveries: d.recordset || [], routeTotals: t.recordset || [] };
+  return { deliveries: enriched, routeTotals: t.recordset || [] };
 }
 
 async function fetchReportBundle(id, userId) {

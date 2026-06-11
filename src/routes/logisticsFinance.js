@@ -15,12 +15,15 @@ import {
   buildLogisticsExportPdfBuffer,
   formatExportPeriodLabel,
 } from '../lib/logisticsFinanceExport.js';
+import { computeLedgerDashboard } from '../lib/deliveryActivityLedger.js';
+import deliveryActivityLedgerRoutes from './deliveryActivityLedger.js';
 const router = Router();
 
 /** Public — confirm deployment includes logistics finance routes (expect 200, not 404). */
 router.get('/ping', (req, res) => res.json({ ok: true, feature: 'logistics-finance' }));
 
 router.use(requireAuth, loadUser, requirePageAccess('logistics_finance_management'));
+router.use('/ledger', deliveryActivityLedgerRoutes);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -219,100 +222,12 @@ router.get('/dashboard', async (req, res, next) => {
   try {
     const t = tenantId(req);
     if (!t) return res.status(400).json({ error: 'No tenant' });
-    const { sql: dateSql, params: dateParams } = buildDateFilter(req.query, 't');
-    const params = { t, ...dateParams };
-
-    const txRes = await query(
-      `SELECT t.transaction_date, t.turnover, t.haulier, t.vehicle_registration
-       FROM logistics_finance_load_transactions t
-       WHERE t.tenant_id = @t ${dateSql}
-       ORDER BY t.transaction_date`,
-      params
-    );
-    const rows = txRes.recordset || [];
-    const fuelMap = await loadFuelExpenseMap(t, req.query.date_from, req.query.date_to);
-    const acctMaps = await loadAccountingExpenseMaps(t, req.query.date_from, req.query.date_to);
-
-    let totalRevenue = 0;
-    let totalFuel = 0;
-    let totalAccounting = 0;
-    const byDay = new Map();
-    const byHaulier = new Map();
-
-    const haulierCounts = new Map();
-    for (const row of rows) {
-      const d = String(row.transaction_date).slice(0, 10);
-      const h = haulierNorm(row.haulier);
-      if (h) haulierCounts.set(`${d}|${h}`, (haulierCounts.get(`${d}|${h}`) || 0) + 1);
-    }
-
-    for (const row of rows) {
-      const d = String(row.transaction_date).slice(0, 10);
-      const rev = Number(row.turnover) || 0;
-      const regNorm = normRegistration(row.vehicle_registration);
-      const fuel = fuelMap.get(`${d}|${regNorm}`) || 0;
-      const acct = matchAccountingForRow(row, acctMaps.byDateHaulier, haulierCounts);
-
-      totalRevenue += rev;
-      totalFuel += fuel;
-      totalAccounting += acct;
-
-      if (!byDay.has(d)) byDay.set(d, { date: d, revenue: 0, fuel_expense: 0, accounting_expense: 0 });
-      const day = byDay.get(d);
-      day.revenue += rev;
-      day.fuel_expense += fuel;
-      day.accounting_expense += acct;
-
-      const hKey = row.haulier || 'Unknown';
-      if (!byHaulier.has(hKey)) byHaulier.set(hKey, { haulier: hKey, revenue: 0, expense: 0 });
-      const h = byHaulier.get(hKey);
-      h.revenue += rev;
-      h.expense += fuel + acct;
-    }
-
-    const by_day = [...byDay.values()]
-      .map((x) => ({
-        ...x,
-        total_expense: Math.round((x.fuel_expense + x.accounting_expense) * 100) / 100,
-        net: Math.round((x.revenue - x.fuel_expense - x.accounting_expense) * 100) / 100,
-      }))
-      .sort((a, b) => a.date.localeCompare(b.date));
-
-    const by_haulier = [...byHaulier.values()]
-      .map((x) => ({ ...x, net: Math.round((x.revenue - x.expense) * 100) / 100 }))
-      .sort((a, b) => b.revenue - a.revenue);
-
-    const totalExpense = Math.round((totalFuel + totalAccounting) * 100) / 100;
-
-    const filters = await query(
-      `SELECT DISTINCT haulier FROM logistics_finance_load_transactions WHERE tenant_id = @t AND haulier IS NOT NULL ORDER BY haulier`,
-      { t }
-    );
-    const regs = await query(
-      `SELECT DISTINCT vehicle_registration FROM logistics_finance_load_transactions WHERE tenant_id = @t AND vehicle_registration IS NOT NULL ORDER BY vehicle_registration`,
-      { t }
-    );
-
-    res.json({
-      kpis: {
-        total_revenue: Math.round(totalRevenue * 100) / 100,
-        total_fuel_expense: Math.round(totalFuel * 100) / 100,
-        total_accounting_expense: Math.round(totalAccounting * 100) / 100,
-        total_expense: totalExpense,
-        net_margin: Math.round((totalRevenue - totalExpense) * 100) / 100,
-        transaction_count: rows.length,
-      },
-      by_day,
-      by_haulier,
-      filters: {
-        hauliers: (filters.recordset || []).map((r) => get(r, 'haulier')).filter(Boolean),
-        registrations: (regs.recordset || []).map((r) => get(r, 'vehicle_registration')).filter(Boolean),
-      },
-    });
+    const data = await computeLedgerDashboard(query, t, req.query);
+    res.json(data);
   } catch (e) {
-    if (String(e.message).includes('logistics_finance_load_transactions')) {
+    if (String(e.message).includes('logistics_delivery_ledger')) {
       return res.status(503).json({
-        error: 'Logistics finance tables not installed. Run: npm run db:logistics-finance',
+        error: 'Delivery Activity Ledger tables not installed. Run: npm run db:delivery-activity-ledger',
       });
     }
     next(e);

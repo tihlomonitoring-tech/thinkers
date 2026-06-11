@@ -6063,6 +6063,38 @@ function DriverSearchSelect({ value, onChange, placeholder = 'Search or type dri
   );
 }
 
+const EMPTY_ROUTE_ALLOCATION = { route_id: '', route_name: '', completed_deliveries: '', tons_loaded: '' };
+
+function mapTruckDeliveryRow(r) {
+  return {
+    truck_registration: r.truck_registration || '',
+    driver_name: r.driver_name || '',
+    completed_deliveries: String(r.completed_deliveries ?? ''),
+    remarks: r.remarks || '',
+    route_allocations: Array.isArray(r.route_allocations) && r.route_allocations.length
+      ? r.route_allocations.map((a) => ({
+          route_id: a.route_id || '',
+          route_name: a.route_name || '',
+          completed_deliveries: String(a.completed_deliveries ?? ''),
+          tons_loaded: a.tons_loaded != null && a.tons_loaded !== '' ? String(a.tons_loaded) : '',
+        }))
+      : [{ ...EMPTY_ROUTE_ALLOCATION }],
+  };
+}
+
+function sumRouteAllocDeliveries(allocations) {
+  return (allocations || []).reduce((s, a) => s + (Number(a.completed_deliveries) || 0), 0);
+}
+
+function defaultTonsForRoute(routeList, routeId, routeName) {
+  const match = (routeList || []).find(
+    (r) => (routeId && String(r.id) === String(routeId))
+      || (routeName && String(r.name || '').trim().toLowerCase() === String(routeName).trim().toLowerCase())
+  );
+  const tons = match?.min_tons ?? match?.max_tons;
+  return tons != null && tons !== '' ? String(tons) : '36';
+}
+
 function ShiftReportForm({
   user,
   onBack,
@@ -6094,7 +6126,7 @@ function ShiftReportForm({
   const emptyNonComp = { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' };
   const emptyInv = { truck_reg: '', time: '', location: '', issue_identified: '', findings: '', action_taken: '' };
   const emptyComm = { time: '', recipient: '', subject: '', method: '', action_required: '' };
-  const emptyTruckDelivery = { truck_registration: '', driver_name: '', completed_deliveries: '', remarks: '' };
+  const emptyTruckDelivery = { truck_registration: '', driver_name: '', completed_deliveries: '', remarks: '', route_allocations: [{ ...EMPTY_ROUTE_ALLOCATION }] };
   const emptyRouteLoadTotal = { route_name: '', total_loads_delivered: '' };
 
   const [selectedRoutes, setSelectedRoutes] = useState(() =>
@@ -6104,12 +6136,7 @@ function ShiftReportForm({
   const [truckDeliveries, setTruckDeliveries] = useState(() => {
     if (reportKind !== 'single_ops') return [];
     if (Array.isArray(initialData?.truck_deliveries) && initialData.truck_deliveries.length) {
-      return initialData.truck_deliveries.map((r) => ({
-        truck_registration: r.truck_registration || '',
-        driver_name: r.driver_name || '',
-        completed_deliveries: String(r.completed_deliveries ?? ''),
-        remarks: r.remarks || '',
-      }));
+      return initialData.truck_deliveries.map(mapTruckDeliveryRow);
     }
     return [{ ...emptyTruckDelivery }];
   });
@@ -6197,14 +6224,7 @@ function ShiftReportForm({
       setFormFields(initFormFields(initialData));
       if (reportKind === 'single_ops') {
         if (Array.isArray(initialData.truck_deliveries) && initialData.truck_deliveries.length) {
-          setTruckDeliveries(
-            initialData.truck_deliveries.map((r) => ({
-              truck_registration: r.truck_registration || '',
-              driver_name: r.driver_name || '',
-              completed_deliveries: String(r.completed_deliveries ?? ''),
-              remarks: r.remarks || '',
-            }))
-          );
+          setTruckDeliveries(initialData.truck_deliveries.map(mapTruckDeliveryRow));
         } else {
           setTruckDeliveries([{ ...emptyTruckDelivery }]);
         }
@@ -6582,6 +6602,50 @@ function ShiftReportForm({
     const r = String(formFields.route || '').trim().toLowerCase();
     return new Set(r ? [r] : []);
   }, [reportKind, selectedRoutes, otherRoutesText, formFields.route]);
+  const routesForTruckAllocations = useMemo(() => {
+    const reportRouteNames = mergeSingleOpsRouteNames(selectedRoutes, otherRoutesText);
+    if (!reportRouteNames.length) return routeList;
+    const nameSet = new Set(reportRouteNames.map((n) => String(n).trim().toLowerCase()));
+    const onReport = routeList.filter((r) => nameSet.has(String(r.name || '').trim().toLowerCase()));
+    const rest = routeList.filter((r) => !nameSet.has(String(r.name || '').trim().toLowerCase()));
+    return onReport.length ? [...onReport, ...rest] : routeList;
+  }, [routeList, selectedRoutes, otherRoutesText]);
+  const updateTruckAllocation = (truckIdx, allocIdx, key, value) => {
+    setTruckDeliveries((prev) => prev.map((row, i) => {
+      if (i !== truckIdx) return row;
+      const allocs = [...(row.route_allocations || [{ ...EMPTY_ROUTE_ALLOCATION }])];
+      const next = { ...allocs[allocIdx], [key]: value };
+      if (key === 'route_id') {
+        const route = routeList.find((r) => String(r.id) === String(value));
+        if (route) {
+          next.route_name = route.name || '';
+          if (!String(next.tons_loaded || '').trim()) {
+            next.tons_loaded = defaultTonsForRoute(routeList, route.id, route.name);
+          }
+        } else {
+          next.route_name = '';
+        }
+      }
+      allocs[allocIdx] = next;
+      const sum = sumRouteAllocDeliveries(allocs);
+      return { ...row, route_allocations: allocs, completed_deliveries: sum > 0 ? String(sum) : '' };
+    }));
+  };
+  const addTruckAllocation = (truckIdx) => {
+    setTruckDeliveries((prev) => prev.map((row, i) => {
+      if (i !== truckIdx) return row;
+      return { ...row, route_allocations: [...(row.route_allocations || []), { ...EMPTY_ROUTE_ALLOCATION }] };
+    }));
+  };
+  const removeTruckAllocation = (truckIdx, allocIdx) => {
+    setTruckDeliveries((prev) => prev.map((row, i) => {
+      if (i !== truckIdx) return row;
+      const allocs = (row.route_allocations || []).filter((_, j) => j !== allocIdx);
+      const nextAllocs = allocs.length ? allocs : [{ ...EMPTY_ROUTE_ALLOCATION }];
+      const sum = sumRouteAllocDeliveries(nextAllocs);
+      return { ...row, route_allocations: nextAllocs, completed_deliveries: sum > 0 ? String(sum) : '' };
+    }));
+  };
   const hasBreakdownRouteFilter = routeSetForBreakdowns.size > 0;
   const filteredBreakdowns = (reportedBreakdowns || []).filter((b) => {
     if (routeSetForBreakdowns.size === 0) return true;
@@ -6626,7 +6690,19 @@ function ShiftReportForm({
       communication_log: filteredComms,
     };
     if (reportKind !== 'single_ops') return base;
-    const td = truckDeliveries.filter((r) => r.truck_registration || r.driver_name || r.completed_deliveries || r.remarks);
+    const td = truckDeliveries
+      .map((r) => {
+        const allocs = (r.route_allocations || []).filter((a) => a.route_id || a.route_name || a.completed_deliveries || a.tons_loaded);
+        const sum = sumRouteAllocDeliveries(allocs);
+        return {
+          truck_registration: r.truck_registration,
+          driver_name: r.driver_name,
+          remarks: r.remarks,
+          completed_deliveries: sum > 0 ? String(sum) : String(r.completed_deliveries ?? '').trim(),
+          route_allocations: allocs,
+        };
+      })
+      .filter((r) => r.truck_registration || r.driver_name || r.completed_deliveries || r.remarks || (r.route_allocations || []).length);
     const rt = routeLoadTotals.filter((r) => r.route_name || r.total_loads_delivered);
     return {
       ...base,
@@ -6752,6 +6828,24 @@ function ShiftReportForm({
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (reportKind === 'single_ops') {
+      for (const row of truckDeliveries) {
+        const hasTruck = String(row.truck_registration || '').trim()
+          || String(row.driver_name || '').trim()
+          || String(row.completed_deliveries || '').trim()
+          || (row.route_allocations || []).some((a) => a.route_id || String(a.route_name || '').trim() || a.completed_deliveries || a.tons_loaded);
+        if (!hasTruck) continue;
+        const validAllocs = (row.route_allocations || []).filter(
+          (a) => (a.route_id || String(a.route_name || '').trim())
+            && String(a.completed_deliveries || '').trim()
+            && String(a.tons_loaded || '').trim()
+        );
+        if (validAllocs.length === 0) {
+          setMessage?.('Each truck with completed deliveries needs at least one route line with loads and tons (used in Logistics finance — not on the shift PDF).');
+          return;
+        }
+      }
+    }
     setSaving(true);
     setMessage('');
     const payload = buildShiftPayload();
@@ -7050,9 +7144,13 @@ function ShiftReportForm({
               <button type="button" onClick={() => addRowWithUndo(setRouteLoadTotals, { ...emptyRouteLoadTotal })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add route total</button>
 
               <p className="text-xs font-semibold text-surface-600 mt-6 mb-2">Deliveries per truck (performance account)</p>
-              <p className="text-xs text-surface-500 mb-2">Same structure as investigations: one row per truck — registration, driver, completed deliveries, remarks.</p>
-              {truckDeliveries.map((row, i) => (
-                <div key={i} className="p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2 space-y-2">
+              <p className="text-xs text-surface-500 mb-2">
+                One row per truck for the shift PDF (registration, driver, total completed deliveries, remarks). Link each delivery to one or more routes with loads and tons — that detail feeds Logistics finance only and is not printed on the shift report.
+              </p>
+              {truckDeliveries.map((row, i) => {
+                const allocSum = sumRouteAllocDeliveries(row.route_allocations);
+                return (
+                <div key={i} className="p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2 space-y-3">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div className="relative sm:col-span-2">
                       <TruckSearchSelect
@@ -7072,14 +7170,72 @@ function ShiftReportForm({
                         id={`td-driver-${i}`}
                       />
                     </div>
-                    <input
-                      type="number"
-                      min="0"
-                      value={row.completed_deliveries}
-                      onChange={(e) => updateRow(setTruckDeliveries, i, 'completed_deliveries', e.target.value)}
-                      placeholder="Completed deliveries"
-                      className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm sm:col-span-2"
-                    />
+                    <div className="sm:col-span-2">
+                      <label className="text-[10px] uppercase tracking-wide text-surface-500">Completed deliveries (total)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        readOnly
+                        value={allocSum > 0 ? String(allocSum) : row.completed_deliveries}
+                        placeholder="Sum from routes below"
+                        className="w-full rounded-lg border border-surface-200 bg-surface-100 px-2 py-1.5 text-sm text-surface-700"
+                        title="Auto-calculated from route lines below"
+                      />
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-dashed border-brand-200 bg-brand-50/40 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-brand-800">Route breakdown (Logistics finance ledger)</p>
+                      <span className="text-[10px] text-brand-700/80">Not on shift PDF</span>
+                    </div>
+                    {(row.route_allocations || [{ ...EMPTY_ROUTE_ALLOCATION }]).map((alloc, j) => (
+                      <div key={j} className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end">
+                        <div className="sm:col-span-2">
+                          <label className="text-[10px] text-surface-500">Route</label>
+                          <select
+                            value={alloc.route_id || ''}
+                            onChange={(e) => updateTruckAllocation(i, j, 'route_id', e.target.value)}
+                            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white"
+                          >
+                            <option value="">Select route…</option>
+                            {routesForTruckAllocations.map((r) => (
+                              <option key={r.id} value={r.id}>{r.name}{(r.min_tons ?? r.max_tons) ? ` (${r.min_tons ?? r.max_tons} t min)` : ''}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-surface-500">Loads</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={alloc.completed_deliveries}
+                            onChange={(e) => updateTruckAllocation(i, j, 'completed_deliveries', e.target.value)}
+                            placeholder="Loads"
+                            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-surface-500">Tons loaded</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={alloc.tons_loaded}
+                            onChange={(e) => updateTruckAllocation(i, j, 'tons_loaded', e.target.value)}
+                            placeholder="Tons"
+                            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeTruckAllocation(i, j)}
+                          className="text-xs text-surface-400 hover:text-red-600 py-1.5 text-left sm:text-right"
+                        >
+                          Remove route
+                        </button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => addTruckAllocation(i)} className="text-xs text-brand-700 hover:text-brand-800 font-medium">+ Add route line</button>
                   </div>
                   <textarea
                     value={row.remarks}
@@ -7095,9 +7251,9 @@ function ShiftReportForm({
                     getContext={getAiContext}
                     disabled={aiAssistOff}
                   />
-                  <button type="button" onClick={() => removeRowWithUndo(setTruckDeliveries, i, truckDeliveries)} className="text-sm text-surface-400 hover:text-red-600">Remove</button>
+                  <button type="button" onClick={() => removeRowWithUndo(setTruckDeliveries, i, truckDeliveries)} className="text-sm text-surface-400 hover:text-red-600">Remove truck</button>
                 </div>
-              ))}
+              );})}
               <button type="button" onClick={() => addRowWithUndo(setTruckDeliveries, { ...emptyTruckDelivery })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add truck row</button>
             </>
           )}

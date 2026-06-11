@@ -14,6 +14,8 @@ export const TRUCK_CHANGE_FIELD_LABELS = {
   tracking_password: 'Tracking password',
   commodity_type: 'Commodity type',
   capacity_tonnes: 'Capacity (tonnes)',
+  fuel_tank_capacity_litres: 'Fuel tank capacity (L)',
+  fuel_consumption_litres_per_100km: 'Fuel consumption (L/100 km)',
   status: 'Status',
 };
 

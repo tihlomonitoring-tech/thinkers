@@ -61,6 +61,11 @@ const TRUCK_HEADER_MAP = {
   'commodity type': 'commodity_type',
   'capacity (tonnes)': 'capacity_tonnes',
   'capacity_tonnes': 'capacity_tonnes',
+  'fuel tank capacity (litres)': 'fuel_tank_capacity_litres',
+  'fuel_tank_capacity_litres': 'fuel_tank_capacity_litres',
+  'fuel consumption (l/100 km)': 'fuel_consumption_litres_per_100km',
+  'fuel consumption (l/100km)': 'fuel_consumption_litres_per_100km',
+  'fuel_consumption_litres_per_100km': 'fuel_consumption_litres_per_100km',
 };
 
 function mapTruckRow(obj) {
@@ -69,7 +74,7 @@ function mapTruckRow(obj) {
     const key = norm(header).replace(/\s+/g, ' ');
     const apiKey = TRUCK_HEADER_MAP[key] || TRUCK_HEADER_MAP[header];
     if (apiKey) {
-      if (apiKey === 'capacity_tonnes') {
+      if (apiKey === 'capacity_tonnes' || apiKey === 'fuel_tank_capacity_litres' || apiKey === 'fuel_consumption_litres_per_100km') {
         const n = parseFloat(value);
         out[apiKey] = Number.isFinite(n) ? n : null;
       } else if (apiKey === 'tracking_provider_other') {
@@ -176,6 +181,8 @@ const TRUCK_TEMPLATE_HEADERS = [
   'Password',
   'Commodity type',
   'Capacity (tonnes)',
+  'Fuel tank capacity (litres)',
+  'Fuel consumption (L/100 km)',
 ];
 
 const DRIVER_TEMPLATE_HEADERS = [
@@ -268,6 +275,8 @@ export async function downloadTruckTemplate() {
     'example',
     'Grain',
     '30',
+    '800',
+    '42',
   ]);
 
   ws.columns = TRUCK_TEMPLATE_HEADERS.map((_, i) => ({

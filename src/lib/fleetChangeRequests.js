@@ -4,7 +4,8 @@ import { logFleetApplicationHistory } from './fleetApplicationHistory.js';
 const TRUCK_PATCH_FIELDS = [
   'main_contractor', 'sub_contractor', 'make_model', 'year_model', 'ownership_desc', 'fleet_no',
   'registration', 'trailer_1_reg_no', 'trailer_2_reg_no', 'tracking_provider', 'tracking_username',
-  'tracking_password', 'commodity_type', 'capacity_tonnes', 'status',
+  'tracking_password', 'commodity_type', 'capacity_tonnes',
+  'fuel_tank_capacity_litres', 'fuel_consumption_litres_per_100km', 'status',
 ];
 
 function get(row, key) {
@@ -35,6 +36,8 @@ export function truckSnapshot(row) {
     tracking_password: get(row, 'tracking_password') ?? null,
     commodity_type: get(row, 'commodity_type') ?? null,
     capacity_tonnes: get(row, 'capacity_tonnes') ?? null,
+    fuel_tank_capacity_litres: get(row, 'fuel_tank_capacity_litres') ?? null,
+    fuel_consumption_litres_per_100km: get(row, 'fuel_consumption_litres_per_100km') ?? null,
     status: get(row, 'status') || 'active',
   };
 }
@@ -46,6 +49,9 @@ export function buildTruckProposedFromBody(body, existingRow) {
     if (body[key] !== undefined) {
       if (key === 'registration') proposed.registration = String(body[key] ?? '').trim();
       else if (key === 'capacity_tonnes') proposed.capacity_tonnes = body.capacity_tonnes != null ? body.capacity_tonnes : null;
+      else if (key === 'fuel_tank_capacity_litres' || key === 'fuel_consumption_litres_per_100km') {
+        proposed[key] = body[key] != null && body[key] !== '' ? Number(body[key]) : null;
+      }
       else if (key === 'tracking_password') {
         if (body.tracking_password !== undefined && body.tracking_password !== '') {
           proposed.tracking_password = body.tracking_password;
@@ -210,7 +216,10 @@ export async function applyTruckChangeRequest(changeRequestId, ccUserId) {
         trailer_1_reg_no = @trailer_1_reg_no, trailer_2_reg_no = @trailer_2_reg_no,
         tracking_provider = @tracking_provider, tracking_username = @tracking_username,
         tracking_password = CASE WHEN @tracking_password IS NULL OR @tracking_password = N'' THEN tracking_password ELSE @tracking_password END,
-        commodity_type = @commodity_type, capacity_tonnes = @capacity_tonnes, [status] = @status,
+        commodity_type = @commodity_type, capacity_tonnes = @capacity_tonnes,
+        fuel_tank_capacity_litres = @fuel_tank_capacity_litres,
+        fuel_consumption_litres_per_100km = @fuel_consumption_litres_per_100km,
+        [status] = @status,
         updated_at = SYSUTCDATETIME()
      OUTPUT INSERTED.*
      WHERE id = @entityId AND tenant_id = @tenantId`,
@@ -231,6 +240,8 @@ export async function applyTruckChangeRequest(changeRequestId, ccUserId) {
       tracking_password: proposed.tracking_password ?? null,
       commodity_type: proposed.commodity_type ?? null,
       capacity_tonnes: proposed.capacity_tonnes != null ? proposed.capacity_tonnes : null,
+      fuel_tank_capacity_litres: proposed.fuel_tank_capacity_litres != null ? proposed.fuel_tank_capacity_litres : null,
+      fuel_consumption_litres_per_100km: proposed.fuel_consumption_litres_per_100km != null ? proposed.fuel_consumption_litres_per_100km : null,
       status: proposed.status || 'active',
     }
   );

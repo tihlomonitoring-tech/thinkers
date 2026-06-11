@@ -10,6 +10,7 @@ import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboard, tsvToKeyMetrics, tsvToBreakdowns, tsvToFleetPerformance } from './lib/monthlyPerfReportHelpers.js';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 import VehicleCompliancePanel from './components/vehicleCompliance/VehicleCompliancePanel.jsx';
+import RouteManagementModal, { RiskBadge } from './components/RouteManagementModal.jsx';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', section: 'Overview' },
@@ -561,9 +562,9 @@ export default function AccessManagement() {
   const [contractorRestrictionsSaving, setContractorRestrictionsSaving] = useState(false);
 
   // Route form (create/edit)
-  const [routeForm, setRouteForm] = useState({ name: '', starting_point: '', destination: '', capacity: '', max_tons: '', route_expiration: '' });
-  const [editingRouteId, setEditingRouteId] = useState(null);
-  const [showRouteForm, setShowRouteForm] = useState(false);
+  const [routeModalRoute, setRouteModalRoute] = useState(null);
+  const [routeModalOpen, setRouteModalOpen] = useState(false);
+  const [routeModalTab, setRouteModalTab] = useState('details');
 
   // Route rector form (create/edit) - user_id = assign existing user to route
   const [rectorForm, setRectorForm] = useState({ route_ids: [], user_id: '', name: '', company: '', email: '', phone: '', mobile_alt: '', address: '', role_or_type: '', notes: '', alert_types: [] });
@@ -1148,54 +1149,26 @@ export default function AccessManagement() {
     return () => { cancelled = true; };
   }, [activeTab]);
 
-  const openEditRoute = (r) => {
-    setEditingRouteId(r.id);
-    setRouteForm({
-      name: r.name || '',
-      starting_point: r.starting_point || '',
-      destination: r.destination || '',
-      capacity: r.capacity != null ? String(r.capacity) : '',
-      max_tons: r.max_tons != null ? String(r.max_tons) : '',
-      route_expiration: r.route_expiration ? r.route_expiration.slice(0, 10) : '',
-    });
-    setShowRouteForm(true);
+  const openRouteModal = (r, tab = 'details') => {
+    setRouteModalRoute(r || null);
+    setRouteModalTab(tab);
+    setRouteModalOpen(true);
   };
 
-  const saveRoute = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      const payload = {
-        name: routeForm.name.trim(),
-        starting_point: routeForm.starting_point.trim() || null,
-        destination: routeForm.destination.trim() || null,
-        capacity: routeForm.capacity.trim() ? parseInt(routeForm.capacity, 10) : null,
-        max_tons: routeForm.max_tons.trim() ? parseFloat(routeForm.max_tons) : null,
-        route_expiration: routeForm.route_expiration.trim() || null,
-      };
-      if (editingRouteId) {
-        const data = await contractorApi.routes.update(editingRouteId, payload);
-        setRoutes((prev) => prev.map((r) => (r.id === editingRouteId ? (data.route || r) : r)));
-        setShowRouteForm(false);
-        setEditingRouteId(null);
-      } else {
-        const data = await contractorApi.routes.create(payload);
-        if (data.route) {
-          const r = data.route;
-          setRoutes((prev) => [...prev, { ...r, id: r.id ?? r.Id, name: r.name ?? r.Name ?? r.name }]);
-        }
-        setShowRouteForm(false);
-        setRouteForm({ name: '', starting_point: '', destination: '', capacity: '', max_tons: '', route_expiration: '' });
+  const handleRouteSaved = (saved) => {
+    if (!saved?.id) return;
+    setRoutes((prev) => {
+      const idx = prev.findIndex((r) => r.id === saved.id);
+      if (idx >= 0) {
+        const next = prev.slice();
+        next[idx] = saved;
+        return next;
       }
-      // Refetch routes and rectors only (don't run full load() which can overwrite routes if context fails)
-      contractorApi.routes.list().then((r) => setRoutes(r.routes || [])).catch(() => {});
-      contractorApi.routeFactors.list().then((r) => setRectors(r.factors || [])).catch(() => {});
-    } catch (err) {
-      setError(err?.message || 'Failed to save route');
-    } finally {
-      setSaving(false);
-    }
+      return [...prev, saved];
+    });
+    setRouteModalRoute(saved);
+    contractorApi.routes.list().then((r) => setRoutes(r.routes || [])).catch(() => {});
+    contractorApi.routeFactors.list().then((r) => setRectors(r.factors || [])).catch(() => {});
   };
 
   const deleteRoute = async (id) => {
@@ -1734,13 +1707,13 @@ export default function AccessManagement() {
             <h2 className="text-lg font-semibold text-surface-900">Route management</h2>
             <button
               type="button"
-              onClick={() => { setEditingRouteId(null); setRouteForm({ name: '', starting_point: '', destination: '', capacity: '', max_tons: '', route_expiration: '' }); setShowRouteForm(true); }}
+              onClick={() => openRouteModal(null, 'details')}
               className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
             >
               Register route
             </button>
           </div>
-          <p className="text-sm text-surface-500">Register a route with starting point, destination, capacity, maximum tons, and expiration. Add route rectors to assign owners and alert preferences.</p>
+          <p className="text-sm text-surface-500">Register corridors with full addresses, distance (km), and professional route risk assessments. Download PDF reports for compliance and rector distribution.</p>
           <div className="app-glass-card overflow-hidden">
             {loading ? (
               <p className="p-6 text-surface-500">Loading…</p>
@@ -1751,25 +1724,36 @@ export default function AccessManagement() {
                 <thead className="bg-surface-50 border-b border-surface-200">
                   <tr>
                     <th className="text-left p-3 font-medium text-surface-700">Name</th>
-                    <th className="text-left p-3 font-medium text-surface-700">Starting point</th>
-                    <th className="text-left p-3 font-medium text-surface-700">Destination</th>
+                    <th className="text-left p-3 font-medium text-surface-700">Corridor</th>
+                    <th className="text-left p-3 font-medium text-surface-700">KM</th>
+                    <th className="text-left p-3 font-medium text-surface-700">Risk</th>
                     <th className="text-left p-3 font-medium text-surface-700">Capacity</th>
-                    <th className="text-left p-3 font-medium text-surface-700">Max tons</th>
+                    <th className="text-left p-3 font-medium text-surface-700">Min tons</th>
                     <th className="text-left p-3 font-medium text-surface-700">Expiration</th>
-                    <th className="p-3 w-32" />
+                    <th className="p-3 min-w-[220px]">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {routes.map((r) => (
                     <tr key={r.id} className="border-b border-surface-100 hover:bg-surface-50/50">
-                      <td className="p-3">{r.name}</td>
-                      <td className="p-3">{r.starting_point || '—'}</td>
-                      <td className="p-3">{r.destination || '—'}</td>
-                      <td className="p-3">{r.capacity != null ? r.capacity : '—'}</td>
-                      <td className="p-3">{r.max_tons != null ? r.max_tons : '—'}</td>
+                      <td className="p-3">
+                        <p className="font-medium text-surface-900">{r.name}</p>
+                      </td>
+                      <td className="p-3 text-surface-600">
+                        {(r.starting_point || r.destination)
+                          ? `${r.starting_point || '—'} → ${r.destination || '—'}`
+                          : '—'}
+                      </td>
+                      <td className="p-3 tabular-nums">{r.distance_km != null ? r.distance_km : '—'}</td>
+                      <td className="p-3">
+                        <RiskBadge level={r.risk_assessment_level || r.risk_summary?.level || 'not_assessed'} score={r.risk_assessment_score ?? r.risk_summary?.average_score} />
+                      </td>
+                      <td className="p-3 tabular-nums">{r.capacity != null ? r.capacity : '—'}</td>
+                      <td className="p-3 tabular-nums">{r.min_tons != null ? r.min_tons : (r.max_tons != null ? r.max_tons : 36)}</td>
                       <td className="p-3">{formatDate(r.route_expiration)}</td>
                       <td className="p-3">
-                        <button type="button" onClick={() => openEditRoute(r)} className="text-brand-600 hover:underline mr-2">Edit</button>
+                        <button type="button" onClick={() => openRouteModal(r, 'details')} className="text-brand-600 hover:underline mr-2">Edit</button>
+                        <button type="button" onClick={() => openRouteModal(r, 'risk')} className="text-brand-600 hover:underline mr-2">Risk assessment</button>
                         <button type="button" onClick={() => setDistRecipientModalRoute({ id: r.id, name: r.name })} className="text-brand-600 hover:underline mr-2">List settings</button>
                         <button type="button" onClick={() => addRectorsToRoute(r.id)} className="text-brand-600 hover:underline mr-2">Add rectors</button>
                         <button type="button" onClick={() => deleteRoute(r.id)} className="text-red-600 hover:underline">Delete</button>
@@ -1781,62 +1765,16 @@ export default function AccessManagement() {
             )}
           </div>
 
-          {showRouteForm && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowRouteForm(false)}>
-              <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-                <h3 className="font-semibold text-surface-900 mb-4">{editingRouteId ? 'Edit route' : 'Register route'}</h3>
-                <form onSubmit={saveRoute} className="space-y-3">
-                  <input
-                    required
-                    placeholder="Route name"
-                    value={routeForm.name}
-                    onChange={(e) => setRouteForm((f) => ({ ...f, name: e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    placeholder="Starting point"
-                    value={routeForm.starting_point}
-                    onChange={(e) => setRouteForm((f) => ({ ...f, starting_point: e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    placeholder="Destination"
-                    value={routeForm.destination}
-                    onChange={(e) => setRouteForm((f) => ({ ...f, destination: e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="Capacity"
-                    value={routeForm.capacity}
-                    onChange={(e) => setRouteForm((f) => ({ ...f, capacity: e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="Max tons"
-                    value={routeForm.max_tons}
-                    onChange={(e) => setRouteForm((f) => ({ ...f, max_tons: e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    type="date"
-                    placeholder="Route expiration"
-                    value={routeForm.route_expiration}
-                    onChange={(e) => setRouteForm((f) => ({ ...f, route_expiration: e.target.value }))}
-                    className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                  />
-                  <div className="flex gap-2 pt-2">
-                    <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Save</button>
-                    <button type="button" onClick={() => setShowRouteForm(false)} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">Cancel</button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
+          <RouteManagementModal
+            open={routeModalOpen}
+            onClose={() => { setRouteModalOpen(false); setRouteModalRoute(null); }}
+            route={routeModalRoute}
+            tenantName={user?.tenant_name}
+            tenantId={user?.tenant_id}
+            initialTab={routeModalTab}
+            onSaved={handleRouteSaved}
+            onError={setError}
+          />
         </div>
       )}
 

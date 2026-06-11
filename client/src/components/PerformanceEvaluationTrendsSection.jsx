@@ -88,7 +88,7 @@ export default function PerformanceEvaluationTrendsSection({ onError }) {
                     {s.evaluation_period_title || '—'}
                   </td>
                   <td className="px-3 py-1.5">{s.relationship_type}</td>
-                  <td className="px-3 py-1.5">{s.evaluator_name}</td>
+                  <td className="px-3 py-1.5">{s.evaluator_name || 'Confidential'}</td>
                   <td className="px-3 py-1.5">{s.evaluatee_name}</td>
                 </tr>
               ))}
