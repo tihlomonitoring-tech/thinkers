@@ -45,9 +45,22 @@ try {
 }
 
 try {
-  await runBatches('add-tracking-integration-page-role.sql', 'add-tracking-integration-page-role.sql');
+  const { execSync } = await import('node:child_process');
+  execSync('node scripts/run-user-page-roles-check-constraint-sync.js', { stdio: 'inherit' });
 } catch (e) {
-  console.warn('add-tracking-integration-page-role:', e?.message || e);
+  console.warn('user-page-roles-check-sync:', e?.message || e);
+}
+
+try {
+  await runBatches('tracking-management-schema.sql', 'tracking-management-schema.sql');
+} catch (e) {
+  console.warn('tracking-management-schema (optional):', e?.message || e);
+}
+
+try {
+  await runBatches('tracking-logistics-activity.sql', 'tracking-logistics-activity.sql');
+} catch (e) {
+  console.warn('tracking-logistics-activity (optional):', e?.message || e);
 }
 
 const pool = await getPool();

@@ -2178,7 +2178,7 @@ export default function Contractor() {
                   </div>
                   {canAccessPage(user, 'tracking_integration') && (
                     <p className="text-sm text-surface-600 mt-4 pt-3 border-t border-surface-200">
-                      <Link to="/tracking-integration" className="text-brand-600 font-medium hover:underline">
+                      <Link to="/tracking-management" className="text-brand-600 font-medium hover:underline">
                         Tracking &amp; integration
                       </Link>
                       <span className="text-surface-500"> — telematics providers and live trip monitoring.</span>
@@ -2312,7 +2312,7 @@ export default function Contractor() {
                   </div>
                   {canAccessPage(user, 'tracking_integration') && (
                     <p className="text-sm text-surface-600 mb-3">
-                      <Link to="/tracking-integration" className="text-brand-600 font-medium hover:underline">
+                      <Link to="/tracking-management" className="text-brand-600 font-medium hover:underline">
                         Tracking & integration
                       </Link>
                       <span className="text-surface-500"> — link trucks to telematics providers and monitor trips (uses this fleet list).</span>

@@ -1,6 +1,6 @@
--- Rebuild CK_user_page_roles_page_id to match app PAGE_IDS (see src/routes/users.js export PAGE_IDS).
--- Run when inserts fail: "conflicted with CHECK constraint CK_user_page_roles_page_id".
--- Safe to re-run: drops then recreates the check.
+-- Rebuild CK_user_page_roles_page_id to match app PAGE_IDS.
+-- Prefer: npm run db:user-page-roles-check-sync
+-- (The Node runner builds the IN list from src/routes/users.js so it stays in sync.)
 
 IF EXISTS (
   SELECT 1 FROM sys.check_constraints
@@ -10,32 +10,4 @@ IF EXISTS (
   ALTER TABLE dbo.user_page_roles DROP CONSTRAINT CK_user_page_roles_page_id;
 GO
 
-ALTER TABLE dbo.user_page_roles ADD CONSTRAINT CK_user_page_roles_page_id CHECK (page_id IN (
-  N'profile',
-  N'management',
-  N'users',
-  N'tenants',
-  N'contractor',
-  N'command_centre',
-  N'access_management',
-  N'rector',
-  N'tasks',
-  N'case_management',
-  N'transport_operations',
-  N'recruitment',
-  N'letters',
-  N'accounting_management',
-  N'tracking_integration',
-  N'fuel_supply_management',
-  N'fuel_customer_orders',
-  N'team_leader_admin',
-  N'performance_evaluations',
-  N'auditor',
-  N'company_library',
-  N'fuel_data',
-  N'quick_sign',
-  N'report_generation',
-  N'office_admin',
-  N'logistics_finance_management',
-  N'policy_development'
-));
+-- Run npm run db:user-page-roles-check-sync to add the constraint with the current PAGE_IDS list.

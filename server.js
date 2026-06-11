@@ -42,6 +42,7 @@ import quickSignRoutes from './src/routes/quickSign.js';
 import operatorManagementRoutes from './src/routes/operatorManagement.js';
 import expenseManagementRoutes from './src/routes/expenseManagement.js';
 import logisticsFinanceRoutes from './src/routes/logisticsFinance.js';
+import trackingRoutes from './src/routes/tracking.js';
 import companyPoliciesRoutes from './src/routes/companyPolicies.js';
 import tabAccessRoutes from './src/routes/tabAccess.js';
 import vehicleComplianceRoutes from './src/routes/vehicleCompliance.js';
@@ -53,6 +54,7 @@ import { isDbEnvConfigured } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
 import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
 import { runFuelDataAutoShareDistributions } from './src/lib/fuelDataAutoShareRunner.js';
+import { runTrackingProviderPoll, pollIntervalMs, isTrackingPollEnabled } from './src/lib/trackingProviderPoll.js';
 
 const app = express();
 // Azure App Service / reverse proxies: correct req.secure, req.ip, and secure session cookies
@@ -170,6 +172,7 @@ app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/accounting', accountingRoutes);
 app.use('/api/expense-management', expenseManagementRoutes);
 app.use('/api/logistics-finance', logisticsFinanceRoutes);
+app.use('/api/tracking', trackingRoutes);
 app.use('/api/tab-access', tabAccessRoutes);
 app.use('/api/vehicle-compliance', vehicleComplianceRoutes);
 app.use('/api/claims', claimsRoutes);
@@ -207,13 +210,16 @@ app.use('/api', (req, res) => {
       pathLower.includes('member-credit-applications') ||
       pathLower.includes('team-point-pools')) &&
     'Team leader / team credit routes need a restarted API (npm run server). Paths: /api/team-goals/team-leader/* and /api/profile-management/team-point-pools/*. Run npm run db:employee-grace-credits && npm run db:team-credit-pools if tables are missing.';
+  const trackingLogisticsHint =
+    pathLower.includes('logistics-activity') &&
+    'Logistics Activity routes live under /api/tracking/logistics-activity/* (not /api/logistics-activity). Restart the API after pulling: npm run server — then run npm run db:tracking-logistics-activity if the board is empty.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || genericHint,
   });
 });
 
@@ -301,6 +307,18 @@ const server = app.listen(PORT, () => {
   setInterval(() => {
     runFuelDataAutoShareDistributions().catch((e) => console.error('[fuel-auto-share]', e?.message || e));
   }, FUEL_AUTO_SHARE_MS);
+
+  // Telematics — poll Cartrack / FleetCam / linked units (default every 60s)
+  if (isTrackingPollEnabled()) {
+    const TRACKING_POLL_MS = pollIntervalMs();
+    console.log(`Tracking poll: enabled every ${TRACKING_POLL_MS / 1000}s (TRACKING_POLL_ENABLED / TRACKING_POLL_INTERVAL_MS)`);
+    runTrackingProviderPoll().catch((e) => console.error('[trackingPoll]', e?.message || e));
+    setInterval(() => {
+      runTrackingProviderPoll().catch((e) => console.error('[trackingPoll]', e?.message || e));
+    }, TRACKING_POLL_MS);
+  } else {
+    console.log('Tracking poll: disabled (TRACKING_POLL_ENABLED=false)');
+  }
 });
 
 server.on('error', (err) => {

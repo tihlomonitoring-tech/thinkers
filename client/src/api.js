@@ -2768,6 +2768,11 @@ export const tracking = {
     create: (body) => trk('/providers', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => trk(`/providers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => trk(`/providers/${id}`, { method: 'DELETE' }),
+    fleetcam: {
+      test: (id) => trk(`/providers/${id}/fleetcam/test`, { method: 'POST' }),
+      devices: (id) => trk(`/providers/${id}/fleetcam/devices`),
+      autoLink: (id) => trk(`/providers/${id}/fleetcam/auto-link`, { method: 'POST' }),
+    },
   },
   vehicles: {
     list: () => trk('/vehicles'),
@@ -2790,7 +2795,39 @@ export const tracking = {
   geofences: {
     list: () => trk('/geofences'),
     create: (body) => trk('/geofences', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => trk(`/geofences/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => trk(`/geofences/${id}`, { method: 'DELETE' }),
+    drawRoute: (body) => trk('/geofences/draw-route', { method: 'POST', body: JSON.stringify(body) }),
+  },
+  map: {
+    geocode: (q) => trk(`/map/geocode?q=${encodeURIComponent(q)}`),
+    route: (params) => {
+      const q = new URLSearchParams(params).toString();
+      return trk(`/map/route?${q}`);
+    },
+  },
+  contractorRoutes: {
+    list: () => trk('/contractor-routes'),
+  },
+  monitor: {
+    distribution: () => trk('/monitor/distribution'),
+    fleetBoard: () => trk('/monitor/fleet-board'),
+    processPositions: () => trk('/monitor/process-positions', { method: 'POST' }),
+  },
+  logisticsActivity: {
+    board: () => trk('/logistics-activity/board'),
+    schedule: (body) => trk('/logistics-activity/schedule', { method: 'POST', body: JSON.stringify(body) }),
+    saveLoadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/loading-slip`, { method: 'POST', body: JSON.stringify(body) }),
+    saveOffloadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/offloading-slip`, { method: 'POST', body: JSON.stringify(body) }),
+    redirect: (id, body) => trk(`/logistics-activity/trips/${id}/redirect`, { method: 'POST', body: JSON.stringify(body) }),
+    cancel: (id) => trk(`/logistics-activity/trips/${id}/cancel`, { method: 'POST' }),
+  },
+  sync: {
+    contractorFleet: () => trk('/sync/contractor-fleet', { method: 'POST' }),
+  },
+  poll: {
+    status: () => trk('/poll/status'),
+    run: () => trk('/poll/run', { method: 'POST' }),
   },
   settings: {
     get: () => trk('/settings'),
@@ -2813,6 +2850,7 @@ export const tracking = {
       const q = new URLSearchParams(params).toString();
       return trk(`/deliveries${q ? `?${q}` : ''}`);
     },
+    saveNote: (id, body) => trk(`/deliveries/${id}/note`, { method: 'PATCH', body: JSON.stringify(body) }),
   },
   alarms: {
     list: (params = {}) => {

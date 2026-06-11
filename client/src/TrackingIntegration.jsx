@@ -878,9 +878,9 @@ function TabFleetMovement({ setError }) {
             )}
           </div>
         </div>
-        <FleetLiveMap trips={trips} routes={routes} />
+        <FleetLiveMap trips={trips} routes={routes} className="w-full aspect-[16/9] min-h-[280px] max-h-[min(52vh,520px)]" />
         <p className="text-xs text-surface-500">
-          Demo data: run <code className="bg-surface-100 px-1 rounded">npm run db:tracking-mock</code> from the project root (three trucks on the JHB–PTA corridor). OpenStreetMap tiles.
+          Fleet positions from linked FleetCam units. CARTO Voyager map tiles.
         </p>
       </section>
 

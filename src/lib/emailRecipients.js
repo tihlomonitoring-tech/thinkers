@@ -468,6 +468,38 @@ export async function getSuperAdminEmails(query) {
   return Array.from(emails);
 }
 
+/** Users with Tracking Management page access in a tenant (tracking_integration role). Excludes subcontractor-portal users. */
+export async function getTrackingManagementEmails(query, tenantId) {
+  if (!tenantId) return [];
+  const emails = new Set();
+  const getRowEmail = (row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = Object.keys(row).find((k) => k.toLowerCase() === 'email');
+    const e = (key ? row[key] : row.email ?? row.Email ?? '').toString().trim();
+    return e && e.includes('@') ? e : null;
+  };
+  try {
+    const result = await query(
+      `SELECT DISTINCT u.email FROM user_page_roles r
+       INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id = N'tracking_integration'
+         AND u.tenant_id = @tenantId
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         ${EXCLUDE_SUBCONTRACTOR_PORTAL_USERS_SQL}`,
+      { tenantId }
+    );
+    for (const row of result?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+    const superAdmins = await getSuperAdminEmailsForTenant(query, tenantId);
+    for (const e of superAdmins) emails.add(e);
+  } catch (err) {
+    console.warn('[emailRecipients] getTrackingManagementEmails:', err?.message || err);
+  }
+  return Array.from(emails);
+}
+
 /** Super admin emails scoped to a tenant (global super_admin + super_admin linked to tenant). */
 export async function getSuperAdminEmailsForTenant(query, tenantId) {
   if (!tenantId) return getSuperAdminEmails(query);

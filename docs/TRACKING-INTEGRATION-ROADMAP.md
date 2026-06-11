@@ -11,7 +11,10 @@ Some items below are still **future** work; others (maps v1, mock seed, live dem
 ### Demo / mock data (local)
 
 - `npm run db:tracking-mock` — Inserts three **MOCK-DEMO-*** en-route trips (Gauteng corridor), a demo provider, weighbridge, and monitor route. Re-run replaces previous MOCK-DEMO trips for the tenant.
-- In the UI, enable **Live updates** to simulate streaming GPS for those MOCK trips only.
+- **Background poll (live feed):** Server runs `runTrackingProviderPoll()` every **60s** by default (`TRACKING_POLL_INTERVAL_MS`, `TRACKING_POLL_ENABLED`). Polls Cartrack / FleetCam / custom REST providers and pushes GPS into `fleet_trip` via the same logic as `POST /tracking/trips/:id/telemetry`. MOCK-* demo trips are nudged each poll cycle.
+- `npm run tracking:poll-once` — Run one poll cycle manually (CLI).
+- `POST /api/tracking/poll/run` — Manual poll while logged in (Monitor **Refresh** button).
+- Demo providers (`Demo mock telematics`) use **simulated** GPS drift when no live API URL is configured.
 
 ## Provider connectors (South Africa–focused + generic)
 

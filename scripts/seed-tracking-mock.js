@@ -176,7 +176,9 @@ async function main() {
     console.log('Created trip', tr.ref, tr.reg, lat.toFixed(4), lng.toFixed(4));
   }
 
-  console.log('\nDone. Open Tracking → Fleet movement, enable Live updates, or call POST /tracking/demo/tick while logged in.');
+  console.log('\nDone. Mock trips move automatically via the server poll job (every 60s).');
+  console.log('Or run: npm run tracking:poll-once');
+  console.log('Open Tracking management → Monitor — trucks update on the map after each poll.');
   const pool = await getPool();
   await pool.close();
 }

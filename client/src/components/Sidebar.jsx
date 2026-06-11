@@ -263,6 +263,7 @@ const navSections = [
       { to: '/fuel-customer-orders', label: 'Customer diesel orders', icon: IconFuel, shortcut: '', pageId: 'fuel_customer_orders' },
       { to: '/fuel-data', label: 'Fuel Data', icon: IconFuel, shortcut: '', pageId: 'fuel_data' },
       { to: '/access-management', label: 'Access management', icon: IconAccess, shortcut: '⌘5', pageId: 'access_management' },
+      { to: '/tracking-management', label: 'Tracking management', icon: IconCommandCentre, shortcut: '', pageId: 'tracking_integration' },
       { to: '/rector', label: 'Rector', icon: IconRector, shortcut: '⌘6', pageId: 'rector' },
       { to: '/tasks', label: 'Tasks', icon: IconTasks, shortcut: '⌘7', pageId: 'tasks' },
       { to: '/case-management', label: 'Case management', icon: IconCaseManagement, shortcut: '', pageId: 'case_management' },

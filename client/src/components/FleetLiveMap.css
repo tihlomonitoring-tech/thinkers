@@ -1,0 +1,48 @@
+.fleet-truck-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.fleet-truck-marker__shell {
+  position: relative;
+  width: 44px;
+  height: 52px;
+}
+
+.fleet-truck-marker__wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 2px 5px rgba(15, 23, 42, 0.35));
+  transform-origin: center center;
+}
+
+.fleet-truck-marker__badge {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.fleet-live-map .leaflet-container {
+  font-family: inherit;
+  background: #e8eef4;
+}
+
+.fleet-live-map .leaflet-control-attribution {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.85) !important;
+}
+
+.fleet-map-legend {
+  pointer-events: none;
+}
