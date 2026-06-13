@@ -90,3 +90,24 @@ export function polygonCentroid(ring) {
   const lng = ring.reduce((s, p) => s + p.lng, 0) / ring.length;
   return { lat, lng };
 }
+
+function haversineM(a, b) {
+  const φ1 = toRad(a.lat);
+  const φ2 = toRad(b.lat);
+  const Δφ = toRad(b.lat - a.lat);
+  const Δλ = toRad(b.lng - a.lng);
+  const x = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+/** Push each vertex outward from the polygon centroid by extraM metres. */
+export function expandPolygonRing(ring, extraM) {
+  if (!ring?.length || !extraM) return ring;
+  const c = polygonCentroid(ring);
+  if (!c) return ring;
+  return ring.map((p) => {
+    const dist = haversineM(c, p);
+    const b = bearingDeg(c.lat, c.lng, p.lat, p.lng);
+    return offsetPoint(c.lat, c.lng, b, dist + extraM);
+  });
+}

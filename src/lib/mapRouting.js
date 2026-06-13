@@ -23,21 +23,29 @@ export async function geocodeAddress(query) {
 }
 
 export async function drivingRoute(fromLat, fromLng, toLat, toLng) {
+  const routes = await drivingRouteAlternatives(fromLat, fromLng, toLat, toLng);
+  if (!routes.length) throw new Error('No driving route found between these points');
+  return routes[0];
+}
+
+/** Up to 3 road-following alternatives via OSRM (fastest first). */
+export async function drivingRouteAlternatives(fromLat, fromLng, toLat, toLng) {
   const a = `${Number(fromLng)},${Number(fromLat)}`;
   const b = `${Number(toLng)},${Number(toLat)}`;
-  const url = `${OSRM}/${a};${b}?overview=full&geometries=geojson&steps=false`;
+  const url = `${OSRM}/${a};${b}?overview=full&geometries=geojson&steps=false&alternatives=true`;
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   if (!res.ok) throw new Error(`Route lookup failed (${res.status})`);
   const data = await res.json();
-  if (data.code !== 'Ok' || !data.routes?.[0]) {
+  if (data.code !== 'Ok' || !data.routes?.length) {
     throw new Error(data.message || 'No driving route found between these points');
   }
-  const route = data.routes[0];
-  const coords = route.geometry?.coordinates || [];
-  const polyline = coords.map(([lng, lat]) => ({ lat, lng }));
-  return {
-    distance_km: Math.round((route.distance / 1000) * 10) / 10,
-    duration_min: Math.round(route.duration / 60),
-    polyline,
-  };
+  return data.routes.map((route, index) => {
+    const coords = route.geometry?.coordinates || [];
+    return {
+      index,
+      distance_km: Math.round((route.distance / 1000) * 10) / 10,
+      duration_min: Math.round(route.duration / 60),
+      polyline: coords.map(([lng, lat]) => ({ lat, lng })),
+    };
+  });
 }

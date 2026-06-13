@@ -5,7 +5,7 @@ import { requireAuth, loadUser, requireSuperAdmin } from '../middleware/auth.js'
 const router = Router();
 router.use(requireAuth, loadUser);
 
-const VALID_PAGES = ['accounting', 'management', 'contractor'];
+const VALID_PAGES = ['accounting', 'management', 'contractor', 'tracking_management'];
 
 const PAGE_TABS = {
   accounting: [
@@ -27,7 +27,11 @@ const PAGE_TABS = {
     'fleet-maintenance', 'workshop', 'truck-inspection', 'external-inspections',
     'incidents', 'expiries', 'suspensions', 'messages',
   ],
+  tracking_management: ['geofence', 'integration', 'activity', 'monitor', 'deliveries'],
 };
+
+/** Pages where zero grants means no tabs (must grant explicitly). */
+const STRICT_EMPTY_GRANTS = new Set(['tracking_management']);
 
 router.get('/my-tabs/:pageKey', async (req, res, next) => {
   try {
@@ -43,7 +47,7 @@ router.get('/my-tabs/:pageKey', async (req, res, next) => {
     const canonical = PAGE_TABS[pageKey];
     let tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => canonical.includes(id));
     if (tabs.length === 0) {
-      tabs = [...canonical];
+      if (!STRICT_EMPTY_GRANTS.has(pageKey)) tabs = [...canonical];
     } else {
       // Users with explicit grants still receive newly added tabs (e.g. general-ledger)
       tabs = [...new Set([...tabs, ...canonical])];

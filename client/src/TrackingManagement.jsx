@@ -1,31 +1,74 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthContext';
-import { tracking as trackingApi } from './api';
+import { tracking as trackingApi, tabAccess as tabAccessApi } from './api';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
+import ManagePageTabAccess from './components/ManagePageTabAccess.jsx';
+import TrackingNotificationSettings from './components/tracking/TrackingNotificationSettings.jsx';
 import GeofenceRoutesTab from './components/tracking/GeofenceRoutesTab.jsx';
 import FleetIntegrationTab from './components/tracking/FleetIntegrationTab.jsx';
 import FleetDistributionMonitor from './components/tracking/FleetDistributionMonitor.jsx';
 import LogisticsActivityTab from './components/tracking/LogisticsActivityTab.jsx';
 import CompletedDeliveriesTab from './components/tracking/CompletedDeliveriesTab.jsx';
+import {
+  TRACKING_TAB_IDS,
+  TRACKING_TAB_LABELS,
+  TRACKING_TABS,
+} from './lib/trackingManagementTabs.js';
 
-const TABS = [
-  { id: 'geofence', label: 'Geofence routes', description: 'Map geofences on Access Management routes' },
-  { id: 'integration', label: 'Fleet integration', description: 'Cartrack, FleetCam & unit links' },
-  { id: 'activity', label: 'Logistics Activity', description: 'Schedule loads · slips · stage board' },
-  { id: 'monitor', label: 'Monitor', description: 'Live fleet map' },
-  { id: 'deliveries', label: 'Completed deliveries', description: 'Delivery notes for Command Centre' },
-];
+const MANAGE_TAB = {
+  id: 'manage-tab-access',
+  label: 'Manage tabs',
+  description: 'Grant tab access per user (super admin)',
+};
 
 export default function TrackingManagement() {
   const { user } = useAuth();
+  const isSuperAdmin = user?.role === 'super_admin';
   const [navHidden, setNavHidden] = useSecondaryNavHidden('tracking-management');
   const [tab, setTab] = useState('activity');
   const [error, setError] = useState('');
   const [migrationHint, setMigrationHint] = useState('');
   const [noteTripId, setNoteTripId] = useState(null);
+  const [allowedTabs, setAllowedTabs] = useState([]);
+  const [tabsLoading, setTabsLoading] = useState(true);
+  const [permissions, setPermissions] = useState([]);
+  const [tabAccessUsers, setTabAccessUsers] = useState([]);
 
-  useAutoHideNavAfterTabChange(tab);
+  const navTabs = useMemo(() => {
+    const visible = TRACKING_TABS.filter((t) => allowedTabs.includes(t.id));
+    if (isSuperAdmin) return [...visible, MANAGE_TAB];
+    return visible;
+  }, [allowedTabs, isSuperAdmin]);
+
+  useEffect(() => {
+    tabAccessApi
+      .myTabs('tracking_management')
+      .then((d) => {
+        let tabs = d.tabs || [];
+        if (isSuperAdmin && !tabs.length) tabs = [...TRACKING_TAB_IDS];
+        setAllowedTabs(tabs);
+      })
+      .catch(() => setAllowedTabs(isSuperAdmin ? [...TRACKING_TAB_IDS] : []))
+      .finally(() => setTabsLoading(false));
+  }, [isSuperAdmin]);
+
+  useEffect(() => {
+    if (tabsLoading) return;
+    if (tab === 'manage-tab-access' && isSuperAdmin) return;
+    if (allowedTabs.includes(tab)) return;
+    if (allowedTabs.length > 0) {
+      setTab(allowedTabs[0]);
+    } else if (isSuperAdmin) {
+      setTab('manage-tab-access');
+    }
+  }, [allowedTabs, tab, tabsLoading, isSuperAdmin]);
+
+  const hasAccess = isSuperAdmin || allowedTabs.length > 0;
+  const tabOk =
+    tab === 'manage-tab-access' ||
+    allowedTabs.includes(tab);
+  useAutoHideNavAfterTabChange(tab, { ready: !tabsLoading && hasAccess && tabOk });
 
   useEffect(() => {
     trackingApi.dashboard().then((d) => {
@@ -36,10 +79,23 @@ export default function TrackingManagement() {
     });
   }, [tab]);
 
-  const openDeliveryNote = (vehicle) => {
-    setNoteTripId(vehicle.trip_id || vehicle.truck_registration);
-    setTab('deliveries');
-  };
+  if (tabsLoading) {
+    return <p className="text-sm text-surface-500 py-12">Loading…</p>;
+  }
+
+  if (!hasAccess) {
+    return (
+      <div className="max-w-lg mx-auto py-12 px-4">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-amber-900 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-100">
+          <h2 className="font-semibold text-lg">No Tracking tabs assigned</h2>
+          <p className="mt-2 text-sm">
+            You have access to Tracking management, but no tabs have been granted yet. Ask a super admin to assign tabs under{' '}
+            <strong>Manage tabs</strong>.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-0 min-h-[calc(100vh-8rem)]">
@@ -70,7 +126,7 @@ export default function TrackingManagement() {
         </div>
         <div className="flex-1 overflow-y-auto py-2 w-72">
           <ul className="space-y-0.5">
-            {TABS.map((t) => (
+            {navTabs.map((t) => (
               <li key={t.id}>
                 <button
                   type="button"
@@ -106,7 +162,7 @@ export default function TrackingManagement() {
         )}
 
         <div className="w-full max-w-7xl mx-auto flex-1">
-          {migrationHint && (
+          {migrationHint && tab !== 'manage-tab-access' && (
             <div className="mb-4 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-100">
               <p className="font-semibold">Tracking database not installed</p>
               <p className="text-xs mt-1">{migrationHint}</p>
@@ -119,16 +175,32 @@ export default function TrackingManagement() {
             </div>
           )}
 
-          {tab === 'geofence' && <GeofenceRoutesTab setError={setError} />}
-          {tab === 'integration' && <FleetIntegrationTab setError={setError} />}
-          {tab === 'activity' && <LogisticsActivityTab setError={setError} />}
-          {tab === 'monitor' && <FleetDistributionMonitor setError={setError} />}
-          {tab === 'deliveries' && (
+          {tab === 'geofence' && allowedTabs.includes('geofence') && <GeofenceRoutesTab setError={setError} />}
+          {tab === 'integration' && allowedTabs.includes('integration') && <FleetIntegrationTab setError={setError} />}
+          {tab === 'activity' && allowedTabs.includes('activity') && <LogisticsActivityTab setError={setError} />}
+          {tab === 'monitor' && allowedTabs.includes('monitor') && <FleetDistributionMonitor setError={setError} />}
+          {tab === 'deliveries' && allowedTabs.includes('deliveries') && (
             <CompletedDeliveriesTab
               setError={setError}
               noteDeliveryId={noteTripId}
               onNoteDeliveryHandled={() => setNoteTripId(null)}
             />
+          )}
+          {tab === 'manage-tab-access' && isSuperAdmin && (
+            <>
+              <ManagePageTabAccess
+                pageKey="tracking_management"
+                pageLabel="Tracking management"
+                allTabIds={TRACKING_TAB_IDS}
+                tabLabels={TRACKING_TAB_LABELS}
+                permissions={permissions}
+                setPermissions={setPermissions}
+                users={tabAccessUsers}
+                setUsers={setTabAccessUsers}
+                emptyMeansAll={false}
+              />
+              <TrackingNotificationSettings setError={setError} />
+            </>
           )}
         </div>
       </div>

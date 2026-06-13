@@ -3,9 +3,10 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { todayYmd } from '../lib/appTime.js';
 import { processGeofencePositions, syncContractorFleetToTracking } from '../lib/trackingGeofenceEngine.js';
-import { geocodeAddress, drivingRoute } from '../lib/mapRouting.js';
+import { geocodeAddress, drivingRouteAlternatives } from '../lib/mapRouting.js';
 import { bufferPolylineToPolygon } from '../lib/routeCorridorGeofence.js';
 import { applyTelemetryToTrip } from '../lib/trackingTelemetry.js';
+import { sendDeviationAlertEmail } from '../lib/trackingEmailAlerts.js';
 import { getTrackingPollStatus, runTrackingProviderPoll } from '../lib/trackingProviderPoll.js';
 import { testFleetcamConnection, listFleetcamDevices } from '../lib/fleetcamConnector.js';
 import {
@@ -759,6 +760,11 @@ function mapSettings(row) {
     alarm_harsh_accel: !!get(row, 'alarm_harsh_accel'),
     alarm_seatbelt: !!get(row, 'alarm_seatbelt'),
     alarm_idle_minutes: get(row, 'alarm_idle_minutes'),
+    notify_email_deviation: get(row, 'notify_email_deviation') !== false && get(row, 'notify_email_deviation') !== 0,
+    notify_email_overspeed: get(row, 'notify_email_overspeed') !== false && get(row, 'notify_email_overspeed') !== 0,
+    notify_email_parking: get(row, 'notify_email_parking') !== false && get(row, 'notify_email_parking') !== 0,
+    notify_email_loading: get(row, 'notify_email_loading') !== false && get(row, 'notify_email_loading') !== 0,
+    notify_email_offloading: get(row, 'notify_email_offloading') !== false && get(row, 'notify_email_offloading') !== 0,
     updated_at: get(row, 'updated_at'),
   };
 }
@@ -776,6 +782,11 @@ router.patch('/settings', async (req, res) => {
     if (b.alarm_harsh_accel !== undefined) { updates.push('alarm_harsh_accel = @aha'); params.aha = b.alarm_harsh_accel ? 1 : 0; }
     if (b.alarm_seatbelt !== undefined) { updates.push('alarm_seatbelt = @asb'); params.asb = b.alarm_seatbelt ? 1 : 0; }
     if (b.alarm_idle_minutes != null) { updates.push('alarm_idle_minutes = @aim'); params.aim = Number(b.alarm_idle_minutes); }
+    if (b.notify_email_deviation !== undefined) { updates.push('notify_email_deviation = @ned'); params.ned = b.notify_email_deviation ? 1 : 0; }
+    if (b.notify_email_overspeed !== undefined) { updates.push('notify_email_overspeed = @neo'); params.neo = b.notify_email_overspeed ? 1 : 0; }
+    if (b.notify_email_parking !== undefined) { updates.push('notify_email_parking = @nep'); params.nep = b.notify_email_parking ? 1 : 0; }
+    if (b.notify_email_loading !== undefined) { updates.push('notify_email_loading = @nel'); params.nel = b.notify_email_loading ? 1 : 0; }
+    if (b.notify_email_offloading !== undefined) { updates.push('notify_email_offloading = @nef'); params.nef = b.notify_email_offloading ? 1 : 0; }
     updates.push('updated_at = SYSUTCDATETIME()');
     if (updates.length === 1) return res.status(400).json({ error: 'No fields' });
     await query(
@@ -1047,6 +1058,16 @@ router.post('/trips/:id/deviation', async (req, res) => {
        VALUES (@tenantId, @tripId, @reg, N'deviation', N'warning', SYSUTCDATETIME(), @lat, @lng, @det)`,
       { tenantId: tid, tripId: req.params.id, reg: trReg, lat: b.lat ?? null, lng: b.lng ?? null, det: b.detail || 'Route deviation' }
     );
+    if (trReg) {
+      await sendDeviationAlertEmail({
+        query,
+        tenantId: tid,
+        truckRegistration: trReg,
+        lat: b.lat ?? null,
+        lng: b.lng ?? null,
+        detail: b.detail || 'Route deviation',
+      });
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to record deviation' });
@@ -1223,8 +1244,8 @@ router.get('/map/route', async (req, res) => {
     if (![fromLat, fromLng, toLat, toLng].every(Number.isFinite)) {
       return res.status(400).json({ error: 'from_lat, from_lng, to_lat, to_lng required' });
     }
-    const route = await drivingRoute(fromLat, fromLng, toLat, toLng);
-    res.json({ route });
+    const route = await drivingRouteAlternatives(fromLat, fromLng, toLat, toLng);
+    res.json({ route: route[0], alternatives: route });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Route lookup failed' });
   }
@@ -1247,29 +1268,65 @@ router.post('/geofences/draw-route', async (req, res) => {
     const route = rr.recordset?.[0];
     if (!route) return res.status(404).json({ error: 'Route not found' });
 
-    const originQuery = b.origin_query || get(route, 'loading_address') || get(route, 'starting_point');
-    const destQuery = b.destination_query || get(route, 'destination_address') || get(route, 'destination');
-    if (!originQuery || !destQuery) {
-      return res.status(400).json({ error: 'Route needs loading and destination addresses in Access Management' });
+    const originQuery = b.origin_query || get(route, 'loading_address') || get(route, 'starting_point') || '';
+    const destQuery = b.destination_query || get(route, 'destination_address') || get(route, 'destination') || '';
+
+    const originFromCoords = Number.isFinite(Number(b.origin_lat)) && Number.isFinite(Number(b.origin_lng));
+    const destFromCoords = Number.isFinite(Number(b.dest_lat)) && Number.isFinite(Number(b.dest_lng));
+
+    if (!originFromCoords && !String(originQuery).trim()) {
+      return res.status(400).json({ error: 'Provide a loading address or origin latitude/longitude coordinates' });
+    }
+    if (!destFromCoords && !String(destQuery).trim()) {
+      return res.status(400).json({ error: 'Provide a destination address or destination latitude/longitude coordinates' });
     }
 
     const corridorM = Math.max(100, Number(b.corridor_m) || 400);
     const endpointRadiusM = Math.max(100, Number(b.endpoint_radius_m) || 500);
 
-    const origin = b.origin_lat != null && b.origin_lng != null
-      ? { lat: Number(b.origin_lat), lng: Number(b.origin_lng), display_name: originQuery }
-      : await geocodeAddress(originQuery);
-    const dest = b.dest_lat != null && b.dest_lng != null
-      ? { lat: Number(b.dest_lat), lng: Number(b.dest_lng), display_name: destQuery }
-      : await geocodeAddress(destQuery);
+    let origin;
+    if (originFromCoords) {
+      origin = {
+        lat: Number(b.origin_lat),
+        lng: Number(b.origin_lng),
+        display_name: String(originQuery).trim() || `${Number(b.origin_lat)}, ${Number(b.origin_lng)}`,
+      };
+    } else {
+      origin = await geocodeAddress(originQuery);
+    }
 
-    if (!origin) return res.status(404).json({ error: `Could not locate origin: ${originQuery}` });
-    if (!dest) return res.status(404).json({ error: `Could not locate destination: ${destQuery}` });
+    let dest;
+    if (destFromCoords) {
+      dest = {
+        lat: Number(b.dest_lat),
+        lng: Number(b.dest_lng),
+        display_name: String(destQuery).trim() || `${Number(b.dest_lat)}, ${Number(b.dest_lng)}`,
+      };
+    } else {
+      dest = await geocodeAddress(destQuery);
+    }
 
-    const driving = await drivingRoute(origin.lat, origin.lng, dest.lat, dest.lng);
-    const polyline = driving.polyline || [];
+    if (!origin) return res.status(404).json({ error: `Could not locate origin: ${originQuery || 'invalid coordinates'}` });
+    if (!dest) return res.status(404).json({ error: `Could not locate destination: ${destQuery || 'invalid coordinates'}` });
 
-    const ring = bufferPolylineToPolygon(polyline, corridorM);
+    const alternatives = await drivingRouteAlternatives(origin.lat, origin.lng, dest.lat, dest.lng);
+    const selectedIndex = Math.min(
+      Math.max(0, Number(b.selected_route_index) || 0),
+      alternatives.length - 1
+    );
+    const selected = alternatives[selectedIndex] || alternatives[0];
+    const polyline = Array.isArray(b.route_polyline) && b.route_polyline.length >= 2
+      ? b.route_polyline
+      : (selected.polyline || []);
+    const driving = {
+      distance_km: selected.distance_km,
+      duration_min: selected.duration_min,
+      polyline,
+    };
+
+    const ring = Array.isArray(b.corridor_polygon) && b.corridor_polygon.length >= 3
+      ? b.corridor_polygon
+      : bufferPolylineToPolygon(polyline, corridorM);
     const corridorJson = JSON.stringify({
       type: 'corridor',
       corridor_m: corridorM,
@@ -1288,6 +1345,8 @@ router.post('/geofences/draw-route', async (req, res) => {
         origin,
         destination: dest,
         driving,
+        alternatives,
+        selected_route_index: selectedIndex,
         corridor_m: corridorM,
         endpoint_radius_m: endpointRadiusM,
         corridor_polygon: ring,

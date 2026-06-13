@@ -102,8 +102,36 @@ export async function processGeofencePositions(query, tenantId) {
 
       if (!wasInside && inside) {
         if (get(fence, 'alert_on_entry')) {
-          await sendGeofenceAlertEmail({ query, tenantId, truckRegistration: reg, geofenceName: fenceName, eventType: 'entry', lat, lng, routeName });
-          stats.alerts++;
+          const fenceType = String(get(fence, 'fence_type') || '').toLowerCase();
+          if (fenceType === 'hazard' || leg === 'alert') {
+            await query(
+              `INSERT INTO tracking_alarm_record (tenant_id, trip_id, truck_registration, alarm_type, severity, occurred_at, lat, lng, detail)
+               VALUES (@tenantId, @tripId, @reg, N'geofence', N'warning', SYSUTCDATETIME(), @lat, @lng, @det)`,
+              {
+                tenantId,
+                tripId,
+                reg,
+                lat,
+                lng,
+                det: `Entered alert zone: ${fenceName}${routeName ? ` (${routeName})` : ''}`,
+              }
+            );
+          }
+          if (leg !== 'origin' && leg !== 'destination') {
+            await sendGeofenceAlertEmail({
+              query,
+              tenantId,
+              truckRegistration: reg,
+              geofenceName: fenceName,
+              eventType: 'entry',
+              lat,
+              lng,
+              routeName,
+              leg,
+              fenceType: get(fence, 'fence_type'),
+            });
+            stats.alerts++;
+          }
         }
 
         if (leg === 'origin' && contractorRouteId) {
@@ -128,6 +156,19 @@ export async function processGeofencePositions(query, tenantId) {
               }
             );
             await openLoadingDeliveryRecord(query, tenantId, tripId, trip, contractorRouteId);
+            await sendGeofenceAlertEmail({
+              query,
+              tenantId,
+              truckRegistration: reg,
+              geofenceName: fenceName || 'Loading point',
+              eventType: 'entry',
+              lat,
+              lng,
+              routeName,
+              leg: 'origin',
+              notificationType: 'loading',
+            });
+            stats.alerts++;
             stats.allocated++;
             stats.pending_notes++;
           }
@@ -147,6 +188,19 @@ export async function processGeofencePositions(query, tenantId) {
               { tenantId, id: tripId }
             );
             await openDestinationDeliveryRecord(query, tenantId, tripId, trip, contractorRouteId);
+            await sendGeofenceAlertEmail({
+              query,
+              tenantId,
+              truckRegistration: reg,
+              geofenceName: fenceName || 'Destination',
+              eventType: 'entry',
+              lat,
+              lng,
+              routeName,
+              leg: 'destination',
+              notificationType: 'offloading',
+            });
+            stats.alerts++;
             stats.pending_notes++;
           }
         }
@@ -166,7 +220,18 @@ export async function processGeofencePositions(query, tenantId) {
               det: `Exited geofence: ${fenceName}${routeName ? ` (${routeName})` : ''}`,
             }
           );
-          await sendGeofenceAlertEmail({ query, tenantId, truckRegistration: reg, geofenceName: fenceName, eventType: 'exit', lat, lng, routeName });
+          await sendGeofenceAlertEmail({
+            query,
+            tenantId,
+            truckRegistration: reg,
+            geofenceName: fenceName,
+            eventType: 'exit',
+            lat,
+            lng,
+            routeName,
+            leg,
+            fenceType: get(fence, 'fence_type'),
+          });
           stats.alerts++;
         }
       }

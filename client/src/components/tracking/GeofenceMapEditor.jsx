@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { MapContainer, Circle, Marker, Polygon, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, Circle, Marker, Polygon, Polyline, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import FleetMapBasemap from '../FleetMapBasemap.jsx';
@@ -21,6 +21,13 @@ const vertexIcon = L.divIcon({
   iconAnchor: [6, 6],
 });
 
+const previewVertexIcon = L.divIcon({
+  className: 'geofence-preview-vertex-handle',
+  html: '<div style="width:14px;height:14px;border-radius:50%;background:#7c3aed;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>',
+  iconSize: [14, 14],
+  iconAnchor: [7, 7],
+});
+
 function FitBounds({ positions }) {
   const map = useMap();
   useEffect(() => {
@@ -34,11 +41,11 @@ function FitBounds({ positions }) {
   return null;
 }
 
-function DraggableVertex({ position, index, onDrag }) {
+function DraggableVertex({ position, index, onDrag, icon = vertexIcon }) {
   return (
     <Marker
       position={position}
-      icon={vertexIcon}
+      icon={icon}
       draggable
       eventHandlers={{
         dragend: (e) => {
@@ -50,12 +57,25 @@ function DraggableVertex({ position, index, onDrag }) {
   );
 }
 
-function legColor(leg) {
+function MapClickHandler({ enabled, onMapClick }) {
+  useMapEvents({
+    click(e) {
+      if (enabled && onMapClick) onMapClick(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
+
+function legColor(leg, fenceType) {
+  const ft = String(fenceType || '').toLowerCase();
+  if (leg === 'alert' || ft === 'hazard') return '#e11d48';
   if (leg === 'origin') return '#2563eb';
   if (leg === 'destination') return '#059669';
   if (leg === 'corridor') return '#7c3aed';
   return '#64748b';
 }
+
+const ALT_COLORS = ['#94a3b8', '#cbd5e1', '#e2e8f0'];
 
 export default function GeofenceMapEditor({
   geofences = [],
@@ -64,21 +84,33 @@ export default function GeofenceMapEditor({
   editCenter = null,
   editRadius = null,
   editLeg = null,
+  editFenceType = null,
   onVertexDrag,
   onCenterDrag,
+  onPreviewVertexDrag,
+  alertPreview = null,
+  mapClickMode = false,
+  onMapClick,
   fitKey = 0,
   className = '',
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
+  const selectedAltIndex = preview?.selected_route_index ?? 0;
+  const previewCorridor = preview?.corridor_polygon;
+
   const positions = useMemo(() => {
     const pts = [];
-    if (preview?.route_polyline?.length) {
+    if (preview?.alternatives?.length) {
+      preview.alternatives.forEach((alt) => {
+        alt.polyline?.forEach((p) => pts.push([p.lat, p.lng]));
+      });
+    } else if (preview?.route_polyline?.length) {
       preview.route_polyline.forEach((p) => pts.push([p.lat, p.lng]));
     }
-    if (preview?.corridor_polygon?.length) {
-      preview.corridor_polygon.forEach((p) => pts.push([p.lat, p.lng]));
+    if (previewCorridor?.length) {
+      previewCorridor.forEach((p) => pts.push([p.lat, p.lng]));
     }
     if (preview?.origin) pts.push([preview.origin.lat, preview.origin.lng]);
     if (preview?.destination) pts.push([preview.destination.lat, preview.destination.lng]);
@@ -89,26 +121,43 @@ export default function GeofenceMapEditor({
     });
     if (editRing?.length) editRing.forEach((p) => pts.push([p.lat, p.lng]));
     if (editCenter) pts.push([editCenter.lat, editCenter.lng]);
+    if (alertPreview?.lat != null && alertPreview?.lng != null) pts.push([alertPreview.lat, alertPreview.lng]);
     return pts;
-  }, [geofences, preview, editRing, editCenter, fitKey]);
+  }, [geofences, preview, previewCorridor, editRing, editCenter, alertPreview, fitKey]);
 
   const center = positions[0] || [-26.15, 28.12];
 
   if (!mounted) {
-    return <div className={`h-[32rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>Loading map…</div>;
+    return (
+      <div className={`h-[32rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
+        Loading map…
+      </div>
+    );
   }
 
   const showEditPolygon = editRing && editRing.length >= 3;
+  const showPreviewCorridor = !showEditPolygon && previewCorridor?.length >= 3;
 
   return (
-    <div className={`rounded-xl border border-surface-200 overflow-hidden h-[32rem] z-0 ${className}`}>
+    <div className={`rounded-xl border border-surface-200 overflow-hidden h-[32rem] z-0 relative ${className}`}>
+      {mapClickMode && (
+        <div className="absolute top-2 right-2 z-[1000] rounded-lg bg-rose-600 text-white px-2.5 py-1.5 text-[10px] font-medium shadow-sm">
+          Click the map to set coordinates
+        </div>
+      )}
+      {showPreviewCorridor && onPreviewVertexDrag && !mapClickMode && (
+        <div className="absolute top-2 left-2 z-[1000] rounded-lg bg-white/95 dark:bg-surface-900/95 border border-surface-200 dark:border-surface-700 px-2.5 py-1.5 text-[10px] text-surface-600 dark:text-surface-300 shadow-sm max-w-[220px]">
+          Drag purple handles to expand or reshape the corridor geofence
+        </div>
+      )}
       <MapContainer center={center} zoom={9} className="h-full w-full" scrollWheelZoom>
         <FleetMapBasemap />
+        <MapClickHandler enabled={mapClickMode} onMapClick={onMapClick} />
         <FitBounds positions={positions} />
 
         {geofences.map((g) => {
           const ring = parsePolygonJson(g.polygon_json);
-          const color = legColor(g.leg);
+          const color = legColor(g.leg, g.fence_type);
           if (ring?.length >= 3) {
             return (
               <Polygon
@@ -131,30 +180,79 @@ export default function GeofenceMapEditor({
           return null;
         })}
 
+        {preview?.alternatives?.map((alt, i) => {
+          if (i === selectedAltIndex || !alt.polyline?.length) return null;
+          return (
+            <Polyline
+              key={`alt-${i}`}
+              positions={alt.polyline.map((p) => [p.lat, p.lng])}
+              pathOptions={{
+                color: ALT_COLORS[i] || '#cbd5e1',
+                weight: 4,
+                opacity: 0.55,
+                dashArray: '8 6',
+              }}
+            />
+          );
+        })}
+
         {preview?.route_polyline?.length > 1 && (
           <Polyline
             positions={preview.route_polyline.map((p) => [p.lat, p.lng])}
-            pathOptions={{ color: '#0ea5e9', weight: 5, opacity: 0.85 }}
+            pathOptions={{ color: '#0ea5e9', weight: 6, opacity: 0.95 }}
           />
         )}
-        {preview?.corridor_polygon?.length >= 3 && (
-          <Polygon
-            positions={preview.corridor_polygon.map((p) => [p.lat, p.lng])}
-            pathOptions={{ color: '#7c3aed', weight: 2, dashArray: '6 4', fillOpacity: 0.18 }}
-          />
+
+        {showPreviewCorridor && (
+          <>
+            <Polygon
+              positions={previewCorridor.map((p) => [p.lat, p.lng])}
+              pathOptions={{ color: '#7c3aed', weight: 2, dashArray: '6 4', fillOpacity: 0.2 }}
+            />
+            {onPreviewVertexDrag && !mapClickMode &&
+              previewCorridor.map((p, i) => (
+                <DraggableVertex
+                  key={`pv-${i}`}
+                  position={[p.lat, p.lng]}
+                  index={i}
+                  icon={previewVertexIcon}
+                  onDrag={onPreviewVertexDrag}
+                />
+              ))}
+          </>
         )}
+
         {preview?.origin && (
-          <Circle center={[preview.origin.lat, preview.origin.lng]} radius={preview.endpoint_radius_m || 500} pathOptions={{ color: '#2563eb', fillOpacity: 0.2 }} />
+          <Circle
+            center={[preview.origin.lat, preview.origin.lng]}
+            radius={preview.endpoint_radius_m || 500}
+            pathOptions={{ color: '#2563eb', fillOpacity: 0.2 }}
+          />
         )}
         {preview?.destination && (
-          <Circle center={[preview.destination.lat, preview.destination.lng]} radius={preview.endpoint_radius_m || 500} pathOptions={{ color: '#059669', fillOpacity: 0.2 }} />
+          <Circle
+            center={[preview.destination.lat, preview.destination.lng]}
+            radius={preview.endpoint_radius_m || 500}
+            pathOptions={{ color: '#059669', fillOpacity: 0.2 }}
+          />
+        )}
+
+        {alertPreview?.lat != null && alertPreview?.lng != null && (
+          <>
+            <Circle
+              center={[alertPreview.lat, alertPreview.lng]}
+              radius={Number(alertPreview.radius_m) || 150}
+              pathOptions={{ color: '#e11d48', weight: 2, fillOpacity: 0.25, dashArray: '4 4' }}
+            />
+            <Marker position={[alertPreview.lat, alertPreview.lng]} />
+          </>
         )}
 
         {showEditPolygon && (
           <>
             <Polygon
               positions={editRing.map((p) => [p.lat, p.lng])}
-              pathOptions={{ color: legColor(editLeg), weight: 3, fillOpacity: 0.2 }}
+              pathOptions={{ color: legColor(editLeg, editFenceType), weight: 3, fillOpacity: 0.2 }}
             />
             {editRing.map((p, i) => (
               <DraggableVertex key={`v-${i}`} position={[p.lat, p.lng]} index={i} onDrag={onVertexDrag} />
@@ -167,7 +265,7 @@ export default function GeofenceMapEditor({
             <Circle
               center={[editCenter.lat, editCenter.lng]}
               radius={Number(editRadius) || 500}
-              pathOptions={{ color: legColor(editLeg), weight: 3, fillOpacity: 0.2 }}
+              pathOptions={{ color: legColor(editLeg, editFenceType), weight: 3, fillOpacity: 0.2 }}
             />
             <Marker
               position={[editCenter.lat, editCenter.lng]}

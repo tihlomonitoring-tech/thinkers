@@ -63,6 +63,12 @@ try {
   console.warn('tracking-logistics-activity (optional):', e?.message || e);
 }
 
+try {
+  await runBatches('tracking-notification-email-settings.sql', 'tracking-notification-email-settings.sql');
+} catch (e) {
+  console.warn('tracking-notification-email-settings (optional):', e?.message || e);
+}
+
 const pool = await getPool();
 await pool.close();
 console.log('Tracking setup complete. Restart the API server.');
