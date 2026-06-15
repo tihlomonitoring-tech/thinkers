@@ -1,9 +1,26 @@
-import { useEffect, useMemo, useState } from 'react';
-import { MapContainer, Circle, Marker, Polygon, Polyline, useMap, useMapEvents } from 'react-leaflet';
+import { useMemo, useState, useEffect } from 'react';
+import { MapContainer, Circle, Marker, Polygon, Polyline, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import FleetMapBasemap from '../FleetMapBasemap.jsx';
-import { parsePolygonJson } from '../../lib/routeCorridorGeofence.js';
+import { parsePolygonJson, parseCorridorPolyline } from '../../lib/routeCorridorGeofence.js';
+import { geofenceDisplayColor } from '../../lib/geofenceStyle.js';
+import { MapPanLock, MapWheelGuard, FitBoundsOnce, FlyToPoint } from './geofenceMapControls.jsx';
+import MapPlaceSearch from './MapPlaceSearch.jsx';
+import GeofencePlaceLabels from './GeofencePlaceLabels.jsx';
+import RouteAlternativesMapLayers from './RouteAlternativesMapLayers.jsx';
+import { landGeofencePlaces } from '../../lib/geofenceLabels.js';
+import {
+  CircleDrawHandler,
+  CircleDrawPreview,
+  CircleDraftEditor,
+} from './geofenceCircleDraw.jsx';
+import {
+  PolygonClickDrawHandler,
+  FreehandDrawHandler,
+  PolygonDrawPreview,
+  PolygonDraftEditor,
+} from './geofencePolygonDraw.jsx';
 
 const defaultIcon = L.icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -14,49 +31,6 @@ const defaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = defaultIcon;
 
-const vertexIcon = L.divIcon({
-  className: 'geofence-vertex-handle',
-  html: '<div style="width:12px;height:12px;border-radius:50%;background:#2563eb;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.35)"></div>',
-  iconSize: [12, 12],
-  iconAnchor: [6, 6],
-});
-
-const previewVertexIcon = L.divIcon({
-  className: 'geofence-preview-vertex-handle',
-  html: '<div style="width:14px;height:14px;border-radius:50%;background:#7c3aed;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>',
-  iconSize: [14, 14],
-  iconAnchor: [7, 7],
-});
-
-function FitBounds({ positions }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!positions?.length) return;
-    if (positions.length === 1) {
-      map.setView(positions[0], 12);
-      return;
-    }
-    map.fitBounds(L.latLngBounds(positions.map(([lat, lng]) => [lat, lng])), { padding: [40, 40], maxZoom: 13 });
-  }, [map, positions]);
-  return null;
-}
-
-function DraggableVertex({ position, index, onDrag, icon = vertexIcon }) {
-  return (
-    <Marker
-      position={position}
-      icon={icon}
-      draggable
-      eventHandlers={{
-        dragend: (e) => {
-          const { lat, lng } = e.target.getLatLng();
-          onDrag?.(index, lat, lng);
-        },
-      }}
-    />
-  );
-}
-
 function MapClickHandler({ enabled, onMapClick }) {
   useMapEvents({
     click(e) {
@@ -66,16 +40,82 @@ function MapClickHandler({ enabled, onMapClick }) {
   return null;
 }
 
-function legColor(leg, fenceType) {
-  const ft = String(fenceType || '').toLowerCase();
-  if (leg === 'alert' || ft === 'hazard') return '#e11d48';
-  if (leg === 'origin') return '#2563eb';
-  if (leg === 'destination') return '#059669';
-  if (leg === 'corridor') return '#7c3aed';
-  return '#64748b';
+function InteractiveGeofence({ geofence, selected, selectionEnabled, onSelect }) {
+  const ring = parsePolygonJson(geofence.polygon_json);
+  const color = geofenceDisplayColor(geofence);
+  const weight = selected ? 4 : 2;
+  const fillOpacity = selected ? 0.25 : 0.12;
+  const leg = String(geofence.leg || '').toLowerCase();
+  const isCorridor = leg === 'corridor' || leg === 'corridor_alt';
+  const polyline = isCorridor ? parseCorridorPolyline(geofence.polygon_json) : null;
+  const lineWeight = leg === 'corridor_alt' ? 5 : 6;
+  const lineOpacity = leg === 'corridor_alt' ? 0.85 : 0.95;
+  const lineDash = leg === 'corridor_alt' ? '6 4' : undefined;
+
+  const clickHandler = selectionEnabled
+    ? {
+        click: (e) => {
+          L.DomEvent.stopPropagation(e.originalEvent);
+          onSelect?.(geofence);
+        },
+      }
+    : {};
+
+  return (
+    <>
+      {polyline?.length > 1 && (
+        <Polyline
+          positions={polyline.map((p) => [p.lat, p.lng])}
+          pathOptions={{
+            color,
+            weight: lineWeight,
+            opacity: lineOpacity,
+            dashArray: lineDash,
+          }}
+          eventHandlers={clickHandler}
+        />
+      )}
+      {ring?.length >= 3 && (
+        <Polygon
+          positions={ring.map((p) => [p.lat, p.lng])}
+          pathOptions={{
+            color,
+            weight,
+            fillOpacity,
+            fillColor: color,
+            dashArray: leg === 'corridor_alt' ? '5 5' : undefined,
+          }}
+          eventHandlers={clickHandler}
+        />
+      )}
+      {!ring?.length && geofence.center_lat != null && geofence.center_lng != null && geofence.radius_m && (
+        <Circle
+          center={[geofence.center_lat, geofence.center_lng]}
+          radius={Number(geofence.radius_m) || 500}
+          pathOptions={{ color, weight, fillOpacity, fillColor: color }}
+          eventHandlers={clickHandler}
+        />
+      )}
+    </>
+  );
 }
 
-const ALT_COLORS = ['#94a3b8', '#cbd5e1', '#e2e8f0'];
+function ToolBtn({ active, onClick, children, title }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={`px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+        active
+          ? 'bg-brand-600 text-white border-brand-600'
+          : 'bg-white dark:bg-surface-800 text-surface-700 dark:text-surface-200 border-surface-200 dark:border-surface-600 hover:bg-surface-50'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
 
 export default function GeofenceMapEditor({
   geofences = [],
@@ -83,201 +123,249 @@ export default function GeofenceMapEditor({
   editRing = null,
   editCenter = null,
   editRadius = null,
+  editColor = null,
   editLeg = null,
   editFenceType = null,
   onVertexDrag,
   onCenterDrag,
+  onEditRingChange,
+  onEditRadiusChange,
+  onEditSnapshot,
   onPreviewVertexDrag,
   alertPreview = null,
   mapClickMode = false,
   onMapClick,
-  fitKey = 0,
+  manualDrawMode = null,
+  circleDrawPreview = null,
+  onCircleDrawPreview,
+  onCircleDrawComplete,
+  manualCircleDraft = null,
+  onManualCircleDraftChange,
+  polygonDrawPoints = [],
+  onPolygonAddPoint,
+  onPolygonDrawComplete,
+  freehandPreview = null,
+  onFreehandPreview,
+  onFreehandComplete,
+  manualPolygonDraft = null,
+  onManualPolygonDraftChange,
+  draftColor = '#f59e0b',
+  selectedGeofenceId = null,
+  onGeofenceSelect,
+  mapTool = 'pan',
+  onMapToolChange,
+  fitRevision = 0,
+  fitPositions = null,
+  flyRevision = 0,
+  flyTarget = null,
+  onPlaceSelect,
+  routeMarkers = null,
+  labelGeofences = null,
+  onScaleDraft,
+  onDraftSnapshot,
   className = '',
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const selectedAltIndex = preview?.selected_route_index ?? 0;
-  const previewCorridor = preview?.corridor_polygon;
+  const resolveEditColor = editColor || geofenceDisplayColor({ leg: editLeg, fence_type: editFenceType });
 
-  const positions = useMemo(() => {
-    const pts = [];
-    if (preview?.alternatives?.length) {
-      preview.alternatives.forEach((alt) => {
-        alt.polyline?.forEach((p) => pts.push([p.lat, p.lng]));
-      });
-    } else if (preview?.route_polyline?.length) {
-      preview.route_polyline.forEach((p) => pts.push([p.lat, p.lng]));
-    }
-    if (previewCorridor?.length) {
-      previewCorridor.forEach((p) => pts.push([p.lat, p.lng]));
-    }
-    if (preview?.origin) pts.push([preview.origin.lat, preview.origin.lng]);
-    if (preview?.destination) pts.push([preview.destination.lat, preview.destination.lng]);
-    geofences.forEach((g) => {
-      if (g.center_lat != null && g.center_lng != null) pts.push([g.center_lat, g.center_lng]);
-      const ring = parsePolygonJson(g.polygon_json);
-      ring?.forEach((p) => pts.push([p.lat, p.lng]));
-    });
-    if (editRing?.length) editRing.forEach((p) => pts.push([p.lat, p.lng]));
-    if (editCenter) pts.push([editCenter.lat, editCenter.lng]);
-    if (alertPreview?.lat != null && alertPreview?.lng != null) pts.push([alertPreview.lat, alertPreview.lng]);
-    return pts;
-  }, [geofences, preview, previewCorridor, editRing, editCenter, alertPreview, fitKey]);
+  const defaultCenter = useMemo(() => {
+    const g = geofences[0];
+    if (g?.center_lat != null) return [g.center_lat, g.center_lng];
+    const ring = parsePolygonJson(g?.polygon_json);
+    if (ring?.[0]) return [ring[0].lat, ring[0].lng];
+    return [-26.15, 28.12];
+  }, [geofences]);
 
-  const center = positions[0] || [-26.15, 28.12];
+  const drawingActive = !!manualDrawMode;
+  const editingActive = !!(editRing || editCenter);
+  const panLocked = mapTool !== 'pan' || drawingActive || mapClickMode;
+  const hasResizableDraft = !!(manualCircleDraft || manualPolygonDraft?.ring?.length || editingActive);
+
+  const selectionEnabled = mapTool === 'pan' && !drawingActive && !mapClickMode && !editingActive;
+
+  const statusLine = panLocked
+    ? mapClickMode
+      ? 'Pick mode — click once (scroll to zoom, drag handles to resize)'
+      : drawingActive
+        ? 'Draw mode — scroll to zoom in/out; map position stays put'
+        : editingActive
+          ? 'Edit mode — drag corner dots to reshape, N/E/S/W handles to resize'
+          : 'Tool active — scroll wheel zooms the map'
+    : 'Pan mode — drag to move, scroll to zoom; click a geofence to edit';
+
+  const showEditPolygon = editRing && editRing.length >= 3;
+  const placeLabels = useMemo(
+    () => landGeofencePlaces(labelGeofences ?? geofences),
+    [labelGeofences, geofences]
+  );
 
   if (!mounted) {
     return (
-      <div className={`h-[32rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
+      <div className={`h-[36rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
         Loading map…
       </div>
     );
   }
 
-  const showEditPolygon = editRing && editRing.length >= 3;
-  const showPreviewCorridor = !showEditPolygon && previewCorridor?.length >= 3;
-
   return (
-    <div className={`rounded-xl border border-surface-200 overflow-hidden h-[32rem] z-0 relative ${className}`}>
-      {mapClickMode && (
-        <div className="absolute top-2 right-2 z-[1000] rounded-lg bg-rose-600 text-white px-2.5 py-1.5 text-[10px] font-medium shadow-sm">
-          Click the map to set coordinates
+    <div className={`rounded-xl border border-surface-200 overflow-hidden z-0 relative overscroll-contain ${className}`}>
+      <div className="absolute top-3 left-3 right-3 z-[1000] pointer-events-none flex justify-center">
+        <MapPlaceSearch onSelect={onPlaceSelect} savedPlaces={placeLabels} className="w-full max-w-lg pointer-events-auto shadow-lg" />
+      </div>
+
+      <div className="absolute bottom-3 left-3 z-[1000] flex flex-col gap-2 pointer-events-none max-w-[calc(100%-1.5rem)]">
+        <div className="flex flex-wrap gap-1.5 pointer-events-auto shadow-sm">
+          <ToolBtn active={mapTool === 'pan' && !mapClickMode} onClick={() => onMapToolChange?.('pan')} title="Pan the map (drag to move)">
+            Pan
+          </ToolBtn>
+          <ToolBtn active={mapTool === 'draw'} onClick={() => onMapToolChange?.('draw')} title="Draw land boundary">
+            Draw
+          </ToolBtn>
+          <ToolBtn active={mapClickMode} onClick={() => onMapToolChange?.('pick')} title="Pick a point">
+            Pick
+          </ToolBtn>
+        </div>
+        <div className="rounded-lg bg-slate-900/88 text-white px-3 py-2 text-[11px] shadow-lg pointer-events-auto max-w-md">
+          {statusLine}
+        </div>
+      </div>
+
+      {hasResizableDraft && onScaleDraft && (
+        <div className="absolute bottom-3 right-3 z-[1000] flex flex-col gap-1.5 pointer-events-auto">
+          <span className="text-[10px] font-semibold text-white bg-slate-900/80 px-2 py-1 rounded-md text-center">Resize</span>
+          <div className="flex gap-1">
+            <button type="button" onClick={() => onScaleDraft(0.9)} className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-white dark:bg-surface-800 border shadow-sm hover:bg-surface-50">−10%</button>
+            <button type="button" onClick={() => onScaleDraft(1.1)} className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-white dark:bg-surface-800 border shadow-sm hover:bg-surface-50">+10%</button>
+          </div>
         </div>
       )}
-      {showPreviewCorridor && onPreviewVertexDrag && !mapClickMode && (
-        <div className="absolute top-2 left-2 z-[1000] rounded-lg bg-white/95 dark:bg-surface-900/95 border border-surface-200 dark:border-surface-700 px-2.5 py-1.5 text-[10px] text-surface-600 dark:text-surface-300 shadow-sm max-w-[220px]">
-          Drag purple handles to expand or reshape the corridor geofence
-        </div>
-      )}
-      <MapContainer center={center} zoom={9} className="h-full w-full" scrollWheelZoom>
+
+      <MapContainer
+        center={defaultCenter}
+        zoom={9}
+        className="h-[36rem] w-full"
+        scrollWheelZoom="center"
+        doubleClickZoom={!drawingActive || manualDrawMode !== 'polygon'}
+        zoomControl
+      >
         <FleetMapBasemap />
-        <MapClickHandler enabled={mapClickMode} onMapClick={onMapClick} />
-        <FitBounds positions={positions} />
+        <MapWheelGuard />
+        <MapPanLock locked={panLocked} disableDoubleClickZoom={manualDrawMode === 'polygon'} />
+        <FitBoundsOnce revision={fitRevision} positions={fitPositions} />
+        <FlyToPoint point={flyTarget} revision={flyRevision} />
 
-        {geofences.map((g) => {
-          const ring = parsePolygonJson(g.polygon_json);
-          const color = legColor(g.leg, g.fence_type);
-          if (ring?.length >= 3) {
-            return (
-              <Polygon
-                key={g.id}
-                positions={ring.map((p) => [p.lat, p.lng])}
-                pathOptions={{ color, weight: 2, fillOpacity: 0.12 }}
-              />
-            );
-          }
-          if (g.center_lat != null && g.center_lng != null && g.radius_m) {
-            return (
-              <Circle
-                key={g.id}
-                center={[g.center_lat, g.center_lng]}
-                radius={Number(g.radius_m) || 500}
-                pathOptions={{ color, fillOpacity: 0.15 }}
-              />
-            );
-          }
-          return null;
-        })}
+        <MapClickHandler enabled={mapClickMode && !drawingActive} onMapClick={onMapClick} />
 
-        {preview?.alternatives?.map((alt, i) => {
-          if (i === selectedAltIndex || !alt.polyline?.length) return null;
-          return (
-            <Polyline
-              key={`alt-${i}`}
-              positions={alt.polyline.map((p) => [p.lat, p.lng])}
-              pathOptions={{
-                color: ALT_COLORS[i] || '#cbd5e1',
-                weight: 4,
-                opacity: 0.55,
-                dashArray: '8 6',
-              }}
-            />
-          );
-        })}
+        <CircleDrawHandler
+          active={manualDrawMode === 'circle' && !manualCircleDraft}
+          onPreview={onCircleDrawPreview}
+          onComplete={onCircleDrawComplete}
+        />
+        <PolygonClickDrawHandler
+          active={manualDrawMode === 'polygon' && !manualPolygonDraft}
+          points={polygonDrawPoints}
+          onAddPoint={(pt, opts) => onPolygonAddPoint?.(pt, opts)}
+          onComplete={onPolygonDrawComplete}
+        />
+        <FreehandDrawHandler
+          active={manualDrawMode === 'freehand' && !manualPolygonDraft}
+          onPreview={onFreehandPreview}
+          onComplete={onFreehandComplete}
+        />
 
-        {preview?.route_polyline?.length > 1 && (
-          <Polyline
-            positions={preview.route_polyline.map((p) => [p.lat, p.lng])}
-            pathOptions={{ color: '#0ea5e9', weight: 6, opacity: 0.95 }}
+        {circleDrawPreview && (
+          <CircleDrawPreview
+            circle={circleDrawPreview}
+            color={draftColor}
+            label={`${(circleDrawPreview.radius_m || 0).toLocaleString()} m`}
+          />
+        )}
+        {polygonDrawPoints?.length > 0 && manualDrawMode === 'polygon' && (
+          <PolygonDrawPreview points={polygonDrawPoints} color={draftColor} />
+        )}
+        {freehandPreview?.length > 0 && (
+          <PolygonDrawPreview points={freehandPreview} color={draftColor} />
+        )}
+        {manualCircleDraft && (
+          <CircleDraftEditor
+            circle={manualCircleDraft}
+            color={draftColor}
+            onChange={onManualCircleDraftChange}
+            onEditSnapshot={onDraftSnapshot}
+          />
+        )}
+        {manualPolygonDraft?.ring?.length >= 3 && (
+          <PolygonDraftEditor
+            ring={manualPolygonDraft.ring}
+            color={draftColor}
+            onChange={onManualPolygonDraftChange}
+            onEditSnapshot={onDraftSnapshot}
           />
         )}
 
-        {showPreviewCorridor && (
+        {geofences.map((g) => (
+          <InteractiveGeofence
+            key={g.id}
+            geofence={g}
+            selected={g.id === selectedGeofenceId}
+            selectionEnabled={selectionEnabled}
+            onSelect={onGeofenceSelect}
+          />
+        ))}
+
+        <GeofencePlaceLabels geofences={labelGeofences ?? geofences} />
+
+        <RouteAlternativesMapLayers preview={preview} />
+
+        {routeMarkers?.pointA && (
           <>
-            <Polygon
-              positions={previewCorridor.map((p) => [p.lat, p.lng])}
-              pathOptions={{ color: '#7c3aed', weight: 2, dashArray: '6 4', fillOpacity: 0.2 }}
-            />
-            {onPreviewVertexDrag && !mapClickMode &&
-              previewCorridor.map((p, i) => (
-                <DraggableVertex
-                  key={`pv-${i}`}
-                  position={[p.lat, p.lng]}
-                  index={i}
-                  icon={previewVertexIcon}
-                  onDrag={onPreviewVertexDrag}
-                />
-              ))}
+            <Circle center={[routeMarkers.pointA.lat, routeMarkers.pointA.lng]} radius={routeMarkers.endpointRadius || 500} pathOptions={{ color: '#2563eb', fillOpacity: 0.2 }} />
+            <Marker position={[routeMarkers.pointA.lat, routeMarkers.pointA.lng]} />
+          </>
+        )}
+        {routeMarkers?.pointB && (
+          <>
+            <Circle center={[routeMarkers.pointB.lat, routeMarkers.pointB.lng]} radius={routeMarkers.endpointRadius || 500} pathOptions={{ color: '#059669', fillOpacity: 0.2 }} />
+            <Marker position={[routeMarkers.pointB.lat, routeMarkers.pointB.lng]} />
           </>
         )}
 
-        {preview?.origin && (
-          <Circle
-            center={[preview.origin.lat, preview.origin.lng]}
-            radius={preview.endpoint_radius_m || 500}
-            pathOptions={{ color: '#2563eb', fillOpacity: 0.2 }}
-          />
+        {preview?.origin && !routeMarkers?.pointA && (
+          <Circle center={[preview.origin.lat, preview.origin.lng]} radius={preview.endpoint_radius_m || 500} pathOptions={{ color: '#2563eb', fillOpacity: 0.2 }} />
         )}
-        {preview?.destination && (
-          <Circle
-            center={[preview.destination.lat, preview.destination.lng]}
-            radius={preview.endpoint_radius_m || 500}
-            pathOptions={{ color: '#059669', fillOpacity: 0.2 }}
-          />
+        {preview?.destination && !routeMarkers?.pointB && (
+          <Circle center={[preview.destination.lat, preview.destination.lng]} radius={preview.endpoint_radius_m || 500} pathOptions={{ color: '#059669', fillOpacity: 0.2 }} />
         )}
 
         {alertPreview?.lat != null && alertPreview?.lng != null && (
           <>
-            <Circle
-              center={[alertPreview.lat, alertPreview.lng]}
-              radius={Number(alertPreview.radius_m) || 150}
-              pathOptions={{ color: '#e11d48', weight: 2, fillOpacity: 0.25, dashArray: '4 4' }}
-            />
+            <Circle center={[alertPreview.lat, alertPreview.lng]} radius={Number(alertPreview.radius_m) || 150} pathOptions={{ color: '#e11d48', weight: 2, fillOpacity: 0.25, dashArray: '4 4' }} />
             <Marker position={[alertPreview.lat, alertPreview.lng]} />
           </>
         )}
 
         {showEditPolygon && (
-          <>
-            <Polygon
-              positions={editRing.map((p) => [p.lat, p.lng])}
-              pathOptions={{ color: legColor(editLeg, editFenceType), weight: 3, fillOpacity: 0.2 }}
-            />
-            {editRing.map((p, i) => (
-              <DraggableVertex key={`v-${i}`} position={[p.lat, p.lng]} index={i} onDrag={onVertexDrag} />
-            ))}
-          </>
+          <PolygonDraftEditor
+            ring={editRing}
+            color={resolveEditColor}
+            onChange={onEditRingChange}
+            onVertexDrag={onVertexDrag}
+            onEditSnapshot={onEditSnapshot}
+          />
         )}
 
-        {editCenter && editRadius && (
-          <>
-            <Circle
-              center={[editCenter.lat, editCenter.lng]}
-              radius={Number(editRadius) || 500}
-              pathOptions={{ color: legColor(editLeg, editFenceType), weight: 3, fillOpacity: 0.2 }}
-            />
-            <Marker
-              position={[editCenter.lat, editCenter.lng]}
-              draggable
-              eventHandlers={{
-                dragend: (e) => {
-                  const { lat, lng } = e.target.getLatLng();
-                  onCenterDrag?.(lat, lng);
-                },
-              }}
-            />
-          </>
+        {editCenter && editRadius && !editRing && (
+          <CircleDraftEditor
+            circle={{ lat: editCenter.lat, lng: editCenter.lng, radius_m: Number(editRadius) || 500 }}
+            color={resolveEditColor}
+            onEditSnapshot={onEditSnapshot}
+            onChange={({ lat, lng, radius_m }) => {
+              onCenterDrag?.(lat, lng);
+              onEditRadiusChange?.(radius_m);
+            }}
+          />
         )}
       </MapContainer>
     </div>

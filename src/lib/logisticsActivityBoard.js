@@ -1,4 +1,5 @@
 import { todayYmd } from './appTime.js';
+import { haversineMeters } from './geo.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -22,6 +23,7 @@ export const ACTIVITY_STAGES = [
   { id: 'at_loading', label: 'At loading', hint: 'Capture loading slip or proceed without' },
   { id: 'enroute', label: 'En route', hint: 'Tracked to destination geofence' },
   { id: 'at_destination', label: 'At destination', hint: 'Capture offloading slip to clear board' },
+  { id: 'awaiting_reschedule', label: 'Awaiting reschedule', hint: 'Delivery complete — schedule next destination' },
 ];
 
 export function inferActivityStage(trip, openDelivery) {
@@ -33,34 +35,89 @@ export function inferActivityStage(trip, openDelivery) {
 
   if (status === 'enroute' || status === 'deviated' || status === 'overdue') return 'enroute';
   if (status === 'pending' && phase === 'destination') return 'at_destination';
+  if (explicit === 'awaiting_reschedule') return 'awaiting_reschedule';
   if (status === 'pending' && get(trip, 'at_loading_at')) return 'at_loading';
   if (get(trip, 'scheduled_at') && !get(trip, 'at_loading_at')) return 'scheduled';
   if (status === 'pending') return 'at_loading';
   return 'scheduled';
 }
 
-export function mapActivityTrip(row, openDelivery, routeMeta) {
+export function computeKmRemaining({ activity_stage, last_lat, last_lng, destination_lat, destination_lng, route_distance_km }) {
+  const stage = String(activity_stage || '').toLowerCase();
+  if (stage === 'awaiting_reschedule') return 0;
+
+  const lat = last_lat != null ? Number(last_lat) : null;
+  const lng = last_lng != null ? Number(last_lng) : null;
+  const dLat = destination_lat != null ? Number(destination_lat) : null;
+  const dLng = destination_lng != null ? Number(destination_lng) : null;
+
+  if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(dLat) && Number.isFinite(dLng)) {
+    const m = haversineMeters(lat, lng, dLat, dLng);
+    return Math.round((m / 1000) * 10) / 10;
+  }
+
+  const routeKm = route_distance_km != null ? Number(route_distance_km) : null;
+  if (Number.isFinite(routeKm) && routeKm > 0 && (stage === 'scheduled' || stage === 'at_loading' || stage === 'enroute')) {
+    return Math.round(routeKm * 10) / 10;
+  }
+
+  return null;
+}
+
+export function mapActivityTrip(row, openDelivery, routeMeta, destCoords, alarmCounts) {
   const rid = gid(get(row, 'contractor_route_id')) || gid(get(row, 'route_id'));
   const route = routeMeta?.get(rid);
+  const dest = destCoords?.get(rid);
   const started = get(row, 'started_at');
   const hours = started ? (Date.now() - new Date(started).getTime()) / 3600000 : null;
   const stage = inferActivityStage(row, openDelivery);
+  const tripId = gid(get(row, 'id'));
+  const alarms = alarmCounts?.get(tripId) || {};
+
+  const lastLat = get(row, 'last_lat') != null ? Number(get(row, 'last_lat')) : null;
+  const lastLng = get(row, 'last_lng') != null ? Number(get(row, 'last_lng')) : null;
+  const destLat = dest?.lat ?? null;
+  const destLng = dest?.lng ?? null;
+  const routeDistanceKm = route?.distance_km != null ? Number(route.distance_km) : null;
+
+  const kmRemaining = computeKmRemaining({
+    activity_stage: stage,
+    last_lat: lastLat,
+    last_lng: lastLng,
+    destination_lat: destLat,
+    destination_lng: destLng,
+    route_distance_km: routeDistanceKm,
+  });
+
+  const lastSpeed = get(row, 'last_speed_kmh') != null ? Number(get(row, 'last_speed_kmh')) : null;
+  let etaMinutes = null;
+  if (stage === 'enroute' && kmRemaining != null && kmRemaining > 0 && lastSpeed != null && lastSpeed >= 5) {
+    etaMinutes = Math.round((kmRemaining / lastSpeed) * 60);
+  }
 
   return {
-    trip_id: gid(get(row, 'id')),
+    trip_id: tripId,
     trip_ref: get(row, 'trip_ref'),
     truck_registration: get(row, 'truck_registration'),
     contractor_name: get(row, 'contractor_name'),
     driver_name: get(row, 'driver_name') || get(row, 'linked_driver_name'),
+    driver_phone: get(row, 'driver_phone') || get(row, 'linked_driver_phone'),
     contractor_route_id: rid,
     route_name: route?.name || get(row, 'collection_point_name') || '—',
     loading_address: route?.loading_address || get(row, 'collection_point_name'),
     destination_address: route?.destination_address || get(row, 'destination_name'),
+    destination_name: get(row, 'destination_name') || route?.destination_address || route?.name,
+    destination_lat: destLat,
+    destination_lng: destLng,
+    route_distance_km: routeDistanceKm,
+    km_remaining: kmRemaining,
+    eta_minutes: etaMinutes,
     activity_stage: stage,
     status: get(row, 'status'),
     scheduled_at: get(row, 'scheduled_at'),
     at_loading_at: get(row, 'at_loading_at'),
     at_destination_at: get(row, 'at_destination_at'),
+    completed_at: get(row, 'completed_at'),
     loading_slip_no: get(row, 'loading_slip_no'),
     loading_slip_deferred: !!get(row, 'loading_slip_deferred'),
     offloading_slip_no: get(row, 'offloading_slip_no'),
@@ -70,11 +127,15 @@ export function mapActivityTrip(row, openDelivery, routeMeta) {
     pending_note: openDelivery ? !!get(openDelivery, 'pending_note') : false,
     activity_phase: get(openDelivery, 'activity_phase'),
     hours_on_route: hours != null ? Math.round(hours * 100) / 100 : null,
-    deviation_count: get(row, 'deviation_count') || 0,
+    deviation_count: get(row, 'deviation_count') || alarms.deviation_count || 0,
+    overspeed_count: alarms.overspeed_count || 0,
     is_overdue: !!get(row, 'is_overdue'),
     last_seen_at: get(row, 'last_seen_at'),
-    last_speed_kmh: get(row, 'last_speed_kmh') != null ? Number(get(row, 'last_speed_kmh')) : null,
-    needs_action: stage === 'at_loading' || stage === 'at_destination',
+    last_lat: lastLat,
+    last_lng: lastLng,
+    last_speed_kmh: lastSpeed,
+    last_heading_deg: get(row, 'last_heading_deg') != null ? Number(get(row, 'last_heading_deg')) : null,
+    needs_action: stage === 'at_loading' || stage === 'at_destination' || stage === 'awaiting_reschedule',
   };
 }
 
@@ -91,6 +152,7 @@ function emptyRouteSummary(routeId, routeName, loadingAddress, destinationAddres
     at_loading: 0,
     enroute: 0,
     at_destination: 0,
+    awaiting_reschedule: 0,
     action_needed: 0,
     alerts: 0,
     priority_score: 0,
@@ -118,8 +180,9 @@ export function buildRouteSummaries(items, routes) {
     else if (stage === 'at_loading') s.at_loading += 1;
     else if (stage === 'enroute') s.enroute += 1;
     else if (stage === 'at_destination') s.at_destination += 1;
+    else if (stage === 'awaiting_reschedule') s.awaiting_reschedule += 1;
     if (item.needs_action) s.action_needed += 1;
-    if (item.is_overdue || item.deviation_count > 0) s.alerts += 1;
+    if (item.is_overdue || item.deviation_count > 0 || item.overspeed_count > 0) s.alerts += 1;
   }
 
   const summaries = [...map.values()].filter((s) => s.total > 0 || (routes || []).some((r) => r.id === s.route_id));
@@ -130,6 +193,7 @@ export function buildRouteSummaries(items, routes) {
       s.alerts * 45 +
       s.at_loading * 25 +
       s.at_destination * 30 +
+      s.awaiting_reschedule * 35 +
       s.enroute * 8 +
       s.scheduled * 3;
     if (s.action_needed > 0) s.priority_reason = `${s.action_needed} slip(s) awaiting capture`;
@@ -157,11 +221,13 @@ export { UNASSIGNED_ROUTE_ID };
 
 /** Active logistics activity board grouped by stage (aviation-style lanes). */
 export async function buildLogisticsActivityBoard(query, tenantId) {
-  const [tripsR, routesR, deliveriesR] = await Promise.all([
+  const [tripsR, routesR, deliveriesR, destGeofencesR, alarmsR] = await Promise.all([
     query(
       `SELECT t.*, c.name AS contractor_name,
               (SELECT TOP 1 d.full_name FROM contractor_drivers d
-               WHERE d.linked_truck_id = ct.id AND d.tenant_id = t.tenant_id) AS linked_driver_name
+               WHERE d.linked_truck_id = ct.id AND d.tenant_id = t.tenant_id) AS linked_driver_name,
+              (SELECT TOP 1 d.phone FROM contractor_drivers d
+               WHERE d.linked_truck_id = ct.id AND d.tenant_id = t.tenant_id) AS linked_driver_phone
        FROM fleet_trip t
        LEFT JOIN contractor_trucks ct ON ct.id = t.contractor_truck_id AND ct.tenant_id = t.tenant_id
        LEFT JOIN contractors c ON c.id = ct.contractor_id AND c.tenant_id = t.tenant_id
@@ -176,7 +242,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       { tenantId }
     ),
     query(
-      `SELECT id, name, loading_address, destination_address FROM contractor_routes WHERE tenant_id = @tenantId ORDER BY [order], name`,
+      `SELECT id, name, loading_address, destination_address, distance_km FROM contractor_routes WHERE tenant_id = @tenantId ORDER BY [order], name`,
       { tenantId }
     ),
     query(
@@ -188,13 +254,48 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
        ORDER BY d.delivered_at DESC`,
       { tenantId }
     ),
+    query(
+      `SELECT contractor_route_id, center_lat, center_lng FROM tracking_geofence
+       WHERE tenant_id = @tenantId AND leg = N'destination'
+         AND contractor_route_id IS NOT NULL AND center_lat IS NOT NULL AND center_lng IS NOT NULL`,
+      { tenantId }
+    ),
+    query(
+      `SELECT trip_id, alarm_type, COUNT(*) AS cnt FROM tracking_alarm_record
+       WHERE tenant_id = @tenantId AND alarm_type IN (N'overspeed', N'deviation')
+       GROUP BY trip_id, alarm_type`,
+      { tenantId }
+    ),
   ]);
 
   const routeMeta = new Map((routesR.recordset || []).map((r) => [gid(get(r, 'id')), {
     name: get(r, 'name'),
     loading_address: get(r, 'loading_address'),
     destination_address: get(r, 'destination_address'),
+    distance_km: get(r, 'distance_km') != null ? Number(get(r, 'distance_km')) : null,
   }]));
+
+  const destCoords = new Map();
+  for (const g of destGeofencesR.recordset || []) {
+    const rid = gid(get(g, 'contractor_route_id'));
+    if (rid && !destCoords.has(rid)) {
+      destCoords.set(rid, {
+        lat: Number(get(g, 'center_lat')),
+        lng: Number(get(g, 'center_lng')),
+      });
+    }
+  }
+
+  const alarmCounts = new Map();
+  for (const row of alarmsR.recordset || []) {
+    const tid = gid(get(row, 'trip_id'));
+    if (!tid) continue;
+    if (!alarmCounts.has(tid)) alarmCounts.set(tid, { overspeed_count: 0, deviation_count: 0 });
+    const type = String(get(row, 'alarm_type') || '').toLowerCase();
+    const cnt = Number(get(row, 'cnt')) || 0;
+    if (type === 'overspeed') alarmCounts.get(tid).overspeed_count = cnt;
+    if (type === 'deviation') alarmCounts.get(tid).deviation_count = cnt;
+  }
 
   const deliveryByTrip = new Map();
   for (const d of deliveriesR.recordset || []) {
@@ -203,7 +304,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
   }
 
   const items = (tripsR.recordset || []).map((row) =>
-    mapActivityTrip(row, deliveryByTrip.get(gid(get(row, 'id'))), routeMeta)
+    mapActivityTrip(row, deliveryByTrip.get(gid(get(row, 'id'))), routeMeta, destCoords, alarmCounts)
   );
 
   const stages = ACTIVITY_STAGES.map((s) => ({
@@ -217,6 +318,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
     name: get(r, 'name'),
     loading_address: get(r, 'loading_address'),
     destination_address: get(r, 'destination_address'),
+    distance_km: get(r, 'distance_km') != null ? Number(get(r, 'distance_km')) : null,
   }));
 
   const route_summaries = buildRouteSummaries(items, routeList);
@@ -269,7 +371,9 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
         collection_point_name = @cp, destination_name = @dn,
         activity_stage = N'scheduled', scheduled_at = SYSUTCDATETIME(),
         status = N'pending', updated_at = SYSUTCDATETIME(),
-        contractor_truck_id = COALESCE(@ctid, contractor_truck_id)
+        contractor_truck_id = COALESCE(@ctid, contractor_truck_id),
+        offloading_slip_no = NULL, at_destination_at = NULL,
+        started_at = NULL, eta_due_at = NULL, is_overdue = 0
        WHERE id = @id AND tenant_id = @tenantId`,
       {
         tenantId,

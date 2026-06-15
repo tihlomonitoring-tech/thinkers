@@ -2763,6 +2763,12 @@ export const tracking = {
   contractorTrucks: {
     list: () => trk('/contractor-trucks'),
   },
+  contractorDrivers: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(params).toString();
+      return trk(`/contractor-drivers${q ? `?${q}` : ''}`);
+    },
+  },
   providers: {
     list: () => trk('/providers'),
     create: (body) => trk('/providers', { method: 'POST', body: JSON.stringify(body) }),
@@ -2801,6 +2807,7 @@ export const tracking = {
   },
   map: {
     geocode: (q) => trk(`/map/geocode?q=${encodeURIComponent(q)}`),
+    locationContext: (lat, lng) => trk(`/map/location-context?lat=${lat}&lng=${lng}`),
     route: (params) => {
       const q = new URLSearchParams(params).toString();
       return trk(`/map/route?${q}`);
@@ -2842,6 +2849,12 @@ export const tracking = {
     update: (id, body) => trk(`/trips/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     activateDelivery: (id) => trk(`/trips/${id}/activate-delivery`, { method: 'POST' }),
     telemetry: (id, body) => trk(`/trips/${id}/telemetry`, { method: 'POST', body: JSON.stringify(body) }),
+    trail: (id, params = {}) => {
+      const q = new URLSearchParams();
+      if (params.km != null) q.set('km', String(params.km));
+      const qs = q.toString();
+      return trk(`/trips/${id}/trail${qs ? `?${qs}` : ''}`);
+    },
     complete: (id, body) => trk(`/trips/${id}/complete`, { method: 'POST', body: JSON.stringify(body) }),
     deviation: (id, body) => trk(`/trips/${id}/deviation`, { method: 'POST', body: JSON.stringify(body) }),
   },

@@ -216,6 +216,7 @@ export default function LogisticsRouteViewBar({
                 ['Load', focused.at_loading, 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200'],
                 ['Enr', focused.enroute, 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200'],
                 ['Dest', focused.at_destination, 'bg-brand-100 text-brand-800 dark:bg-brand-950 dark:text-brand-200'],
+                ['Wait', focused.awaiting_reschedule, 'bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-200'],
               ].map(([label, count, cls]) => (
                 <span key={label} className={`px-1.5 py-0.5 rounded tabular-nums ${cls}`}>
                   {label} {count}

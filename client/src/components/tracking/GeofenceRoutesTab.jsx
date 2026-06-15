@@ -2,21 +2,135 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { tracking as trackingApi } from '../../api';
 import GeofenceMapEditor from './GeofenceMapEditor.jsx';
+import ManualGeofencePanel from './ManualGeofencePanel.jsx';
+import AlternativeRoutesPanel from './AlternativeRoutesPanel.jsx';
+import GeofenceColorPicker from './GeofenceColorPicker.jsx';
+import { geofenceDisplayColor, parseGeofenceMeta, colorMetaJson, mergeColorIntoPolygonJson } from '../../lib/geofenceStyle.js';
 import {
   bufferPolylineToPolygon,
   expandPolygonRing,
   parsePolygonJson,
-  serializeCorridorPolygon,
-  serializeSimplePolygon,
+  parseCorridorPolyline,
+  parseCorridorMeta,
+  scalePolygonRing,
 } from '../../lib/routeCorridorGeofence.js';
 import { hasValidCoords, parseLatLngPair } from '../../lib/geoCoords.js';
+import { useUndoStack, cloneRing } from '../../lib/useUndoStack.js';
+import PickedPointRow from './PickedPointRow.jsx';
+import { clampRadius } from './geofenceCircleDraw.jsx';
 
-const LEG_OPTIONS = [
-  { value: 'origin', label: 'Origin / loading (auto-allocate)' },
-  { value: 'destination', label: 'Destination (delivery note)' },
-  { value: 'corridor', label: 'Road corridor (exit alerts)' },
-  { value: 'alert', label: 'Alert zone (high risk / hazard)' },
+const WORKFLOW_STEPS = [
+  { id: 'land', label: '1. Land & site area', desc: 'Search a place, draw the boundary around your site or land parcel' },
+  { id: 'road', label: '2. Haul road A → B', desc: 'Link to a system route, set loading & destination, draw the road corridor' },
+  { id: 'manage', label: '3. Saved geofences', desc: 'Review, edit, and remove configured geofences' },
 ];
+
+function positionsFromGeofence(g) {
+  const pts = [];
+  const ring = parsePolygonJson(g?.polygon_json);
+  ring?.forEach((p) => pts.push([p.lat, p.lng]));
+  if (g?.center_lat != null) pts.push([g.center_lat, g.center_lng]);
+  return pts;
+}
+
+function positionsFromGeofences(list) {
+  return list.flatMap((g) => positionsFromGeofence(g));
+}
+
+function routeLetter(index) {
+  return String.fromCharCode(65 + Number(index || 0));
+}
+
+function initAltCorridors(alternatives, corridorM, selectedIndex) {
+  const alt_corridors = {};
+  (alternatives || []).forEach((alt, i) => {
+    alt_corridors[i] = {
+      enabled: i === selectedIndex,
+      corridor_polygon: bufferPolylineToPolygon(alt.polyline || [], corridorM),
+      corridor_manual: false,
+    };
+  });
+  return alt_corridors;
+}
+
+function syncCurrentAltCorridor(preview, corridorPolygon, corridorManual) {
+  if (!preview) return preview;
+  const idx = preview.selected_route_index ?? 0;
+  const alt_corridors = { ...(preview.alt_corridors || {}) };
+  alt_corridors[idx] = {
+    ...(alt_corridors[idx] || {}),
+    enabled: alt_corridors[idx]?.enabled ?? true,
+    corridor_polygon: corridorPolygon,
+    corridor_manual: corridorManual,
+  };
+  return { ...preview, alt_corridors };
+}
+
+function matchAlternativeIndex(alternatives, polyline) {
+  if (!polyline?.length || !alternatives?.length) return 0;
+  const start = polyline[0];
+  const end = polyline[polyline.length - 1];
+  let best = 0;
+  let bestScore = Infinity;
+  alternatives.forEach((alt, i) => {
+    const pl = alt.polyline;
+    if (!pl?.length) return;
+    const d0 = Math.hypot(pl[0].lat - start.lat, pl[0].lng - start.lng)
+      + Math.hypot(pl[pl.length - 1].lat - end.lat, pl[pl.length - 1].lng - end.lng);
+    if (d0 < bestScore) {
+      bestScore = d0;
+      best = i;
+    }
+  });
+  return best;
+}
+
+function mergeSavedCorridorsIntoPreview(preview, savedGeofences, corridorM) {
+  if (!preview?.alternatives?.length) return preview;
+  const corridorG = savedGeofences.find((g) => g.leg === 'corridor');
+  const altGs = savedGeofences.filter((g) => g.leg === 'corridor_alt');
+  const primaryPoly = parseCorridorPolyline(corridorG?.polygon_json);
+  const primaryIndex = primaryPoly?.length
+    ? matchAlternativeIndex(preview.alternatives, primaryPoly)
+    : (preview.selected_route_index ?? 0);
+
+  const alt_corridors = initAltCorridors(preview.alternatives, corridorM, primaryIndex);
+  const primaryRing = parsePolygonJson(corridorG?.polygon_json);
+  if (primaryRing?.length) {
+    alt_corridors[primaryIndex] = {
+      enabled: true,
+      corridor_polygon: primaryRing,
+      corridor_manual: true,
+    };
+  }
+
+  for (const g of altGs) {
+    const meta = parseCorridorMeta(g.polygon_json);
+    const ring = parsePolygonJson(g.polygon_json);
+    const pl = parseCorridorPolyline(g.polygon_json);
+    let idx = Number.isFinite(meta.route_index) ? meta.route_index : matchAlternativeIndex(preview.alternatives, pl);
+    if (!alt_corridors[idx]) idx = primaryIndex;
+    alt_corridors[idx] = {
+      enabled: true,
+      corridor_polygon: ring?.length ? ring : alt_corridors[idx]?.corridor_polygon,
+      corridor_manual: true,
+    };
+  }
+
+  const selected = preview.alternatives[primaryIndex] || preview.alternatives[0];
+  return {
+    ...preview,
+    selected_route_index: primaryIndex,
+    route_polyline: selected?.polyline || preview.route_polyline,
+    corridor_polygon: alt_corridors[primaryIndex]?.corridor_polygon || preview.corridor_polygon,
+    alt_corridors,
+    driving: {
+      distance_km: selected?.distance_km,
+      duration_min: selected?.duration_min,
+      polyline: selected?.polyline,
+    },
+  };
+}
 
 const ALERT_ZONE_TYPES = [
   { value: 'hazard', label: 'High risk area', radius: 150, alert_on_entry: true, alert_on_exit: false },
@@ -32,7 +146,24 @@ export default function GeofenceRoutesTab({ setError }) {
   const [drawing, setDrawing] = useState(false);
   const [preview, setPreview] = useState(null);
   const [corridorManual, setCorridorManual] = useState(false);
-  const [fitKey, setFitKey] = useState(0);
+  const [workflowStep, setWorkflowStep] = useState('land');
+  const [mapTool, setMapTool] = useState('pan');
+  const [fitRevision, setFitRevision] = useState(0);
+  const [fitPositions, setFitPositions] = useState(null);
+  const [flyRevision, setFlyRevision] = useState(0);
+  const [flyTarget, setFlyTarget] = useState(null);
+
+  const requestMapFit = useCallback((positions) => {
+    if (!positions?.length) return;
+    setFitPositions(positions);
+    setFitRevision((r) => r + 1);
+  }, []);
+
+  const flyToPlace = useCallback((place) => {
+    if (!place?.lat) return;
+    setFlyTarget({ lat: place.lat, lng: place.lng, zoom: place.zoom || 15 });
+    setFlyRevision((r) => r + 1);
+  }, []);
 
   const [drawForm, setDrawForm] = useState({
     contractor_route_id: '',
@@ -61,11 +192,24 @@ export default function GeofenceRoutesTab({ setError }) {
   const [mapClickTarget, setMapClickTarget] = useState(null);
   const [savingAlert, setSavingAlert] = useState(false);
 
+  const [manualDrawMode, setManualDrawMode] = useState(null);
+  const [manualCircleDraft, setManualCircleDraft] = useState(null);
+  const [circleDrawPreview, setCircleDrawPreview] = useState(null);
+  const polygonPointsUndo = useUndoStack([]);
+  const polygonDrawPoints = polygonPointsUndo.value;
+  const [freehandPreview, setFreehandPreview] = useState(null);
+  const [manualPolygonDraft, setManualPolygonDraft] = useState(null);
+  const [geofenceColor, setGeofenceColor] = useState('#f59e0b');
+
   const [editing, setEditing] = useState(null);
   const [editRing, setEditRing] = useState(null);
   const [editCenter, setEditCenter] = useState(null);
   const [editRadius, setEditRadius] = useState('500');
+  const [editColor, setEditColor] = useState('#2563eb');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [editUndoStack, setEditUndoStack] = useState([]);
+  const [draftUndoStack, setDraftUndoStack] = useState([]);
+  const [haulRoadDirty, setHaulRoadDirty] = useState(false);
 
   const alertPreview = useMemo(() => {
     const coords = parseLatLngPair(alertForm.center_lat, alertForm.center_lng);
@@ -73,19 +217,254 @@ export default function GeofenceRoutesTab({ setError }) {
     return { ...coords, radius_m: Number(alertForm.radius_m) || 150 };
   }, [alertForm.center_lat, alertForm.center_lng, alertForm.radius_m]);
 
+  const pointACoords = useMemo(() => {
+    if (hasValidCoords(drawForm.origin_lat, drawForm.origin_lng)) {
+      return parseLatLngPair(drawForm.origin_lat, drawForm.origin_lng);
+    }
+    return preview?.origin || null;
+  }, [drawForm.origin_lat, drawForm.origin_lng, preview?.origin]);
+
+  const pointBCoords = useMemo(() => {
+    if (hasValidCoords(drawForm.dest_lat, drawForm.dest_lng)) {
+      return parseLatLngPair(drawForm.dest_lat, drawForm.dest_lng);
+    }
+    return preview?.destination || null;
+  }, [drawForm.dest_lat, drawForm.dest_lng, preview?.destination]);
+
+  const clearPointA = () => {
+    setDrawForm((f) => ({ ...f, origin_lat: '', origin_lng: '', use_origin_coords: false }));
+    setPreview((p) => (p ? { ...p, origin: undefined } : p));
+    setHaulRoadDirty(true);
+    setMapClickTarget('origin');
+    setMapTool('pick');
+  };
+
+  const clearPointB = () => {
+    setDrawForm((f) => ({ ...f, dest_lat: '', dest_lng: '', use_dest_coords: false }));
+    setPreview((p) => (p ? { ...p, destination: undefined } : p));
+    setHaulRoadDirty(true);
+    setMapClickTarget('destination');
+    setMapTool('pick');
+  };
+
+  const updateOriginCoords = (latStr, lngStr) => {
+    const valid = hasValidCoords(latStr, lngStr);
+    setDrawForm((f) => ({
+      ...f,
+      origin_lat: latStr,
+      origin_lng: lngStr,
+      use_origin_coords: valid,
+    }));
+    if (valid) {
+      const coords = parseLatLngPair(latStr, lngStr);
+      setPreview((p) => (p ? { ...p, origin: coords } : p));
+    }
+    setHaulRoadDirty(true);
+  };
+
+  const updateDestCoords = (latStr, lngStr) => {
+    const valid = hasValidCoords(latStr, lngStr);
+    setDrawForm((f) => ({
+      ...f,
+      dest_lat: latStr,
+      dest_lng: lngStr,
+      use_dest_coords: valid,
+    }));
+    if (valid) {
+      const coords = parseLatLngPair(latStr, lngStr);
+      setPreview((p) => (p ? { ...p, destination: coords } : p));
+    }
+    setHaulRoadDirty(true);
+  };
+
+  const clearHaulRoadPreview = () => {
+    setPreview(null);
+    setCorridorManual(false);
+    setHaulRoadDirty(false);
+  };
+
+  const clearAlertPick = () => {
+    setAlertForm((f) => ({ ...f, center_lat: '', center_lng: '' }));
+    setMapClickTarget(null);
+    setMapTool('pan');
+  };
+
+  const pushEditUndo = useCallback(() => {
+    setEditUndoStack((stack) => [
+      ...stack,
+      {
+        ring: cloneRing(editRing),
+        center: editCenter ? { ...editCenter } : null,
+        radius: editRadius,
+      },
+    ].slice(-30));
+  }, [editRing, editCenter, editRadius]);
+
+  const undoEdit = useCallback(() => {
+    setEditUndoStack((stack) => {
+      if (!stack.length) return stack;
+      const prev = stack[stack.length - 1];
+      setEditRing(prev.ring);
+      setEditCenter(prev.center);
+      setEditRadius(prev.radius);
+      return stack.slice(0, -1);
+    });
+  }, []);
+
+  const pushDraftUndo = useCallback(() => {
+    setDraftUndoStack((stack) => [
+      ...stack,
+      {
+        circle: manualCircleDraft ? { ...manualCircleDraft } : null,
+        polygon: manualPolygonDraft?.ring ? { ring: cloneRing(manualPolygonDraft.ring) } : null,
+      },
+    ].slice(-30));
+  }, [manualCircleDraft, manualPolygonDraft]);
+
+  const undoDraft = useCallback(() => {
+    setDraftUndoStack((stack) => {
+      if (!stack.length) return stack;
+      const prev = stack[stack.length - 1];
+      setManualCircleDraft(prev.circle);
+      setManualPolygonDraft(prev.polygon);
+      return stack.slice(0, -1);
+    });
+  }, []);
+
   const handleMapClick = (lat, lng) => {
+    if (manualDrawMode) return;
     const latStr = lat.toFixed(6);
     const lngStr = lng.toFixed(6);
     if (mapClickTarget === 'origin') {
       setDrawForm((f) => ({ ...f, origin_lat: latStr, origin_lng: lngStr, use_origin_coords: true }));
+      setPreview((p) => (p ? { ...p, origin: { lat, lng } } : p));
+      setHaulRoadDirty(true);
+      setMapClickTarget('destination');
     } else if (mapClickTarget === 'destination') {
       setDrawForm((f) => ({ ...f, dest_lat: latStr, dest_lng: lngStr, use_dest_coords: true }));
+      setPreview((p) => (p ? { ...p, destination: { lat, lng } } : p));
+      setHaulRoadDirty(true);
+      setMapClickTarget(null);
+      setMapTool('pan');
     } else if (mapClickTarget === 'alert') {
       setAlertForm((f) => ({ ...f, center_lat: latStr, center_lng: lngStr }));
+      setMapClickTarget(null);
+      setMapTool('pan');
     }
-    setMapClickTarget(null);
-    setFitKey((k) => k + 1);
   };
+
+  const handleMapToolChange = (tool) => {
+    setMapTool(tool);
+    if (tool === 'pan') {
+      setManualDrawMode(null);
+      setMapClickTarget(null);
+      return;
+    }
+    if (tool === 'draw') {
+      setMapClickTarget(null);
+      setEditing(null);
+      setEditRing(null);
+      setEditCenter(null);
+      setWorkflowStep('land');
+      if (!manualDrawMode) setManualDrawMode('polygon');
+      return;
+    }
+    if (tool === 'pick') {
+      setManualDrawMode(null);
+      setWorkflowStep('road');
+      setMapClickTarget((t) => t || 'origin');
+    }
+  };
+
+  const handlePlaceSelect = (place) => {
+    if (place.geofenceId) {
+      flyToPlace({ ...place, zoom: place.zoom || 16 });
+      if (workflowStep === 'manage') {
+        const g = geofences.find((x) => x.id === place.geofenceId);
+        if (g) startEdit(g);
+      }
+      return;
+    }
+    flyToPlace(place);
+    if (workflowStep === 'road' && mapClickTarget === 'origin') {
+      setDrawForm((f) => ({
+        ...f,
+        origin_lat: place.lat.toFixed(6),
+        origin_lng: place.lng.toFixed(6),
+        origin_query: place.label || f.origin_query,
+        use_origin_coords: true,
+      }));
+      setPreview((p) => (p ? { ...p, origin: { lat: place.lat, lng: place.lng, display_name: place.label } } : p));
+      setHaulRoadDirty(true);
+      setMapClickTarget('destination');
+    } else if (workflowStep === 'road' && mapClickTarget === 'destination') {
+      setDrawForm((f) => ({
+        ...f,
+        dest_lat: place.lat.toFixed(6),
+        dest_lng: place.lng.toFixed(6),
+        destination_query: place.label || f.destination_query,
+        use_dest_coords: true,
+      }));
+      setPreview((p) => (p ? { ...p, destination: { lat: place.lat, lng: place.lng, display_name: place.label } } : p));
+      setHaulRoadDirty(true);
+      setMapClickTarget(null);
+      setMapTool('pan');
+    }
+  };
+
+  const setDrawMode = (mode) => {
+    if (mode) {
+      setMapClickTarget(null);
+      setEditing(null);
+      setEditRing(null);
+      setEditCenter(null);
+      polygonPointsUndo.reset([]);
+      setFreehandPreview(null);
+      setCircleDrawPreview(null);
+    }
+    if (mode) setMapTool('draw');
+    setManualDrawMode(mode);
+  };
+
+  const handleCircleDrawComplete = (circle) => {
+    if (!circle) return;
+    setManualCircleDraft(circle);
+    setCircleDrawPreview(null);
+    setManualDrawMode(null);
+    setMapTool('pan');
+  };
+
+  const handlePolygonAddPoint = (pt, opts) => {
+    if (opts?.undo) {
+      polygonPointsUndo.undo();
+      return;
+    }
+    if (opts?.clear) {
+      polygonPointsUndo.reset([]);
+      return;
+    }
+    if (pt) polygonPointsUndo.commit((cur) => [...cur, pt]);
+  };
+
+  const handlePolygonDrawComplete = (ring) => {
+    if (!ring || ring.length < 3) {
+      polygonPointsUndo.reset([]);
+      return;
+    }
+    setManualPolygonDraft({ ring });
+    polygonPointsUndo.reset([]);
+    setManualDrawMode(null);
+    setMapTool('pan');
+  };
+
+  const handleFreehandComplete = (ring) => {
+    setFreehandPreview(null);
+    if (!ring || ring.length < 3) return;
+    setManualPolygonDraft({ ring });
+    setManualDrawMode(null);
+    setMapTool('pan');
+  };
+
   const selectedRoute = useMemo(
     () => routes.find((r) => r.id === drawForm.contractor_route_id),
     [routes, drawForm.contractor_route_id]
@@ -98,16 +477,43 @@ export default function GeofenceRoutesTab({ setError }) {
       const [r, g] = await Promise.all([trackingApi.contractorRoutes.list(), trackingApi.geofences.list()]);
       setRoutes(r.routes || []);
       setGeofences(g.geofences || []);
+      requestMapFit(positionsFromGeofences(g.geofences || []));
     } catch (e) {
       setError(e?.message || 'Failed to load routes');
     } finally {
       setLoading(false);
     }
-  }, [setError]);
+  }, [setError, requestMapFit]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === 'z' && e.shiftKey) {
+        e.preventDefault();
+        if (manualDrawMode === 'polygon' && !manualPolygonDraft) polygonPointsUndo.redo();
+        return;
+      }
+      if (mod && e.key === 'z') {
+        e.preventDefault();
+        if (manualDrawMode === 'polygon' && !manualPolygonDraft) polygonPointsUndo.undo();
+        else if (editing) undoEdit();
+        else if (manualPolygonDraft || manualCircleDraft) undoDraft();
+        return;
+      }
+      if (e.key === 'Backspace' && manualDrawMode === 'polygon' && !manualPolygonDraft && !mod) {
+        e.preventDefault();
+        polygonPointsUndo.undo();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [manualDrawMode, manualPolygonDraft, manualCircleDraft, editing, undoEdit, undoDraft, polygonPointsUndo]);
 
   useEffect(() => {
     if (!selectedRoute) return;
@@ -121,21 +527,78 @@ export default function GeofenceRoutesTab({ setError }) {
   const applyPreviewRoute = (alt, index, corridorM, endpointRadiusM, extras = {}) => {
     const polyline = alt.polyline || [];
     const ring = bufferPolylineToPolygon(polyline, corridorM);
-    setPreview({
+    const alt_corridors = extras.alt_corridors
+      || (extras.alternatives ? initAltCorridors(extras.alternatives, corridorM, index) : null);
+    const activeCorridor = alt_corridors?.[index]?.corridor_polygon?.length >= 3
+      ? alt_corridors[index].corridor_polygon
+      : ring;
+
+    const nextPreview = {
       route_polyline: polyline,
-      corridor_polygon: ring,
+      corridor_polygon: activeCorridor,
       origin: extras.origin,
       destination: extras.destination,
       endpoint_radius_m: endpointRadiusM,
       driving: { distance_km: alt.distance_km, duration_min: alt.duration_min, polyline },
       alternatives: extras.alternatives,
       selected_route_index: index,
-    });
-    setCorridorManual(false);
-    setFitKey((k) => k + 1);
+      alt_corridors: alt_corridors
+        ? {
+            ...alt_corridors,
+            [index]: {
+              ...(alt_corridors[index] || {}),
+              enabled: true,
+              corridor_polygon: activeCorridor,
+            },
+          }
+        : undefined,
+    };
+    const finalPreview = extras.mergeSavedGeofences
+      ? mergeSavedCorridorsIntoPreview(nextPreview, extras.mergeSavedGeofences, corridorM)
+      : nextPreview;
+    setPreview(finalPreview);
+    setCorridorManual(!!finalPreview.alt_corridors?.[finalPreview.selected_route_index ?? index]?.corridor_manual);
+    setHaulRoadDirty(false);
+    const allPositions = (extras.alternatives || [])
+      .flatMap((a) => (a.polyline || []).map((p) => [p.lat, p.lng]));
+    requestMapFit(allPositions.length >= 2 ? allPositions : polyline.map((p) => [p.lat, p.lng]));
   };
 
-  const drawRouteOnMap = async () => {
+  const positionsFromAlternatives = (alternatives) => (
+    (alternatives || []).flatMap((a) => (a.polyline || []).map((p) => [p.lat, p.lng]))
+  );
+
+  const zoomAllRouteOptions = () => {
+    if (!preview?.alternatives?.length) return;
+    requestMapFit(positionsFromAlternatives(preview.alternatives));
+  };
+
+  const zoomRouteOption = (index) => {
+    const polyline = preview?.alternatives?.[index]?.polyline;
+    if (!polyline?.length) return;
+    requestMapFit(polyline.map((p) => [p.lat, p.lng]));
+  };
+
+  const includeAllRouteOptions = () => {
+    if (!preview?.alternatives?.length) return;
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    const synced = syncCurrentAltCorridor(preview, preview.corridor_polygon, corridorManual);
+    const alt_corridors = { ...(synced.alt_corridors || {}) };
+    preview.alternatives.forEach((alt, i) => {
+      alt_corridors[i] = {
+        ...(alt_corridors[i] || {}),
+        enabled: true,
+        corridor_polygon: alt_corridors[i]?.corridor_polygon?.length >= 3
+          ? alt_corridors[i].corridor_polygon
+          : bufferPolylineToPolygon(alt.polyline || [], corridorM),
+        corridor_manual: alt_corridors[i]?.corridor_manual || false,
+      };
+    });
+    setPreview((p) => (p ? { ...p, alt_corridors } : p));
+    zoomAllRouteOptions();
+  };
+
+  const drawRouteOnMap = async (opts = {}) => {
     if (!drawForm.contractor_route_id) {
       setError('Select a route first.');
       return;
@@ -143,7 +606,7 @@ export default function GeofenceRoutesTab({ setError }) {
     setDrawing(true);
     setError('');
     setEditing(null);
-    setCorridorManual(false);
+    if (!opts.keepCorridorEdits) setCorridorManual(false);
     try {
       const payload = {
         contractor_route_id: drawForm.contractor_route_id,
@@ -172,10 +635,23 @@ export default function GeofenceRoutesTab({ setError }) {
       }];
       const selectedIndex = r.selected_route_index ?? 0;
       const selected = alternatives[selectedIndex] || alternatives[0];
-      applyPreviewRoute(selected, selectedIndex, Number(drawForm.corridor_m) || 400, Number(drawForm.endpoint_radius_m) || 500, {
+      const corridorM = Number(drawForm.corridor_m) || 400;
+      setDrawForm((f) => ({
+        ...f,
+        origin_lat: r.origin?.lat != null ? Number(r.origin.lat).toFixed(6) : f.origin_lat,
+        origin_lng: r.origin?.lng != null ? Number(r.origin.lng).toFixed(6) : f.origin_lng,
+        dest_lat: r.destination?.lat != null ? Number(r.destination.lat).toFixed(6) : f.dest_lat,
+        dest_lng: r.destination?.lng != null ? Number(r.destination.lng).toFixed(6) : f.dest_lng,
+        use_origin_coords: r.origin?.lat != null || f.use_origin_coords,
+        use_dest_coords: r.destination?.lat != null || f.use_dest_coords,
+        origin_query: f.origin_query || r.origin?.display_name || '',
+        destination_query: f.destination_query || r.destination?.display_name || '',
+      }));
+      applyPreviewRoute(selected, selectedIndex, corridorM, Number(drawForm.endpoint_radius_m) || 500, {
         origin: r.origin,
         destination: r.destination,
         alternatives,
+        mergeSavedGeofences: opts.mergeSavedGeofences || null,
       });
     } catch (err) {
       setError(err?.message || 'Could not draw route on map');
@@ -185,19 +661,82 @@ export default function GeofenceRoutesTab({ setError }) {
     }
   };
 
+  const loadHaulRoadFromSaved = async (routeId) => {
+    const saved = geofences.filter((g) => g.contractor_route_id === routeId);
+    const originG = saved.find((g) => g.leg === 'origin');
+    const destG = saved.find((g) => g.leg === 'destination');
+    const corridorG = saved.find((g) => g.leg === 'corridor');
+    const route = routes.find((r) => r.id === routeId);
+    const corridorMeta = parseCorridorMeta(corridorG?.polygon_json);
+
+    setDrawForm({
+      contractor_route_id: routeId,
+      corridor_m: String(corridorMeta.corridor_m || 400),
+      endpoint_radius_m: String(originG?.radius_m || destG?.radius_m || 500),
+      origin_query: route?.loading_address || route?.starting_point || '',
+      destination_query: route?.destination_address || route?.destination || '',
+      origin_lat: originG?.center_lat != null ? Number(originG.center_lat).toFixed(6) : '',
+      origin_lng: originG?.center_lng != null ? Number(originG.center_lng).toFixed(6) : '',
+      dest_lat: destG?.center_lat != null ? Number(destG.center_lat).toFixed(6) : '',
+      dest_lng: destG?.center_lng != null ? Number(destG.center_lng).toFixed(6) : '',
+      use_origin_coords: originG?.center_lat != null,
+      use_dest_coords: destG?.center_lat != null,
+    });
+    setWorkflowStep('road');
+    setEditing(null);
+    setMapTool('pan');
+    await drawRouteOnMap({ mergeSavedGeofences: saved });
+  };
+
   const selectAlternativeRoute = (index) => {
     if (!preview?.alternatives?.[index]) return;
-    applyPreviewRoute(
-      preview.alternatives[index],
-      index,
-      Number(drawForm.corridor_m) || 400,
-      preview.endpoint_radius_m || Number(drawForm.endpoint_radius_m) || 500,
-      {
-        origin: preview.origin,
-        destination: preview.destination,
-        alternatives: preview.alternatives,
-      }
-    );
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    const prevIndex = preview.selected_route_index ?? 0;
+    let alt_corridors = preview.alt_corridors || initAltCorridors(preview.alternatives, corridorM, prevIndex);
+    alt_corridors = {
+      ...alt_corridors,
+      [prevIndex]: {
+        ...alt_corridors[prevIndex],
+        corridor_polygon: preview.corridor_polygon,
+        corridor_manual: corridorManual,
+      },
+    };
+    const alt = preview.alternatives[index];
+    applyPreviewRoute(alt, index, corridorM, preview.endpoint_radius_m || Number(drawForm.endpoint_radius_m) || 500, {
+      origin: preview.origin,
+      destination: preview.destination,
+      alternatives: preview.alternatives,
+      alt_corridors,
+    });
+  };
+
+  const toggleAltGeofence = (index) => {
+    if (!preview?.alternatives?.[index]) return;
+    const primaryIndex = preview.selected_route_index ?? 0;
+    if (index === primaryIndex) return;
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    let alt_corridors = syncCurrentAltCorridor(preview, preview.corridor_polygon, corridorManual).alt_corridors
+      || initAltCorridors(preview.alternatives, corridorM, primaryIndex);
+    const entry = alt_corridors[index] || {};
+    const enabled = !entry.enabled;
+    alt_corridors = {
+      ...alt_corridors,
+      [index]: {
+        ...entry,
+        enabled,
+        corridor_polygon: entry.corridor_polygon?.length >= 3
+          ? entry.corridor_polygon
+          : bufferPolylineToPolygon(preview.alternatives[index].polyline || [], corridorM),
+        corridor_manual: entry.corridor_manual || false,
+      },
+    };
+    setPreview((p) => (p ? { ...p, alt_corridors } : p));
+    if (enabled) zoomRouteOption(index);
+  };
+
+  const setPrimaryAlternativeRoute = (index) => {
+    selectAlternativeRoute(index);
+    zoomRouteOption(index);
   };
 
   const saveDrawnRoute = async () => {
@@ -205,6 +744,17 @@ export default function GeofenceRoutesTab({ setError }) {
     setDrawing(true);
     setError('');
     try {
+      const primaryIndex = preview.selected_route_index ?? 0;
+      const synced = syncCurrentAltCorridor(preview, preview.corridor_polygon, corridorManual);
+      const alt_corridors = synced.alt_corridors || initAltCorridors(preview.alternatives, Number(drawForm.corridor_m) || 400, primaryIndex);
+      const alternative_corridors = Object.entries(alt_corridors)
+        .filter(([i, c]) => c.enabled && Number(i) !== primaryIndex)
+        .map(([i, c]) => ({
+          index: Number(i),
+          route_polyline: preview.alternatives?.[Number(i)]?.polyline || [],
+          corridor_polygon: c.corridor_polygon,
+        }));
+
       await trackingApi.geofences.drawRoute({
         contractor_route_id: drawForm.contractor_route_id,
         corridor_m: Number(drawForm.corridor_m) || 400,
@@ -217,13 +767,19 @@ export default function GeofenceRoutesTab({ setError }) {
         dest_lng: drawForm.use_dest_coords ? parseLatLngPair(drawForm.dest_lat, drawForm.dest_lng)?.lng : preview.destination?.lng,
         route_polyline: preview.route_polyline,
         corridor_polygon: preview.corridor_polygon,
-        selected_route_index: preview.selected_route_index ?? 0,
+        selected_route_index: primaryIndex,
+        alternative_corridors,
         save: true,
       });
       setPreview(null);
       setCorridorManual(false);
       await load();
-      alert('Route geofences saved: origin, road corridor, and destination.');
+      const altCount = alternative_corridors.length;
+      alert(
+        altCount
+          ? `Route geofences saved: origin, destination, primary corridor, and ${altCount} alternative road${altCount === 1 ? '' : 's'}.`
+          : 'Route geofences saved: origin, road corridor, and destination.'
+      );
     } catch (err) {
       setError(err?.message || 'Save failed');
     } finally {
@@ -232,36 +788,69 @@ export default function GeofenceRoutesTab({ setError }) {
   };
 
   const adjustCorridorWidth = (corridorM) => {
-    if (!preview?.route_polyline?.length) return;
-    const ring = bufferPolylineToPolygon(preview.route_polyline, corridorM);
+    if (!preview?.alternatives?.length) return;
     setDrawForm((f) => ({ ...f, corridor_m: String(corridorM) }));
-    setPreview((p) => (p ? { ...p, corridor_polygon: ring } : p));
+    setPreview((p) => {
+      if (!p) return p;
+      const primaryIndex = p.selected_route_index ?? 0;
+      const alt_corridors = { ...(p.alt_corridors || initAltCorridors(p.alternatives, corridorM, primaryIndex)) };
+      p.alternatives.forEach((alt, i) => {
+        if (!alt_corridors[i]?.enabled) return;
+        if (alt_corridors[i]?.corridor_manual && i !== primaryIndex) return;
+        alt_corridors[i] = {
+          ...alt_corridors[i],
+          corridor_polygon: bufferPolylineToPolygon(alt.polyline || [], corridorM),
+          corridor_manual: i === primaryIndex ? false : alt_corridors[i]?.corridor_manual,
+        };
+      });
+      const primaryRing = alt_corridors[primaryIndex]?.corridor_polygon;
+      return {
+        ...p,
+        corridor_polygon: primaryRing,
+        alt_corridors,
+      };
+    });
     setCorridorManual(false);
   };
 
   const expandCorridorOnMap = (extraM) => {
     if (!preview?.corridor_polygon?.length) return;
     const ring = expandPolygonRing(preview.corridor_polygon, extraM);
-    setPreview((p) => (p ? { ...p, corridor_polygon: ring } : p));
+    setPreview((p) => {
+      if (!p) return p;
+      const next = { ...p, corridor_polygon: ring };
+      return syncCurrentAltCorridor(next, ring, true);
+    });
     setCorridorManual(true);
   };
 
   const resetCorridorShape = () => {
     if (!preview?.route_polyline?.length) return;
     const ring = bufferPolylineToPolygon(preview.route_polyline, Number(drawForm.corridor_m) || 400);
-    setPreview((p) => (p ? { ...p, corridor_polygon: ring } : p));
+    setPreview((p) => {
+      if (!p) return p;
+      const next = { ...p, corridor_polygon: ring };
+      return syncCurrentAltCorridor(next, ring, false);
+    });
     setCorridorManual(false);
   };
 
   const startEdit = (g) => {
     setPreview(null);
+    setManualDrawMode(null);
+    setManualCircleDraft(null);
+    setManualPolygonDraft(null);
+    setMapTool('pan');
+    setWorkflowStep('manage');
+    setEditColor(geofenceDisplayColor(g));
+    setEditUndoStack([]);
     const ring = parsePolygonJson(g.polygon_json);
     if (ring?.length >= 3) {
       setEditing(g);
       setEditRing(ring.map((p) => ({ ...p })));
       setEditCenter(null);
       setEditRadius(String(g.radius_m || 500));
-      setFitKey((k) => k + 1);
+      requestMapFit(positionsFromGeofence(g));
       return;
     }
     if (g.center_lat != null && g.center_lng != null) {
@@ -269,7 +858,45 @@ export default function GeofenceRoutesTab({ setError }) {
       setEditRing(null);
       setEditCenter({ lat: g.center_lat, lng: g.center_lng });
       setEditRadius(String(g.radius_m || 500));
-      setFitKey((k) => k + 1);
+      requestMapFit(positionsFromGeofence(g));
+    }
+  };
+
+  const expandEditGeofence = (extraM) => {
+    pushEditUndo();
+    if (editRing?.length >= 3) {
+      setEditRing(expandPolygonRing(editRing, extraM));
+      return;
+    }
+    if (editCenter) {
+      setEditRadius(String(Math.round((Number(editRadius) || 500) + extraM)));
+    }
+  };
+
+  const scaleEditGeofence = (factor) => {
+    pushEditUndo();
+    if (editRing?.length >= 3) {
+      setEditRing(scalePolygonRing(editRing, factor));
+    } else if (editCenter) {
+      setEditRadius(String(clampRadius((Number(editRadius) || 500) * factor)));
+    }
+  };
+
+  const scaleMapDraft = (factor) => {
+    if (editing) {
+      scaleEditGeofence(factor);
+      return;
+    }
+    pushDraftUndo();
+    if (manualPolygonDraft?.ring?.length >= 3) {
+      setManualPolygonDraft({ ring: scalePolygonRing(manualPolygonDraft.ring, factor) });
+      return;
+    }
+    if (manualCircleDraft) {
+      setManualCircleDraft({
+        ...manualCircleDraft,
+        radius_m: clampRadius((manualCircleDraft.radius_m || 500) * factor),
+      });
     }
   };
 
@@ -277,6 +904,7 @@ export default function GeofenceRoutesTab({ setError }) {
     setEditing(null);
     setEditRing(null);
     setEditCenter(null);
+    setEditUndoStack([]);
   };
 
   const saveEdit = async () => {
@@ -289,17 +917,13 @@ export default function GeofenceRoutesTab({ setError }) {
         alert_on_entry: editing.alert_on_entry,
       };
       if (editRing?.length >= 3) {
-        const existing = parsePolygonJson(editing.polygon_json);
-        let meta = {};
-        if (typeof editing.polygon_json === 'string') {
-          try {
-            const parsed = JSON.parse(editing.polygon_json);
-            if (parsed?.type === 'corridor') meta = { corridor_m: parsed.corridor_m, route_polyline: parsed.route_polyline };
-          } catch { /* ignore */ }
-        }
-        body.polygon_json = meta.route_polyline
-          ? serializeCorridorPolygon(editRing, meta)
-          : serializeSimplePolygon(editRing);
+        const meta = parseGeofenceMeta(editing.polygon_json);
+        body.polygon_json = mergeColorIntoPolygonJson(editing.polygon_json, editRing, {
+          color: editColor,
+          type: meta.type === 'corridor' ? 'corridor' : 'polygon',
+          corridor_m: meta.corridor_m,
+          route_polyline: meta.route_polyline,
+        });
         body.center_lat = null;
         body.center_lng = null;
         body.radius_m = null;
@@ -307,6 +931,7 @@ export default function GeofenceRoutesTab({ setError }) {
         body.center_lat = editCenter.lat;
         body.center_lng = editCenter.lng;
         body.radius_m = Number(editRadius) || 500;
+        body.polygon_json = colorMetaJson(editColor);
       }
       await trackingApi.geofences.update(editing.id, body);
       cancelEdit();
@@ -384,188 +1009,305 @@ export default function GeofenceRoutesTab({ setError }) {
     }));
   };
 
-  const otherGeofences = editing ? geofences.filter((g) => g.id !== editing.id) : geofences;
+  const routeMarkers = useMemo(() => {
+    const endpointRadius = Number(drawForm.endpoint_radius_m) || 500;
+    const pointA = hasValidCoords(drawForm.origin_lat, drawForm.origin_lng)
+      ? parseLatLngPair(drawForm.origin_lat, drawForm.origin_lng)
+      : preview?.origin || null;
+    const pointB = hasValidCoords(drawForm.dest_lat, drawForm.dest_lng)
+      ? parseLatLngPair(drawForm.dest_lat, drawForm.dest_lng)
+      : preview?.destination || null;
+    if (!pointA && !pointB) return null;
+    return { pointA, pointB, endpointRadius };
+  }, [drawForm.origin_lat, drawForm.origin_lng, drawForm.dest_lat, drawForm.dest_lng, drawForm.endpoint_radius_m, preview]);
+
+  const haulRoadSetups = useMemo(() => {
+    const byRoute = new Map();
+    for (const g of geofences) {
+      if (!g.contractor_route_id) continue;
+      if (!['origin', 'destination', 'corridor', 'corridor_alt'].includes(g.leg)) continue;
+      if (!byRoute.has(g.contractor_route_id)) {
+        byRoute.set(g.contractor_route_id, {
+          routeId: g.contractor_route_id,
+          name: g.contractor_route_name || 'Route',
+          geofences: [],
+        });
+      }
+      byRoute.get(g.contractor_route_id).geofences.push(g);
+    }
+    return [...byRoute.values()].filter((s) => s.geofences.some((g) => g.leg === 'corridor'));
+  }, [geofences]);
+
+  const savedHaulRoadForForm = useMemo(
+    () => haulRoadSetups.find((s) => s.routeId === drawForm.contractor_route_id),
+    [haulRoadSetups, drawForm.contractor_route_id]
+  );
+
+  const mapGeofences = useMemo(() => {
+    let list = geofences;
+    if (editing) list = list.filter((g) => g.id !== editing.id);
+    if (preview && drawForm.contractor_route_id) {
+      list = list.filter(
+        (g) => !(g.contractor_route_id === drawForm.contractor_route_id && ['origin', 'destination', 'corridor', 'corridor_alt'].includes(g.leg))
+      );
+    }
+    return list;
+  }, [geofences, editing, preview, drawForm.contractor_route_id]);
+
+  const otherGeofences = mapGeofences;
 
   if (loading) return <p className="text-sm text-surface-500">Loading geofences…</p>;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <header>
-        <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Route geofencing</h1>
+        <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Geofencing studio</h1>
         <p className="text-sm text-surface-600 dark:text-surface-400 mt-1 max-w-3xl">
-          Pick a route from{' '}
-          <Link to="/access-management" className="text-brand-600 hover:underline">Access Management</Link>,
-          then <strong>Draw route on map</strong> — the system geocodes loading/destination, snaps to roads (OSRM),
-          shows alternative road routes to choose from, and builds a corridor geofence you can expand on the map.
-          Use coordinates when addresses are unavailable. Add small alert zones for high-risk areas.
+          First <strong>search and draw your land or site boundary</strong>, then define the <strong>haul road from point A to point B</strong> and link it to a route from{' '}
+          <Link to="/access-management" className="text-brand-600 hover:underline">Access Management</Link>.
+          Use <strong>Pan</strong> to move the map and <strong>scroll to zoom</strong>. While drawing or picking, pan is locked but zoom stays on the map so you do not lose your place.
         </p>
       </header>
 
+      <nav className="flex flex-wrap gap-2">
+        {WORKFLOW_STEPS.map((step) => (
+          <button
+            key={step.id}
+            type="button"
+            onClick={() => {
+              setWorkflowStep(step.id);
+              if (step.id === 'land') {
+                setMapTool('draw');
+                if (!manualDrawMode && !manualPolygonDraft && !manualCircleDraft) setManualDrawMode('polygon');
+              } else {
+                setMapTool('pan');
+                setManualDrawMode(null);
+              }
+            }}
+            className={`text-left rounded-xl border px-4 py-3 transition-colors flex-1 min-w-[200px] ${
+              workflowStep === step.id
+                ? 'border-brand-500 bg-brand-50 dark:bg-brand-950/40 shadow-sm'
+                : 'border-surface-200 dark:border-surface-700 hover:bg-surface-50 dark:hover:bg-surface-800/50'
+            }`}
+          >
+            <span className="text-sm font-semibold text-surface-900 dark:text-surface-100">{step.label}</span>
+            <span className="block text-[11px] text-surface-500 mt-0.5">{step.desc}</span>
+          </button>
+        ))}
+      </nav>
+
       <GeofenceMapEditor
         geofences={otherGeofences}
+        labelGeofences={geofences}
         preview={editing ? null : preview}
         editRing={editRing}
         editCenter={editCenter}
         editRadius={editRadius}
+        editColor={editColor}
         editLeg={editing?.leg}
         editFenceType={editing?.fence_type}
-        fitKey={fitKey}
-        alertPreview={mapClickTarget === 'alert' || alertPreview ? alertPreview : null}
-        mapClickMode={!!mapClickTarget}
+        fitRevision={fitRevision}
+        fitPositions={fitPositions}
+        flyRevision={flyRevision}
+        flyTarget={flyTarget}
+        mapTool={mapTool}
+        onMapToolChange={handleMapToolChange}
+        onPlaceSelect={handlePlaceSelect}
+        routeMarkers={workflowStep === 'road' ? routeMarkers : null}
+        alertPreview={!manualDrawMode && (mapClickTarget === 'alert' || alertPreview) ? alertPreview : null}
+        mapClickMode={!!mapClickTarget && !manualDrawMode}
         onMapClick={handleMapClick}
+        manualDrawMode={manualDrawMode}
+        circleDrawPreview={circleDrawPreview}
+        onCircleDrawPreview={setCircleDrawPreview}
+        onCircleDrawComplete={handleCircleDrawComplete}
+        manualCircleDraft={manualCircleDraft}
+        onManualCircleDraftChange={setManualCircleDraft}
+        polygonDrawPoints={polygonDrawPoints}
+        onPolygonAddPoint={handlePolygonAddPoint}
+        onPolygonDrawComplete={handlePolygonDrawComplete}
+        freehandPreview={freehandPreview}
+        onFreehandPreview={setFreehandPreview}
+        onFreehandComplete={handleFreehandComplete}
+        manualPolygonDraft={manualPolygonDraft}
+        onManualPolygonDraftChange={(ring) => setManualPolygonDraft({ ring })}
+        draftColor={geofenceColor}
+        selectedGeofenceId={editing?.id}
+        onGeofenceSelect={startEdit}
+        onEditRingChange={setEditRing}
+        onEditRadiusChange={(r) => setEditRadius(String(r))}
         onVertexDrag={(index, lat, lng) => {
           setEditRing((ring) => ring.map((p, i) => (i === index ? { lat, lng } : p)));
         }}
         onCenterDrag={(lat, lng) => setEditCenter({ lat, lng })}
-        onPreviewVertexDrag={(index, lat, lng) => {
-          setPreview((p) => {
-            if (!p?.corridor_polygon) return p;
-            const corridor_polygon = p.corridor_polygon.map((pt, i) => (i === index ? { lat, lng } : pt));
-            return { ...p, corridor_polygon };
-          });
-          setCorridorManual(true);
-        }}
+        onEditSnapshot={pushEditUndo}
+        onScaleDraft={scaleMapDraft}
+        onDraftSnapshot={pushDraftUndo}
       />
 
-      {editing && (
-        <div className="rounded-lg border border-brand-200 bg-brand-50/60 dark:bg-brand-950/30 dark:border-brand-900 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm">
-            Editing <strong>{editing.name}</strong>
-            {editRing ? ' — drag blue handles to reshape the corridor' : ' — drag the pin to move; adjust radius below'}
-          </p>
-          <div className="flex gap-2">
-            {!editRing && (
-              <label className="text-sm flex items-center gap-2">
-                Radius (m)
-                <input
-                  type="number"
-                  className="w-24 rounded border px-2 py-1 text-sm dark:bg-surface-950"
-                  value={editRadius}
-                  onChange={(e) => setEditRadius(e.target.value)}
-                />
-              </label>
-            )}
-            <button type="button" onClick={cancelEdit} className="px-3 py-1.5 text-sm rounded-lg border">Cancel</button>
-            <button type="button" onClick={saveEdit} disabled={savingEdit} className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white disabled:opacity-50">
-              {savingEdit ? 'Saving…' : 'Save changes'}
-            </button>
-          </div>
-        </div>
+      {workflowStep === 'land' && (
+        <ManualGeofencePanel
+          routes={routes}
+          drawMode={manualDrawMode}
+          onDrawModeChange={setDrawMode}
+          circle={manualCircleDraft}
+          onCircleChange={setManualCircleDraft}
+          circlePreview={circleDrawPreview}
+          polygonPoints={polygonDrawPoints}
+          onPolygonPointsChange={(pts) => polygonPointsUndo.replace(pts)}
+          onPolygonUndo={() => polygonPointsUndo.undo()}
+          onPolygonRedo={() => polygonPointsUndo.redo()}
+          onPolygonClear={() => polygonPointsUndo.reset([])}
+          freehandPreview={freehandPreview}
+          polygonDraft={manualPolygonDraft}
+          onPolygonDraftChange={setManualPolygonDraft}
+          color={geofenceColor}
+          onColorChange={setGeofenceColor}
+          setError={setError}
+          onSaved={load}
+        />
       )}
 
-      <div className="grid lg:grid-cols-2 gap-6">
+      {workflowStep === 'road' && (
         <section className="rounded-xl border border-surface-200 bg-white dark:bg-surface-900 dark:border-surface-800 p-5 space-y-4">
-          <h2 className="text-sm font-semibold">Draw route on road</h2>
-          <div>
-            <label className="text-xs text-surface-500">Route</label>
-            <select
-              className="w-full mt-1 rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950"
-              value={drawForm.contractor_route_id}
-              onChange={(e) => setDrawForm((f) => ({ ...f, contractor_route_id: e.target.value }))}
-            >
-              <option value="">— Select route —</option>
-              {routes.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-xs text-surface-500">Loading / origin</label>
-              <label className="inline-flex items-center gap-1.5 text-[10px] text-surface-500 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={drawForm.use_origin_coords}
-                  onChange={(e) => setDrawForm((f) => ({ ...f, use_origin_coords: e.target.checked }))}
-                />
-                Use coordinates
-              </label>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">Haul road — point A to point B</h2>
+              <p className="text-xs text-surface-500 mt-1 max-w-2xl">
+                Edit every field below — addresses, coordinates, corridor width, and endpoints. Use <strong>Pick</strong> on the map or type lat/lng directly, then draw or redraw the road.
+              </p>
             </div>
-            {drawForm.use_origin_coords ? (
-              <div className="mt-1 grid grid-cols-2 gap-2">
-                <input
-                  className="rounded-lg border px-3 py-2 text-sm font-mono dark:border-surface-700 dark:bg-surface-950"
-                  placeholder="Latitude"
-                  value={drawForm.origin_lat}
-                  onChange={(e) => setDrawForm((f) => ({ ...f, origin_lat: e.target.value }))}
-                />
-                <input
-                  className="rounded-lg border px-3 py-2 text-sm font-mono dark:border-surface-700 dark:bg-surface-950"
-                  placeholder="Longitude"
-                  value={drawForm.origin_lng}
-                  onChange={(e) => setDrawForm((f) => ({ ...f, origin_lng: e.target.value }))}
-                />
-                <button
-                  type="button"
-                  onClick={() => setMapClickTarget(mapClickTarget === 'origin' ? null : 'origin')}
-                  className={`col-span-2 text-xs px-2 py-1.5 rounded-md border ${
-                    mapClickTarget === 'origin'
-                      ? 'border-brand-500 bg-brand-50 text-brand-800'
-                      : 'border-surface-300 text-surface-600 hover:bg-surface-50'
-                  }`}
-                >
-                  {mapClickTarget === 'origin' ? 'Click map for origin…' : 'Pick origin on map'}
-                </button>
-              </div>
-            ) : (
+            {savedHaulRoadForForm && !preview && (
+              <button
+                type="button"
+                onClick={() => loadHaulRoadFromSaved(drawForm.contractor_route_id)}
+                disabled={drawing}
+                className="text-xs px-3 py-1.5 rounded-lg border border-brand-400 text-brand-700 hover:bg-brand-50 disabled:opacity-50"
+              >
+                Load saved setup
+              </button>
+            )}
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs text-surface-500">Link to system route</label>
+              <select
+                className="w-full mt-1 rounded-lg border px-3 py-2 text-sm dark:bg-surface-950"
+                value={drawForm.contractor_route_id}
+                onChange={(e) => {
+                  setDrawForm((f) => ({ ...f, contractor_route_id: e.target.value }));
+                  clearHaulRoadPreview();
+                }}
+              >
+                <option value="">— Select route —</option>
+                {routes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              {haulRoadSetups.length > 0 && (
+                <p className="text-[10px] text-surface-400 mt-1">
+                  {haulRoadSetups.length} route{haulRoadSetups.length === 1 ? '' : 's'} with saved haul-road geofences
+                </p>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <PickedPointRow
+                label="Point A — loading"
+                color="#2563eb"
+                coords={pointACoords}
+                active={mapClickTarget === 'origin'}
+                onPick={() => { setMapTool('pick'); setMapClickTarget('origin'); }}
+                onClear={clearPointA}
+              />
+              <PickedPointRow
+                label="Point B — destination"
+                color="#059669"
+                coords={pointBCoords}
+                active={mapClickTarget === 'destination'}
+                onPick={() => { setMapTool('pick'); setMapClickTarget('destination'); }}
+                onClear={clearPointB}
+              />
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs text-surface-500">Point A — loading address</label>
               <input
-                className="w-full mt-1 rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950"
+                className="w-full rounded-lg border px-3 py-2 text-sm dark:bg-surface-950"
+                placeholder="Loading address or site name"
                 value={drawForm.origin_query}
-                onChange={(e) => setDrawForm((f) => ({ ...f, origin_query: e.target.value }))}
-                placeholder="Address from Access Management or type address"
+                onChange={(e) => { setDrawForm((f) => ({ ...f, origin_query: e.target.value })); setHaulRoadDirty(true); }}
               />
-            )}
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-xs text-surface-500">Destination</label>
-              <label className="inline-flex items-center gap-1.5 text-[10px] text-surface-500 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={drawForm.use_dest_coords}
-                  onChange={(e) => setDrawForm((f) => ({ ...f, use_dest_coords: e.target.checked }))}
-                />
-                Use coordinates
-              </label>
             </div>
-            {drawForm.use_dest_coords ? (
-              <div className="mt-1 grid grid-cols-2 gap-2">
-                <input
-                  className="rounded-lg border px-3 py-2 text-sm font-mono dark:border-surface-700 dark:bg-surface-950"
-                  placeholder="Latitude"
-                  value={drawForm.dest_lat}
-                  onChange={(e) => setDrawForm((f) => ({ ...f, dest_lat: e.target.value }))}
-                />
-                <input
-                  className="rounded-lg border px-3 py-2 text-sm font-mono dark:border-surface-700 dark:bg-surface-950"
-                  placeholder="Longitude"
-                  value={drawForm.dest_lng}
-                  onChange={(e) => setDrawForm((f) => ({ ...f, dest_lng: e.target.value }))}
-                />
-                <button
-                  type="button"
-                  onClick={() => setMapClickTarget(mapClickTarget === 'destination' ? null : 'destination')}
-                  className={`col-span-2 text-xs px-2 py-1.5 rounded-md border ${
-                    mapClickTarget === 'destination'
-                      ? 'border-brand-500 bg-brand-50 text-brand-800'
-                      : 'border-surface-300 text-surface-600 hover:bg-surface-50'
-                  }`}
-                >
-                  {mapClickTarget === 'destination' ? 'Click map for destination…' : 'Pick destination on map'}
-                </button>
-              </div>
-            ) : (
+            <div className="space-y-1">
+              <label className="text-xs text-surface-500">Point B — destination address</label>
               <input
-                className="w-full mt-1 rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950"
+                className="w-full rounded-lg border px-3 py-2 text-sm dark:bg-surface-950"
+                placeholder="Destination address or site name"
                 value={drawForm.destination_query}
-                onChange={(e) => setDrawForm((f) => ({ ...f, destination_query: e.target.value }))}
-                placeholder="Destination site address"
+                onChange={(e) => { setDrawForm((f) => ({ ...f, destination_query: e.target.value })); setHaulRoadDirty(true); }}
               />
-            )}
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <fieldset className="rounded-lg border border-surface-200 dark:border-surface-700 p-3 space-y-2">
+              <legend className="text-xs font-semibold text-surface-600 px-1">Point A coordinates</legend>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-surface-500">Latitude</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="w-full mt-0.5 rounded border px-2 py-1.5 text-sm font-mono dark:bg-surface-950"
+                    placeholder="-26.123456"
+                    value={drawForm.origin_lat}
+                    onChange={(e) => updateOriginCoords(e.target.value, drawForm.origin_lng)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-surface-500">Longitude</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="w-full mt-0.5 rounded border px-2 py-1.5 text-sm font-mono dark:bg-surface-950"
+                    placeholder="28.123456"
+                    value={drawForm.origin_lng}
+                    onChange={(e) => updateOriginCoords(drawForm.origin_lat, e.target.value)}
+                  />
+                </div>
+              </div>
+            </fieldset>
+            <fieldset className="rounded-lg border border-surface-200 dark:border-surface-700 p-3 space-y-2">
+              <legend className="text-xs font-semibold text-surface-600 px-1">Point B coordinates</legend>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-surface-500">Latitude</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="w-full mt-0.5 rounded border px-2 py-1.5 text-sm font-mono dark:bg-surface-950"
+                    placeholder="-26.123456"
+                    value={drawForm.dest_lat}
+                    onChange={(e) => updateDestCoords(e.target.value, drawForm.dest_lng)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-surface-500">Longitude</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="w-full mt-0.5 rounded border px-2 py-1.5 text-sm font-mono dark:bg-surface-950"
+                    placeholder="28.123456"
+                    value={drawForm.dest_lng}
+                    onChange={(e) => updateDestCoords(drawForm.dest_lat, e.target.value)}
+                  />
+                </div>
+              </div>
+            </fieldset>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-surface-500">Corridor width (m)</label>
               <input
@@ -578,121 +1320,112 @@ export default function GeofenceRoutesTab({ setError }) {
                 onChange={(e) => {
                   const v = Number(e.target.value);
                   setDrawForm((f) => ({ ...f, corridor_m: String(v) }));
-                  adjustCorridorWidth(v);
+                  if (preview) adjustCorridorWidth(v);
                 }}
               />
-              <p className="text-xs text-surface-500 mt-1">{drawForm.corridor_m} m each side of road</p>
+              <p className="text-xs text-surface-500">{drawForm.corridor_m} m total width</p>
             </div>
             <div>
-              <label className="text-xs text-surface-500">Endpoint radius (m)</label>
+              <label className="text-xs text-surface-500">Endpoint radius at A &amp; B (m)</label>
               <input
                 type="number"
-                className="w-full mt-1 rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950"
+                min="100"
+                max="5000"
+                step="50"
+                className="w-full mt-1 rounded-lg border px-3 py-2 text-sm dark:bg-surface-950"
                 value={drawForm.endpoint_radius_m}
                 onChange={(e) => setDrawForm((f) => ({ ...f, endpoint_radius_m: e.target.value }))}
               />
             </div>
           </div>
-          {preview?.alternatives?.length > 1 && (
-            <div className="space-y-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3 bg-surface-50/80 dark:bg-surface-900/40">
-              <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Choose road route</p>
-              <p className="text-[11px] text-surface-500">Dashed grey lines on the map are alternatives. Select the corridor that best matches your haul road.</p>
-              <div className="flex flex-col gap-2">
-                {preview.alternatives.map((alt, i) => {
-                  const selected = (preview.selected_route_index ?? 0) === i;
-                  const label = String.fromCharCode(65 + i);
-                  return (
-                    <button
-                      key={alt.index ?? i}
-                      type="button"
-                      onClick={() => selectAlternativeRoute(i)}
-                      className={`text-left rounded-lg border px-3 py-2 text-sm transition-colors ${
-                        selected
-                          ? 'border-brand-500 bg-brand-50 text-brand-900 dark:bg-brand-950/40 dark:text-brand-100'
-                          : 'border-surface-200 dark:border-surface-700 hover:bg-white dark:hover:bg-surface-800'
-                      }`}
-                    >
-                      <span className="font-medium">Route {label}</span>
-                      {i === 0 && <span className="ml-1.5 text-[10px] text-brand-600 dark:text-brand-300">fastest</span>}
-                      <span className="block text-xs text-surface-500 mt-0.5 tabular-nums">
-                        ~{alt.distance_km} km · ~{alt.duration_min} min driving
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
-          {preview?.corridor_polygon?.length >= 3 && (
-            <div className="rounded-lg border border-violet-200 dark:border-violet-900/60 bg-violet-50/50 dark:bg-violet-950/20 p-3 space-y-2">
-              <p className="text-xs font-semibold text-violet-900 dark:text-violet-200">Adjust corridor on map</p>
-              <p className="text-[11px] text-surface-600 dark:text-surface-400">
-                Drag the purple handles on the map, or use quick expand. {corridorManual ? 'Custom shape applied.' : 'Auto-generated from road width.'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={() => expandCorridorOnMap(50)} className="text-xs px-2.5 py-1 rounded-md border border-violet-300 text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-950/40">
-                  Expand +50 m
-                </button>
-                <button type="button" onClick={() => expandCorridorOnMap(100)} className="text-xs px-2.5 py-1 rounded-md border border-violet-300 text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-950/40">
-                  Expand +100 m
-                </button>
-                <button type="button" onClick={resetCorridorShape} className="text-xs px-2.5 py-1 rounded-md border border-surface-300 text-surface-600 hover:bg-surface-50 dark:hover:bg-surface-800">
-                  Reset to road width
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={drawRouteOnMap}
-              disabled={drawing}
-              className="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
-            >
-              {drawing ? 'Drawing…' : 'Draw route on map'}
-            </button>
-            {preview && (
-              <button
-                type="button"
-                onClick={saveDrawnRoute}
-                disabled={drawing}
-                className="rounded-lg border border-emerald-600 text-emerald-700 px-4 py-2 text-sm font-medium hover:bg-emerald-50 disabled:opacity-50"
-              >
-                Save geofences (origin + corridor + destination)
-              </button>
-            )}
-          </div>
-          {preview?.driving && (
-            <p className="text-xs text-surface-500">
-              Road distance ~{preview.driving.distance_km} km · ~{preview.driving.duration_min} min driving
+          {haulRoadDirty && preview && (
+            <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-lg px-3 py-2">
+              Points or addresses changed — click <strong>Redraw haul road</strong> to refresh routes and corridors on the map.
             </p>
           )}
+          {preview?.alternatives?.length >= 1 && (
+            <AlternativeRoutesPanel
+              preview={preview}
+              corridorManual={corridorManual}
+              onSetPrimary={setPrimaryAlternativeRoute}
+              onToggleOption={toggleAltGeofence}
+              onIncludeAll={includeAllRouteOptions}
+              onZoomRoute={zoomRouteOption}
+              onZoomAll={zoomAllRouteOptions}
+            />
+          )}
+          {preview?.corridor_polygon?.length >= 3 && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button type="button" onClick={() => expandCorridorOnMap(50)} className="px-2.5 py-1 rounded-md border">Expand +50 m</button>
+              <button type="button" onClick={() => expandCorridorOnMap(100)} className="px-2.5 py-1 rounded-md border">Expand +100 m</button>
+              <button type="button" onClick={resetCorridorShape} className="px-2.5 py-1 rounded-md border">Reset corridor</button>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => drawRouteOnMap()} disabled={drawing} className="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
+              {drawing ? 'Drawing…' : preview ? 'Redraw haul road on map' : 'Draw haul road on map'}
+            </button>
+            {preview && (
+              <button type="button" onClick={clearHaulRoadPreview} className="rounded-lg border px-4 py-2 text-sm">
+                Clear preview
+              </button>
+            )}
+            {preview && (() => {
+              const primary = preview.selected_route_index ?? 0;
+              const altCount = Object.entries(preview.alt_corridors || {}).filter(([i, c]) => c.enabled && Number(i) !== primary).length;
+              return (
+                <button type="button" onClick={saveDrawnRoute} disabled={drawing} className="rounded-lg border border-emerald-600 text-emerald-700 px-4 py-2 text-sm font-medium">
+                  Save route geofences (A + corridor{altCount ? ` + ${altCount} alt road${altCount === 1 ? '' : 's'}` : ''} + B)
+                </button>
+              );
+            })()}
+          </div>
         </section>
+      )}
 
+      {workflowStep === 'manage' && !editing && (
         <div className="rounded-xl border border-surface-200 bg-white dark:bg-surface-900 dark:border-surface-800 overflow-hidden">
-          <div className="px-4 py-3 border-b border-surface-100 dark:border-surface-800 text-sm font-semibold">Configured geofences</div>
-          <ul className="divide-y divide-surface-100 dark:divide-surface-800 max-h-[28rem] overflow-y-auto">
+          <div className="px-4 py-3 border-b text-sm font-semibold">Saved geofences — click one on the map to edit</div>
+          {haulRoadSetups.length > 0 && (
+            <div className="px-4 py-3 border-b bg-surface-50/80 dark:bg-surface-900/40 space-y-2">
+              <p className="text-xs font-semibold text-surface-600">Saved haul roads (A → B)</p>
+              {haulRoadSetups.map((setup) => {
+                const altCount = setup.geofences.filter((g) => g.leg === 'corridor_alt').length;
+                return (
+                  <div key={setup.routeId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                    <span>
+                      {setup.name}
+                      {altCount > 0 && (
+                        <span className="ml-2 text-xs text-cyan-700 dark:text-cyan-300">+ {altCount} alt road{altCount === 1 ? '' : 's'}</span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => loadHaulRoadFromSaved(setup.routeId)}
+                      className="text-xs text-brand-600 hover:underline"
+                    >
+                      Edit A→B setup
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <ul className="divide-y max-h-[24rem] overflow-y-auto">
             {geofences.map((g) => {
               const isPoly = !!parsePolygonJson(g.polygon_json)?.length;
               return (
-                <li key={g.id} className={`px-4 py-3 text-sm ${editing?.id === g.id ? 'bg-brand-50/50 dark:bg-brand-950/20' : ''}`}>
+                <li key={g.id} className="px-4 py-3 text-sm">
                   <div className="flex justify-between gap-3">
                     <div>
-                      <p className="font-medium flex items-center gap-2 flex-wrap">
+                      <p className="font-medium flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full border" style={{ backgroundColor: geofenceDisplayColor(g) }} />
                         {g.name}
-                        {(g.leg === 'alert' || g.fence_type === 'hazard') && (
-                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200">
-                            Alert zone
-                          </span>
-                        )}
                       </p>
                       <p className="text-xs text-surface-500">
-                        {g.contractor_route_name || (g.leg === 'alert' ? 'All routes' : '—')} · {g.leg || g.fence_type}
-                        {isPoly ? ' · road corridor' : ` · ${g.radius_m}m`}
-                        {g.alert_on_entry && ' · entry alert'}
-                        {g.alert_on_exit && ' · exit alert'}
+                        {g.contractor_route_name || '—'} · {g.leg === 'corridor_alt' ? 'alt road corridor' : (g.leg || g.fence_type)}
+                        {isPoly ? ' · area/corridor' : ` · ${g.radius_m}m`}
                       </p>
                     </div>
                     <div className="flex gap-2 shrink-0">
@@ -703,12 +1436,62 @@ export default function GeofenceRoutesTab({ setError }) {
                 </li>
               );
             })}
-            {geofences.length === 0 && (
-              <li className="px-4 py-6 text-surface-500 text-sm">No geofences yet. Select a route and draw on the map.</li>
-            )}
+            {geofences.length === 0 && <li className="px-4 py-6 text-surface-500 text-sm">No geofences yet. Start with step 1 to draw a land area.</li>}
           </ul>
         </div>
-      </div>
+      )}
+
+      {editing && (
+        <div className="rounded-lg border border-brand-200 bg-brand-50/60 dark:bg-brand-950/30 dark:border-brand-900 px-4 py-4 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">
+                Editing <strong>{editing.name}</strong>
+              </p>
+              <p className="text-xs text-surface-600 dark:text-surface-400 mt-0.5">
+                {editRing
+                  ? 'Drag the large corner handles on the map. Use Undo or expand/scale below — Pan map to move the view.'
+                  : 'Drag the blue centre or orange edge handle. Undo restores the previous shape.'}
+              </p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              {editUndoStack.length > 0 && (
+                <button type="button" onClick={undoEdit} className="px-3 py-1.5 text-sm rounded-lg border border-surface-300">
+                  Undo
+                </button>
+              )}
+              <button type="button" onClick={cancelEdit} className="px-3 py-1.5 text-sm rounded-lg border">Cancel</button>
+              <button type="button" onClick={saveEdit} disabled={savingEdit} className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white disabled:opacity-50">
+                {savingEdit ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-4">
+            <GeofenceColorPicker value={editColor} onChange={setEditColor} className="min-w-[200px]" />
+            <div className="flex flex-wrap gap-2 items-center text-xs">
+              <span className="text-surface-500 font-medium">Expand:</span>
+              <button type="button" onClick={() => expandEditGeofence(50)} className="px-2.5 py-1 rounded-md border border-brand-300 text-brand-800 hover:bg-brand-100">+50 m</button>
+              <button type="button" onClick={() => expandEditGeofence(100)} className="px-2.5 py-1 rounded-md border border-brand-300 text-brand-800 hover:bg-brand-100">+100 m</button>
+              <button type="button" onClick={() => expandEditGeofence(250)} className="px-2.5 py-1 rounded-md border border-brand-300 text-brand-800 hover:bg-brand-100">+250 m</button>
+              <span className="text-surface-500 font-medium ml-2">Scale:</span>
+              <button type="button" onClick={() => scaleEditGeofence(1.1)} className="px-2.5 py-1 rounded-md border border-surface-300 hover:bg-white dark:hover:bg-surface-800">110%</button>
+              <button type="button" onClick={() => scaleEditGeofence(0.9)} className="px-2.5 py-1 rounded-md border border-surface-300 hover:bg-white dark:hover:bg-surface-800">90%</button>
+            </div>
+            {!editRing && (
+              <label className="text-sm flex items-center gap-2 ml-auto">
+                Radius (m)
+                <input
+                  type="number"
+                  min="30"
+                  className="w-28 rounded border px-2 py-1 text-sm font-mono dark:bg-surface-950"
+                  value={editRadius}
+                  onChange={(e) => setEditRadius(e.target.value)}
+                />
+              </label>
+            )}
+          </div>
+        </div>
+      )}
 
       <section className="rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50/30 dark:bg-rose-950/10 p-5 space-y-4">
         <div>
@@ -718,6 +1501,14 @@ export default function GeofenceRoutesTab({ setError }) {
             Optional route link — leave blank to monitor all trucks on the tenant.
           </p>
         </div>
+        <PickedPointRow
+          label="Alert zone centre"
+          color="#e11d48"
+          coords={alertPreview}
+          active={mapClickTarget === 'alert'}
+          onPick={() => { setMapTool('pick'); setMapClickTarget('alert'); }}
+          onClear={clearAlertPick}
+        />
         <form onSubmit={saveAlertZone} className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           <input
             className="rounded-lg border px-3 py-2 text-sm dark:bg-surface-950"
@@ -776,17 +1567,6 @@ export default function GeofenceRoutesTab({ setError }) {
               Alert on exit
             </label>
             <button
-              type="button"
-              onClick={() => setMapClickTarget(mapClickTarget === 'alert' ? null : 'alert')}
-              className={`px-2.5 py-1.5 rounded-md border ${
-                mapClickTarget === 'alert'
-                  ? 'border-rose-500 bg-rose-100 text-rose-900'
-                  : 'border-surface-300 text-surface-600 hover:bg-surface-50'
-              }`}
-            >
-              {mapClickTarget === 'alert' ? 'Click map to place zone…' : 'Place on map'}
-            </button>
-            <button
               type="submit"
               disabled={savingAlert}
               className="ml-auto rounded-lg bg-rose-600 text-white px-4 py-2 text-sm font-medium hover:bg-rose-700 disabled:opacity-50"
@@ -796,65 +1576,6 @@ export default function GeofenceRoutesTab({ setError }) {
           </div>
         </form>
       </section>
-
-      <details className="rounded-xl border border-dashed border-surface-300 dark:border-surface-700 p-4 text-sm">
-        <summary className="font-medium cursor-pointer">Manual point geofence (advanced)</summary>
-        <ManualGeofenceForm routes={routes} onSaved={load} setError={setError} legOptions={LEG_OPTIONS} />
-      </details>
     </div>
-  );
-}
-
-function ManualGeofenceForm({ routes, onSaved, setError, legOptions }) {
-  const [form, setForm] = useState({
-    name: '',
-    contractor_route_id: '',
-    leg: 'origin',
-    center_lat: '',
-    center_lng: '',
-    radius_m: '500',
-    alert_on_exit: true,
-  });
-
-  const save = async (e) => {
-    e.preventDefault();
-    if (!form.center_lat || !form.center_lng) {
-      setError('Enter lat/lng for a manual circle geofence.');
-      return;
-    }
-    try {
-      await trackingApi.geofences.create({
-        name: form.name,
-        fence_type: form.leg === 'alert' ? 'hazard' : form.leg === 'destination' ? 'destination' : 'deviation',
-        contractor_route_id: form.contractor_route_id || null,
-        leg: form.leg,
-        center_lat: Number(form.center_lat),
-        center_lng: Number(form.center_lng),
-        radius_m: Number(form.radius_m) || 500,
-        alert_on_entry: form.leg === 'alert' ? true : !!form.alert_on_entry,
-        alert_on_exit: form.alert_on_exit,
-      });
-      onSaved();
-      setForm((f) => ({ ...f, name: '', center_lat: '', center_lng: '' }));
-    } catch (err) {
-      setError(err?.message || 'Save failed');
-    }
-  };
-
-  return (
-    <form onSubmit={save} className="mt-4 grid sm:grid-cols-2 gap-3">
-      <input className="rounded-lg border px-3 py-2 text-sm dark:bg-surface-950" placeholder="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
-      <select className="rounded-lg border px-3 py-2 text-sm dark:bg-surface-950" value={form.contractor_route_id} onChange={(e) => setForm((f) => ({ ...f, contractor_route_id: e.target.value }))}>
-        <option value="">All routes (optional)</option>
-        {routes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-      </select>
-      <select className="rounded-lg border px-3 py-2 text-sm dark:bg-surface-950" value={form.leg} onChange={(e) => setForm((f) => ({ ...f, leg: e.target.value }))}>
-        {legOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      <input className="rounded-lg border px-3 py-2 text-sm font-mono dark:bg-surface-950" placeholder="Lat" value={form.center_lat} onChange={(e) => setForm((f) => ({ ...f, center_lat: e.target.value }))} />
-      <input className="rounded-lg border px-3 py-2 text-sm font-mono dark:bg-surface-950" placeholder="Lng" value={form.center_lng} onChange={(e) => setForm((f) => ({ ...f, center_lng: e.target.value }))} />
-      <input className="rounded-lg border px-3 py-2 text-sm dark:bg-surface-950" placeholder="Radius m" value={form.radius_m} onChange={(e) => setForm((f) => ({ ...f, radius_m: e.target.value }))} />
-      <button type="submit" className="sm:col-span-2 rounded-lg border border-brand-600 text-brand-700 px-4 py-2 text-sm w-fit">Add manual circle</button>
-    </form>
   );
 }

@@ -3,9 +3,10 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { todayYmd } from '../lib/appTime.js';
 import { processGeofencePositions, syncContractorFleetToTracking } from '../lib/trackingGeofenceEngine.js';
-import { geocodeAddress, drivingRouteAlternatives } from '../lib/mapRouting.js';
+import { geocodeAddress, drivingRouteAlternatives, locationContextAt, reverseGeocode, parseCoordinateQuery } from '../lib/mapRouting.js';
 import { bufferPolylineToPolygon } from '../lib/routeCorridorGeofence.js';
 import { applyTelemetryToTrip } from '../lib/trackingTelemetry.js';
+import { getTripTrailLastKm } from '../lib/tripPositionTrail.js';
 import { sendDeviationAlertEmail } from '../lib/trackingEmailAlerts.js';
 import { getTrackingPollStatus, runTrackingProviderPoll } from '../lib/trackingProviderPoll.js';
 import { testFleetcamConnection, listFleetcamDevices } from '../lib/fleetcamConnector.js';
@@ -110,6 +111,46 @@ router.get('/contractor-trucks', async (req, res) => {
     res.json({ trucks });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to list contractor trucks' });
+  }
+});
+
+router.get('/contractor-drivers', async (req, res) => {
+  try {
+    const tid = tenantId(req);
+    if (!tid) return res.status(400).json({ error: 'No tenant' });
+    const truckReg = String(req.query.truck_registration || '').trim();
+    const r = await query(
+      `SELECT d.id, d.full_name, d.name, d.surname, d.phone, d.license_number,
+              t.registration AS linked_truck_registration, t.id AS linked_truck_id,
+              c.name AS contractor_name
+       FROM contractor_drivers d
+       LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractors c ON c.id = d.contractor_id AND c.tenant_id = d.tenant_id
+       WHERE d.tenant_id = @tenantId
+       ORDER BY
+         CASE WHEN @reg <> N'' AND UPPER(REPLACE(t.registration, N' ', N'')) = UPPER(REPLACE(@reg, N' ', N'')) THEN 0 ELSE 1 END,
+         d.full_name, d.name, d.surname`,
+      { tenantId: tid, reg: truckReg }
+    );
+    const drivers = (r.recordset || []).map((row) => {
+      const fullName = String(get(row, 'full_name') || '').trim()
+        || [get(row, 'name'), get(row, 'surname')].filter(Boolean).join(' ').trim();
+      const linkedReg = String(get(row, 'linked_truck_registration') || '').trim();
+      const norm = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, '');
+      return {
+        id: gid(get(row, 'id')),
+        full_name: fullName || null,
+        phone: get(row, 'phone') || null,
+        license_number: get(row, 'license_number') || null,
+        linked_truck_id: gid(get(row, 'linked_truck_id')),
+        linked_truck_registration: linkedReg || null,
+        contractor_name: get(row, 'contractor_name') || null,
+        linked_to_truck: !!(truckReg && linkedReg && norm(linkedReg) === norm(truckReg)),
+      };
+    });
+    res.json({ drivers });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to list contractor drivers' });
   }
 });
 
@@ -990,6 +1031,23 @@ router.post('/trips/:id/telemetry', async (req, res) => {
   }
 });
 
+router.get('/trips/:id/trail', async (req, res) => {
+  if (!ensureSchema(req, res, { trail: { points: [], distance_km: 0 } })) return;
+  try {
+    const tid = tenantId(req);
+    const km = req.query.km != null ? Number(req.query.km) : 2;
+    const tripR = await query(
+      `SELECT id FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`,
+      { tenantId: tid, id: req.params.id }
+    );
+    if (!tripR.recordset?.[0]) return res.status(404).json({ error: 'Trip not found' });
+    const trail = await getTripTrailLastKm(query, tid, req.params.id, km);
+    res.json({ trail });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load trail' });
+  }
+});
+
 /** Background poll status (live telematics ingestion). */
 router.get('/poll/status', async (req, res) => {
   res.json(getTrackingPollStatus());
@@ -1209,12 +1267,7 @@ router.post('/demo/tick', async (req, res) => {
       lng += Math.cos(rad * 1.27) * 0.003;
       const spd = 52 + Math.round((Math.sin(rad * 2) + 1) * 15);
       const hdg = ((Math.atan2(Math.cos(rad * 1.3), Math.sin(rad)) * 180) / Math.PI + 360) % 360;
-      await query(
-        `UPDATE fleet_trip SET last_lat = @lat, last_lng = @lng, last_speed_kmh = @spd, last_heading_deg = @hdg,
-            last_seen_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-         WHERE id = @id AND tenant_id = @tenantId`,
-        { tenantId: tid, id, lat, lng, spd, hdg }
-      );
+      await applyTelemetryToTrip(query, tid, id, { lat, lng, speed_kmh: spd, heading_deg: hdg });
       updated++;
     }
     res.json({ ok: true, updated });
@@ -1227,11 +1280,52 @@ router.get('/map/geocode', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     if (!q) return res.status(400).json({ error: 'q required' });
+
+    const coords = parseCoordinateQuery(q);
+    if (coords) {
+      const hit = await reverseGeocode(coords.lat, coords.lng);
+      if (hit) {
+        return res.json({
+          result: {
+            ...hit,
+            lat: coords.lat,
+            lng: coords.lng,
+            query: q,
+            from_coordinates: true,
+          },
+        });
+      }
+      return res.json({
+        result: {
+          lat: coords.lat,
+          lng: coords.lng,
+          display_name: `${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)}`,
+          query: q,
+          from_coordinates: true,
+        },
+      });
+    }
+
     const hit = await geocodeAddress(q);
     if (!hit) return res.status(404).json({ error: 'Address not found on map' });
     res.json({ result: hit });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Geocode failed' });
+  }
+});
+
+router.get('/map/location-context', async (req, res) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ error: 'lat and lng required' });
+    }
+    const context = await locationContextAt(lat, lng);
+    if (!context) return res.status(404).json({ error: 'Location not found' });
+    res.json({ context });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Location lookup failed' });
   }
 });
 
@@ -1369,6 +1463,35 @@ router.post('/geofences/draw-route', async (req, res) => {
     );
     created.push({ id: gid(insCorridor.recordset?.[0]?.id), leg: 'corridor' });
 
+    const altInputs = Array.isArray(b.alternative_corridors) ? b.alternative_corridors : [];
+    for (const alt of altInputs) {
+      const altIndex = Number(alt.index);
+      if (!Number.isFinite(altIndex) || altIndex === selectedIndex) continue;
+      const altRoute = alternatives[altIndex];
+      const altPoly = Array.isArray(alt.route_polyline) && alt.route_polyline.length >= 2
+        ? alt.route_polyline
+        : (altRoute?.polyline || []);
+      if (altPoly.length < 2) continue;
+      const altRing = Array.isArray(alt.corridor_polygon) && alt.corridor_polygon.length >= 3
+        ? alt.corridor_polygon
+        : bufferPolylineToPolygon(altPoly, corridorM);
+      const altLetter = String.fromCharCode(65 + altIndex);
+      const altJson = JSON.stringify({
+        type: 'corridor',
+        corridor_m: corridorM,
+        route_polyline: altPoly,
+        ring: altRing,
+        route_index: altIndex,
+        is_alternative: true,
+      });
+      const insAlt = await query(
+        `INSERT INTO tracking_geofence (tenant_id, name, fence_type, polygon_json, alert_on_exit, alert_on_entry, contractor_route_id, leg)
+         OUTPUT INSERTED.id VALUES (@tenantId, @n, N'deviation', @pj, 0, 0, @rid, N'corridor_alt')`,
+        { tenantId: tid, n: `${routeName} — Alt ${altLetter} corridor`, pj: altJson, rid: routeId }
+      );
+      created.push({ id: gid(insAlt.recordset?.[0]?.id), leg: 'corridor_alt', route_index: altIndex });
+    }
+
     const insDest = await query(
       `INSERT INTO tracking_geofence (tenant_id, name, fence_type, center_lat, center_lng, radius_m, alert_on_exit, alert_on_entry, contractor_route_id, leg)
        OUTPUT INSERTED.id VALUES (@tenantId, @n, N'destination', @lat, @lng, @rm, 0, 1, @rid, N'destination')`,
@@ -1505,11 +1628,17 @@ async function buildFleetDistribution(tenantId) {
       mapTrips.push({
         id: vehicle.trip_id,
         truck_registration: vehicle.truck_registration,
+        trip_ref: vehicle.trip_ref,
+        contractor_name: vehicle.contractor_name,
+        driver_name: vehicle.driver_name,
         last_lat: vehicle.last_lat,
         last_lng: vehicle.last_lng,
         status: vehicle.status,
         last_speed_kmh: vehicle.last_speed_kmh,
         last_heading_deg: get(row, 'last_heading_deg') != null ? Number(get(row, 'last_heading_deg')) : null,
+        last_seen_at: vehicle.last_seen_at,
+        collection_point_name: vehicle.collection_point_name,
+        destination_name: vehicle.destination_name,
       });
     }
   }
@@ -1713,9 +1842,8 @@ router.post('/logistics-activity/trips/:id/offloading-slip', async (req, res) =>
     await query(
       `UPDATE fleet_trip SET
         offloading_slip_no = @slip,
-        activity_stage = N'completed',
-        status = N'completed',
-        completed_at = SYSUTCDATETIME(),
+        activity_stage = N'awaiting_reschedule',
+        status = N'pending',
         is_overdue = 0,
         updated_at = SYSUTCDATETIME(),
         notes = COALESCE(@notes, notes)
@@ -1744,7 +1872,7 @@ router.post('/logistics-activity/trips/:id/offloading-slip', async (req, res) =>
       }
     );
 
-    res.json({ ok: true, activity_stage: 'completed' });
+    res.json({ ok: true, activity_stage: 'awaiting_reschedule' });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Offloading slip failed' });
   }
@@ -1761,6 +1889,16 @@ router.post('/logistics-activity/trips/:id/redirect', async (req, res) => {
     const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId: tid, id: tripId });
     const trip = tr.recordset?.[0];
     if (!trip) return res.status(404).json({ error: 'Trip not found' });
+
+    const stage = String(get(trip, 'activity_stage') || '').toLowerCase();
+    if (stage === 'awaiting_reschedule') {
+      const result = await scheduleTruckForRoute(query, tid, {
+        truck_registration: get(trip, 'truck_registration'),
+        contractor_truck_id: gid(get(trip, 'contractor_truck_id')),
+        contractor_route_id: rid,
+      });
+      return res.json({ ok: true, ...result });
+    }
 
     await query(
       `UPDATE fleet_trip SET status = N'completed', activity_stage = N'completed', completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()

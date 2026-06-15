@@ -422,3 +422,13 @@ html.dark .overflow-x-auto::-webkit-scrollbar-thumb:hover {
     background-color: rgb(255 255 255 / 0.16);
   }
 }
+
+.geofence-place-label {
+  background: transparent !important;
+  border: none !important;
+}
+
+.route-option-label {
+  background: transparent !important;
+  border: none !important;
+}

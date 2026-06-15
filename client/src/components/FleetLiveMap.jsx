@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
-import { MapContainer, Marker, Popup, Polyline, Polygon, Circle, useMap } from 'react-leaflet';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { MapContainer, Marker, Popup, Polyline, Polygon, Circle, ZoomControl, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './FleetLiveMap.css';
 import FleetMapBasemap from './FleetMapBasemap.jsx';
 import { parsePolygonJson } from '../lib/routeCorridorGeofence.js';
-import { fleetTruckIcon, FLEET_STATUS_COLORS } from '../lib/fleetMapIcons.js';
+import { fleetCamVehicleIcon } from '../lib/fleetMapIcons.js';
+import GeofencePlaceLabels from './tracking/GeofencePlaceLabels.jsx';
 
 function parseWaypoints(raw) {
   if (!raw) return [];
@@ -37,19 +38,34 @@ function legColor(leg) {
   if (leg === 'origin') return '#2563eb';
   if (leg === 'destination') return '#059669';
   if (leg === 'corridor') return '#7c3aed';
+  if (leg === 'corridor_alt') return '#0891b2';
   return '#64748b';
 }
 
-function FitBounds({ positions }) {
+function FitBounds({ positions, selectedPosition, selectedTripId, selectedZoom = 13 }) {
   const map = useMap();
+  const lastFocusedTripRef = useRef(null);
+
   useEffect(() => {
-    if (!positions?.length) return;
-    if (positions.length === 1) {
-      map.setView(positions[0], 11);
+    if (selectedPosition) {
+      const tripChanged =
+        selectedTripId != null ? selectedTripId !== lastFocusedTripRef.current : lastFocusedTripRef.current !== 'position';
+      if (tripChanged) {
+        lastFocusedTripRef.current = selectedTripId ?? 'position';
+        map.flyTo(selectedPosition, selectedZoom, { duration: 0.65 });
+      } else {
+        map.panTo(selectedPosition, { animate: true, duration: 0.35 });
+      }
       return;
     }
-    map.fitBounds(L.latLngBounds(positions.map(([lat, lng]) => [lat, lng])), { padding: [48, 48], maxZoom: 11 });
-  }, [map, positions]);
+    lastFocusedTripRef.current = null;
+    if (!positions?.length) return;
+    if (positions.length === 1) {
+      map.setView(positions[0], 12);
+      return;
+    }
+    map.fitBounds(L.latLngBounds(positions.map(([lat, lng]) => [lat, lng])), { padding: [48, 48], maxZoom: 12 });
+  }, [map, positions, selectedPosition, selectedTripId, selectedZoom]);
   return null;
 }
 
@@ -62,40 +78,48 @@ function MapResizeWatcher({ resizeKey }) {
   return null;
 }
 
-function MapLegend({ vehicleCount }) {
-  const items = [
-    { key: 'enroute', label: 'En route' },
-    { key: 'pending', label: 'Pending' },
-    { key: 'deviated', label: 'Deviated' },
-    { key: 'overdue', label: 'Overdue' },
-  ];
-  return (
-    <div className="fleet-map-legend absolute bottom-3 left-3 z-[1000] rounded-lg border border-surface-200/90 bg-white/95 px-3 py-2 shadow-md dark:border-surface-700 dark:bg-surface-900/95">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-surface-500 mb-1.5">
-        Fleet live · {vehicleCount} unit{vehicleCount === 1 ? '' : 's'}
-      </p>
-      <div className="flex flex-wrap gap-x-3 gap-y-1">
-        {items.map(({ key, label }) => (
-          <span key={key} className="inline-flex items-center gap-1 text-[10px] text-surface-600 dark:text-surface-300">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: FLEET_STATUS_COLORS[key] }} />
-            {label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+function TravelTrailPane() {
+  const map = useMap();
+  useEffect(() => {
+    if (!map.getPane('travelTrailPane')) {
+      const pane = map.createPane('travelTrailPane');
+      pane.style.zIndex = '520';
+    }
+  }, [map]);
+  return null;
 }
 
 /**
- * Live fleet map with geofenced routes, road polylines, and truck markers.
+ * Live fleet map with geofenced routes, satellite basemap, and directional vehicle markers.
  */
-export default function FleetLiveMap({ trips = [], routes = [], geofences = [], className = '', resizeKey = '' }) {
+export default function FleetLiveMap({
+  trips = [],
+  routes = [],
+  geofences = [],
+  className = '',
+  resizeKey = '',
+  basemap = 'satellite',
+  showMapLabels = true,
+  selectedTripId = null,
+  visibleTripIds = null,
+  onSelectTrip = null,
+  showAllLabels = false,
+  locationByTripId = {},
+  selectedZoom = 13,
+  travelTrail = [],
+}) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const { withPos, positions, routeLines, center } = useMemo(() => {
+  const { withPos, positions, routeLines, center, selectedPosition } = useMemo(() => {
+    const visibleSet = visibleTripIds instanceof Set ? visibleTripIds : null;
     const withPos = (trips || []).filter(
-      (t) => t.last_lat != null && t.last_lng != null && Number.isFinite(Number(t.last_lat)) && Number.isFinite(Number(t.last_lng))
+      (t) =>
+        t.last_lat != null &&
+        t.last_lng != null &&
+        Number.isFinite(Number(t.last_lat)) &&
+        Number.isFinite(Number(t.last_lng)) &&
+        (!visibleSet || visibleSet.has(t.id))
     );
     const positions = [];
 
@@ -110,7 +134,7 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
         const key = `gf-${g.contractor_route_id || g.id}-line`;
         if (!seenRouteKeys.has(key)) {
           seenRouteKeys.add(key);
-          routeLines.push({ key, points: polyline.map((p) => [p.lat, p.lng]), color: '#0ea5e9', weight: 4 });
+          routeLines.push({ key, points: polyline.map((p) => [p.lat, p.lng]), color: '#38bdf8', weight: 3, opacity: 0.75 });
           polyline.forEach((p) => positions.push([p.lat, p.lng]));
         }
       }
@@ -127,7 +151,7 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
         const key = `mr-${r.contractor_route_id || r.id}`;
         if (!seenRouteKeys.has(key)) {
           seenRouteKeys.add(key);
-          routeLines.push({ key, points: wp.map((p) => [p.lat, p.lng]), color: '#0ea5e9', weight: 4 });
+          routeLines.push({ key, points: wp.map((p) => [p.lat, p.lng]), color: '#38bdf8', weight: 3, opacity: 0.75 });
           wp.forEach((p) => positions.push([p.lat, p.lng]));
         }
       } else if (r.origin_lat != null && r.origin_lng != null && r.dest_lat != null && r.dest_lng != null) {
@@ -140,9 +164,10 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
               [Number(r.origin_lat), Number(r.origin_lng)],
               [Number(r.dest_lat), Number(r.dest_lng)],
             ],
-            color: '#94a3b8',
+            color: '#64748b',
             weight: 2,
             dashArray: '6 4',
+            opacity: 0.6,
           });
           positions.push([Number(r.origin_lat), Number(r.origin_lng)], [Number(r.dest_lat), Number(r.dest_lng)]);
         }
@@ -157,14 +182,25 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
           ]
         : [-26.15, 28.12];
 
-    return { withPos, positions, routeLines, center };
-  }, [trips, routes, geofences]);
+    const selected = withPos.find((t) => t.id === selectedTripId);
+    const selectedPosition = selected ? [Number(selected.last_lat), Number(selected.last_lng)] : null;
+
+    return { withPos, positions, routeLines, center, selectedPosition };
+  }, [trips, routes, geofences, selectedTripId, visibleTripIds]);
 
   const shellClass = className || 'h-80';
+  const mapTheme = basemap === 'satellite' ? 'fleet-live-map--satellite' : '';
+  const trailPositions = useMemo(
+    () =>
+      (travelTrail || [])
+        .map((p) => [Number(p.lat), Number(p.lng)])
+        .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng)),
+    [travelTrail]
+  );
 
   if (!mounted) {
     return (
-      <div className={`fleet-live-map rounded-xl border border-surface-200 bg-surface-100 flex items-center justify-center text-surface-500 text-sm ${shellClass}`}>
+      <div className={`fleet-live-map ${mapTheme} rounded-xl border border-surface-200 bg-surface-100 flex items-center justify-center text-surface-500 text-sm ${shellClass}`}>
         Loading map…
       </div>
     );
@@ -174,9 +210,11 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
   const hasOverlay = hasGeofences || routeLines.length > 0;
 
   return (
-    <div className={`fleet-live-map relative rounded-xl border border-surface-200 dark:border-surface-700 overflow-hidden shadow-sm z-0 ${shellClass}`}>
-      <MapContainer center={center} zoom={10} className="absolute inset-0 h-full w-full z-0" scrollWheelZoom>
-        <FleetMapBasemap />
+    <div className={`fleet-live-map ${mapTheme} relative overflow-hidden z-0 ${shellClass}`}>
+      <MapContainer center={center} zoom={11} maxZoom={19} className="absolute inset-0 h-full w-full z-0" scrollWheelZoom zoomControl={false}>
+        <ZoomControl position="bottomright" />
+        <FleetMapBasemap variant={basemap} showLabels={showMapLabels} />
+        <TravelTrailPane />
 
         {(geofences || []).map((g) => {
           const ring = parsePolygonJson(g.polygon_json);
@@ -186,7 +224,7 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
               <Polygon
                 key={`poly-${g.id}`}
                 positions={ring.map((p) => [p.lat, p.lng])}
-                pathOptions={{ color, weight: 2, fillOpacity: 0.1 }}
+                pathOptions={{ color, weight: 2, fillOpacity: 0.08 }}
               />
             );
           }
@@ -196,12 +234,14 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
                 key={`circle-${g.id}`}
                 center={[Number(g.center_lat), Number(g.center_lng)]}
                 radius={Number(g.radius_m) || 500}
-                pathOptions={{ color, fillOpacity: 0.12 }}
+                pathOptions={{ color, fillOpacity: 0.08 }}
               />
             );
           }
           return null;
         })}
+
+        <GeofencePlaceLabels geofences={geofences} />
 
         {routeLines.map((line) => (
           <Polyline
@@ -210,48 +250,123 @@ export default function FleetLiveMap({ trips = [], routes = [], geofences = [], 
             pathOptions={{
               color: line.color,
               weight: line.weight || 4,
-              opacity: 0.85,
+              opacity: line.opacity ?? 0.85,
               dashArray: line.dashArray,
             }}
           />
         ))}
 
-        {withPos.map((trip) => (
-          <Marker
-            key={trip.id || trip.truck_registration}
-            position={[Number(trip.last_lat), Number(trip.last_lng)]}
-            icon={fleetTruckIcon(trip.status, trip.last_heading_deg)}
-          >
-            <Popup className="fleet-truck-popup" minWidth={180}>
-              <div className="space-y-1">
-                <p className="font-bold text-surface-900">{trip.truck_registration || 'Truck'}</p>
-                <p className="text-xs capitalize text-surface-600">{trip.status || '—'}</p>
-                {trip.last_speed_kmh != null && (
-                  <p className="text-xs text-surface-600">{Math.round(Number(trip.last_speed_kmh))} km/h</p>
-                )}
-                {trip.last_heading_deg != null && (
-                  <p className="text-xs text-surface-500">Heading {Math.round(Number(trip.last_heading_deg))}°</p>
-                )}
-              </div>
-            </Popup>
-          </Marker>
-        ))}
+        {trailPositions.length >= 2 && (
+          <>
+            <Polyline
+              pane="travelTrailPane"
+              positions={trailPositions}
+              pathOptions={{
+                color: '#ffffff',
+                weight: 14,
+                opacity: 0.95,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+            <Polyline
+              pane="travelTrailPane"
+              positions={trailPositions}
+              pathOptions={{
+                color: '#ff9500',
+                weight: 7,
+                opacity: 1,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+            <Circle
+              pane="travelTrailPane"
+              center={trailPositions[0]}
+              radius={18}
+              pathOptions={{
+                color: '#ffffff',
+                weight: 3,
+                fillColor: '#ff9500',
+                fillOpacity: 1,
+              }}
+            />
+          </>
+        )}
 
-        {positions.length > 0 && <FitBounds positions={positions} />}
+        {withPos.map((trip) => {
+          const selected = trip.id === selectedTripId;
+          const showLabel = showAllLabels || selected;
+          const loc = locationByTripId?.[trip.id];
+          const tripForIcon = loc
+            ? {
+                ...trip,
+                _labelExtra: loc.speed_limit_kmh != null ? ` · limit ${loc.speed_limit_kmh}` : '',
+              }
+            : trip;
+          return (
+            <Marker
+              key={trip.id || trip.truck_registration}
+              position={[Number(trip.last_lat), Number(trip.last_lng)]}
+              icon={fleetCamVehicleIcon(tripForIcon, { selected, showLabel })}
+              eventHandlers={{
+                click: () => onSelectTrip?.(trip.id),
+              }}
+              zIndexOffset={selected ? 1000 : 0}
+            >
+              <Popup className="fleet-truck-popup" minWidth={220}>
+                <div className="space-y-1 text-sm">
+                  <p className="font-bold text-surface-900">{trip.truck_registration || 'Truck'}</p>
+                  {loc?.address_line && (
+                    <p className="text-xs text-surface-700 leading-snug">{loc.address_line}</p>
+                  )}
+                  {loc?.road_name && (
+                    <p className="text-xs text-surface-600">
+                      Road: {loc.road_name}
+                      {loc.speed_limit_kmh != null ? ` · limit ${loc.speed_limit_kmh} km/h` : ''}
+                    </p>
+                  )}
+                  {trip.driver_name && <p className="text-xs text-surface-600">Driver: {trip.driver_name}</p>}
+                  <p className="text-xs capitalize text-surface-600">{trip.status || '—'}</p>
+                  {trip.last_speed_kmh != null && (
+                    <p className="text-xs text-surface-600">{Math.round(Number(trip.last_speed_kmh))} km/h</p>
+                  )}
+                  {trip.last_heading_deg != null && (
+                    <p className="text-xs text-surface-500">Heading {Math.round(Number(trip.last_heading_deg))}°</p>
+                  )}
+                  {trip.last_seen_at && (
+                    <p className="text-xs text-surface-500">Last seen {new Date(trip.last_seen_at).toLocaleString()}</p>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+          );
+        })}
+
+        <FitBounds
+          positions={positions}
+          selectedPosition={selectedPosition}
+          selectedTripId={selectedTripId}
+          selectedZoom={selectedZoom}
+        />
         <MapResizeWatcher resizeKey={resizeKey || className} />
       </MapContainer>
 
-      {withPos.length > 0 && <MapLegend vehicleCount={withPos.length} />}
-
       {positions.length === 0 && !hasOverlay && (
-        <p className="absolute bottom-0 inset-x-0 text-xs text-surface-500 px-3 py-2 bg-surface-50/95 border-t border-surface-100 dark:bg-surface-900/95 dark:border-surface-800">
+        <p className="absolute bottom-3 left-3 right-3 text-xs text-slate-300 px-3 py-2 bg-slate-900/85 border border-white/10 rounded-lg">
           No GPS or geofences yet. Link FleetCam units under Fleet integration.
         </p>
       )}
       {hasOverlay && withPos.length === 0 && (
-        <p className="absolute bottom-0 inset-x-0 text-xs text-surface-500 px-3 py-2 bg-surface-50/95 border-t border-surface-100 dark:bg-surface-900/95 dark:border-surface-800">
-          Geofenced route shown. Fleet icons appear when trucks report GPS.
+        <p className="absolute bottom-3 left-3 right-3 text-xs text-slate-300 px-3 py-2 bg-slate-900/85 border border-white/10 rounded-lg">
+          Geofenced route shown. Vehicle icons appear when trucks report GPS.
         </p>
+      )}
+      {trailPositions.length >= 2 && (
+        <div className="fleet-travel-trail-legend absolute bottom-3 left-3 text-[10px] text-slate-200 px-2.5 py-1.5 bg-slate-900/88 border border-white/10 rounded-md flex items-center gap-2">
+          <span className="inline-block w-8 h-1.5 rounded-full bg-[#ff9500] ring-2 ring-white/90" />
+          Last 2 km travelled
+        </div>
       )}
     </div>
   );

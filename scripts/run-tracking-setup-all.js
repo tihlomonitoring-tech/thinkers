@@ -69,6 +69,12 @@ try {
   console.warn('tracking-notification-email-settings (optional):', e?.message || e);
 }
 
+try {
+  await runBatches('tracking-trip-positions.sql', 'tracking-trip-positions.sql');
+} catch (e) {
+  console.warn('tracking-trip-positions (optional):', e?.message || e);
+}
+
 const pool = await getPool();
 await pool.close();
 console.log('Tracking setup complete. Restart the API server.');

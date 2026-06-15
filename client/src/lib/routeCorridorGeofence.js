@@ -71,17 +71,71 @@ export function parsePolygonJson(raw) {
   return null;
 }
 
+/** Route centerline stored in corridor polygon_json metadata. */
+export function parseCorridorPolyline(raw) {
+  if (!raw) return null;
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!data?.route_polyline?.length) return null;
+  return data.route_polyline
+    .map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+}
+
+export function parseCorridorMeta(raw) {
+  if (!raw) return { corridor_m: null, route_index: null, is_alternative: false, route_polyline: null };
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return { corridor_m: null, route_index: null, is_alternative: false, route_polyline: null };
+    }
+  }
+  if (Array.isArray(data)) {
+    return { corridor_m: null, route_index: null, is_alternative: false, route_polyline: null };
+  }
+  return {
+    corridor_m: data?.corridor_m ?? null,
+    route_index: data?.route_index ?? null,
+    is_alternative: !!data?.is_alternative,
+    route_polyline: data?.route_polyline ?? null,
+  };
+}
+
 export function serializeCorridorPolygon(ring, meta = {}) {
   return JSON.stringify({
     type: 'corridor',
+    color: meta.color ?? null,
     corridor_m: meta.corridor_m ?? null,
     route_polyline: meta.route_polyline ?? null,
     ring,
   });
 }
 
-export function serializeSimplePolygon(ring) {
+export function serializeSimplePolygon(ring, meta = {}) {
+  if (meta.color) {
+    return JSON.stringify({ type: 'polygon', color: meta.color, ring });
+  }
   return JSON.stringify(ring);
+}
+
+/** Uniform scale from centroid (factor 1 = unchanged, 1.1 = 10% larger). */
+export function scalePolygonRing(ring, factor) {
+  if (!ring?.length || !factor || factor === 1) return ring;
+  const c = polygonCentroid(ring);
+  if (!c) return ring;
+  return ring.map((p) => {
+    const dist = haversineM(c, p);
+    const b = bearingDeg(c.lat, c.lng, p.lat, p.lng);
+    return offsetPoint(c.lat, c.lng, b, dist * factor);
+  });
 }
 
 export function polygonCentroid(ring) {

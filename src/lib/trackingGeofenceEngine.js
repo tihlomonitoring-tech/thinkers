@@ -14,6 +14,21 @@ function get(row, key) {
   return entry ? entry[1] : undefined;
 }
 
+function isInsideRouteAltCorridor(fences, lat, lng, routeId) {
+  if (!routeId) return false;
+  for (const f of fences) {
+    if (gid(get(f, 'contractor_route_id')) !== routeId) continue;
+    if (String(get(f, 'leg') || '').toLowerCase() !== 'corridor_alt') continue;
+    if (isInsideGeofence(lat, lng, {
+      center_lat: get(f, 'center_lat'),
+      center_lng: get(f, 'center_lng'),
+      radius_m: get(f, 'radius_m'),
+      polygon_json: get(f, 'polygon_json'),
+    })) return true;
+  }
+  return false;
+}
+
 /**
  * Process vehicle positions against geofences: logistics activity stages, exit alerts.
  * @returns {{ processed: number, allocated: number, alerts: number, pending_notes: number }}
@@ -208,31 +223,35 @@ export async function processGeofencePositions(query, tenantId) {
 
       if (wasInside && !inside) {
         if (get(fence, 'alert_on_exit')) {
-          await query(
-            `INSERT INTO tracking_alarm_record (tenant_id, trip_id, truck_registration, alarm_type, severity, occurred_at, lat, lng, detail)
-             VALUES (@tenantId, @tripId, @reg, N'geofence', N'warning', SYSUTCDATETIME(), @lat, @lng, @det)`,
-            {
+          const suppressCorridorExit = leg === 'corridor'
+            && isInsideRouteAltCorridor(fences, lat, lng, contractorRouteId);
+          if (!suppressCorridorExit) {
+            await query(
+              `INSERT INTO tracking_alarm_record (tenant_id, trip_id, truck_registration, alarm_type, severity, occurred_at, lat, lng, detail)
+               VALUES (@tenantId, @tripId, @reg, N'geofence', N'warning', SYSUTCDATETIME(), @lat, @lng, @det)`,
+              {
+                tenantId,
+                tripId,
+                reg,
+                lat,
+                lng,
+                det: `Exited geofence: ${fenceName}${routeName ? ` (${routeName})` : ''}`,
+              }
+            );
+            await sendGeofenceAlertEmail({
+              query,
               tenantId,
-              tripId,
-              reg,
+              truckRegistration: reg,
+              geofenceName: fenceName,
+              eventType: 'exit',
               lat,
               lng,
-              det: `Exited geofence: ${fenceName}${routeName ? ` (${routeName})` : ''}`,
-            }
-          );
-          await sendGeofenceAlertEmail({
-            query,
-            tenantId,
-            truckRegistration: reg,
-            geofenceName: fenceName,
-            eventType: 'exit',
-            lat,
-            lng,
-            routeName,
-            leg,
-            fenceType: get(fence, 'fence_type'),
-          });
-          stats.alerts++;
+              routeName,
+              leg,
+              fenceType: get(fence, 'fence_type'),
+            });
+            stats.alerts++;
+          }
         }
       }
     }

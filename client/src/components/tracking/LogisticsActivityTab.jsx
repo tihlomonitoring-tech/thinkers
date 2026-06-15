@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { tracking as trackingApi } from '../../api';
 import LogisticsArchivePanel from './LogisticsArchivePanel.jsx';
 import LogisticsRouteViewBar from './LogisticsRouteViewBar.jsx';
+import LogisticsActivityMapPanel from './LogisticsActivityMapPanel.jsx';
 import {
   boardTotals,
   buildRouteSummariesFromBoard,
@@ -45,13 +46,62 @@ const STAGE_STYLES = {
     badge: 'bg-brand-100 text-brand-800 dark:bg-brand-900/50 dark:text-brand-200',
     card: 'border-l-brand-500',
   },
+  awaiting_reschedule: {
+    header: 'bg-violet-50/90 dark:bg-violet-950/25 border-b border-violet-200/80 dark:border-violet-900/60',
+    title: 'text-violet-900 dark:text-violet-100',
+    hint: 'text-violet-800/80 dark:text-violet-300/80',
+    count: 'text-violet-900 dark:text-violet-200',
+    badge: 'bg-violet-100 text-violet-900 dark:bg-violet-900/50 dark:text-violet-100',
+    card: 'border-l-violet-500',
+  },
 };
 
 const inputClass =
   'w-full rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950 focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400';
 
-function SlipModal({ title, fields, initial, onClose, onSave, saving }) {
+function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave, saving }) {
   const [form, setForm] = useState(initial);
+  const [driversLoading, setDriversLoading] = useState(false);
+  const [loadedDrivers, setLoadedDrivers] = useState([]);
+
+  useEffect(() => {
+    setForm(initial);
+  }, [initial]);
+
+  useEffect(() => {
+    if (!truckRegistration) {
+      setLoadedDrivers([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setDriversLoading(true);
+    trackingApi.contractorDrivers
+      .list({ truck_registration: truckRegistration })
+      .then((res) => {
+        if (!cancelled) setLoadedDrivers(res.drivers || []);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadedDrivers([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDriversLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [truckRegistration]);
+
+  useEffect(() => {
+    if (!loadedDrivers.length || form.driver_id) return;
+    const name = String(initial.driver_name || '').trim().toLowerCase();
+    if (!name) return;
+    const match = loadedDrivers.find((d) => String(d.full_name || '').trim().toLowerCase() === name);
+    if (match) {
+      setForm((prev) => ({ ...prev, driver_id: match.id, driver_name: match.full_name }));
+    }
+  }, [loadedDrivers, initial.driver_name, form.driver_id]);
+
+  const linkedDrivers = loadedDrivers.filter((d) => d.linked_to_truck);
+  const otherDrivers = loadedDrivers.filter((d) => !d.linked_to_truck);
+
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-surface-950/50 backdrop-blur-sm">
       <form
@@ -74,6 +124,66 @@ function SlipModal({ title, fields, initial, onClose, onSave, saving }) {
                 value={form[f.key] || ''}
                 onChange={(e) => setForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
               />
+            ) : f.type === 'driver_select' ? (
+              <div className="space-y-2">
+                <select
+                  className={inputClass}
+                  value={form.driver_id || ''}
+                  disabled={driversLoading}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (!id) {
+                      setForm((prev) => ({ ...prev, driver_id: '', driver_name: prev.driver_name || '' }));
+                      return;
+                    }
+                    if (id === '__manual__') {
+                      setForm((prev) => ({ ...prev, driver_id: '__manual__', driver_name: '' }));
+                      return;
+                    }
+                    const picked = loadedDrivers.find((d) => d.id === id);
+                    setForm((prev) => ({
+                      ...prev,
+                      driver_id: id,
+                      driver_name: picked?.full_name || '',
+                    }));
+                  }}
+                >
+                  <option value="">{driversLoading ? 'Loading drivers…' : 'Select driver'}</option>
+                  {linkedDrivers.length > 0 && (
+                    <optgroup label={truckRegistration ? `Linked to ${truckRegistration}` : 'Linked drivers'}>
+                      {linkedDrivers.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.full_name}{d.phone ? ` · ${d.phone}` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {otherDrivers.length > 0 && (
+                    <optgroup label="Other drivers">
+                      {otherDrivers.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.full_name}
+                          {d.linked_truck_registration ? ` (${d.linked_truck_registration})` : ''}
+                          {d.contractor_name ? ` · ${d.contractor_name}` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <option value="__manual__">Other — enter name manually</option>
+                </select>
+                {(form.driver_id === '__manual__' || !form.driver_id) && (
+                  <input
+                    className={inputClass}
+                    type="text"
+                    placeholder="Driver name"
+                    value={form.driver_name || ''}
+                    onChange={(e) => setForm((prev) => ({ ...prev, driver_name: e.target.value }))}
+                  />
+                )}
+                {form.driver_id && form.driver_id !== '__manual__' && form.driver_name && (
+                  <p className="text-xs text-surface-500">Selected: {form.driver_name}</p>
+                )}
+              </div>
             ) : (
               <input
                 className={inputClass}
@@ -103,87 +213,179 @@ function SlipModal({ title, fields, initial, onClose, onSave, saving }) {
   );
 }
 
-function ActivityCard({ item, styles, onLoadingSlip, onProceedWithoutSlip, onOffloadingSlip, onRedirect, onCancel }) {
+function formatKm(km) {
+  if (km == null || !Number.isFinite(Number(km))) return '—';
+  return `${Number(km).toFixed(km >= 100 ? 0 : 1)} km`;
+}
+
+function formatEta(minutes) {
+  if (minutes == null || !Number.isFinite(Number(minutes))) return null;
+  const m = Math.round(Number(minutes));
+  if (m < 60) return `~${m} min`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `~${h}h ${r}m` : `~${h}h`;
+}
+
+function progressPct(item) {
+  const total = item.route_distance_km;
+  const left = item.km_remaining;
+  if (!Number.isFinite(total) || total <= 0 || left == null) return null;
+  const done = Math.max(0, Math.min(100, ((total - left) / total) * 100));
+  return Math.round(done);
+}
+
+function ActivityCard({ item, styles, onLoadingSlip, onProceedWithoutSlip, onOffloadingSlip, onRedirect, onReschedule, onCancel, onShowOnMap, mapActive }) {
   const needsLoading = item.activity_stage === 'at_loading';
   const needsOffload = item.activity_stage === 'at_destination';
-  const needsAction = needsLoading || needsOffload;
+  const awaitingNext = item.activity_stage === 'awaiting_reschedule';
+  const needsAction = needsLoading || needsOffload || awaitingNext;
+  const speed = Number(item.last_speed_kmh);
+  const hasSpeed = Number.isFinite(speed);
+  const moving = hasSpeed && speed >= 5;
+  const pct = progressPct(item);
+  const alertCount = (item.deviation_count || 0) + (item.overspeed_count || 0);
+  const destLabel = item.destination_name || item.destination_address || item.route_name || '—';
 
   return (
     <div
-      className={`rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 border-l-4 ${styles.card} p-3 shadow-sm transition-shadow hover:shadow-md ${
+      className={`rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 border-l-4 ${styles.card} shadow-sm transition-all hover:shadow-md ${
         needsAction ? 'ring-1 ring-brand-200/60 dark:ring-brand-800/40' : ''
-      }`}
+      } ${mapActive ? 'ring-2 ring-sky-400/80 dark:ring-sky-500/50' : ''}`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <p className="font-mono font-bold text-surface-900 dark:text-surface-100 tracking-tight">{item.truck_registration}</p>
-        {(item.deviation_count > 0 || item.is_overdue) && (
-          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
-            Alert
+      <div className="p-3 space-y-2.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <button
+              type="button"
+              onClick={() => onShowOnMap?.(item)}
+              title="Show this truck on the map"
+              className="font-mono font-bold text-base text-left tracking-tight text-brand-700 dark:text-brand-300 hover:underline underline-offset-2 decoration-brand-400/60"
+            >
+              {item.truck_registration}
+            </button>
+            <p className="text-[10px] text-surface-500 truncate">{item.route_name}</p>
+          </div>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            {hasSpeed && (
+              <span className={`text-xs font-bold tabular-nums px-2 py-0.5 rounded-full ${
+                moving
+                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200'
+                  : 'bg-slate-100 text-slate-600 dark:bg-surface-800 dark:text-surface-300'
+              }`}>
+                {Math.round(speed)} km/h
+              </span>
+            )}
+            {(item.is_overdue || alertCount > 0) && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
+                {item.is_overdue ? 'Overdue' : `${alertCount} alert${alertCount === 1 ? '' : 's'}`}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-surface-50 dark:bg-surface-950/60 border border-surface-100 dark:border-surface-800 px-2.5 py-2 space-y-1.5">
+          <div className="flex items-start gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400 w-14 shrink-0 pt-0.5">Dest</span>
+            <p className="text-xs font-medium text-surface-800 dark:text-surface-200 leading-snug line-clamp-2">{destLabel}</p>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400 shrink-0">Left</span>
+              <span className="text-sm font-bold tabular-nums text-brand-700 dark:text-brand-300">
+                {awaitingNext ? 'Delivered' : formatKm(item.km_remaining)}
+              </span>
+              {item.eta_minutes != null && item.activity_stage === 'enroute' && (
+                <span className="text-[10px] text-surface-500 tabular-nums">{formatEta(item.eta_minutes)}</span>
+              )}
+            </div>
+            {item.route_distance_km != null && (
+              <span className="text-[10px] text-surface-500 tabular-nums shrink-0">Route {formatKm(item.route_distance_km)}</span>
+            )}
+          </div>
+          {pct != null && item.activity_stage === 'enroute' && (
+            <div className="pt-0.5">
+              <div className="h-1.5 rounded-full bg-surface-200 dark:bg-surface-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-brand-500 to-emerald-500 transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <p className="text-[10px] text-surface-500 mt-0.5 tabular-nums">{pct}% of corridor covered</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="min-w-0">
+            <p className="font-medium text-surface-800 dark:text-surface-200 truncate">{item.driver_name || 'Driver TBC'}</p>
+            {item.driver_phone && (
+              <p className="text-[10px] text-surface-500 truncate">{item.driver_phone}</p>
+            )}
+          </div>
+          {item.contractor_name && (
+            <span className="text-[10px] text-surface-500 truncate max-w-[40%]">{item.contractor_name}</span>
+          )}
+        </div>
+
+        {(item.deviation_count > 0 || item.overspeed_count > 0) && (
+          <div className="flex flex-wrap gap-1.5">
+            {item.deviation_count > 0 && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+                ⚠ {item.deviation_count} deviation{item.deviation_count === 1 ? '' : 's'}
+              </span>
+            )}
+            {item.overspeed_count > 0 && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-200">
+                ⏱ {item.overspeed_count} overspeed
+              </span>
+            )}
+          </div>
+        )}
+
+        {item.loading_slip_deferred && (
+          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
+            Slip deferred
           </span>
         )}
-      </div>
-      <p className="text-xs font-medium text-surface-700 dark:text-surface-300 truncate mt-0.5">{item.route_name}</p>
-      <p className="text-[10px] text-surface-500 truncate mt-0.5">
-        {item.loading_address && item.destination_address
-          ? `${item.loading_address} → ${item.destination_address}`
-          : item.destination_address || '—'}
-      </p>
-      <p className="text-xs text-surface-500 mt-1">{item.driver_name || item.contractor_name || 'Driver TBC'}</p>
-      {item.hours_on_route != null && (
-        <p className="text-[10px] text-surface-500 mt-1 tabular-nums">{item.hours_on_route}h en route</p>
-      )}
-      {item.loading_slip_deferred && (
-        <span className="inline-block mt-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-          Slip deferred
-        </span>
-      )}
+        {awaitingNext && item.offloading_slip_no && (
+          <p className="text-[10px] text-violet-700 dark:text-violet-300">
+            Delivered · slip {item.offloading_slip_no}
+          </p>
+        )}
 
-      <div className="mt-2.5 flex flex-wrap gap-1.5">
-        {needsLoading && (
-          <>
-            <button
-              type="button"
-              onClick={() => onLoadingSlip(item)}
-              className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 font-medium"
-            >
-              Loading slip
+        <div className="flex flex-wrap gap-1.5 pt-0.5">
+          {needsLoading && (
+            <>
+              <button type="button" onClick={() => onLoadingSlip(item)} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 font-medium">
+                Loading slip
+              </button>
+              <button type="button" onClick={() => onProceedWithoutSlip(item)} className="text-[10px] px-2.5 py-1 rounded-md border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800">
+                Proceed · slip later
+              </button>
+            </>
+          )}
+          {needsOffload && (
+            <button type="button" onClick={() => onOffloadingSlip(item)} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 font-medium">
+              Offloading slip
             </button>
-            <button
-              type="button"
-              onClick={() => onProceedWithoutSlip(item)}
-              className="text-[10px] px-2.5 py-1 rounded-md border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800"
-            >
-              Proceed · slip later
+          )}
+          {awaitingNext && (
+            <button type="button" onClick={() => onReschedule(item)} className="text-[10px] px-2.5 py-1 rounded-md bg-violet-600 text-white hover:bg-violet-700 font-medium">
+              Schedule next load
             </button>
-          </>
-        )}
-        {needsOffload && (
-          <button
-            type="button"
-            onClick={() => onOffloadingSlip(item)}
-            className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 font-medium"
-          >
-            Offloading slip
-          </button>
-        )}
-        {item.activity_stage === 'scheduled' && (
-          <button
-            type="button"
-            onClick={() => onCancel(item)}
-            className="text-[10px] px-2.5 py-1 rounded-md border border-surface-300 dark:border-surface-600 text-surface-600 hover:bg-surface-50 dark:hover:bg-surface-800"
-          >
-            Cancel
-          </button>
-        )}
-        {(item.activity_stage === 'at_destination' || item.activity_stage === 'enroute') && (
-          <button
-            type="button"
-            onClick={() => onRedirect(item)}
-            className="text-[10px] px-2.5 py-1 rounded-md border border-brand-300 dark:border-brand-700 text-brand-700 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-brand-950/40"
-          >
-            Redirect
-          </button>
-        )}
+          )}
+          {item.activity_stage === 'scheduled' && (
+            <button type="button" onClick={() => onCancel(item)} className="text-[10px] px-2.5 py-1 rounded-md border border-surface-300 dark:border-surface-600 text-surface-600 hover:bg-surface-50 dark:hover:bg-surface-800">
+              Cancel
+            </button>
+          )}
+          {(item.activity_stage === 'at_destination' || item.activity_stage === 'enroute' || awaitingNext) && (
+            <button type="button" onClick={() => onRedirect(item)} className="text-[10px] px-2.5 py-1 rounded-md border border-brand-300 dark:border-brand-700 text-brand-700 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-brand-950/40">
+              {awaitingNext ? 'Redirect route' : 'Redirect'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -200,6 +402,9 @@ export default function LogisticsActivityTab({ setError }) {
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [redirectTarget, setRedirectTarget] = useState(null);
+  const [mapTripId, setMapTripId] = useState(null);
+  const [geofences, setGeofences] = useState([]);
+  const mapPanelRef = useRef(null);
 
   const initialPrefs = useMemo(() => loadRouteViewPrefs(), []);
   const [filterRouteId, setFilterRouteId] = useState(initialPrefs.filterRouteId);
@@ -250,6 +455,54 @@ export default function LogisticsActivityTab({ setError }) {
     return () => clearInterval(id);
   }, [load]);
 
+  useEffect(() => {
+    trackingApi.geofences.list()
+      .then((r) => setGeofences(r.geofences || []))
+      .catch(() => setGeofences([]));
+  }, []);
+
+  const allBoardItems = useMemo(
+    () => (board.stages || []).flatMap((s) => s.items || []),
+    [board.stages]
+  );
+
+  const mapTrips = useMemo(
+    () => allBoardItems.map((item) => ({
+      id: item.trip_id,
+      truck_registration: item.truck_registration,
+      last_lat: item.last_lat,
+      last_lng: item.last_lng,
+      last_speed_kmh: item.last_speed_kmh,
+      last_heading_deg: item.last_heading_deg,
+      last_seen_at: item.last_seen_at,
+      status: item.status,
+      driver_name: item.driver_name,
+      contractor_name: item.contractor_name,
+      contractor_route_id: item.contractor_route_id,
+      collection_point_name: item.loading_address,
+      destination_name: item.destination_name,
+    })),
+    [allBoardItems]
+  );
+
+  const selectedMapTrip = useMemo(
+    () => allBoardItems.find((item) => item.trip_id === mapTripId) || null,
+    [allBoardItems, mapTripId]
+  );
+
+  const showTruckOnMap = useCallback((item) => {
+    setMapTripId(item.trip_id);
+    window.setTimeout(() => {
+      mapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }, []);
+
+  useEffect(() => {
+    if (mapTripId && !allBoardItems.some((item) => item.trip_id === mapTripId)) {
+      setMapTripId(null);
+    }
+  }, [mapTripId, allBoardItems]);
+
   const refresh = async () => {
     setRefreshing(true);
     try {
@@ -285,7 +538,8 @@ export default function LogisticsActivityTab({ setError }) {
   const actionNeeds = useMemo(() => {
     const atLoading = board.stages?.find((s) => s.id === 'at_loading')?.count || 0;
     const atDest = board.stages?.find((s) => s.id === 'at_destination')?.count || 0;
-    return atLoading + atDest;
+    const awaiting = board.stages?.find((s) => s.id === 'awaiting_reschedule')?.count || 0;
+    return atLoading + atDest + awaiting;
   }, [board.stages]);
 
   const submitLoadingSlip = async (tripId, form, defer = false) => {
@@ -381,7 +635,7 @@ export default function LogisticsActivityTab({ setError }) {
         <div>
           <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Logistics Activity</h1>
           <p className="text-sm text-surface-600 dark:text-surface-400 mt-0.5 max-w-3xl">
-            Schedule loads by route, track geofence arrivals, and capture loading and offloading slips.
+            Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a <strong>truck registration</strong> to open its live position on the map.
           </p>
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-surface-100 text-surface-700 dark:bg-surface-800 dark:text-surface-300">
@@ -489,8 +743,23 @@ export default function LogisticsActivityTab({ setError }) {
         persistPrefs={persistPrefs}
       />
 
+      {mapTripId && selectedMapTrip && (
+        <div ref={mapPanelRef}>
+          <LogisticsActivityMapPanel
+            tripId={mapTripId}
+            trip={selectedMapTrip}
+            mapTrips={mapTrips}
+            routes={board.routes || []}
+            geofences={geofences}
+            onSelectTrip={setMapTripId}
+            onClose={() => setMapTripId(null)}
+          />
+        </div>
+      )}
+
       <section className="app-glass-panel-2xl overflow-hidden rounded-xl border border-surface-200 dark:border-surface-800 shadow-sm">
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 min-w-0 divide-y md:divide-y-0 md:divide-x divide-surface-200 dark:divide-surface-800">
+        <div className="overflow-x-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 min-w-[320px] xl:min-w-[1100px] divide-y md:divide-y-0 md:divide-x divide-surface-200 dark:divide-surface-800">
           {filteredStages.map((stage) => {
             const styles = STAGE_STYLES[stage.id] || STAGE_STYLES.scheduled;
             return (
@@ -513,10 +782,17 @@ export default function LogisticsActivityTab({ setError }) {
                         key={item.trip_id}
                         item={item}
                         styles={styles}
+                        mapActive={mapTripId === item.trip_id}
+                        onShowOnMap={showTruckOnMap}
                         onLoadingSlip={setModal}
                         onProceedWithoutSlip={(it) => submitLoadingSlip(it.trip_id, { driver_name: it.driver_name || '' }, true)}
                         onOffloadingSlip={setModal}
-                        onRedirect={(it) => setRedirectTarget({ trip_id: it.trip_id, route_id: '' })}
+                        onRedirect={(it) => setRedirectTarget({ trip_id: it.trip_id, route_id: '', registration: it.truck_registration })}
+                        onReschedule={(it) => {
+                          setScheduleReg(it.truck_registration);
+                          setScheduleRouteId('');
+                          setScheduleArchived(false);
+                        }}
                         onCancel={async (it) => {
                           if (!window.confirm(`Cancel scheduled load for ${it.truck_registration}?`)) return;
                           await trackingApi.logisticsActivity.cancel(it.trip_id);
@@ -533,17 +809,19 @@ export default function LogisticsActivityTab({ setError }) {
               </div>
             );
           })}
+          </div>
         </div>
       </section>
 
       {modal?.activity_stage === 'at_loading' && (
         <SlipModal
           title={`Loading slip — ${modal.truck_registration}`}
-          initial={{ loading_slip_no: '', tons_loaded: '', driver_name: modal.driver_name || '', notes: '' }}
+          truckRegistration={modal.truck_registration}
+          initial={{ loading_slip_no: '', tons_loaded: '', driver_id: '', driver_name: modal.driver_name || '', notes: '' }}
           fields={[
             { key: 'loading_slip_no', label: 'Loading slip number', required: true },
             { key: 'tons_loaded', label: 'Tons loaded', type: 'number', step: '0.001' },
-            { key: 'driver_name', label: 'Driver name' },
+            { key: 'driver_name', label: 'Driver', type: 'driver_select' },
             { key: 'notes', label: 'Remarks', type: 'textarea' },
           ]}
           onClose={() => setModal(null)}
@@ -582,7 +860,9 @@ export default function LogisticsActivityTab({ setError }) {
       {redirectTarget && (
         <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-surface-950/50 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 p-5 space-y-3 shadow-xl">
-            <h3 className="font-semibold text-surface-900 dark:text-surface-100">Redirect route</h3>
+            <h3 className="font-semibold text-surface-900 dark:text-surface-100">
+              Redirect route{redirectTarget.registration ? ` — ${redirectTarget.registration}` : ''}
+            </h3>
             <p className="text-xs text-surface-500">Completes this delivery and schedules the truck on a new route.</p>
             <select
               value={redirectTarget.route_id}

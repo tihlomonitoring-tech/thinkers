@@ -29,6 +29,24 @@ function offsetPoint(lat, lng, bearingDegrees, distM) {
   return { lat: toDeg(lat2), lng: toDeg(lng2) };
 }
 
+export function parseCorridorPolyline(raw) {
+  if (!raw) return null;
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!data?.route_polyline?.length) return null;
+  return data.route_polyline
+    .map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+}
+
+export { bearingDeg, offsetPoint };
+
 export function bufferPolylineToPolygon(points, bufferM) {
   if (!points?.length || points.length < 2) return [];
   const half = Math.max(50, Number(bufferM) || 400) / 2;

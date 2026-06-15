@@ -1,6 +1,7 @@
 /** Apply GPS telemetry to a fleet trip + optional overspeed / idle alarms. */
 
 import { sendOverspeedAlertEmail, sendParkingAlertEmail } from './trackingEmailAlerts.js';
+import { recordTripPosition } from './tripPositionTrail.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -38,6 +39,8 @@ export async function applyTelemetryToTrip(query, tenantId, tripId, payload) {
       hdg: heading_deg ?? null,
     }
   );
+
+  await recordTripPosition(query, tenantId, tripId, { lat, lng, speed_kmh, heading_deg });
 
   const settingsR = await query(
     `SELECT alarm_overspeed_kmh, alarm_idle_minutes FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,

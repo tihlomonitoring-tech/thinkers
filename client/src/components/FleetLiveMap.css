@@ -1,3 +1,44 @@
+.fleet-cam-marker-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+.fleet-cam-marker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.fleet-cam-marker__arrow-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+  pointer-events: auto;
+}
+
+.fleet-cam-marker--selected .fleet-cam-marker__arrow-wrap {
+  filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.85)) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+}
+
+.fleet-cam-marker__label {
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
 .fleet-truck-marker {
   background: transparent !important;
   border: none !important;
@@ -35,14 +76,31 @@
 
 .fleet-live-map .leaflet-container {
   font-family: inherit;
-  background: #e8eef4;
+  background: #1a1d24;
+}
+
+.fleet-live-map--satellite .leaflet-container {
+  background: #0f1419;
 }
 
 .fleet-live-map .leaflet-control-attribution {
   font-size: 10px;
-  background: rgba(255, 255, 255, 0.85) !important;
+  background: rgba(15, 23, 42, 0.75) !important;
+  color: #cbd5e1 !important;
+}
+
+.fleet-live-map .leaflet-control-attribution a {
+  color: #94a3b8 !important;
 }
 
 .fleet-map-legend {
   pointer-events: none;
+}
+
+.fleet-travel-trail-legend {
+  pointer-events: none;
+}
+
+.fleet-truck-popup .leaflet-popup-content-wrapper {
+  border-radius: 8px;
 }

@@ -110,6 +110,7 @@ export function buildRouteSummariesFromBoard(stages, routes) {
       at_loading: 0,
       enroute: 0,
       at_destination: 0,
+      awaiting_reschedule: 0,
       action_needed: 0,
       alerts: 0,
       priority_score: 0,
@@ -158,8 +159,9 @@ export function buildRouteSummariesFromBoard(stages, routes) {
     else if (stage === 'at_loading') s.at_loading += 1;
     else if (stage === 'enroute') s.enroute += 1;
     else if (stage === 'at_destination') s.at_destination += 1;
+    else if (stage === 'awaiting_reschedule') s.awaiting_reschedule += 1;
     if (item.needs_action) s.action_needed += 1;
-    if (item.is_overdue || item.deviation_count > 0) s.alerts += 1;
+    if (item.is_overdue || item.deviation_count > 0 || item.overspeed_count > 0) s.alerts += 1;
   }
 
   const summaries = [...map.values()].filter(
@@ -172,6 +174,7 @@ export function buildRouteSummariesFromBoard(stages, routes) {
       s.alerts * 45 +
       s.at_loading * 25 +
       s.at_destination * 30 +
+      s.awaiting_reschedule * 35 +
       s.enroute * 8 +
       s.scheduled * 3;
     if (s.action_needed > 0) s.priority_reason = `${s.action_needed} slip(s) awaiting capture`;
