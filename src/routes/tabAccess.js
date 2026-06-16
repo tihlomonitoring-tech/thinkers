@@ -1,9 +1,36 @@
 import { Router } from 'express';
 import { query } from '../db.js';
-import { requireAuth, loadUser, requireSuperAdmin } from '../middleware/auth.js';
+import { requireAuth, loadUser } from '../middleware/auth.js';
 
 const router = Router();
 router.use(requireAuth, loadUser);
+
+function get(row, key) {
+  if (!row) return undefined;
+  const lower = key.toLowerCase();
+  const entry = Object.entries(row).find(([k]) => k && String(k).toLowerCase() === lower);
+  return entry ? entry[1] : undefined;
+}
+
+function canManageTabAccess(req) {
+  return req.user?.role === 'super_admin' || req.user?.role === 'tenant_admin';
+}
+
+function requireTabAccessManager(req, res, next) {
+  if (!canManageTabAccess(req)) return res.status(403).json({ error: 'Forbidden' });
+  next();
+}
+
+async function assertCanManageUser(req, targetUserId) {
+  if (req.user.role === 'super_admin') return;
+  const r = await query(`SELECT tenant_id FROM users WHERE id = @id`, { id: targetUserId });
+  const targetTenant = get(r.recordset?.[0], 'tenant_id');
+  if (!targetTenant || String(targetTenant) !== String(req.user.tenant_id)) {
+    const err = new Error('Forbidden');
+    err.status = 403;
+    throw err;
+  }
+}
 
 const VALID_PAGES = ['accounting', 'management', 'contractor', 'tracking_management'];
 
@@ -31,7 +58,7 @@ const PAGE_TABS = {
 };
 
 /** Pages where zero grants means no tabs (must grant explicitly). */
-const STRICT_EMPTY_GRANTS = new Set(['tracking_management']);
+const STRICT_EMPTY_GRANTS = new Set([]);
 
 router.get('/my-tabs/:pageKey', async (req, res, next) => {
   try {
@@ -57,17 +84,23 @@ router.get('/my-tabs/:pageKey', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/permissions/:pageKey', requireSuperAdmin, async (req, res, next) => {
+router.get('/permissions/:pageKey', requireTabAccessManager, async (req, res, next) => {
   try {
     const { pageKey } = req.params;
     if (!VALID_PAGES.includes(pageKey)) return res.status(400).json({ error: 'Invalid page key' });
+    const params = { pageKey };
+    let tenantFilter = '';
+    if (req.user.role === 'tenant_admin') {
+      tenantFilter = ' AND u.tenant_id = @tenantId';
+      params.tenantId = req.user.tenant_id;
+    }
     const result = await query(
       `SELECT g.user_id, g.tab_id, g.granted_at, u.full_name, u.email
        FROM tab_access_grants g
        JOIN users u ON u.id = g.user_id
-       WHERE g.page_key = @pageKey
+       WHERE g.page_key = @pageKey${tenantFilter}
        ORDER BY u.full_name, g.tab_id`,
-      { pageKey }
+      params
     );
     const byUser = {};
     for (const row of result.recordset || []) {
@@ -78,7 +111,7 @@ router.get('/permissions/:pageKey', requireSuperAdmin, async (req, res, next) =>
   } catch (err) { next(err); }
 });
 
-router.post('/permissions/:pageKey', requireSuperAdmin, async (req, res, next) => {
+router.post('/permissions/:pageKey', requireTabAccessManager, async (req, res, next) => {
   try {
     const { pageKey } = req.params;
     const { user_id, tab_id } = req.body || {};
@@ -86,35 +119,44 @@ router.post('/permissions/:pageKey', requireSuperAdmin, async (req, res, next) =
     if (!user_id || !tab_id || !PAGE_TABS[pageKey].includes(tab_id)) {
       return res.status(400).json({ error: 'user_id and valid tab_id required' });
     }
+    await assertCanManageUser(req, user_id);
     await query(
       `IF NOT EXISTS (SELECT 1 FROM tab_access_grants WHERE user_id = @userId AND page_key = @pageKey AND tab_id = @tabId)
        INSERT INTO tab_access_grants (user_id, page_key, tab_id, granted_by_user_id) VALUES (@userId, @pageKey, @tabId, @grantedBy)`,
       { userId: user_id, pageKey, tabId: tab_id, grantedBy: req.user.id }
     );
     res.status(201).json({ granted: true });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: 'Forbidden' });
+    next(err);
+  }
 });
 
-router.delete('/permissions/:pageKey', requireSuperAdmin, async (req, res, next) => {
+router.delete('/permissions/:pageKey', requireTabAccessManager, async (req, res, next) => {
   try {
     const { pageKey } = req.params;
     const { user_id, tab_id } = req.query;
     if (!VALID_PAGES.includes(pageKey)) return res.status(400).json({ error: 'Invalid page key' });
     if (!user_id || !tab_id) return res.status(400).json({ error: 'user_id and tab_id query params required' });
+    await assertCanManageUser(req, user_id);
     const result = await query(
       `DELETE FROM tab_access_grants WHERE user_id = @userId AND page_key = @pageKey AND tab_id = @tabId`,
       { userId: user_id, pageKey, tabId: tab_id }
     );
     res.json({ revoked: (result.rowsAffected?.[0] ?? 0) > 0 });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: 'Forbidden' });
+    next(err);
+  }
 });
 
-router.post('/permissions/:pageKey/bulk', requireSuperAdmin, async (req, res, next) => {
+router.post('/permissions/:pageKey/bulk', requireTabAccessManager, async (req, res, next) => {
   try {
     const { pageKey } = req.params;
     const { user_id, tab_ids } = req.body || {};
     if (!VALID_PAGES.includes(pageKey)) return res.status(400).json({ error: 'Invalid page key' });
     if (!user_id || !Array.isArray(tab_ids)) return res.status(400).json({ error: 'user_id and tab_ids[] required' });
+    await assertCanManageUser(req, user_id);
 
     await query(`DELETE FROM tab_access_grants WHERE user_id = @userId AND page_key = @pageKey`, { userId: user_id, pageKey });
 
@@ -126,7 +168,10 @@ router.post('/permissions/:pageKey/bulk', requireSuperAdmin, async (req, res, ne
       );
     }
     res.json({ ok: true, count: tab_ids.length });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: 'Forbidden' });
+    next(err);
+  }
 });
 
 export default router;

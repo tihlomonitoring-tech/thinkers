@@ -13,6 +13,7 @@ import { testFleetcamConnection, listFleetcamDevices } from '../lib/fleetcamConn
 import {
   buildLogisticsActivityBoard,
   scheduleTruckForRoute,
+  moveTripActivityStage,
 } from '../lib/logisticsActivityBoard.js';
 
 function get(row, key) {
@@ -1930,6 +1931,25 @@ router.post('/logistics-activity/trips/:id/cancel', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Cancel failed' });
+  }
+});
+
+router.post('/logistics-activity/trips/:id/stage', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const b = req.body || {};
+    const stage = b.activity_stage;
+    if (!stage) return res.status(400).json({ error: 'activity_stage required' });
+    const result = await moveTripActivityStage(query, tid, req.params.id, stage, {
+      contractor_route_id: b.contractor_route_id,
+      defer_slip: b.defer_slip,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const msg = err?.message || 'Stage move failed';
+    const code = msg.includes('required') || msg.includes('must be') || msg.includes('not found') ? 400 : 500;
+    res.status(code).json({ error: msg });
   }
 });
 

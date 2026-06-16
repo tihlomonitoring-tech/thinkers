@@ -15,10 +15,15 @@ export default function ManagePageTabAccess({
   users,
   setUsers,
   emptyMeansAll = true,
+  onError,
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(null);
   const [search, setSearch] = useState('');
+
+  const reportError = (err) => {
+    onError?.(err?.message || 'Tab access update failed');
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -45,6 +50,7 @@ export default function ManagePageTabAccess({
           return [...prev, { user_id: userId, full_name: u?.full_name || '', email: u?.email || '', tabs: [tabId] }];
         });
       })
+      .catch(reportError)
       .finally(() => setSaving(null));
   };
 
@@ -57,6 +63,7 @@ export default function ManagePageTabAccess({
           prev.map((p) => (p.user_id === userId ? { ...p, tabs: (p.tabs || []).filter((t) => t !== tabId) } : p))
         );
       })
+      .catch(reportError)
       .finally(() => setSaving(null));
   };
 
@@ -72,6 +79,7 @@ export default function ManagePageTabAccess({
           return [...prev, { user_id: userId, full_name: u?.full_name || '', email: u?.email || '', tabs: [...allTabIds] }];
         });
       })
+      .catch(reportError)
       .finally(() => setSaving(null));
   };
 
@@ -82,6 +90,7 @@ export default function ManagePageTabAccess({
       .then(() => {
         setPermissions((prev) => prev.map((p) => (p.user_id === userId ? { ...p, tabs: [] } : p)));
       })
+      .catch(reportError)
       .finally(() => setSaving(null));
   };
 
@@ -110,7 +119,7 @@ export default function ManagePageTabAccess({
       <div>
         <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Manage tab access</h2>
         <p className="text-sm text-surface-500 mt-1">
-          Control which tabs each user can see on <strong>{pageLabel}</strong>. Only super admins can manage this.
+          Control which tabs each user can see on <strong>{pageLabel}</strong>. Tenant and super admins can manage this.
         </p>
       </div>
 

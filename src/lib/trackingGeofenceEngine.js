@@ -4,7 +4,7 @@ import { todayYmd } from './appTime.js';
 import {
   gid,
   openDestinationDeliveryRecord,
-  openLoadingDeliveryRecord,
+  allocateTripAtLoading,
 } from './logisticsActivityBoard.js';
 
 function get(row, key) {
@@ -151,26 +151,27 @@ export async function processGeofencePositions(query, tenantId) {
 
         if (leg === 'origin' && contractorRouteId) {
           const routeMatch = !currentRouteId || currentRouteId === contractorRouteId;
-          if (routeMatch) {
-            await query(
-              `UPDATE fleet_trip SET
-                contractor_route_id = @rid, route_id = @rid,
-                collection_point_name = COALESCE(collection_point_name, @cp),
-                destination_name = COALESCE(destination_name, @dn),
-                activity_stage = N'at_loading',
-                at_loading_at = COALESCE(at_loading_at, SYSUTCDATETIME()),
-                status = N'pending',
-                updated_at = SYSUTCDATETIME()
-               WHERE id = @id AND tenant_id = @tenantId`,
-              {
-                tenantId,
-                id: tripId,
-                rid: contractorRouteId,
-                cp: route ? get(route, 'loading_address') || get(route, 'name') : null,
-                dn: route ? get(route, 'destination_address') : null,
-              }
-            );
-            await openLoadingDeliveryRecord(query, tenantId, tripId, trip, contractorRouteId);
+          const isReturnAfterDelivery = activityStage === 'awaiting_reschedule';
+
+          if (isReturnAfterDelivery && routeMatch) {
+            await allocateTripAtLoading(query, tenantId, tripId, trip, contractorRouteId, route);
+            await sendGeofenceAlertEmail({
+              query,
+              tenantId,
+              truckRegistration: reg,
+              geofenceName: fenceName || 'Loading point',
+              eventType: 'entry',
+              lat,
+              lng,
+              routeName,
+              leg: 'origin',
+              notificationType: 'loading',
+            });
+            stats.alerts++;
+            stats.allocated++;
+            stats.pending_notes++;
+          } else if (routeMatch && !isReturnAfterDelivery) {
+            await allocateTripAtLoading(query, tenantId, tripId, trip, contractorRouteId, route);
             await sendGeofenceAlertEmail({
               query,
               tenantId,

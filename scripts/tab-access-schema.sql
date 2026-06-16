@@ -8,7 +8,7 @@ CREATE TABLE tab_access_grants (
   granted_by_user_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE NO ACTION,
   granted_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
   CONSTRAINT UQ_tab_access_grants UNIQUE (user_id, page_key, tab_id),
-  CONSTRAINT CK_tag_page_key CHECK (page_key IN (N'accounting', N'management', N'contractor'))
+  CONSTRAINT CK_tag_page_key CHECK (page_key IN (N'accounting', N'management', N'contractor', N'tracking_management'))
 );
 GO
 

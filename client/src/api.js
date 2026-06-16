@@ -2828,6 +2828,7 @@ export const tracking = {
     saveOffloadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/offloading-slip`, { method: 'POST', body: JSON.stringify(body) }),
     redirect: (id, body) => trk(`/logistics-activity/trips/${id}/redirect`, { method: 'POST', body: JSON.stringify(body) }),
     cancel: (id) => trk(`/logistics-activity/trips/${id}/cancel`, { method: 'POST' }),
+    moveStage: (id, body) => trk(`/logistics-activity/trips/${id}/stage`, { method: 'POST', body: JSON.stringify(body) }),
   },
   sync: {
     contractorFleet: () => trk('/sync/contractor-fleet', { method: 'POST' }),

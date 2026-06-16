@@ -132,6 +132,7 @@
     "db:team-credit-pools": "node scripts/run-team-credit-pools-schema.js",
     "db:expense-management": "node scripts/run-expense-management-schema.js",
     "db:tab-access": "node scripts/run-tab-access-schema.js",
+    "db:tab-access-tracking": "node scripts/run-tab-access-tracking-management.js",
     "db:claims": "node scripts/run-claims-schema.js",
     "db:claims-overtime": "node scripts/run-claims-overtime-schema.js",
     "db:claims-email-log": "node scripts/run-claims-email-log-schema.js",

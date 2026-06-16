@@ -19,12 +19,13 @@ import {
 const MANAGE_TAB = {
   id: 'manage-tab-access',
   label: 'Manage tabs',
-  description: 'Grant tab access per user (super admin)',
+  description: 'Grant tab access per user (admin)',
 };
 
 export default function TrackingManagement() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'super_admin';
+  const isTabAccessAdmin = isSuperAdmin || user?.role === 'tenant_admin';
   const [navHidden, setNavHidden] = useSecondaryNavHidden('tracking-management');
   const [tab, setTab] = useState('activity');
   const [error, setError] = useState('');
@@ -37,34 +38,34 @@ export default function TrackingManagement() {
 
   const navTabs = useMemo(() => {
     const visible = TRACKING_TABS.filter((t) => allowedTabs.includes(t.id));
-    if (isSuperAdmin) return [...visible, MANAGE_TAB];
+    if (isTabAccessAdmin) return [...visible, MANAGE_TAB];
     return visible;
-  }, [allowedTabs, isSuperAdmin]);
+  }, [allowedTabs, isTabAccessAdmin]);
 
   useEffect(() => {
     tabAccessApi
       .myTabs('tracking_management')
       .then((d) => {
         let tabs = d.tabs || [];
-        if (isSuperAdmin && !tabs.length) tabs = [...TRACKING_TAB_IDS];
+        if (isTabAccessAdmin && !tabs.length) tabs = [...TRACKING_TAB_IDS];
         setAllowedTabs(tabs);
       })
-      .catch(() => setAllowedTabs(isSuperAdmin ? [...TRACKING_TAB_IDS] : []))
+      .catch(() => setAllowedTabs(isTabAccessAdmin ? [...TRACKING_TAB_IDS] : []))
       .finally(() => setTabsLoading(false));
-  }, [isSuperAdmin]);
+  }, [isTabAccessAdmin]);
 
   useEffect(() => {
     if (tabsLoading) return;
-    if (tab === 'manage-tab-access' && isSuperAdmin) return;
+    if (tab === 'manage-tab-access' && isTabAccessAdmin) return;
     if (allowedTabs.includes(tab)) return;
     if (allowedTabs.length > 0) {
       setTab(allowedTabs[0]);
-    } else if (isSuperAdmin) {
+    } else if (isTabAccessAdmin) {
       setTab('manage-tab-access');
     }
-  }, [allowedTabs, tab, tabsLoading, isSuperAdmin]);
+  }, [allowedTabs, tab, tabsLoading, isTabAccessAdmin]);
 
-  const hasAccess = isSuperAdmin || allowedTabs.length > 0;
+  const hasAccess = isTabAccessAdmin || allowedTabs.length > 0;
   const tabOk =
     tab === 'manage-tab-access' ||
     allowedTabs.includes(tab);
@@ -87,10 +88,10 @@ export default function TrackingManagement() {
     return (
       <div className="max-w-lg mx-auto py-12 px-4">
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-amber-900 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-100">
-          <h2 className="font-semibold text-lg">No Tracking tabs assigned</h2>
+          <h2 className="font-semibold text-lg">No access to Tracking management</h2>
           <p className="mt-2 text-sm">
-            You have access to Tracking management, but no tabs have been granted yet. Ask a super admin to assign tabs under{' '}
-            <strong>Manage tabs</strong>.
+            Ask your administrator to assign the <strong>Tracking management</strong> page role under User management.
+            Tenant admins can then restrict tabs under <strong>Manage tabs</strong> in Tracking management.
           </p>
         </div>
       </div>
@@ -186,7 +187,7 @@ export default function TrackingManagement() {
               onNoteDeliveryHandled={() => setNoteTripId(null)}
             />
           )}
-          {tab === 'manage-tab-access' && isSuperAdmin && (
+          {tab === 'manage-tab-access' && isTabAccessAdmin && (
             <>
               <ManagePageTabAccess
                 pageKey="tracking_management"
@@ -197,7 +198,8 @@ export default function TrackingManagement() {
                 setPermissions={setPermissions}
                 users={tabAccessUsers}
                 setUsers={setTabAccessUsers}
-                emptyMeansAll={false}
+                emptyMeansAll={true}
+                onError={setError}
               />
               <TrackingNotificationSettings setError={setError} />
             </>

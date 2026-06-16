@@ -19,11 +19,11 @@ export function gid(v) {
 }
 
 export const ACTIVITY_STAGES = [
-  { id: 'scheduled', label: 'Scheduled', hint: 'Awaiting arrival at loading geofence' },
-  { id: 'at_loading', label: 'At loading', hint: 'Capture loading slip or proceed without' },
-  { id: 'enroute', label: 'En route', hint: 'Tracked to destination geofence' },
+  { id: 'scheduled', label: 'Scheduled', hint: 'Awaiting arrival at loading geofence — or drag truck here' },
+  { id: 'at_loading', label: 'At loading', hint: 'Capture loading slip — drag here if late to schedule' },
+  { id: 'enroute', label: 'En route', hint: 'Tracked to destination — drag here to start tracking' },
   { id: 'at_destination', label: 'At destination', hint: 'Capture offloading slip to clear board' },
-  { id: 'awaiting_reschedule', label: 'Awaiting reschedule', hint: 'Delivery complete — schedule next destination' },
+  { id: 'awaiting_reschedule', label: 'Awaiting reschedule', hint: 'Returns to At loading automatically at origin geofence' },
 ];
 
 export function inferActivityStage(trip, openDelivery) {
@@ -462,4 +462,144 @@ export async function openDestinationDeliveryRecord(query, tenantId, tripId, tri
     }
   );
   return gid(get(ins.recordset?.[0], 'id'));
+}
+
+/** Move a truck to the loading geofence stage (manual or GPS return after delivery). */
+export async function allocateTripAtLoading(query, tenantId, tripId, trip, contractorRouteId, route) {
+  const rid = gid(contractorRouteId);
+  if (!rid) throw new Error('Route is required');
+
+  await query(
+    `UPDATE fleet_trip SET
+      contractor_route_id = @rid, route_id = @rid,
+      collection_point_name = COALESCE(@cp, collection_point_name),
+      destination_name = COALESCE(@dn, destination_name),
+      activity_stage = N'at_loading',
+      at_loading_at = COALESCE(at_loading_at, SYSUTCDATETIME()),
+      status = N'pending',
+      offloading_slip_no = NULL,
+      at_destination_at = NULL,
+      started_at = NULL,
+      eta_due_at = NULL,
+      is_overdue = 0,
+      updated_at = SYSUTCDATETIME()
+     WHERE id = @id AND tenant_id = @tenantId`,
+    {
+      tenantId,
+      id: tripId,
+      rid,
+      cp: route ? get(route, 'loading_address') || get(route, 'name') : get(trip, 'collection_point_name'),
+      dn: route ? get(route, 'destination_address') : get(trip, 'destination_name'),
+    }
+  );
+  await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
+  return { activity_stage: 'at_loading' };
+}
+
+/** Manually move a truck between logistics activity stages. */
+export async function moveTripActivityStage(query, tenantId, tripId, targetStage, options = {}) {
+  const stage = String(targetStage || '').toLowerCase();
+  const allowed = ['scheduled', 'at_loading', 'enroute'];
+  if (!allowed.includes(stage)) throw new Error('Stage must be scheduled, at_loading, or enroute');
+
+  const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId, id: tripId });
+  const trip = tr.recordset?.[0];
+  if (!trip) throw new Error('Trip not found');
+
+  const rid = gid(options.contractor_route_id) || gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
+
+  if (stage === 'scheduled') {
+    if (!rid) throw new Error('Assign a route before scheduling');
+    const routeR = await query(
+      `SELECT name, loading_address, destination_address FROM contractor_routes WHERE id = @rid AND tenant_id = @tenantId`,
+      { rid, tenantId }
+    );
+    const route = routeR.recordset?.[0];
+    if (!route) throw new Error('Route not found');
+
+    await query(
+      `UPDATE fleet_trip SET
+        contractor_route_id = @rid, route_id = @rid,
+        collection_point_name = @cp, destination_name = @dn,
+        activity_stage = N'scheduled',
+        scheduled_at = SYSUTCDATETIME(),
+        status = N'pending',
+        at_loading_at = NULL,
+        at_destination_at = NULL,
+        started_at = NULL,
+        eta_due_at = NULL,
+        is_overdue = 0,
+        updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      {
+        tenantId,
+        id: tripId,
+        rid,
+        cp: get(route, 'loading_address') || get(route, 'name'),
+        dn: get(route, 'destination_address'),
+      }
+    );
+    return { activity_stage: 'scheduled' };
+  }
+
+  if (stage === 'at_loading') {
+    if (!rid) throw new Error('Assign a route before moving to At loading');
+    const routeR = await query(
+      `SELECT name, loading_address, destination_address FROM contractor_routes WHERE id = @rid AND tenant_id = @tenantId`,
+      { rid, tenantId }
+    );
+    const route = routeR.recordset?.[0];
+    if (!route) throw new Error('Route not found');
+    return allocateTripAtLoading(query, tenantId, tripId, trip, rid, route);
+  }
+
+  if (stage === 'enroute') {
+    if (!rid) throw new Error('Assign a route before moving to En route');
+    const st = await query(`SELECT max_enroute_minutes FROM tracking_tenant_settings WHERE tenant_id = @tenantId`, { tenantId });
+    let maxM = st.recordset?.[0] ? get(st.recordset[0], 'max_enroute_minutes') : 240;
+    if (maxM == null || maxM < 1) maxM = 240;
+
+    const defer = options.defer_slip !== false;
+    await query(
+      `UPDATE fleet_trip SET
+        activity_stage = N'enroute',
+        status = N'enroute',
+        loading_slip_deferred = CASE WHEN @defer = 1 AND (loading_slip_no IS NULL OR loading_slip_no = N'') THEN 1 ELSE loading_slip_deferred END,
+        started_at = COALESCE(started_at, SYSUTCDATETIME()),
+        eta_due_at = DATEADD(minute, @maxM, COALESCE(started_at, SYSUTCDATETIME())),
+        is_overdue = 0,
+        updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { tenantId, id: tripId, defer: defer ? 1 : 0, maxM }
+    );
+
+    await query(
+      `UPDATE tracking_delivery_record SET
+        pending_note = 0,
+        loading_slip_deferred = CASE WHEN @defer = 1 THEN 1 ELSE loading_slip_deferred END,
+        status = N'loading_complete'
+       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
+      { tenantId, tripId, defer: defer ? 1 : 0 }
+    );
+
+    const pendingLoad = await query(
+      `SELECT TOP 1 id FROM tracking_delivery_record
+       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
+      { tenantId, tripId }
+    );
+    if (!pendingLoad.recordset?.[0]) {
+      await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
+      if (defer) {
+        await query(
+          `UPDATE tracking_delivery_record SET pending_note = 0, loading_slip_deferred = 1, status = N'loading_complete'
+           WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
+          { tenantId, tripId }
+        );
+      }
+    }
+
+    return { activity_stage: 'enroute' };
+  }
+
+  return { activity_stage: stage };
 }

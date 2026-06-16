@@ -13,6 +13,8 @@ import {
   saveRouteViewPrefs,
 } from '../../lib/logisticsActivityRouteView.js';
 
+const MANUAL_DROP_STAGES = new Set(['scheduled', 'at_loading', 'enroute']);
+
 const STAGE_STYLES = {
   scheduled: {
     header: 'bg-sky-50/90 dark:bg-sky-950/25 border-b border-sky-200/80 dark:border-sky-900/60',
@@ -235,7 +237,21 @@ function progressPct(item) {
   return Math.round(done);
 }
 
-function ActivityCard({ item, styles, onLoadingSlip, onProceedWithoutSlip, onOffloadingSlip, onRedirect, onReschedule, onCancel, onShowOnMap, mapActive }) {
+function ActivityCard({
+  item,
+  styles,
+  onLoadingSlip,
+  onProceedWithoutSlip,
+  onOffloadingSlip,
+  onRedirect,
+  onReschedule,
+  onCancel,
+  onShowOnMap,
+  mapActive,
+  draggable = false,
+  onDragStart,
+  onDragEnd,
+}) {
   const needsLoading = item.activity_stage === 'at_loading';
   const needsOffload = item.activity_stage === 'at_destination';
   const awaitingNext = item.activity_stage === 'awaiting_reschedule';
@@ -249,9 +265,13 @@ function ActivityCard({ item, styles, onLoadingSlip, onProceedWithoutSlip, onOff
 
   return (
     <div
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       className={`rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 border-l-4 ${styles.card} shadow-sm transition-all hover:shadow-md ${
         needsAction ? 'ring-1 ring-brand-200/60 dark:ring-brand-800/40' : ''
-      } ${mapActive ? 'ring-2 ring-sky-400/80 dark:ring-sky-500/50' : ''}`}
+      } ${mapActive ? 'ring-2 ring-sky-400/80 dark:ring-sky-500/50' : ''} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      title={draggable ? 'Drag to Scheduled, At loading, or En route' : undefined}
     >
       <div className="p-3 space-y-2.5">
         <div className="flex items-start justify-between gap-2">
@@ -405,6 +425,7 @@ export default function LogisticsActivityTab({ setError }) {
   const [mapTripId, setMapTripId] = useState(null);
   const [geofences, setGeofences] = useState([]);
   const mapPanelRef = useRef(null);
+  const [draggingTrip, setDraggingTrip] = useState(null);
 
   const initialPrefs = useMemo(() => loadRouteViewPrefs(), []);
   const [filterRouteId, setFilterRouteId] = useState(initialPrefs.filterRouteId);
@@ -566,6 +587,20 @@ export default function LogisticsActivityTab({ setError }) {
     return submitLoadingSlip(modal.trip_id, form, defer);
   };
 
+  const moveTripStage = useCallback(async (tripId, targetStage, fromStage) => {
+    if (!tripId || !targetStage || fromStage === targetStage) return;
+    if (!MANUAL_DROP_STAGES.has(targetStage)) return;
+    try {
+      await trackingApi.logisticsActivity.moveStage(tripId, {
+        activity_stage: targetStage,
+        defer_slip: targetStage === 'enroute',
+      });
+      await load({ silent: true });
+    } catch (e) {
+      setError(e?.message || 'Could not move truck');
+    }
+  }, [load, setError]);
+
   const routeSummaries = useMemo(() => {
     if (board.route_summaries?.length) return board.route_summaries;
     return buildRouteSummariesFromBoard(board.stages, board.routes);
@@ -635,7 +670,7 @@ export default function LogisticsActivityTab({ setError }) {
         <div>
           <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Logistics Activity</h1>
           <p className="text-sm text-surface-600 dark:text-surface-400 mt-0.5 max-w-3xl">
-            Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a <strong>truck registration</strong> to open its live position on the map.
+            Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a <strong>truck registration</strong> to open its live position on the map. <strong>Drag a truck card</strong> to Scheduled, At loading, or En route if it was not scheduled on time.
           </p>
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-surface-100 text-surface-700 dark:bg-surface-800 dark:text-surface-300">
@@ -762,8 +797,21 @@ export default function LogisticsActivityTab({ setError }) {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 min-w-[320px] xl:min-w-[1100px] divide-y md:divide-y-0 md:divide-x divide-surface-200 dark:divide-surface-800">
           {filteredStages.map((stage) => {
             const styles = STAGE_STYLES[stage.id] || STAGE_STYLES.scheduled;
+            const acceptsDrop = MANUAL_DROP_STAGES.has(stage.id);
+            const isDropTarget = draggingTrip && acceptsDrop && draggingTrip.fromStage !== stage.id;
             return (
-              <div key={stage.id} className="flex flex-col min-h-[360px]">
+              <div
+                key={stage.id}
+                className={`flex flex-col min-h-[360px] ${isDropTarget ? 'bg-brand-50/40 dark:bg-brand-950/20' : ''}`}
+                onDragOver={acceptsDrop ? (e) => { e.preventDefault(); } : undefined}
+                onDrop={acceptsDrop ? (e) => {
+                  e.preventDefault();
+                  if (draggingTrip) {
+                    moveTripStage(draggingTrip.tripId, stage.id, draggingTrip.fromStage);
+                    setDraggingTrip(null);
+                  }
+                } : undefined}
+              >
                 <div className={`px-3 py-3 ${styles.header}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -783,6 +831,9 @@ export default function LogisticsActivityTab({ setError }) {
                         item={item}
                         styles={styles}
                         mapActive={mapTripId === item.trip_id}
+                        draggable
+                        onDragStart={() => setDraggingTrip({ tripId: item.trip_id, fromStage: item.activity_stage })}
+                        onDragEnd={() => setDraggingTrip(null)}
                         onShowOnMap={showTruckOnMap}
                         onLoadingSlip={setModal}
                         onProceedWithoutSlip={(it) => submitLoadingSlip(it.trip_id, { driver_name: it.driver_name || '' }, true)}
