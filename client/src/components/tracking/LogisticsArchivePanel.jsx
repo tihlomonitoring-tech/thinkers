@@ -22,13 +22,13 @@ export default function LogisticsArchivePanel({
   summary,
   children,
   className = 'border border-surface-200 dark:border-surface-800',
-  contentClassName = 'p-4 pt-0 space-y-3',
+  contentClassName = 'p-3 pt-0 space-y-2',
 }) {
   const toggle = () => onToggleArchived(!archived);
 
   return (
     <section className={`app-glass-card overflow-hidden ${className}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
         <button
           type="button"
           onClick={toggle}

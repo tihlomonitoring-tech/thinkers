@@ -11,6 +11,7 @@ import FleetDistributionMonitor from './components/tracking/FleetDistributionMon
 import LogisticsActivityTab from './components/tracking/LogisticsActivityTab.jsx';
 import CompletedDeliveriesTab from './components/tracking/CompletedDeliveriesTab.jsx';
 import FuelRegulationTab from './components/tracking/FuelRegulationTab.jsx';
+import TrackingAlertsTab from './components/tracking/TrackingAlertsTab.jsx';
 import {
   TRACKING_TAB_IDS,
   TRACKING_TAB_LABELS,
@@ -181,6 +182,7 @@ export default function TrackingManagement() {
           {tab === 'integration' && allowedTabs.includes('integration') && <FleetIntegrationTab setError={setError} />}
           {tab === 'activity' && allowedTabs.includes('activity') && <LogisticsActivityTab setError={setError} />}
           {tab === 'monitor' && allowedTabs.includes('monitor') && <FleetDistributionMonitor setError={setError} />}
+          {tab === 'alerts' && allowedTabs.includes('alerts') && <TrackingAlertsTab setError={setError} />}
           {tab === 'deliveries' && allowedTabs.includes('deliveries') && (
             <CompletedDeliveriesTab
               setError={setError}

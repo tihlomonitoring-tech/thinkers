@@ -53,20 +53,46 @@ export function computeKmRemaining({ activity_stage, last_lat, last_lng, destina
 
   if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(dLat) && Number.isFinite(dLng)) {
     const m = haversineMeters(lat, lng, dLat, dLng);
-    return Math.round((m / 1000) * 10) / 10;
+    const km = Math.round((m / 1000) * 10) / 10;
+    const routeKm = route_distance_km != null ? Number(route_distance_km) : null;
+    if (Number.isFinite(routeKm) && routeKm > 0 && stage === 'enroute') {
+      return Math.min(km, routeKm);
+    }
+    return km;
   }
 
   const routeKm = route_distance_km != null ? Number(route_distance_km) : null;
-  if (Number.isFinite(routeKm) && routeKm > 0 && (stage === 'scheduled' || stage === 'at_loading' || stage === 'enroute')) {
+  if (Number.isFinite(routeKm) && routeKm > 0 && (stage === 'scheduled' || stage === 'at_loading' || stage === 'enroute' || stage === 'at_destination')) {
     return Math.round(routeKm * 10) / 10;
   }
 
   return null;
 }
 
-export function mapActivityTrip(row, openDelivery, routeMeta, destCoords, alarmCounts) {
+function geofenceSpanKm(originCoords, destCoords) {
+  if (!originCoords || !destCoords) return null;
+  const oLat = Number(originCoords.lat);
+  const oLng = Number(originCoords.lng);
+  const dLat = Number(destCoords.lat);
+  const dLng = Number(destCoords.lng);
+  if (!Number.isFinite(oLat) || !Number.isFinite(oLng) || !Number.isFinite(dLat) || !Number.isFinite(dLng)) {
+    return null;
+  }
+  const m = haversineMeters(oLat, oLng, dLat, dLng);
+  return Math.round((m / 1000) * 10) / 10;
+}
+
+export function resolveRouteDistanceKm(route, originCoords, destCoords) {
+  const fromRoute = route?.distance_km != null ? Number(route.distance_km) : null;
+  if (Number.isFinite(fromRoute) && fromRoute > 0) return fromRoute;
+  const span = geofenceSpanKm(originCoords, destCoords);
+  return span != null && span > 0 ? span : null;
+}
+
+export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts) {
   const rid = gid(get(row, 'contractor_route_id')) || gid(get(row, 'route_id'));
   const route = routeMeta?.get(rid);
+  const origin = originCoords?.get(rid);
   const dest = destCoords?.get(rid);
   const started = get(row, 'started_at');
   const hours = started ? (Date.now() - new Date(started).getTime()) / 3600000 : null;
@@ -78,7 +104,7 @@ export function mapActivityTrip(row, openDelivery, routeMeta, destCoords, alarmC
   const lastLng = get(row, 'last_lng') != null ? Number(get(row, 'last_lng')) : null;
   const destLat = dest?.lat ?? null;
   const destLng = dest?.lng ?? null;
-  const routeDistanceKm = route?.distance_km != null ? Number(route.distance_km) : null;
+  const routeDistanceKm = resolveRouteDistanceKm(route, origin, dest);
 
   const kmRemaining = computeKmRemaining({
     activity_stage: stage,
@@ -221,7 +247,7 @@ export { UNASSIGNED_ROUTE_ID };
 
 /** Active logistics activity board grouped by stage (aviation-style lanes). */
 export async function buildLogisticsActivityBoard(query, tenantId) {
-  const [tripsR, routesR, deliveriesR, destGeofencesR, alarmsR] = await Promise.all([
+  const [tripsR, routesR, deliveriesR, geofencesR, alarmsR] = await Promise.all([
     query(
       `SELECT t.*, c.name AS contractor_name,
               (SELECT TOP 1 d.full_name FROM contractor_drivers d
@@ -242,7 +268,12 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       { tenantId }
     ),
     query(
-      `SELECT id, name, loading_address, destination_address, distance_km FROM contractor_routes WHERE tenant_id = @tenantId ORDER BY [order], name`,
+      `SELECT r.id, r.name, r.loading_address, r.destination_address,
+              COALESCE(reg.distance_km, r.distance_km) AS distance_km
+       FROM contractor_routes r
+       LEFT JOIN access_route_target_regulations reg ON reg.route_id = r.id AND reg.tenant_id = @tenantId
+       WHERE r.tenant_id = @tenantId
+       ORDER BY r.[order], r.name`,
       { tenantId }
     ),
     query(
@@ -256,8 +287,8 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       { tenantId }
     ),
     query(
-      `SELECT contractor_route_id, center_lat, center_lng FROM tracking_geofence
-       WHERE tenant_id = @tenantId AND leg = N'destination'
+      `SELECT contractor_route_id, leg, center_lat, center_lng FROM tracking_geofence
+       WHERE tenant_id = @tenantId AND leg IN (N'origin', N'destination')
          AND contractor_route_id IS NOT NULL AND center_lat IS NOT NULL AND center_lng IS NOT NULL`,
       { tenantId }
     ),
@@ -276,15 +307,18 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
     distance_km: get(r, 'distance_km') != null ? Number(get(r, 'distance_km')) : null,
   }]));
 
+  const originCoords = new Map();
   const destCoords = new Map();
-  for (const g of destGeofencesR.recordset || []) {
+  for (const g of geofencesR.recordset || []) {
     const rid = gid(get(g, 'contractor_route_id'));
-    if (rid && !destCoords.has(rid)) {
-      destCoords.set(rid, {
-        lat: Number(get(g, 'center_lat')),
-        lng: Number(get(g, 'center_lng')),
-      });
-    }
+    if (!rid) continue;
+    const leg = String(get(g, 'leg') || '').toLowerCase();
+    const coords = {
+      lat: Number(get(g, 'center_lat')),
+      lng: Number(get(g, 'center_lng')),
+    };
+    if (leg === 'origin' && !originCoords.has(rid)) originCoords.set(rid, coords);
+    if (leg === 'destination' && !destCoords.has(rid)) destCoords.set(rid, coords);
   }
 
   const alarmCounts = new Map();
@@ -305,7 +339,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
   }
 
   const items = (tripsR.recordset || []).map((row) =>
-    mapActivityTrip(row, deliveryByTrip.get(gid(get(row, 'id'))), routeMeta, destCoords, alarmCounts)
+    mapActivityTrip(row, deliveryByTrip.get(gid(get(row, 'id'))), routeMeta, originCoords, destCoords, alarmCounts)
   );
 
   const stages = ACTIVITY_STAGES.map((s) => ({

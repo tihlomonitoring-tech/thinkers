@@ -105,6 +105,7 @@
     "db:tracking-logistics-activity": "node scripts/run-tracking-logistics-activity-schema.js",
     "db:tracking-trip-positions": "node scripts/run-tracking-trip-positions.js",
     "db:tracking-notification-email": "node scripts/run-tracking-notification-email-settings.js",
+    "db:tracking-notification-geofence": "node scripts/run-tracking-notification-geofence-email.js",
     "db:tracking-mock": "node scripts/seed-tracking-mock.js",
     "db:tracking-mock:clean": "node scripts/remove-tracking-mock.js",
     "tracking:poll-once": "node scripts/run-tracking-poll-once.js",

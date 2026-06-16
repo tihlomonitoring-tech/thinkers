@@ -3,6 +3,7 @@ export const TRACKING_TABS = [
   { id: 'integration', label: 'Fleet integration', description: 'Cartrack, FleetCam & unit links' },
   { id: 'activity', label: 'Logistics Activity', description: 'Schedule loads · slips · stage board' },
   { id: 'monitor', label: 'Monitor', description: 'Live fleet map' },
+  { id: 'alerts', label: 'Alerts', description: 'Overspeed & telematics alarms per truck' },
   { id: 'deliveries', label: 'Completed deliveries', description: 'Delivery notes for Command Centre' },
   { id: 'fuel_regulation', label: 'Fuel regulation per truck', description: 'Price per litre & consumption overrides' },
 ];

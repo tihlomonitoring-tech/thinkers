@@ -1,6 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { todayYmd } from '../../lib/appTime.js';
 import { tracking as trackingApi } from '../../api';
+import AdvancedColumnSearchBar from '../AdvancedColumnSearchBar.jsx';
+import { emptyColumnValues, matchesColumnSearch } from '../../lib/advancedColumnSearch.js';
+
+const DELIVERY_SEARCH_COLUMNS = [
+  { key: 'truck', label: 'Truck', get: (d) => d.truck_registration },
+  { key: 'destination', label: 'Destination', get: (d) => d.destination_name },
+  { key: 'origin', label: 'Origin', get: (d) => d.origin_name },
+  { key: 'note', label: 'Note #', get: (d) => d.delivery_note_no },
+  { key: 'driver', label: 'Driver', get: (d) => d.driver_name },
+  { key: 'tons', label: 'Tons', get: (d) => d.tons_loaded },
+  { key: 'fuel_litres', label: 'Fuel (L)', get: (d) => d.fuel_litres },
+  { key: 'revenue', label: 'Revenue', get: (d) => d.revenue_amount },
+  { key: 'deleted_by', label: 'Deleted by', get: (d) => d.deleted_by },
+  { key: 'notes', label: 'Notes', get: (d) => d.notes },
+];
 
 function DeliveryNoteModal({ delivery, onClose, onSaved, setError }) {
   const [form, setForm] = useState({
@@ -246,6 +261,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
     return d.toISOString().slice(0, 10);
   });
   const [to, setTo] = useState(todayYmd());
+  const [search, setSearch] = useState({ global: '', columns: emptyColumnValues(DELIVERY_SEARCH_COLUMNS), expanded: false });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -255,6 +271,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
         from,
         to,
         deleted: view === 'deleted' ? 'true' : 'false',
+        completed_only: 'true',
       });
       setDeliveries(r.deliveries || []);
     } catch (e) {
@@ -273,7 +290,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
     const d = deliveries.find((x) => x.trip_id === noteDeliveryId || x.id === noteDeliveryId);
     if (d) setModal(d);
     else {
-      trackingApi.deliveries.list({ deleted: 'false' }).then((r) => {
+      trackingApi.deliveries.list({ deleted: 'false', completed_only: 'false' }).then((r) => {
         const pending = (r.deliveries || []).find((x) => x.pending_note && (x.trip_id === noteDeliveryId || x.truck_registration === noteDeliveryId));
         if (pending) setModal(pending);
       }).catch(() => {});
@@ -308,14 +325,20 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
     }
   };
 
-  const pending = view === 'active' ? deliveries.filter((d) => d.pending_note) : [];
   const isDeletedView = view === 'deleted';
+
+  const filteredDeliveries = useMemo(
+    () => deliveries.filter((d) => matchesColumnSearch(d, DELIVERY_SEARCH_COLUMNS, search.columns, search.global)),
+    [deliveries, search]
+  );
 
   return (
     <div className="space-y-6">
       <header>
         <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Completed deliveries</h1>
-        <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">Delivery notes feed Command Centre. Fuel expense and revenue are snapshotted per delivery.</p>
+        <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
+          Deliveries captured with an offloading slip on Logistics Activity. Fuel expense and revenue are snapshotted per delivery.
+        </p>
       </header>
 
       <div className="flex flex-wrap gap-2 border-b border-surface-200 dark:border-surface-800 pb-2">
@@ -335,12 +358,6 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
         </button>
       </div>
 
-      {pending.length > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-          <strong>{pending.length}</strong> delivery note(s) awaiting capture.
-        </div>
-      )}
-
       <div className="flex flex-wrap gap-3 items-end">
         <label className="text-sm">
           <span className="text-xs text-surface-500 block mb-1">From</span>
@@ -352,6 +369,19 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
         </label>
         <button type="button" onClick={load} className="rounded-lg border px-3 py-1.5 text-sm">Apply</button>
       </div>
+
+      <AdvancedColumnSearchBar
+        columns={DELIVERY_SEARCH_COLUMNS}
+        columnValues={search.columns}
+        onColumnChange={(key, val) => setSearch((s) => ({ ...s, columns: { ...s.columns, [key]: val } }))}
+        globalQuery={search.global}
+        onGlobalQueryChange={(v) => setSearch((s) => ({ ...s, global: v }))}
+        expanded={search.expanded}
+        onToggleExpanded={() => setSearch((s) => ({ ...s, expanded: !s.expanded }))}
+        onClear={() => setSearch({ global: '', columns: emptyColumnValues(DELIVERY_SEARCH_COLUMNS), expanded: false })}
+        resultCount={filteredDeliveries.length}
+        totalCount={deliveries.length}
+      />
 
       <section className="rounded-xl border border-surface-200 dark:border-surface-800 overflow-hidden">
         <table className="w-full text-sm">
@@ -375,7 +405,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
           <tbody>
             {loading ? (
               <tr><td colSpan={isDeletedView ? 8 : 12} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
-            ) : deliveries.map((d) => (
+            ) : filteredDeliveries.map((d) => (
               <tr key={d.id} className="border-t border-surface-100 dark:border-surface-800">
                 <td className="px-4 py-2 whitespace-nowrap">
                   {String((isDeletedView ? d.deleted_at : d.delivered_at) || '').slice(0, 16).replace('T', ' ')}
@@ -399,8 +429,6 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
                 <td className="px-4 py-2">
                   {isDeletedView ? (
                     <span className="text-xs font-medium text-red-700 bg-red-100 dark:bg-red-950/40 dark:text-red-200 px-2 py-0.5 rounded">Deleted</span>
-                  ) : d.pending_note ? (
-                    <span className="text-xs font-medium text-amber-700 bg-amber-100 px-2 py-0.5 rounded">Pending note</span>
                   ) : (
                     <span className="text-xs text-emerald-700">Completed</span>
                   )}
@@ -409,10 +437,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
                   <td className="px-4 py-2 text-surface-600 text-xs">{d.deleted_by || '—'}</td>
                 )}
                 <td className="px-4 py-2 text-right whitespace-nowrap">
-                  {!isDeletedView && d.pending_note && (
-                    <button type="button" onClick={() => setModal(d)} className="text-xs text-brand-600 hover:underline mr-3">Enter note</button>
-                  )}
-                  {!isDeletedView && !d.pending_note && (
+                  {!isDeletedView && (
                     <>
                       <button type="button" onClick={() => setEconomicsModal(d)} className="text-xs text-brand-600 hover:underline mr-3">Economics</button>
                       <button
@@ -438,10 +463,12 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
                 </td>
               </tr>
             ))}
-            {!loading && deliveries.length === 0 && (
+            {!loading && filteredDeliveries.length === 0 && (
               <tr>
                 <td colSpan={isDeletedView ? 8 : 12} className="px-4 py-8 text-center text-surface-500">
-                  {isDeletedView ? 'No deleted deliveries in this period.' : 'No deliveries in this period.'}
+                  {deliveries.length === 0
+                    ? (isDeletedView ? 'No deleted deliveries in this period.' : 'No completed deliveries with an offloading slip in this period.')
+                    : 'No deliveries match your search.'}
                 </td>
               </tr>
             )}

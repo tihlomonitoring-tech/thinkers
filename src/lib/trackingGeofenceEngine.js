@@ -1,5 +1,9 @@
 import { isInsideGeofence } from './trackingGeofence.js';
-import { sendGeofenceAlertEmail } from './trackingEmailAlerts.js';
+import {
+  sendGeofenceAlertEmail,
+  isTrackingNotificationEnabled,
+  resolveGeofenceNotificationType,
+} from './trackingEmailAlerts.js';
 import { todayYmd } from './appTime.js';
 import {
   gid,
@@ -126,7 +130,14 @@ export async function processGeofencePositions(query, tenantId) {
       if (!wasInside && inside) {
         if (get(fence, 'alert_on_entry')) {
           const fenceType = String(get(fence, 'fence_type') || '').toLowerCase();
-          if (fenceType === 'hazard' || leg === 'alert') {
+          const entryNotificationType = resolveGeofenceNotificationType({
+            leg,
+            eventType: 'entry',
+            fenceType: get(fence, 'fence_type'),
+          });
+          const entryAlertsEnabled = await isTrackingNotificationEnabled(query, tenantId, entryNotificationType);
+
+          if ((fenceType === 'hazard' || leg === 'alert') && entryAlertsEnabled) {
             await query(
               `INSERT INTO tracking_alarm_record (tenant_id, trip_id, truck_registration, alarm_type, severity, occurred_at, lat, lng, detail)
                VALUES (@tenantId, @tripId, @reg, N'geofence', N'warning', SYSUTCDATETIME(), @lat, @lng, @det)`,
@@ -140,7 +151,7 @@ export async function processGeofencePositions(query, tenantId) {
               }
             );
           }
-          if (leg !== 'origin' && leg !== 'destination') {
+          if (leg !== 'origin' && leg !== 'destination' && entryAlertsEnabled) {
             await sendGeofenceAlertEmail({
               query,
               tenantId,
@@ -152,6 +163,7 @@ export async function processGeofencePositions(query, tenantId) {
               routeName,
               leg,
               fenceType: get(fence, 'fence_type'),
+              notificationType: entryNotificationType,
             });
             stats.alerts++;
           }
@@ -234,7 +246,13 @@ export async function processGeofencePositions(query, tenantId) {
         if (get(fence, 'alert_on_exit')) {
           const suppressCorridorExit = leg === 'corridor'
             && isInsideRouteAltCorridor(fences, lat, lng, contractorRouteId);
-          if (!suppressCorridorExit) {
+          const exitNotificationType = resolveGeofenceNotificationType({
+            leg,
+            eventType: 'exit',
+            fenceType: get(fence, 'fence_type'),
+          });
+          const exitAlertsEnabled = await isTrackingNotificationEnabled(query, tenantId, exitNotificationType);
+          if (!suppressCorridorExit && exitAlertsEnabled) {
             await query(
               `INSERT INTO tracking_alarm_record (tenant_id, trip_id, truck_registration, alarm_type, severity, occurred_at, lat, lng, detail)
                VALUES (@tenantId, @tripId, @reg, N'geofence', N'warning', SYSUTCDATETIME(), @lat, @lng, @det)`,
@@ -258,6 +276,7 @@ export async function processGeofencePositions(query, tenantId) {
               routeName,
               leg,
               fenceType: get(fence, 'fence_type'),
+              notificationType: exitNotificationType,
             });
             stats.alerts++;
           }

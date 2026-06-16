@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { tracking as trackingApi } from '../../api';
+import InfoHint from '../InfoHint.jsx';
+import AdvancedColumnSearchBar from '../AdvancedColumnSearchBar.jsx';
+import { emptyColumnValues, matchesColumnSearch } from '../../lib/advancedColumnSearch.js';
 import LogisticsArchivePanel from './LogisticsArchivePanel.jsx';
 import LogisticsRouteViewBar from './LogisticsRouteViewBar.jsx';
 import LogisticsActivityMapPanel from './LogisticsActivityMapPanel.jsx';
@@ -14,6 +17,20 @@ import {
 } from '../../lib/logisticsActivityRouteView.js';
 
 const MANUAL_DROP_STAGES = new Set(['scheduled', 'at_loading', 'enroute']);
+
+const ACTIVITY_SEARCH_COLUMNS = [
+  { key: 'truck', label: 'Truck', get: (i) => i.truck_registration },
+  { key: 'route', label: 'Route', get: (i) => i.route_name },
+  { key: 'destination', label: 'Destination', get: (i) => i.destination_name || i.destination_address },
+  { key: 'driver', label: 'Driver', get: (i) => i.driver_name },
+  { key: 'phone', label: 'Driver phone', get: (i) => i.driver_phone },
+  { key: 'contractor', label: 'Contractor', get: (i) => i.contractor_name },
+  { key: 'loading_slip', label: 'Loading slip', get: (i) => i.loading_slip_no },
+  { key: 'offload_slip', label: 'Offloading slip', get: (i) => i.offloading_slip_no },
+  { key: 'stage', label: 'Stage', get: (i) => i.activity_stage },
+  { key: 'status', label: 'Status', get: (i) => i.status },
+  { key: 'alerts', label: 'Alerts', get: (i) => `${(i.deviation_count || 0) + (i.overspeed_count || 0)}` },
+];
 
 const STAGE_STYLES = {
   scheduled: {
@@ -59,7 +76,95 @@ const STAGE_STYLES = {
 };
 
 const inputClass =
-  'w-full rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950 focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400';
+  'w-full rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950 focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 transition-shadow';
+
+function ScheduleLoadPanel({
+  expanded,
+  onToggle,
+  trucks,
+  routes,
+  scheduleReg,
+  setScheduleReg,
+  scheduleRouteId,
+  setScheduleRouteId,
+  scheduling,
+  onSubmit,
+}) {
+  if (!expanded) return null;
+
+  const selectedRoute = routes.find((r) => r.id === scheduleRouteId);
+  const selectedTruck = trucks.find((t) => t.registration === scheduleReg);
+
+  return (
+    <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 p-4 shadow-sm">
+      <h3 className="font-medium text-surface-900 dark:text-surface-100 mb-3">Schedule load</h3>
+      <form onSubmit={onSubmit} className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block text-sm">
+            <span className="text-xs font-medium text-surface-600 dark:text-surface-400 block mb-1">
+              Truck <span className="text-red-500">*</span>
+            </span>
+            <select
+              value={scheduleReg}
+              onChange={(e) => setScheduleReg(e.target.value)}
+              className={inputClass}
+              required
+            >
+              <option value="">Select truck registration</option>
+              {trucks.map((t) => (
+                <option key={t.id || t.registration} value={t.registration}>
+                  {t.registration}{t.contractor_name ? ` · ${t.contractor_name}` : ''}
+                </option>
+              ))}
+            </select>
+            {selectedTruck?.make_model && (
+              <p className="text-xs text-surface-500 mt-1">{selectedTruck.make_model}{selectedTruck.year_model ? ` · ${selectedTruck.year_model}` : ''}</p>
+            )}
+          </label>
+
+          <label className="block text-sm">
+            <span className="text-xs font-medium text-surface-600 dark:text-surface-400 block mb-1">
+              Route <span className="text-red-500">*</span>
+            </span>
+            <select
+              value={scheduleRouteId}
+              onChange={(e) => setScheduleRouteId(e.target.value)}
+              className={inputClass}
+              required
+            >
+              <option value="">Select route</option>
+              {routes.map((r) => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+            {selectedRoute && (selectedRoute.loading_address || selectedRoute.destination_address) && (
+              <p className="text-xs text-surface-500 mt-1 truncate" title={`${selectedRoute.loading_address || ''} → ${selectedRoute.destination_address || ''}`}>
+                {[selectedRoute.loading_address, selectedRoute.destination_address].filter(Boolean).join(' → ')}
+              </p>
+            )}
+          </label>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => onToggle(false)}
+            className="px-4 py-2 rounded-lg border border-surface-200 dark:border-surface-700 text-sm font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={scheduling || !scheduleReg.trim() || !scheduleRouteId}
+            className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {scheduling ? 'Scheduling…' : 'Confirm schedule'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
 
 function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave, saving }) {
   const [form, setForm] = useState(initial);
@@ -215,9 +320,54 @@ function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave,
   );
 }
 
-function formatKm(km) {
-  if (km == null || !Number.isFinite(Number(km))) return '—';
-  return `${Number(km).toFixed(km >= 100 ? 0 : 1)} km`;
+function formatKmNum(km) {
+  if (km == null || !Number.isFinite(Number(km))) return null;
+  const n = Number(km);
+  return n >= 100 ? String(Math.round(n)) : String(Math.round(n * 10) / 10);
+}
+
+function resolveRouteTotalKm(item, routes) {
+  const direct = item.route_distance_km ?? item.routeDistanceKm;
+  if (direct != null && Number.isFinite(Number(direct)) && Number(direct) > 0) {
+    return Number(direct);
+  }
+  const rid = item.contractor_route_id;
+  if (rid && routes?.length) {
+    const route = routes.find((r) => r.id === rid);
+    const km = route?.distance_km ?? route?.distanceKm;
+    if (km != null && Number.isFinite(Number(km)) && Number(km) > 0) return Number(km);
+  }
+  return null;
+}
+
+function formatDistanceProgress(item, routes) {
+  if (item.activity_stage === 'awaiting_reschedule') return 'Delivered';
+  const totalKm = resolveRouteTotalKm(item, routes);
+  let leftKm = item.km_remaining ?? item.kmRemaining;
+  leftKm = leftKm != null && Number.isFinite(Number(leftKm)) ? Number(leftKm) : null;
+  if (leftKm != null && totalKm != null && leftKm > totalKm) leftKm = totalKm;
+  const left = formatKmNum(leftKm);
+  const total = formatKmNum(totalKm);
+  if (left != null && total != null) return `${left}/${total} km`;
+  if (left != null) return `${left} km left`;
+  if (total != null) return `${total} km`;
+  return '—';
+}
+
+function formatKmDone(item, routes) {
+  if (item.activity_stage !== 'enroute') return null;
+  const total = resolveRouteTotalKm(item, routes);
+  const left = Number(item.km_remaining ?? item.kmRemaining);
+  if (!Number.isFinite(total) || !Number.isFinite(left)) return null;
+  return Math.max(0, Math.min(total, total - left));
+}
+
+function progressPct(item, routes) {
+  const total = resolveRouteTotalKm(item, routes);
+  const left = item.km_remaining ?? item.kmRemaining;
+  if (!Number.isFinite(total) || total <= 0 || left == null) return null;
+  const done = Math.max(0, Math.min(100, ((total - Number(left)) / total) * 100));
+  return Math.round(done);
 }
 
 function formatEta(minutes) {
@@ -229,16 +379,9 @@ function formatEta(minutes) {
   return r ? `~${h}h ${r}m` : `~${h}h`;
 }
 
-function progressPct(item) {
-  const total = item.route_distance_km;
-  const left = item.km_remaining;
-  if (!Number.isFinite(total) || total <= 0 || left == null) return null;
-  const done = Math.max(0, Math.min(100, ((total - left) / total) * 100));
-  return Math.round(done);
-}
-
 function ActivityCard({
   item,
+  routes,
   styles,
   onLoadingSlip,
   onProceedWithoutSlip,
@@ -259,7 +402,8 @@ function ActivityCard({
   const speed = Number(item.last_speed_kmh);
   const hasSpeed = Number.isFinite(speed);
   const moving = hasSpeed && speed >= 5;
-  const pct = progressPct(item);
+  const pct = progressPct(item, routes);
+  const kmDone = formatKmDone(item, routes);
   const alertCount = (item.deviation_count || 0) + (item.overspeed_count || 0);
   const destLabel = item.destination_name || item.destination_address || item.route_name || '—';
 
@@ -310,17 +454,19 @@ function ActivityCard({
             <p className="text-xs font-medium text-surface-800 dark:text-surface-200 leading-snug line-clamp-2">{destLabel}</p>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400 shrink-0">Left</span>
+            <div className="flex items-center gap-2 min-w-0 flex-wrap">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400 shrink-0">Dist</span>
               <span className="text-sm font-bold tabular-nums text-brand-700 dark:text-brand-300">
-                {awaitingNext ? 'Delivered' : formatKm(item.km_remaining)}
+                {formatDistanceProgress(item, routes)}
               </span>
               {item.eta_minutes != null && item.activity_stage === 'enroute' && (
                 <span className="text-[10px] text-surface-500 tabular-nums">{formatEta(item.eta_minutes)}</span>
               )}
             </div>
-            {item.route_distance_km != null && (
-              <span className="text-[10px] text-surface-500 tabular-nums shrink-0">Route {formatKm(item.route_distance_km)}</span>
+            {kmDone != null && (
+              <span className="text-[10px] text-surface-500 tabular-nums shrink-0">
+                {formatKmNum(kmDone)} km done
+              </span>
             )}
           </div>
           {pct != null && item.activity_stage === 'enroute' && (
@@ -426,6 +572,11 @@ export default function LogisticsActivityTab({ setError }) {
   const [geofences, setGeofences] = useState([]);
   const mapPanelRef = useRef(null);
   const [draggingTrip, setDraggingTrip] = useState(null);
+  const [boardSearch, setBoardSearch] = useState({
+    global: '',
+    columns: emptyColumnValues(ACTIVITY_SEARCH_COLUMNS),
+    expanded: false,
+  });
 
   const initialPrefs = useMemo(() => loadRouteViewPrefs(), []);
   const [filterRouteId, setFilterRouteId] = useState(initialPrefs.filterRouteId);
@@ -548,6 +699,9 @@ export default function LogisticsActivityTab({ setError }) {
         contractor_route_id: scheduleRouteId,
       });
       setScheduleReg('');
+      setScheduleRouteId('');
+      setScheduleArchived(true);
+      persistPrefs({ scheduleArchived: true });
       await load({ silent: true });
     } catch (err) {
       setError(err?.message || 'Schedule failed');
@@ -611,7 +765,21 @@ export default function LogisticsActivityTab({ setError }) {
     [board.stages, filterRouteId]
   );
 
-  const filteredTotal = useMemo(() => boardTotals(filteredStages), [filteredStages]);
+  const searchedStages = useMemo(() => {
+    const hasSearch = Boolean(
+      boardSearch.global.trim() || Object.values(boardSearch.columns).some((v) => String(v || '').trim())
+    );
+    if (!hasSearch) return filteredStages;
+    return filteredStages.map((stage) => {
+      const items = (stage.items || []).filter((item) =>
+        matchesColumnSearch(item, ACTIVITY_SEARCH_COLUMNS, boardSearch.columns, boardSearch.global)
+      );
+      return { ...stage, items, count: items.length };
+    });
+  }, [filteredStages, boardSearch]);
+
+  const filteredTotal = useMemo(() => boardTotals(searchedStages), [searchedStages]);
+  const boardTotalBeforeSearch = useMemo(() => boardTotals(filteredStages), [filteredStages]);
 
   const handleFilterRoute = useCallback((routeId) => {
     setFilterRouteId(routeId);
@@ -665,82 +833,67 @@ export default function LogisticsActivityTab({ setError }) {
   }
 
   return (
-    <div className="space-y-4">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Logistics Activity</h1>
-          <p className="text-sm text-surface-600 dark:text-surface-400 mt-0.5 max-w-3xl">
-            Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a <strong>truck registration</strong> to open its live position on the map. <strong>Drag a truck card</strong> to Scheduled, At loading, or En route if it was not scheduled on time.
-          </p>
-          <div className="flex flex-wrap items-center gap-2 mt-2">
-            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-surface-100 text-surface-700 dark:bg-surface-800 dark:text-surface-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
-              {board.total_active || 0} active
-            </span>
-            {actionNeeds > 0 && (
-              <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
-                {actionNeeds} awaiting slip or driver details
-              </span>
-            )}
-            {filterRouteId !== 'all' && (
-              <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-brand-100 text-brand-800 dark:bg-brand-950/50 dark:text-brand-200">
-                Viewing: {focusedRoute?.route_name || 'Route'} · {filteredTotal} truck{filteredTotal === 1 ? '' : 's'}
-              </span>
-            )}
+    <div className="space-y-2">
+      <header className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Logistics Activity</h1>
+            <InfoHint
+              title="Logistics Activity"
+              text={
+                <>
+                  Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a{' '}
+                  <strong>truck registration</strong> to open its live position on the map.{' '}
+                  <strong>Drag a truck card</strong> to Scheduled, At loading, or En route if it was not scheduled on time.
+                </>
+              }
+            />
           </div>
+          <p className="text-xs text-surface-500 dark:text-surface-400">
+            {board.total_active || 0} active
+            {actionNeeds > 0 && ` · ${actionNeeds} awaiting slip`}
+            {filterRouteId !== 'all' && ` · ${focusedRoute?.route_name || 'Route'} (${filteredTotal})`}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={refreshing}
-          className="rounded-lg border border-surface-200 dark:border-surface-700 px-3 py-1.5 text-sm font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-50"
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh GPS'}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={refreshing}
+            className="px-3 py-2 rounded-lg border border-surface-200 dark:border-surface-700 text-sm font-medium text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-50"
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh GPS'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (scheduleArchived) {
+                setScheduleArchived(false);
+                persistPrefs({ scheduleArchived: false });
+              }
+            }}
+            className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700"
+          >
+            Schedule load
+          </button>
+        </div>
       </header>
 
-      <LogisticsArchivePanel
-        title="Schedule truck to load"
-        hint="Pick a truck and route to add it to the scheduled lane."
-        archived={scheduleArchived}
-        onToggleArchived={(v) => {
-          setScheduleArchived(v);
-          persistPrefs({ scheduleArchived: v });
+      <ScheduleLoadPanel
+        expanded={!scheduleArchived}
+        onToggle={(open) => {
+          setScheduleArchived(!open);
+          persistPrefs({ scheduleArchived: !open });
         }}
-        summary="Hidden — expand to schedule a new load"
-        className="border border-brand-100 dark:border-brand-900/40 bg-brand-50/20 dark:bg-brand-950/10"
-        contentClassName="px-4 pb-4"
-      >
-        <form onSubmit={schedule} className="flex flex-wrap gap-3 items-end">
-          <label className="text-sm min-w-[180px] flex-1">
-            <span className="text-xs text-surface-500 block mb-1">Truck</span>
-            <select value={scheduleReg} onChange={(e) => setScheduleReg(e.target.value)} className={inputClass} required>
-              <option value="">Select truck</option>
-              {trucks.map((t) => (
-                <option key={t.id || t.registration} value={t.registration}>
-                  {t.registration}{t.contractor_name ? ` · ${t.contractor_name}` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm min-w-[220px] flex-1">
-            <span className="text-xs text-surface-500 block mb-1">Route</span>
-            <select value={scheduleRouteId} onChange={(e) => setScheduleRouteId(e.target.value)} className={inputClass} required>
-              <option value="">Select route</option>
-              {(board.routes || []).map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="submit"
-            disabled={scheduling}
-            className="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium hover:bg-brand-700 disabled:opacity-50 shadow-sm"
-          >
-            {scheduling ? 'Scheduling…' : 'Schedule load'}
-          </button>
-        </form>
-      </LogisticsArchivePanel>
+        trucks={trucks}
+        routes={board.routes || []}
+        scheduleReg={scheduleReg}
+        setScheduleReg={setScheduleReg}
+        scheduleRouteId={scheduleRouteId}
+        setScheduleRouteId={setScheduleRouteId}
+        scheduling={scheduling}
+        onSubmit={schedule}
+      />
 
       <LogisticsRouteViewBar
         routeSummaries={routeSummaries}
@@ -778,6 +931,19 @@ export default function LogisticsActivityTab({ setError }) {
         persistPrefs={persistPrefs}
       />
 
+      <AdvancedColumnSearchBar
+        columns={ACTIVITY_SEARCH_COLUMNS}
+        columnValues={boardSearch.columns}
+        onColumnChange={(key, val) => setBoardSearch((s) => ({ ...s, columns: { ...s.columns, [key]: val } }))}
+        globalQuery={boardSearch.global}
+        onGlobalQueryChange={(v) => setBoardSearch((s) => ({ ...s, global: v }))}
+        expanded={boardSearch.expanded}
+        onToggleExpanded={() => setBoardSearch((s) => ({ ...s, expanded: !s.expanded }))}
+        onClear={() => setBoardSearch({ global: '', columns: emptyColumnValues(ACTIVITY_SEARCH_COLUMNS), expanded: false })}
+        resultCount={filteredTotal}
+        totalCount={boardTotalBeforeSearch}
+      />
+
       {mapTripId && selectedMapTrip && (
         <div ref={mapPanelRef}>
           <LogisticsActivityMapPanel
@@ -795,14 +961,14 @@ export default function LogisticsActivityTab({ setError }) {
       <section className="app-glass-panel-2xl overflow-hidden rounded-xl border border-surface-200 dark:border-surface-800 shadow-sm">
         <div className="overflow-x-auto">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 min-w-[320px] xl:min-w-[1100px] divide-y md:divide-y-0 md:divide-x divide-surface-200 dark:divide-surface-800">
-          {filteredStages.map((stage) => {
+          {searchedStages.map((stage) => {
             const styles = STAGE_STYLES[stage.id] || STAGE_STYLES.scheduled;
             const acceptsDrop = MANUAL_DROP_STAGES.has(stage.id);
             const isDropTarget = draggingTrip && acceptsDrop && draggingTrip.fromStage !== stage.id;
             return (
               <div
                 key={stage.id}
-                className={`flex flex-col min-h-[360px] ${isDropTarget ? 'bg-brand-50/40 dark:bg-brand-950/20' : ''}`}
+                className={`flex flex-col min-h-[420px] ${isDropTarget ? 'bg-brand-50/40 dark:bg-brand-950/20' : ''}`}
                 onDragOver={acceptsDrop ? (e) => { e.preventDefault(); } : undefined}
                 onDrop={acceptsDrop ? (e) => {
                   e.preventDefault();
@@ -823,12 +989,13 @@ export default function LogisticsActivityTab({ setError }) {
                     </span>
                   </div>
                 </div>
-                <div className="flex-1 overflow-y-auto p-2.5 space-y-2 bg-surface-50/50 dark:bg-surface-950/30 max-h-[min(60vh,520px)]">
+                <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-surface-50/50 dark:bg-surface-950/30 max-h-[min(78vh,680px)]">
                   {stage.items?.length ? (
                     stage.items.map((item) => (
                       <ActivityCard
                         key={item.trip_id}
                         item={item}
+                        routes={board.routes || []}
                         styles={styles}
                         mapActive={mapTripId === item.trip_id}
                         draggable

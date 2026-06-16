@@ -18,6 +18,11 @@ const NOTIFICATION_TOGGLES = [
     hint: 'When a truck stays stationary beyond the idle threshold',
   },
   {
+    key: 'notify_email_geofence',
+    label: 'Geofence / hazard zone alerts',
+    hint: 'High-risk, crime hotspot, and custom alert zones (entry and exit)',
+  },
+  {
     key: 'notify_email_loading',
     label: 'Loading alerts',
     hint: 'When a truck enters the origin / loading geofence',
@@ -44,6 +49,7 @@ export default function TrackingNotificationSettings({ setError }) {
           notify_email_deviation: s.notify_email_deviation !== false,
           notify_email_overspeed: s.notify_email_overspeed !== false,
           notify_email_parking: s.notify_email_parking !== false,
+          notify_email_geofence: s.notify_email_geofence !== false,
           notify_email_loading: s.notify_email_loading !== false,
           notify_email_offloading: s.notify_email_offloading !== false,
         });
@@ -73,8 +79,8 @@ export default function TrackingNotificationSettings({ setError }) {
       <div className="border-b border-slate-200 px-5 py-4">
         <h2 className="text-lg font-semibold text-slate-900">Email notifications</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Choose which tracking alerts send email to users with Tracking Management access. Alarm records are still
-          created when a type is switched off.
+          Choose which tracking alerts send email and create alarm records for users with Tracking Management access.
+          Loading and offloading alerts still run logistics workflow when enabled.
         </p>
       </div>
       <div className="divide-y divide-slate-100">

@@ -814,6 +814,7 @@ function mapSettings(row) {
     notify_email_deviation: get(row, 'notify_email_deviation') !== false && get(row, 'notify_email_deviation') !== 0,
     notify_email_overspeed: get(row, 'notify_email_overspeed') !== false && get(row, 'notify_email_overspeed') !== 0,
     notify_email_parking: get(row, 'notify_email_parking') !== false && get(row, 'notify_email_parking') !== 0,
+    notify_email_geofence: get(row, 'notify_email_geofence') !== false && get(row, 'notify_email_geofence') !== 0,
     notify_email_loading: get(row, 'notify_email_loading') !== false && get(row, 'notify_email_loading') !== 0,
     notify_email_offloading: get(row, 'notify_email_offloading') !== false && get(row, 'notify_email_offloading') !== 0,
     updated_at: get(row, 'updated_at'),
@@ -836,6 +837,7 @@ router.patch('/settings', async (req, res) => {
     if (b.notify_email_deviation !== undefined) { updates.push('notify_email_deviation = @ned'); params.ned = b.notify_email_deviation ? 1 : 0; }
     if (b.notify_email_overspeed !== undefined) { updates.push('notify_email_overspeed = @neo'); params.neo = b.notify_email_overspeed ? 1 : 0; }
     if (b.notify_email_parking !== undefined) { updates.push('notify_email_parking = @nep'); params.nep = b.notify_email_parking ? 1 : 0; }
+    if (b.notify_email_geofence !== undefined) { updates.push('notify_email_geofence = @neg'); params.neg = b.notify_email_geofence ? 1 : 0; }
     if (b.notify_email_loading !== undefined) { updates.push('notify_email_loading = @nel'); params.nel = b.notify_email_loading ? 1 : 0; }
     if (b.notify_email_offloading !== undefined) { updates.push('notify_email_offloading = @nef'); params.nef = b.notify_email_offloading ? 1 : 0; }
     updates.push('updated_at = SYSUTCDATETIME()');
@@ -1205,8 +1207,18 @@ function mapDeliveryRow(row) {
     margin_amount: margin,
     fuel_calc_source: get(row, 'fuel_calc_source'),
     fuel_snapshot_at: get(row, 'fuel_snapshot_at'),
+    offloading_slip_no: get(row, 'offloading_slip_no'),
+    activity_phase: get(row, 'activity_phase'),
   };
 }
+
+/** SQL fragment: only destination deliveries completed via offloading slip capture. */
+const COMPLETED_DELIVERY_FILTER = `
+  AND d.status = N'completed'
+  AND d.pending_note = 0
+  AND d.activity_phase = N'destination'
+  AND d.offloading_slip_no IS NOT NULL
+  AND LTRIM(RTRIM(d.offloading_slip_no)) <> N''`;
 
 router.get('/deliveries', async (req, res) => {
   if (!ensureSchema(req, res, { deliveries: [] })) return;
@@ -1216,10 +1228,12 @@ router.get('/deliveries', async (req, res) => {
     const to = req.query.to;
     const reg = req.query.registration;
     const deleted = String(req.query.deleted || 'false').toLowerCase();
+    const completedOnly = String(req.query.completed_only || 'false').toLowerCase() === 'true';
     let sql = `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.tenant_id = @tenantId`;
     const params = { tenantId: tid };
     if (deleted === 'true') sql += ` AND d.deleted_at IS NOT NULL`;
     else sql += ` AND d.deleted_at IS NULL`;
+    if (completedOnly) sql += COMPLETED_DELIVERY_FILTER;
     if (from) {
       sql += ` AND d.delivered_at >= @from`;
       params.from = from;
@@ -2105,7 +2119,7 @@ router.post('/logistics-activity/trips/:id/offloading-slip', async (req, res) =>
       {
         tenantId: tid,
         tripId,
-        slip: slipNo || null,
+        slip: slipNo || noteNo,
         note: noteNo || null,
         tons: b.tons_loaded != null ? Number(b.tons_loaded) : null,
         nw: b.tons_loaded != null ? Number(b.tons_loaded) * 1000 : null,

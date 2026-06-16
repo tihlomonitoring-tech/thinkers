@@ -12,6 +12,7 @@ export const TRACKING_EMAIL_NOTIFICATION_KEYS = [
   'notify_email_deviation',
   'notify_email_overspeed',
   'notify_email_parking',
+  'notify_email_geofence',
   'notify_email_loading',
   'notify_email_offloading',
 ];
@@ -21,6 +22,7 @@ export const TRACKING_NOTIFICATION_TYPES = {
   deviation: 'notify_email_deviation',
   overspeed: 'notify_email_overspeed',
   parking: 'notify_email_parking',
+  geofence: 'notify_email_geofence',
   loading: 'notify_email_loading',
   offloading: 'notify_email_offloading',
 };
@@ -32,7 +34,7 @@ export async function getTrackingAlertEmails(query, tenantId) {
 export async function getTrackingEmailPrefs(query, tenantId) {
   const r = await query(
     `SELECT notify_email_deviation, notify_email_overspeed, notify_email_parking,
-            notify_email_loading, notify_email_offloading
+            notify_email_geofence, notify_email_loading, notify_email_offloading
      FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
     { tenantId }
   );
@@ -43,16 +45,22 @@ export async function getTrackingEmailPrefs(query, tenantId) {
     notify_email_deviation: get(row, 'notify_email_deviation') !== false && get(row, 'notify_email_deviation') !== 0,
     notify_email_overspeed: get(row, 'notify_email_overspeed') !== false && get(row, 'notify_email_overspeed') !== 0,
     notify_email_parking: get(row, 'notify_email_parking') !== false && get(row, 'notify_email_parking') !== 0,
+    notify_email_geofence: get(row, 'notify_email_geofence') !== false && get(row, 'notify_email_geofence') !== 0,
     notify_email_loading: get(row, 'notify_email_loading') !== false && get(row, 'notify_email_loading') !== 0,
     notify_email_offloading: get(row, 'notify_email_offloading') !== false && get(row, 'notify_email_offloading') !== 0,
   };
 }
 
 export function isTrackingEmailEnabled(prefs, notificationType) {
-  if (!notificationType) return true;
+  if (!notificationType) return false;
   const key = TRACKING_NOTIFICATION_TYPES[notificationType];
-  if (!key) return true;
+  if (!key) return false;
   return prefs?.[key] !== false;
+}
+
+export async function isTrackingNotificationEnabled(query, tenantId, notificationType) {
+  const prefs = await getTrackingEmailPrefs(query, tenantId);
+  return isTrackingEmailEnabled(prefs, notificationType);
 }
 
 /**
@@ -83,10 +91,11 @@ export function resolveGeofenceNotificationType({ leg, eventType, fenceType }) {
   if (eventType === 'entry') {
     if (l === 'origin') return 'loading';
     if (l === 'destination') return 'offloading';
-    if (l === 'alert' || ft === 'hazard') return null;
+    if (l === 'corridor' || l === 'corridor_alt') return 'deviation';
   }
-  if (eventType === 'exit' && l === 'corridor') return 'deviation';
-  return null;
+  if (eventType === 'exit' && (l === 'corridor' || l === 'corridor_alt')) return 'deviation';
+  if (l === 'alert' || ft === 'hazard' || ft === 'no_stop' || l === 'custom') return 'geofence';
+  return 'geofence';
 }
 
 export async function sendGeofenceAlertEmail({
