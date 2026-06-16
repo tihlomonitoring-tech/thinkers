@@ -2867,6 +2867,14 @@ export const tracking = {
     saveNote: (id, body) => trk(`/deliveries/${id}/note`, { method: 'PATCH', body: JSON.stringify(body) }),
     remove: (id) => trk(`/deliveries/${id}`, { method: 'DELETE' }),
     restore: (id) => trk(`/deliveries/${id}/restore`, { method: 'POST' }),
+    updateEconomics: (id, body) => trk(`/deliveries/${id}/economics`, { method: 'PATCH', body: JSON.stringify(body) }),
+    snapshotFuel: (id) => trk(`/deliveries/${id}/snapshot-fuel`, { method: 'POST' }),
+  },
+  fuelRegulation: {
+    list: () => trk('/fuel-regulation'),
+    saveDefault: (body) => trk('/fuel-regulation/default', { method: 'PUT', body: JSON.stringify(body) }),
+    saveTruck: (truckId, body) => trk(`/fuel-regulation/truck/${truckId}`, { method: 'PUT', body: JSON.stringify(body) }),
+    aiSuggest: (body) => trk('/fuel-regulation/ai-suggest', { method: 'POST', body: JSON.stringify(body) }),
   },
   alarms: {
     list: (params = {}) => {

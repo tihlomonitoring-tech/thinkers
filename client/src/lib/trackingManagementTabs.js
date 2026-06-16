@@ -4,6 +4,7 @@ export const TRACKING_TABS = [
   { id: 'activity', label: 'Logistics Activity', description: 'Schedule loads · slips · stage board' },
   { id: 'monitor', label: 'Monitor', description: 'Live fleet map' },
   { id: 'deliveries', label: 'Completed deliveries', description: 'Delivery notes for Command Centre' },
+  { id: 'fuel_regulation', label: 'Fuel regulation per truck', description: 'Price per litre & consumption overrides' },
 ];
 
 export const TRACKING_TAB_IDS = TRACKING_TABS.map((t) => t.id);

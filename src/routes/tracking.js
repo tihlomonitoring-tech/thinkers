@@ -15,6 +15,12 @@ import {
   scheduleTruckForRoute,
   moveTripActivityStage,
 } from '../lib/logisticsActivityBoard.js';
+import {
+  snapshotDeliveryFuelEconomics,
+  listFuelRegulations,
+  upsertFuelRegulation,
+  suggestFuelRegulationAi,
+} from '../lib/trackingDeliveryFuel.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -1081,9 +1087,10 @@ router.post('/trips/:id/complete', async (req, res) => {
     const tripR = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId: tid, id: req.params.id });
     const t = tripR.recordset?.[0];
     if (t) {
-      await query(
-        `INSERT INTO tracking_delivery_record (tenant_id, trip_id, truck_registration, delivered_at, net_weight_kg, destination_name, status, notes)
-         VALUES (@tenantId, @tid, @reg, SYSUTCDATETIME(), @nw, @dn, N'completed', @n)`,
+      const ins = await query(
+        `INSERT INTO tracking_delivery_record (tenant_id, trip_id, truck_registration, delivered_at, net_weight_kg, destination_name, status, notes, contractor_route_id, tons_loaded)
+         OUTPUT INSERTED.id
+         VALUES (@tenantId, @tid, @reg, SYSUTCDATETIME(), @nw, @dn, N'completed', @n, @rid, @tons)`,
         {
           tenantId: tid,
           tid: req.params.id,
@@ -1091,8 +1098,12 @@ router.post('/trips/:id/complete', async (req, res) => {
           nw: b.net_weight_kg ?? null,
           dn: get(t, 'destination_name'),
           n: b.notes || null,
+          rid: gid(get(t, 'contractor_route_id')) || gid(get(t, 'route_id')),
+          tons: b.tons_loaded != null ? Number(b.tons_loaded) : null,
         }
       );
+      const deliveryId = gid(ins.recordset?.[0]?.id);
+      if (deliveryId) await snapshotDeliveryFuelEconomics(query, tid, deliveryId).catch(() => {});
     }
     res.json({ ok: true });
   } catch (err) {
@@ -1138,6 +1149,16 @@ router.post('/trips/:id/deviation', async (req, res) => {
 
 // ---- Deliveries history ----
 function mapDeliveryRow(row) {
+  const revenue = get(row, 'revenue_amount') != null ? Number(get(row, 'revenue_amount')) : null;
+  const fuelCost = get(row, 'fuel_cost') != null ? Number(get(row, 'fuel_cost')) : null;
+  const returnFuelCost = get(row, 'return_fuel_cost') != null ? Number(get(row, 'return_fuel_cost')) : null;
+  const includeReturn = !!get(row, 'include_return_fuel_in_cost');
+  const totalFuelCost = fuelCost != null
+    ? Math.round((fuelCost + (includeReturn && returnFuelCost != null ? returnFuelCost : 0)) * 100) / 100
+    : null;
+  const margin = revenue != null && totalFuelCost != null
+    ? Math.round((revenue - totalFuelCost) * 100) / 100
+    : (revenue != null && fuelCost != null ? Math.round((revenue - fuelCost) * 100) / 100 : null);
   return {
     id: gid(get(row, 'id')),
     trip_id: gid(get(row, 'trip_id')),
@@ -1147,6 +1168,7 @@ function mapDeliveryRow(row) {
     net_weight_kg: get(row, 'net_weight_kg') != null ? Number(get(row, 'net_weight_kg')) : null,
     tons_loaded: get(row, 'tons_loaded') != null ? Number(get(row, 'tons_loaded')) : null,
     destination_name: get(row, 'destination_name'),
+    origin_name: get(row, 'origin_name'),
     contractor_route_id: gid(get(row, 'contractor_route_id')),
     driver_name: get(row, 'driver_name'),
     delivery_note_no: get(row, 'delivery_note_no'),
@@ -1155,6 +1177,34 @@ function mapDeliveryRow(row) {
     notes: get(row, 'notes'),
     deleted_at: get(row, 'deleted_at'),
     deleted_by: get(row, 'deleted_by'),
+    distance_km: get(row, 'distance_km') != null ? Number(get(row, 'distance_km')) : null,
+    avg_speed_kmh: get(row, 'avg_speed_kmh') != null ? Number(get(row, 'avg_speed_kmh')) : null,
+    truck_make_model: get(row, 'truck_make_model'),
+    truck_year_model: get(row, 'truck_year_model'),
+    fuel_litres_per_100km: get(row, 'fuel_litres_per_100km') != null ? Number(get(row, 'fuel_litres_per_100km')) : null,
+    fuel_price_per_litre: get(row, 'fuel_price_per_litre') != null ? Number(get(row, 'fuel_price_per_litre')) : null,
+    fuel_litres_estimated: get(row, 'fuel_litres_estimated') != null ? Number(get(row, 'fuel_litres_estimated')) : null,
+    fuel_cost_estimated: get(row, 'fuel_cost_estimated') != null ? Number(get(row, 'fuel_cost_estimated')) : null,
+    fuel_litres: get(row, 'fuel_litres') != null ? Number(get(row, 'fuel_litres')) : null,
+    fuel_cost: fuelCost,
+    return_distance_km: get(row, 'return_distance_km') != null ? Number(get(row, 'return_distance_km')) : null,
+    return_avg_speed_kmh: get(row, 'return_avg_speed_kmh') != null ? Number(get(row, 'return_avg_speed_kmh')) : null,
+    return_fuel_litres_per_100km: get(row, 'return_fuel_litres_per_100km') != null
+      ? Number(get(row, 'return_fuel_litres_per_100km')) : null,
+    return_fuel_litres_estimated: get(row, 'return_fuel_litres_estimated') != null
+      ? Number(get(row, 'return_fuel_litres_estimated')) : null,
+    return_fuel_cost_estimated: get(row, 'return_fuel_cost_estimated') != null
+      ? Number(get(row, 'return_fuel_cost_estimated')) : null,
+    return_fuel_litres: get(row, 'return_fuel_litres') != null ? Number(get(row, 'return_fuel_litres')) : null,
+    return_fuel_cost: returnFuelCost,
+    include_return_fuel_in_cost: includeReturn,
+    total_logistics_fuel_cost: totalFuelCost,
+    return_fuel_calc_source: get(row, 'return_fuel_calc_source'),
+    revenue_amount: revenue,
+    revenue_per_ton: get(row, 'revenue_per_ton') != null ? Number(get(row, 'revenue_per_ton')) : null,
+    margin_amount: margin,
+    fuel_calc_source: get(row, 'fuel_calc_source'),
+    fuel_snapshot_at: get(row, 'fuel_snapshot_at'),
   };
 }
 
@@ -1235,6 +1285,129 @@ router.post('/deliveries/:id/restore', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to restore delivery' });
+  }
+});
+
+router.patch('/deliveries/:id/economics', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const b = req.body || {};
+    const existing = await query(
+      `SELECT id, fuel_price_per_litre, fuel_snapshot_at FROM tracking_delivery_record
+       WHERE id = @id AND tenant_id = @tenantId AND deleted_at IS NULL`,
+      { tenantId: tid, id: req.params.id }
+    );
+    if (!existing.recordset?.[0]) return res.status(404).json({ error: 'Delivery not found' });
+
+    const updates = [];
+    const params = { tenantId: tid, id: req.params.id };
+    if (b.fuel_litres !== undefined) {
+      updates.push('fuel_litres = @fl');
+      params.fl = b.fuel_litres != null ? Number(b.fuel_litres) : null;
+      const price = get(existing.recordset[0], 'fuel_price_per_litre');
+      if (b.fuel_cost === undefined && price != null && b.fuel_litres != null) {
+        updates.push('fuel_cost = @fc');
+        params.fc = Math.round(Number(b.fuel_litres) * Number(price) * 100) / 100;
+      }
+    }
+    if (b.fuel_cost !== undefined) {
+      updates.push('fuel_cost = @fc');
+      params.fc = b.fuel_cost != null ? Number(b.fuel_cost) : null;
+    }
+    if (b.revenue_amount !== undefined) {
+      updates.push('revenue_amount = @rev');
+      params.rev = b.revenue_amount != null ? Number(b.revenue_amount) : null;
+    }
+    if (b.return_fuel_litres !== undefined) {
+      updates.push('return_fuel_litres = @rfl');
+      params.rfl = b.return_fuel_litres != null ? Number(b.return_fuel_litres) : null;
+      const price = get(existing.recordset[0], 'fuel_price_per_litre');
+      if (b.return_fuel_cost === undefined && price != null && b.return_fuel_litres != null) {
+        updates.push('return_fuel_cost = @rfc');
+        params.rfc = Math.round(Number(b.return_fuel_litres) * Number(price) * 100) / 100;
+      }
+    }
+    if (b.return_fuel_cost !== undefined) {
+      updates.push('return_fuel_cost = @rfc');
+      params.rfc = b.return_fuel_cost != null ? Number(b.return_fuel_cost) : null;
+    }
+    if (b.include_return_fuel_in_cost !== undefined) {
+      updates.push('include_return_fuel_in_cost = @inc');
+      params.inc = b.include_return_fuel_in_cost ? 1 : 0;
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No fields' });
+    await query(`UPDATE tracking_delivery_record SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
+    const r = await query(
+      `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.id = @id`,
+      { id: req.params.id }
+    );
+    res.json({ ok: true, delivery: mapDeliveryRow(r.recordset?.[0]) });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to update economics' });
+  }
+});
+
+router.post('/deliveries/:id/snapshot-fuel', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const econ = await snapshotDeliveryFuelEconomics(query, tid, req.params.id);
+    if (!econ) return res.status(404).json({ error: 'Delivery not found' });
+    const r = await query(
+      `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.id = @id`,
+      { id: req.params.id }
+    );
+    res.json({ ok: true, delivery: mapDeliveryRow(r.recordset?.[0]), economics: econ });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Fuel snapshot failed' });
+  }
+});
+
+// ---- Fuel regulation per truck ----
+router.get('/fuel-regulation', async (req, res) => {
+  if (!ensureSchema(req, res, { default_regulation: null, trucks: [] })) return;
+  try {
+    const data = await listFuelRegulations(query, tenantId(req));
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load fuel regulation' });
+  }
+});
+
+router.put('/fuel-regulation/default', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const by = req.user?.full_name || req.user?.email || 'operator';
+    await upsertFuelRegulation(query, tid, { ...req.body, contractor_truck_id: null }, by);
+    const data = await listFuelRegulations(query, tid);
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(400).json({ error: err?.message || 'Failed to save default regulation' });
+  }
+});
+
+router.put('/fuel-regulation/truck/:truckId', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const by = req.user?.full_name || req.user?.email || 'operator';
+    await upsertFuelRegulation(query, tid, { ...req.body, contractor_truck_id: req.params.truckId }, by);
+    const data = await listFuelRegulations(query, tid);
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(400).json({ error: err?.message || 'Failed to save truck regulation' });
+  }
+});
+
+router.post('/fuel-regulation/ai-suggest', async (req, res) => {
+  if (!ensureSchema(req, res, { ai_configured: false })) return;
+  try {
+    const result = await suggestFuelRegulationAi(query, tenantId(req), req.body || {});
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'AI suggestion failed' });
   }
 });
 
@@ -1940,7 +2113,27 @@ router.post('/logistics-activity/trips/:id/offloading-slip', async (req, res) =>
       }
     );
 
-    res.json({ ok: true, activity_stage: 'awaiting_reschedule' });
+    const destR = await query(
+      `SELECT TOP 1 id FROM tracking_delivery_record
+       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
+      { tenantId: tid, tripId }
+    );
+    const destId = gid(get(destR.recordset?.[0], 'id'));
+    let emptyReturn = null;
+    if (destId) {
+      emptyReturn = await snapshotDeliveryFuelEconomics(query, tid, destId).catch(() => null);
+    }
+
+    res.json({
+      ok: true,
+      activity_stage: 'awaiting_reschedule',
+      empty_return: emptyReturn ? {
+        return_distance_km: emptyReturn.return_distance_km,
+        return_fuel_litres: emptyReturn.return_fuel_litres,
+        return_fuel_cost: emptyReturn.return_fuel_cost,
+        return_fuel_litres_per_100km: emptyReturn.return_fuel_litres_per_100km,
+      } : null,
+    });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Offloading slip failed' });
   }
@@ -2080,6 +2273,7 @@ router.patch('/deliveries/:id/note', async (req, res) => {
         { tenantId: tid, tripId, notes: notes || null }
       );
     }
+    await snapshotDeliveryFuelEconomics(query, tid, req.params.id).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to save delivery note' });

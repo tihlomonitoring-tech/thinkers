@@ -312,3 +312,68 @@ export async function getTripTrailLastKm(query, tenantId, tripId, km = 2) {
     source,
   };
 }
+
+function averageSpeedKmh(points) {
+  const speeds = points.map((p) => p.speed_kmh).filter((s) => Number.isFinite(s) && s > 0);
+  if (speeds.length) {
+    return Math.round((speeds.reduce((a, b) => a + b, 0) / speeds.length) * 10) / 10;
+  }
+  return null;
+}
+
+/** Total trip distance from GPS breadcrumbs, with route-distance fallback. */
+export async function getTripTotalDistanceKm(query, tenantId, tripId) {
+  const tripR = await query(
+    `SELECT last_speed_kmh, contractor_route_id, collection_point_name, destination_name
+     FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`,
+    { tenantId, tripId }
+  );
+  const trip = tripR.recordset?.[0];
+  if (!trip) return { distance_km: null, avg_speed_kmh: null, source: 'none', origin_name: null, destination_name: null };
+
+  const stored = (await positionsTableExists(query))
+    ? await loadStoredTrailPoints(query, tenantId, tripId)
+    : [];
+  if (stored.length >= 2) {
+    const distanceKm = Math.round((trailDistanceM(stored) / 1000) * 100) / 100;
+    const avgSpeed = averageSpeedKmh(stored) ?? (get(trip, 'last_speed_kmh') != null ? Number(get(trip, 'last_speed_kmh')) : null);
+    return {
+      distance_km: distanceKm,
+      avg_speed_kmh: avgSpeed,
+      source: 'gps_trail',
+      origin_name: get(trip, 'collection_point_name'),
+      destination_name: get(trip, 'destination_name'),
+    };
+  }
+
+  const routeId = get(trip, 'contractor_route_id');
+  if (routeId) {
+    const rr = await query(
+      `SELECT COALESCE(reg.distance_km, r.distance_km) AS distance_km,
+              r.loading_address, r.destination_address
+       FROM contractor_routes r
+       LEFT JOIN access_route_target_regulations reg ON reg.route_id = r.id AND reg.tenant_id = @tenantId
+       WHERE r.id = @routeId AND r.tenant_id = @tenantId`,
+      { tenantId, routeId }
+    );
+    const row = rr.recordset?.[0];
+    const distanceKm = row && get(row, 'distance_km') != null ? Number(get(row, 'distance_km')) : null;
+    if (distanceKm > 0) {
+      return {
+        distance_km: Math.round(distanceKm * 100) / 100,
+        avg_speed_kmh: get(trip, 'last_speed_kmh') != null ? Number(get(trip, 'last_speed_kmh')) : null,
+        source: 'route_distance',
+        origin_name: get(trip, 'collection_point_name') || get(row, 'loading_address'),
+        destination_name: get(trip, 'destination_name') || get(row, 'destination_address'),
+      };
+    }
+  }
+
+  return {
+    distance_km: null,
+    avg_speed_kmh: get(trip, 'last_speed_kmh') != null ? Number(get(trip, 'last_speed_kmh')) : null,
+    source: 'none',
+    origin_name: get(trip, 'collection_point_name'),
+    destination_name: get(trip, 'destination_name'),
+  };
+}

@@ -54,7 +54,7 @@ const PAGE_TABS = {
     'fleet-maintenance', 'workshop', 'truck-inspection', 'external-inspections',
     'incidents', 'expiries', 'suspensions', 'messages',
   ],
-  tracking_management: ['geofence', 'integration', 'activity', 'monitor', 'deliveries'],
+  tracking_management: ['geofence', 'integration', 'activity', 'monitor', 'deliveries', 'fuel_regulation'],
 };
 
 /** Pages where zero grants means no tabs (must grant explicitly). */

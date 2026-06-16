@@ -10,6 +10,7 @@ import FleetIntegrationTab from './components/tracking/FleetIntegrationTab.jsx';
 import FleetDistributionMonitor from './components/tracking/FleetDistributionMonitor.jsx';
 import LogisticsActivityTab from './components/tracking/LogisticsActivityTab.jsx';
 import CompletedDeliveriesTab from './components/tracking/CompletedDeliveriesTab.jsx';
+import FuelRegulationTab from './components/tracking/FuelRegulationTab.jsx';
 import {
   TRACKING_TAB_IDS,
   TRACKING_TAB_LABELS,
@@ -186,6 +187,9 @@ export default function TrackingManagement() {
               noteDeliveryId={noteTripId}
               onNoteDeliveryHandled={() => setNoteTripId(null)}
             />
+          )}
+          {tab === 'fuel_regulation' && allowedTabs.includes('fuel_regulation') && (
+            <FuelRegulationTab setError={setError} />
           )}
           {tab === 'manage-tab-access' && isTabAccessAdmin && (
             <>

@@ -48,10 +48,196 @@ function DeliveryNoteModal({ delivery, onClose, onSaved, setError }) {
   );
 }
 
+function DeliveryEconomicsModal({ delivery, onClose, onSaved, setError }) {
+  const [form, setForm] = useState({
+    fuel_litres: delivery?.fuel_litres ?? '',
+    fuel_cost: delivery?.fuel_cost ?? '',
+    return_fuel_litres: delivery?.return_fuel_litres ?? '',
+    return_fuel_cost: delivery?.return_fuel_cost ?? '',
+    include_return_fuel_in_cost: !!delivery?.include_return_fuel_in_cost,
+    revenue_amount: delivery?.revenue_amount ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [recalcing, setRecalcing] = useState(false);
+  const [detail, setDetail] = useState(delivery);
+
+  const recalc = async () => {
+    setRecalcing(true);
+    try {
+      const r = await trackingApi.deliveries.snapshotFuel(delivery.id);
+      setDetail(r.delivery);
+      setForm({
+        fuel_litres: r.delivery?.fuel_litres ?? '',
+        fuel_cost: r.delivery?.fuel_cost ?? '',
+        return_fuel_litres: r.delivery?.return_fuel_litres ?? '',
+        return_fuel_cost: r.delivery?.return_fuel_cost ?? '',
+        include_return_fuel_in_cost: !!r.delivery?.include_return_fuel_in_cost,
+        revenue_amount: r.delivery?.revenue_amount ?? '',
+      });
+    } catch (err) {
+      setError(err?.message || 'Could not calculate fuel');
+    } finally {
+      setRecalcing(false);
+    }
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const r = await trackingApi.deliveries.updateEconomics(delivery.id, {
+        fuel_litres: form.fuel_litres !== '' ? Number(form.fuel_litres) : null,
+        fuel_cost: form.fuel_cost !== '' ? Number(form.fuel_cost) : null,
+        return_fuel_litres: form.return_fuel_litres !== '' ? Number(form.return_fuel_litres) : null,
+        return_fuel_cost: form.return_fuel_cost !== '' ? Number(form.return_fuel_cost) : null,
+        include_return_fuel_in_cost: form.include_return_fuel_in_cost,
+        revenue_amount: form.revenue_amount !== '' ? Number(form.revenue_amount) : null,
+      });
+      onSaved();
+      onClose();
+      return r;
+    } catch (err) {
+      setError(err?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const margin = detail?.margin_amount;
+  const d = detail || delivery;
+  const liveMargin = (() => {
+    const rev = form.revenue_amount !== '' ? Number(form.revenue_amount) : null;
+    const loaded = form.fuel_cost !== '' ? Number(form.fuel_cost) : null;
+    const ret = form.return_fuel_cost !== '' ? Number(form.return_fuel_cost) : null;
+    let cost = loaded;
+    if (cost != null && form.include_return_fuel_in_cost && ret != null) cost += ret;
+    if (rev != null && cost != null && Number.isFinite(rev) && Number.isFinite(cost)) {
+      return Math.round((rev - cost) * 100) / 100;
+    }
+    return margin;
+  })();
+
+  const liveTotalFuel = (() => {
+    const loaded = form.fuel_cost !== '' ? Number(form.fuel_cost) : null;
+    const ret = form.return_fuel_cost !== '' ? Number(form.return_fuel_cost) : null;
+    if (loaded == null) return null;
+    const total = loaded + (form.include_return_fuel_in_cost && ret != null ? ret : 0);
+    return Math.round(total * 100) / 100;
+  })();
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 overflow-y-auto">
+      <form onSubmit={save} className="w-full max-w-lg rounded-xl bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 shadow-xl p-5 space-y-4 my-8">
+        <h3 className="text-lg font-semibold">Delivery economics — {d.truck_registration}</h3>
+        <p className="text-xs text-surface-500">
+          {d.origin_name || 'Origin'} → {d.destination_name || 'Destination'}
+          {d.distance_km != null && ` · ${d.distance_km} km`}
+          {d.avg_speed_kmh != null && ` · avg ${d.avg_speed_kmh} km/h`}
+        </p>
+        {(d.truck_make_model || d.truck_year_model) && (
+          <p className="text-xs text-surface-500">
+            Vehicle: {[d.truck_make_model, d.truck_year_model].filter(Boolean).join(' · ')}
+            {d.fuel_litres_per_100km != null && ` · ${d.fuel_litres_per_100km} L/100km (snapshot)`}
+          </p>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 text-sm rounded-lg bg-surface-50 dark:bg-surface-950 p-3">
+          <div>
+            <p className="text-xs text-surface-500">Loaded leg fuel (L)</p>
+            <p className="font-semibold tabular-nums">{d.fuel_litres_estimated ?? '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-surface-500">Loaded leg cost (R)</p>
+            <p className="font-semibold tabular-nums">{d.fuel_cost_estimated ?? '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-surface-500">Empty return (L)</p>
+            <p className="font-semibold tabular-nums">{d.return_fuel_litres_estimated ?? '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-surface-500">Empty return cost (R)</p>
+            <p className="font-semibold tabular-nums">{d.return_fuel_cost_estimated ?? '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-surface-500">Return distance</p>
+            <p className="font-semibold tabular-nums">{d.return_distance_km != null ? `${d.return_distance_km} km` : '—'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-surface-500">Empty L/100km (snapshot)</p>
+            <p className="font-semibold tabular-nums">{d.return_fuel_litres_per_100km ?? '—'}</p>
+          </div>
+        </div>
+
+        <p className="text-xs font-medium text-surface-600 dark:text-surface-400">Loaded leg (to destination)</p>
+        <label className="text-sm block">
+          <span className="text-xs text-surface-500 block mb-1">Fuel used (litres)</span>
+          <input type="number" min="0" step="0.001" value={form.fuel_litres} onChange={(e) => setForm((f) => ({ ...f, fuel_litres: e.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950" />
+        </label>
+        <label className="text-sm block">
+          <span className="text-xs text-surface-500 block mb-1">Fuel expense (R)</span>
+          <input type="number" min="0" step="0.01" value={form.fuel_cost} onChange={(e) => setForm((f) => ({ ...f, fuel_cost: e.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950" />
+        </label>
+
+        <p className="text-xs font-medium text-surface-600 dark:text-surface-400 pt-1">
+          Empty return to logistics field
+          {d.origin_name && ` (${d.destination_name || 'Destination'} → ${d.origin_name})`}
+        </p>
+        <label className="text-sm block">
+          <span className="text-xs text-surface-500 block mb-1">Return fuel (litres)</span>
+          <input type="number" min="0" step="0.001" value={form.return_fuel_litres} onChange={(e) => setForm((f) => ({ ...f, return_fuel_litres: e.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950" />
+        </label>
+        <label className="text-sm block">
+          <span className="text-xs text-surface-500 block mb-1">Return fuel expense (R)</span>
+          <input type="number" min="0" step="0.01" value={form.return_fuel_cost} onChange={(e) => setForm((f) => ({ ...f, return_fuel_cost: e.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950" />
+        </label>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.include_return_fuel_in_cost}
+            onChange={(e) => setForm((f) => ({ ...f, include_return_fuel_in_cost: e.target.checked }))}
+            className="rounded border-surface-300"
+          />
+          <span>Include empty return fuel in total logistics cost</span>
+        </label>
+
+        {liveTotalFuel != null && (
+          <p className="text-sm text-surface-600">
+            Total logistics fuel: <strong className="tabular-nums">R {liveTotalFuel.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+            {!form.include_return_fuel_in_cost && form.return_fuel_cost !== '' && (
+              <span className="text-xs text-surface-500"> (loaded only — return excluded)</span>
+            )}
+          </p>
+        )}
+        <label className="text-sm block">
+          <span className="text-xs text-surface-500 block mb-1">Revenue (R)</span>
+          <input type="number" min="0" step="0.01" value={form.revenue_amount} onChange={(e) => setForm((f) => ({ ...f, revenue_amount: e.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950" />
+        </label>
+
+        {liveMargin != null && (
+          <p className={`text-sm font-semibold ${liveMargin >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+            Margin: R {liveMargin.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2 justify-end pt-2">
+          {!d.fuel_snapshot_at && (
+            <button type="button" onClick={recalc} disabled={recalcing} className="px-3 py-2 text-sm rounded-lg border disabled:opacity-50">
+              {recalcing ? 'Calculating…' : 'Calculate fuel'}
+            </button>
+          )}
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border">Cancel</button>
+          <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNoteDeliveryHandled }) {
   const [deliveries, setDeliveries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
+  const [economicsModal, setEconomicsModal] = useState(null);
   const [view, setView] = useState('active');
   const [busyId, setBusyId] = useState(null);
   const [from, setFrom] = useState(() => {
@@ -129,7 +315,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
     <div className="space-y-6">
       <header>
         <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Completed deliveries</h1>
-        <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">Delivery notes feed into Command Centre shift reports.</p>
+        <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">Delivery notes feed Command Centre. Fuel expense and revenue are snapshotted per delivery.</p>
       </header>
 
       <div className="flex flex-wrap gap-2 border-b border-surface-200 dark:border-surface-800 pb-2">
@@ -176,6 +362,11 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
               <th className="text-left px-4 py-2">Destination</th>
               <th className="text-left px-4 py-2">Note #</th>
               <th className="text-right px-4 py-2">Tons</th>
+              {!isDeletedView && <th className="text-right px-4 py-2">Fuel (L)</th>}
+              {!isDeletedView && <th className="text-right px-4 py-2">Fuel (R)</th>}
+              {!isDeletedView && <th className="text-right px-4 py-2">Return (R)</th>}
+              {!isDeletedView && <th className="text-right px-4 py-2">Total fuel</th>}
+              {!isDeletedView && <th className="text-right px-4 py-2">Revenue</th>}
               <th className="text-left px-4 py-2">Status</th>
               {isDeletedView && <th className="text-left px-4 py-2">Deleted by</th>}
               <th className="px-4 py-2" />
@@ -183,7 +374,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={isDeletedView ? 8 : 7} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+              <tr><td colSpan={isDeletedView ? 8 : 12} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
             ) : deliveries.map((d) => (
               <tr key={d.id} className="border-t border-surface-100 dark:border-surface-800">
                 <td className="px-4 py-2 whitespace-nowrap">
@@ -193,6 +384,18 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
                 <td className="px-4 py-2 text-surface-600">{d.destination_name || '—'}</td>
                 <td className="px-4 py-2 font-mono text-xs">{d.delivery_note_no || '—'}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{d.tons_loaded ?? '—'}</td>
+                {!isDeletedView && <td className="px-4 py-2 text-right tabular-nums">{d.fuel_litres ?? '—'}</td>}
+                {!isDeletedView && <td className="px-4 py-2 text-right tabular-nums">{d.fuel_cost != null ? d.fuel_cost.toFixed(2) : '—'}</td>}
+                {!isDeletedView && <td className="px-4 py-2 text-right tabular-nums">{d.return_fuel_cost != null ? d.return_fuel_cost.toFixed(2) : '—'}</td>}
+                {!isDeletedView && (
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {d.total_logistics_fuel_cost != null ? d.total_logistics_fuel_cost.toFixed(2) : '—'}
+                    {d.include_return_fuel_in_cost && d.return_fuel_cost != null && (
+                      <span className="block text-[10px] text-surface-400">incl. return</span>
+                    )}
+                  </td>
+                )}
+                {!isDeletedView && <td className="px-4 py-2 text-right tabular-nums">{d.revenue_amount != null ? d.revenue_amount.toFixed(2) : '—'}</td>}
                 <td className="px-4 py-2">
                   {isDeletedView ? (
                     <span className="text-xs font-medium text-red-700 bg-red-100 dark:bg-red-950/40 dark:text-red-200 px-2 py-0.5 rounded">Deleted</span>
@@ -210,14 +413,17 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
                     <button type="button" onClick={() => setModal(d)} className="text-xs text-brand-600 hover:underline mr-3">Enter note</button>
                   )}
                   {!isDeletedView && !d.pending_note && (
-                    <button
-                      type="button"
-                      disabled={busyId === d.id}
-                      onClick={() => deleteDelivery(d)}
-                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
-                    >
-                      {busyId === d.id ? 'Deleting…' : 'Delete'}
-                    </button>
+                    <>
+                      <button type="button" onClick={() => setEconomicsModal(d)} className="text-xs text-brand-600 hover:underline mr-3">Economics</button>
+                      <button
+                        type="button"
+                        disabled={busyId === d.id}
+                        onClick={() => deleteDelivery(d)}
+                        className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                      >
+                        {busyId === d.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </>
                   )}
                   {isDeletedView && (
                     <button
@@ -234,7 +440,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
             ))}
             {!loading && deliveries.length === 0 && (
               <tr>
-                <td colSpan={isDeletedView ? 8 : 7} className="px-4 py-8 text-center text-surface-500">
+                <td colSpan={isDeletedView ? 8 : 12} className="px-4 py-8 text-center text-surface-500">
                   {isDeletedView ? 'No deleted deliveries in this period.' : 'No deliveries in this period.'}
                 </td>
               </tr>
@@ -247,6 +453,15 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
         <DeliveryNoteModal
           delivery={modal}
           onClose={() => setModal(null)}
+          onSaved={load}
+          setError={setError}
+        />
+      )}
+
+      {economicsModal && (
+        <DeliveryEconomicsModal
+          delivery={economicsModal}
+          onClose={() => setEconomicsModal(null)}
           onSaved={load}
           setError={setError}
         />
