@@ -31,9 +31,10 @@ export default function FleetIntegrationTab({ setError }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [vForm, setVForm] = useState({ provider_id: '', contractor_truck_id: '', truck_registration: '', external_vehicle_id: '' });
   const [fcBusy, setFcBusy] = useState(null);
+  const [monitorBusyId, setMonitorBusyId] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError('');
     try {
       const [p, v, ct] = await Promise.all([
@@ -47,7 +48,7 @@ export default function FleetIntegrationTab({ setError }) {
     } catch (e) {
       setError(e?.message || 'Failed to load');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [setError]);
 
@@ -127,6 +128,24 @@ export default function FleetIntegrationTab({ setError }) {
 
   const isFleetcamForm = form.provider_type === 'fleetcam';
   const fleetcamProviders = providers.filter((p) => p.provider_type === 'fleetcam');
+  const monitoredCount = vehicles.filter((v) => !!v.monitor_enabled).length;
+
+  const toggleVehicleMonitoring = async (vehicle) => {
+    const next = !vehicle.monitor_enabled;
+    const prev = !!vehicle.monitor_enabled;
+    setMonitorBusyId(vehicle.id);
+    setVehicles((list) => list.map((v) => (v.id === vehicle.id ? { ...v, monitor_enabled: next } : v)));
+    setError('');
+    try {
+      await trackingApi.vehicles.update(vehicle.id, { monitor_enabled: next });
+      await load({ silent: true });
+    } catch (err) {
+      setVehicles((list) => list.map((v) => (v.id === vehicle.id ? { ...v, monitor_enabled: prev } : v)));
+      setError(err?.message || 'Failed to update monitoring');
+    } finally {
+      setMonitorBusyId(null);
+    }
+  };
 
   if (loading) return <p className="text-sm text-surface-500">Loading integrations…</p>;
 
@@ -249,7 +268,9 @@ export default function FleetIntegrationTab({ setError }) {
       )}
 
       <section className="rounded-xl border border-surface-200 dark:border-surface-800 overflow-hidden">
-        <div className="px-4 py-3 border-b text-sm font-semibold bg-surface-50 dark:bg-surface-900">Linked units ({vehicles.length})</div>
+        <div className="px-4 py-3 border-b text-sm font-semibold bg-surface-50 dark:bg-surface-900">
+          Linked units ({vehicles.length}) · Monitored: {monitoredCount}
+        </div>
         <table className="w-full text-sm">
           <thead className="text-xs uppercase text-surface-500">
             <tr>
@@ -257,6 +278,7 @@ export default function FleetIntegrationTab({ setError }) {
               <th className="text-left px-4 py-2">Provider</th>
               <th className="text-left px-4 py-2">External ID</th>
               <th className="text-left px-4 py-2">Contractor</th>
+              <th className="text-left px-4 py-2">Monitoring</th>
             </tr>
           </thead>
           <tbody>
@@ -266,10 +288,22 @@ export default function FleetIntegrationTab({ setError }) {
                 <td className="px-4 py-2">{v.provider_name}</td>
                 <td className="px-4 py-2 font-mono text-xs">{v.external_vehicle_id || '—'}</td>
                 <td className="px-4 py-2 text-surface-600">{v.contractor_company_name || '—'}</td>
+                <td className="px-4 py-2">
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!v.monitor_enabled}
+                      disabled={monitorBusyId === v.id}
+                      onChange={() => toggleVehicleMonitoring(v)}
+                      className="h-4 w-4 rounded border-surface-300 text-brand-600 focus:ring-brand-500 disabled:opacity-50"
+                    />
+                    <span className="text-xs text-surface-600">{v.monitor_enabled ? 'Monitored' : 'Excluded'}</span>
+                  </label>
+                </td>
               </tr>
             ))}
             {vehicles.length === 0 && (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-surface-500">No units linked. Add a FleetCam provider, then auto-link or link manually.</td></tr>
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-500">No units linked. Add a FleetCam provider, then auto-link or link manually.</td></tr>
             )}
           </tbody>
         </table>

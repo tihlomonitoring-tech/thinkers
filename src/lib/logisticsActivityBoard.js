@@ -249,6 +249,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       `SELECT d.* FROM tracking_delivery_record d
        INNER JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
        WHERE d.tenant_id = @tenantId
+         AND d.deleted_at IS NULL
          AND t.status NOT IN (N'completed', N'cancelled')
          AND (d.pending_note = 1 OR d.activity_phase IS NOT NULL)
        ORDER BY d.delivered_at DESC`,

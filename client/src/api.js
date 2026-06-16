@@ -2865,6 +2865,8 @@ export const tracking = {
       return trk(`/deliveries${q ? `?${q}` : ''}`);
     },
     saveNote: (id, body) => trk(`/deliveries/${id}/note`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id) => trk(`/deliveries/${id}`, { method: 'DELETE' }),
+    restore: (id) => trk(`/deliveries/${id}/restore`, { method: 'POST' }),
   },
   alarms: {
     list: (params = {}) => {

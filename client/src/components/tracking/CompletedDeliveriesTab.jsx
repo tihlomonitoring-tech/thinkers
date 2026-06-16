@@ -52,6 +52,8 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
   const [deliveries, setDeliveries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
+  const [view, setView] = useState('active');
+  const [busyId, setBusyId] = useState(null);
   const [from, setFrom] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 14);
@@ -63,33 +65,65 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
     setLoading(true);
     setError('');
     try {
-      const r = await trackingApi.deliveries.list({ from, to });
+      const r = await trackingApi.deliveries.list({
+        from,
+        to,
+        deleted: view === 'deleted' ? 'true' : 'false',
+      });
       setDeliveries(r.deliveries || []);
     } catch (e) {
       setError(e?.message || 'Failed to load deliveries');
     } finally {
       setLoading(false);
     }
-  }, [from, to, setError]);
+  }, [from, to, view, setError]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
-    if (!noteDeliveryId) return;
+    if (!noteDeliveryId || view !== 'active') return;
     const d = deliveries.find((x) => x.trip_id === noteDeliveryId || x.id === noteDeliveryId);
     if (d) setModal(d);
     else {
-      trackingApi.deliveries.list({}).then((r) => {
+      trackingApi.deliveries.list({ deleted: 'false' }).then((r) => {
         const pending = (r.deliveries || []).find((x) => x.pending_note && (x.trip_id === noteDeliveryId || x.truck_registration === noteDeliveryId));
         if (pending) setModal(pending);
       }).catch(() => {});
     }
     onNoteDeliveryHandled?.();
-  }, [noteDeliveryId, deliveries, onNoteDeliveryHandled]);
+  }, [noteDeliveryId, deliveries, onNoteDeliveryHandled, view]);
 
-  const pending = deliveries.filter((d) => d.pending_note);
+  const deleteDelivery = async (delivery) => {
+    if (!window.confirm(`Delete completed delivery for ${delivery.truck_registration}? It will move to Deleted completed deliveries.`)) return;
+    setBusyId(delivery.id);
+    setError('');
+    try {
+      await trackingApi.deliveries.remove(delivery.id);
+      await load();
+    } catch (err) {
+      setError(err?.message || 'Delete failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const restoreDelivery = async (delivery) => {
+    setBusyId(delivery.id);
+    setError('');
+    try {
+      await trackingApi.deliveries.restore(delivery.id);
+      await load();
+    } catch (err) {
+      setError(err?.message || 'Restore failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const pending = view === 'active' ? deliveries.filter((d) => d.pending_note) : [];
+  const isDeletedView = view === 'deleted';
 
   return (
     <div className="space-y-6">
@@ -97,6 +131,23 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
         <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Completed deliveries</h1>
         <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">Delivery notes feed into Command Centre shift reports.</p>
       </header>
+
+      <div className="flex flex-wrap gap-2 border-b border-surface-200 dark:border-surface-800 pb-2">
+        <button
+          type="button"
+          onClick={() => setView('active')}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${view === 'active' ? 'bg-brand-600 text-white' : 'text-surface-600 hover:bg-surface-100 dark:hover:bg-surface-800'}`}
+        >
+          Completed deliveries
+        </button>
+        <button
+          type="button"
+          onClick={() => setView('deleted')}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${view === 'deleted' ? 'bg-brand-600 text-white' : 'text-surface-600 hover:bg-surface-100 dark:hover:bg-surface-800'}`}
+        >
+          Deleted completed deliveries
+        </button>
+      </div>
 
       {pending.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
@@ -120,41 +171,73 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
         <table className="w-full text-sm">
           <thead className="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
             <tr>
-              <th className="text-left px-4 py-2">Date</th>
+              <th className="text-left px-4 py-2">{isDeletedView ? 'Deleted' : 'Date'}</th>
               <th className="text-left px-4 py-2">Truck</th>
               <th className="text-left px-4 py-2">Destination</th>
               <th className="text-left px-4 py-2">Note #</th>
               <th className="text-right px-4 py-2">Tons</th>
               <th className="text-left px-4 py-2">Status</th>
+              {isDeletedView && <th className="text-left px-4 py-2">Deleted by</th>}
               <th className="px-4 py-2" />
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
+              <tr><td colSpan={isDeletedView ? 8 : 7} className="px-4 py-8 text-center text-surface-500">Loading…</td></tr>
             ) : deliveries.map((d) => (
               <tr key={d.id} className="border-t border-surface-100 dark:border-surface-800">
-                <td className="px-4 py-2 whitespace-nowrap">{String(d.delivered_at || '').slice(0, 16).replace('T', ' ')}</td>
+                <td className="px-4 py-2 whitespace-nowrap">
+                  {String((isDeletedView ? d.deleted_at : d.delivered_at) || '').slice(0, 16).replace('T', ' ')}
+                </td>
                 <td className="px-4 py-2 font-medium">{d.truck_registration}</td>
                 <td className="px-4 py-2 text-surface-600">{d.destination_name || '—'}</td>
                 <td className="px-4 py-2 font-mono text-xs">{d.delivery_note_no || '—'}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{d.tons_loaded ?? '—'}</td>
                 <td className="px-4 py-2">
-                  {d.pending_note ? (
+                  {isDeletedView ? (
+                    <span className="text-xs font-medium text-red-700 bg-red-100 dark:bg-red-950/40 dark:text-red-200 px-2 py-0.5 rounded">Deleted</span>
+                  ) : d.pending_note ? (
                     <span className="text-xs font-medium text-amber-700 bg-amber-100 px-2 py-0.5 rounded">Pending note</span>
                   ) : (
                     <span className="text-xs text-emerald-700">Completed</span>
                   )}
                 </td>
-                <td className="px-4 py-2 text-right">
-                  {d.pending_note && (
-                    <button type="button" onClick={() => setModal(d)} className="text-xs text-brand-600 hover:underline">Enter note</button>
+                {isDeletedView && (
+                  <td className="px-4 py-2 text-surface-600 text-xs">{d.deleted_by || '—'}</td>
+                )}
+                <td className="px-4 py-2 text-right whitespace-nowrap">
+                  {!isDeletedView && d.pending_note && (
+                    <button type="button" onClick={() => setModal(d)} className="text-xs text-brand-600 hover:underline mr-3">Enter note</button>
+                  )}
+                  {!isDeletedView && !d.pending_note && (
+                    <button
+                      type="button"
+                      disabled={busyId === d.id}
+                      onClick={() => deleteDelivery(d)}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      {busyId === d.id ? 'Deleting…' : 'Delete'}
+                    </button>
+                  )}
+                  {isDeletedView && (
+                    <button
+                      type="button"
+                      disabled={busyId === d.id}
+                      onClick={() => restoreDelivery(d)}
+                      className="text-xs text-brand-600 hover:underline disabled:opacity-50"
+                    >
+                      {busyId === d.id ? 'Restoring…' : 'Restore'}
+                    </button>
                   )}
                 </td>
               </tr>
             ))}
             {!loading && deliveries.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-surface-500">No deliveries in this period.</td></tr>
+              <tr>
+                <td colSpan={isDeletedView ? 8 : 7} className="px-4 py-8 text-center text-surface-500">
+                  {isDeletedView ? 'No deleted deliveries in this period.' : 'No deliveries in this period.'}
+                </td>
+              </tr>
             )}
           </tbody>
         </table>

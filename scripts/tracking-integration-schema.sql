@@ -33,12 +33,24 @@ CREATE TABLE tracking_vehicle_link (
   fleet_no NVARCHAR(80) NULL,
   contractor_truck_id UNIQUEIDENTIFIER NULL,
   notes NVARCHAR(500) NULL,
+  monitor_enabled BIT NOT NULL CONSTRAINT DF_tvl_monitor_enabled DEFAULT 1,
   created_at DATETIME2 NOT NULL CONSTRAINT DF_tvl_created DEFAULT SYSUTCDATETIME(),
   -- NO ACTION on tenant avoids SQL Server "multiple cascade paths" (tenant also cascades to provider -> this table)
   CONSTRAINT FK_tvl_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE NO ACTION,
   CONSTRAINT FK_tvl_provider FOREIGN KEY (provider_id) REFERENCES tracking_integration_provider(id) ON DELETE CASCADE
 );
 -- FK to contractor_trucks added by tracking-expand-contractor-truck.sql (after contractor tables exist)
+GO
+
+IF COL_LENGTH('tracking_vehicle_link', 'monitor_enabled') IS NULL
+BEGIN
+  ALTER TABLE tracking_vehicle_link
+  ADD monitor_enabled BIT NOT NULL CONSTRAINT DF_tvl_monitor_enabled DEFAULT 1;
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tvl_tenant_pid_monitor_enabled' AND object_id = OBJECT_ID('tracking_vehicle_link'))
+  CREATE INDEX IX_tvl_tenant_pid_monitor_enabled ON tracking_vehicle_link(tenant_id, provider_id, monitor_enabled) WHERE monitor_enabled = 1;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tvl_tenant_reg' AND object_id = OBJECT_ID('tracking_vehicle_link'))

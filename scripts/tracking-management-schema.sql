@@ -33,6 +33,18 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'tracking_
   ALTER TABLE tracking_delivery_record ADD pending_note BIT NOT NULL CONSTRAINT DF_tdr_pending_note DEFAULT 0;
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'tracking_delivery_record') AND name = N'deleted_at')
+  ALTER TABLE tracking_delivery_record ADD deleted_at DATETIME2 NULL;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'tracking_delivery_record') AND name = N'deleted_by')
+  ALTER TABLE tracking_delivery_record ADD deleted_by NVARCHAR(200) NULL;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tdr_tenant_deleted' AND object_id = OBJECT_ID('tracking_delivery_record'))
+  CREATE INDEX IX_tdr_tenant_deleted ON tracking_delivery_record(tenant_id, deleted_at) WHERE deleted_at IS NOT NULL;
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'fleet_trip') AND name = N'contractor_route_id')
   ALTER TABLE fleet_trip ADD contractor_route_id UNIQUEIDENTIFIER NULL;
 GO

@@ -132,7 +132,10 @@ export async function runTrackingProviderPoll() {
 
       const vehiclesR = await query(
         `SELECT id, truck_registration, external_vehicle_id, contractor_truck_id
-         FROM tracking_vehicle_link WHERE tenant_id = @tenantId AND provider_id = @pid`,
+         FROM tracking_vehicle_link
+         WHERE tenant_id = @tenantId
+           AND provider_id = @pid
+           AND monitor_enabled = 1`,
         { tenantId, pid: providerId }
       );
       const vehicles = (vehiclesR.recordset || []).map((v) => ({

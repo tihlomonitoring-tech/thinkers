@@ -388,6 +388,7 @@ router.get('/vehicles', async (req, res) => {
     const r = await query(
       `SELECT v.id, v.tenant_id, v.provider_id, v.truck_registration, v.external_vehicle_id, v.fleet_no, v.notes, v.created_at,
               v.contractor_truck_id,
+              v.monitor_enabled,
               p.display_name AS provider_name,
               c.name AS contractor_company_name
        FROM tracking_vehicle_link v
@@ -407,6 +408,7 @@ router.get('/vehicles', async (req, res) => {
       contractor_truck_id: gid(get(row, 'contractor_truck_id')),
       contractor_company_name: get(row, 'contractor_company_name'),
       notes: get(row, 'notes'),
+      monitor_enabled: !!get(row, 'monitor_enabled'),
       created_at: get(row, 'created_at'),
     }));
     res.json({ vehicles });
@@ -450,13 +452,14 @@ router.patch('/vehicles/:id', async (req, res) => {
   if (!ensureSchema(req, res, {})) return;
   try {
     const tid = tenantId(req);
-    const { truck_registration, external_vehicle_id, fleet_no, notes } = req.body || {};
+    const { truck_registration, external_vehicle_id, fleet_no, notes, monitor_enabled } = req.body || {};
     const updates = [];
     const params = { tenantId: tid, id: req.params.id };
     if (truck_registration !== undefined) { updates.push('truck_registration = @reg'); params.reg = truck_registration; }
     if (external_vehicle_id !== undefined) { updates.push('external_vehicle_id = @ev'); params.ev = external_vehicle_id; }
     if (fleet_no !== undefined) { updates.push('fleet_no = @fn'); params.fn = fleet_no; }
     if (notes !== undefined) { updates.push('notes = @n'); params.n = notes; }
+    if (monitor_enabled !== undefined) { updates.push('monitor_enabled = @me'); params.me = monitor_enabled ? 1 : 0; }
     if (!updates.length) return res.status(400).json({ error: 'No fields' });
     await query(`UPDATE tracking_vehicle_link SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
     res.json({ ok: true });
@@ -1134,6 +1137,27 @@ router.post('/trips/:id/deviation', async (req, res) => {
 });
 
 // ---- Deliveries history ----
+function mapDeliveryRow(row) {
+  return {
+    id: gid(get(row, 'id')),
+    trip_id: gid(get(row, 'trip_id')),
+    trip_ref: get(row, 'trip_ref'),
+    truck_registration: get(row, 'truck_registration'),
+    delivered_at: get(row, 'delivered_at'),
+    net_weight_kg: get(row, 'net_weight_kg') != null ? Number(get(row, 'net_weight_kg')) : null,
+    tons_loaded: get(row, 'tons_loaded') != null ? Number(get(row, 'tons_loaded')) : null,
+    destination_name: get(row, 'destination_name'),
+    contractor_route_id: gid(get(row, 'contractor_route_id')),
+    driver_name: get(row, 'driver_name'),
+    delivery_note_no: get(row, 'delivery_note_no'),
+    pending_note: !!get(row, 'pending_note'),
+    status: get(row, 'status'),
+    notes: get(row, 'notes'),
+    deleted_at: get(row, 'deleted_at'),
+    deleted_by: get(row, 'deleted_by'),
+  };
+}
+
 router.get('/deliveries', async (req, res) => {
   if (!ensureSchema(req, res, { deliveries: [] })) return;
   try {
@@ -1141,8 +1165,11 @@ router.get('/deliveries', async (req, res) => {
     const from = req.query.from;
     const to = req.query.to;
     const reg = req.query.registration;
+    const deleted = String(req.query.deleted || 'false').toLowerCase();
     let sql = `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.tenant_id = @tenantId`;
     const params = { tenantId: tid };
+    if (deleted === 'true') sql += ` AND d.deleted_at IS NOT NULL`;
+    else sql += ` AND d.deleted_at IS NULL`;
     if (from) {
       sql += ` AND d.delivered_at >= @from`;
       params.from = from;
@@ -1155,27 +1182,59 @@ router.get('/deliveries', async (req, res) => {
       sql += ` AND d.truck_registration LIKE @reg`;
       params.reg = `%${reg}%`;
     }
-    sql += ` ORDER BY d.delivered_at DESC`;
+    sql += ` ORDER BY COALESCE(d.deleted_at, d.delivered_at) DESC`;
     const r = await query(sql, params);
-    const deliveries = (r.recordset || []).map((row) => ({
-      id: gid(get(row, 'id')),
-      trip_id: gid(get(row, 'trip_id')),
-      trip_ref: get(row, 'trip_ref'),
-      truck_registration: get(row, 'truck_registration'),
-      delivered_at: get(row, 'delivered_at'),
-      net_weight_kg: get(row, 'net_weight_kg') != null ? Number(get(row, 'net_weight_kg')) : null,
-      tons_loaded: get(row, 'tons_loaded') != null ? Number(get(row, 'tons_loaded')) : null,
-      destination_name: get(row, 'destination_name'),
-      contractor_route_id: gid(get(row, 'contractor_route_id')),
-      driver_name: get(row, 'driver_name'),
-      delivery_note_no: get(row, 'delivery_note_no'),
-      pending_note: !!get(row, 'pending_note'),
-      status: get(row, 'status'),
-      notes: get(row, 'notes'),
-    }));
+    const deliveries = (r.recordset || []).map(mapDeliveryRow);
     res.json({ deliveries });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to list deliveries' });
+  }
+});
+
+router.delete('/deliveries/:id', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const existing = await query(
+      `SELECT id, pending_note FROM tracking_delivery_record
+       WHERE id = @id AND tenant_id = @tenantId AND deleted_at IS NULL`,
+      { tenantId: tid, id: req.params.id }
+    );
+    const row = existing.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Delivery not found' });
+    if (!!get(row, 'pending_note')) {
+      return res.status(400).json({ error: 'Complete the delivery note before deleting' });
+    }
+    const by = req.user?.full_name || req.user?.email || 'operator';
+    await query(
+      `UPDATE tracking_delivery_record SET deleted_at = SYSUTCDATETIME(), deleted_by = @by
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { tenantId: tid, id: req.params.id, by }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to delete delivery' });
+  }
+});
+
+router.post('/deliveries/:id/restore', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const existing = await query(
+      `SELECT id FROM tracking_delivery_record
+       WHERE id = @id AND tenant_id = @tenantId AND deleted_at IS NOT NULL`,
+      { tenantId: tid, id: req.params.id }
+    );
+    if (!existing.recordset?.[0]) return res.status(404).json({ error: 'Deleted delivery not found' });
+    await query(
+      `UPDATE tracking_delivery_record SET deleted_at = NULL, deleted_by = NULL
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { tenantId: tid, id: req.params.id }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to restore delivery' });
   }
 });
 
@@ -1584,6 +1643,14 @@ async function buildFleetDistribution(tenantId) {
        LEFT JOIN contractor_trucks ct ON ct.id = t.contractor_truck_id AND ct.tenant_id = t.tenant_id
        LEFT JOIN contractors c ON c.id = ct.contractor_id AND c.tenant_id = t.tenant_id
        WHERE t.tenant_id = @tenantId AND t.status IN (N'pending', N'enroute', N'deviated', N'overdue')
+       AND EXISTS (
+         SELECT 1
+         FROM tracking_vehicle_link v
+         WHERE v.tenant_id = @tenantId
+           AND v.monitor_enabled = 1
+           AND UPPER(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(v.truck_registration)), ' ', ''), CHAR(9), ''), CHAR(13), '')) =
+               UPPER(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(t.truck_registration)), ' ', ''), CHAR(9), ''), CHAR(13), ''))
+       )
        ORDER BY t.updated_at DESC`,
       { tenantId }
     ),
@@ -1993,7 +2060,7 @@ router.patch('/deliveries/:id/note', async (req, res) => {
         net_weight_kg = COALESCE(@nw, net_weight_kg),
         pending_note = 0,
         status = N'completed'
-       WHERE id = @id AND tenant_id = @tenantId`,
+       WHERE id = @id AND tenant_id = @tenantId AND deleted_at IS NULL`,
       {
         tenantId: tid,
         id: req.params.id,

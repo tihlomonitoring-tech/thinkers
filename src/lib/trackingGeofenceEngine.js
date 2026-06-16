@@ -43,7 +43,15 @@ export async function processGeofencePositions(query, tenantId) {
      FROM fleet_trip t
      WHERE t.tenant_id = @tenantId
        AND t.status NOT IN (N'completed', N'cancelled')
-       AND t.last_lat IS NOT NULL AND t.last_lng IS NOT NULL`,
+       AND t.last_lat IS NOT NULL AND t.last_lng IS NOT NULL
+       AND EXISTS (
+         SELECT 1
+         FROM tracking_vehicle_link v
+         WHERE v.tenant_id = @tenantId
+           AND v.monitor_enabled = 1
+           AND UPPER(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(v.truck_registration)), ' ', ''), CHAR(9), ''), CHAR(13), '')) =
+               UPPER(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(t.truck_registration)), ' ', ''), CHAR(9), ''), CHAR(13), ''))
+       )`,
     { tenantId }
   );
   const trips = tripsR.recordset || [];
