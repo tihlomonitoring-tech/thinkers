@@ -2825,6 +2825,7 @@ export const tracking = {
     board: () => trk('/logistics-activity/board'),
     schedule: (body) => trk('/logistics-activity/schedule', { method: 'POST', body: JSON.stringify(body) }),
     saveLoadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/loading-slip`, { method: 'POST', body: JSON.stringify(body) }),
+    updateLoadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/loading-slip`, { method: 'PATCH', body: JSON.stringify(body) }),
     saveOffloadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/offloading-slip`, { method: 'POST', body: JSON.stringify(body) }),
     redirect: (id, body) => trk(`/logistics-activity/trips/${id}/redirect`, { method: 'POST', body: JSON.stringify(body) }),
     cancel: (id) => trk(`/logistics-activity/trips/${id}/cancel`, { method: 'POST' }),
@@ -2971,6 +2972,25 @@ export const operatorManagement = {
     updatePayRecord: (id, body) => om(`/wages/pay-records/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   },
   users: () => om('/users'),
+  loadingSlips: {
+    assignments: () => om('/loading-assignments'),
+    parse: (formData) =>
+      fetch(`${API}/operator-management/loading-slips/parse`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        })
+        .catch((err) => {
+          throw wrapNetworkError(err);
+        }),
+    submit: (tripId, body) =>
+      om(`/loading-slips/${encodeURIComponent(tripId)}/submit`, { method: 'POST', body: JSON.stringify(body) }),
+  },
 };
 
 // ─── Expense Management ──────────────────────────────────────────

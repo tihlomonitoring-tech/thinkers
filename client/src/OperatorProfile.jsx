@@ -8,11 +8,13 @@ import InfoHint from './components/InfoHint.jsx';
 import OvertimeClaimFields, { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
 import { calculateSaOvertimeClaim } from './lib/saOvertimeClaim.js';
 import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
+import OperatorLoadingSlipsTab from './components/operator/OperatorLoadingSlipsTab.jsx';
 import OrgStructureView from './components/OrgStructureView.jsx';
 import { wallMonthYearInAppZone } from './lib/appTime.js';
 
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
+  { id: 'loading_slips', label: 'Loading slips' },
   { id: 'productivity', label: 'Productivity score' },
   { id: 'wages', label: 'Wages & salary' },
   { id: 'leave', label: 'Leave application' },
@@ -436,6 +438,10 @@ export default function OperatorProfile() {
                 </div>
               </div>
             </div>
+          )}
+
+          {activeTab === 'loading_slips' && (
+            <OperatorLoadingSlipsTab user={user} onError={setError} />
           )}
 
           {activeTab === 'productivity' && (

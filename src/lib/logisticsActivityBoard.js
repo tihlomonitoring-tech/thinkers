@@ -89,7 +89,7 @@ export function resolveRouteDistanceKm(route, originCoords, destCoords) {
   return span != null && span > 0 ? span : null;
 }
 
-export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts) {
+export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts, loadingDelivery) {
   const rid = gid(get(row, 'contractor_route_id')) || gid(get(row, 'route_id'));
   const route = routeMeta?.get(rid);
   const origin = originCoords?.get(rid);
@@ -149,7 +149,10 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     offloading_slip_no: get(row, 'offloading_slip_no'),
     delivery_id: openDelivery ? gid(get(openDelivery, 'id')) : null,
     delivery_note_no: get(openDelivery, 'delivery_note_no'),
-    tons_loaded: get(openDelivery, 'tons_loaded') != null ? Number(get(openDelivery, 'tons_loaded')) : null,
+    tons_loaded: get(loadingDelivery, 'tons_loaded') != null
+      ? Number(get(loadingDelivery, 'tons_loaded'))
+      : (get(openDelivery, 'tons_loaded') != null ? Number(get(openDelivery, 'tons_loaded')) : null),
+    loading_notes: get(loadingDelivery, 'notes') || null,
     pending_note: openDelivery ? !!get(openDelivery, 'pending_note') : false,
     activity_phase: get(openDelivery, 'activity_phase'),
     hours_on_route: hours != null ? Math.round(hours * 100) / 100 : null,
@@ -333,14 +336,27 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
   }
 
   const deliveryByTrip = new Map();
+  const loadingDeliveryByTrip = new Map();
   for (const d of deliveriesR.recordset || []) {
     const tid = gid(get(d, 'trip_id'));
-    if (tid && !deliveryByTrip.has(tid)) deliveryByTrip.set(tid, d);
+    if (!tid) continue;
+    const phase = String(get(d, 'activity_phase') || '').toLowerCase();
+    if (phase === 'loading' && !loadingDeliveryByTrip.has(tid)) loadingDeliveryByTrip.set(tid, d);
+    if (!deliveryByTrip.has(tid)) deliveryByTrip.set(tid, d);
   }
 
-  const items = (tripsR.recordset || []).map((row) =>
-    mapActivityTrip(row, deliveryByTrip.get(gid(get(row, 'id'))), routeMeta, originCoords, destCoords, alarmCounts)
-  );
+  const items = (tripsR.recordset || []).map((row) => {
+    const tripId = gid(get(row, 'id'));
+    return mapActivityTrip(
+      row,
+      deliveryByTrip.get(tripId),
+      routeMeta,
+      originCoords,
+      destCoords,
+      alarmCounts,
+      loadingDeliveryByTrip.get(tripId)
+    );
+  });
 
   const stages = ACTIVITY_STAGES.map((s) => ({
     ...s,
@@ -637,4 +653,223 @@ export async function moveTripActivityStage(query, tenantId, tripId, targetStage
   }
 
   return { activity_stage: stage };
+}
+
+export function normalizePersonName(name) {
+  return String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Trucks scheduled / at loading (or deferred slip) assigned to a driver by name or linked truck. */
+export async function listLoadingAssignmentsForDriver(query, tenantId, userFullName) {
+  const driverName = normalizePersonName(userFullName);
+  if (!driverName) return [];
+
+  const driversR = await query(
+    `SELECT d.id, d.full_name, d.linked_truck_id
+     FROM contractor_drivers d
+     WHERE d.tenant_id = @tenantId
+       AND LOWER(LTRIM(RTRIM(d.full_name))) = @driverName`,
+    { tenantId, driverName }
+  );
+  const linkedTruckIds = [...new Set(
+    (driversR.recordset || []).map((row) => gid(get(row, 'linked_truck_id'))).filter(Boolean)
+  )];
+
+  const ors = ['LOWER(LTRIM(RTRIM(COALESCE(t.driver_name, N\'\')))) = @driverName'];
+  const params = { tenantId, driverName };
+  linkedTruckIds.forEach((id, i) => {
+    ors.push(`t.contractor_truck_id = @truck${i}`);
+    params[`truck${i}`] = id;
+  });
+  if (linkedTruckIds.length) {
+    ors.push(
+      `EXISTS (
+        SELECT 1 FROM contractor_drivers d
+        WHERE d.tenant_id = @tenantId AND d.linked_truck_id = t.contractor_truck_id
+          AND LOWER(LTRIM(RTRIM(d.full_name))) = @driverName
+      )`
+    );
+  }
+
+  const r = await query(
+    `SELECT t.id AS trip_id, t.trip_ref, t.truck_registration, t.driver_name, t.activity_stage,
+            t.loading_slip_no, t.loading_slip_deferred, t.scheduled_at, t.at_loading_at,
+            r.name AS route_name, r.loading_address, r.destination_address,
+            ld.tons_loaded, ld.notes AS loading_notes
+     FROM fleet_trip t
+     LEFT JOIN contractor_routes r ON r.id = t.contractor_route_id AND r.tenant_id = t.tenant_id
+     LEFT JOIN contractor_trucks ct ON ct.id = t.contractor_truck_id AND ct.tenant_id = t.tenant_id
+     LEFT JOIN tracking_delivery_record ld ON ld.trip_id = t.id AND ld.tenant_id = t.tenant_id
+       AND ld.activity_phase = N'loading' AND ld.deleted_at IS NULL
+     WHERE t.tenant_id = @tenantId
+       AND t.status NOT IN (N'completed', N'cancelled')
+       AND (
+         COALESCE(t.activity_stage, N'scheduled') IN (N'scheduled', N'at_loading')
+         OR (
+           t.activity_stage = N'enroute' AND t.loading_slip_deferred = 1
+           AND (t.loading_slip_no IS NULL OR LTRIM(RTRIM(t.loading_slip_no)) = N'')
+         )
+       )
+       AND (${ors.join(' OR ')})
+     ORDER BY COALESCE(t.at_loading_at, t.scheduled_at, t.updated_at) DESC`,
+    params
+  );
+
+  return (r.recordset || []).map((row) => ({
+    trip_id: gid(get(row, 'trip_id')),
+    trip_ref: get(row, 'trip_ref'),
+    truck_registration: get(row, 'truck_registration'),
+    driver_name: get(row, 'driver_name'),
+    activity_stage: get(row, 'activity_stage') || 'scheduled',
+    loading_slip_no: get(row, 'loading_slip_no'),
+    loading_slip_deferred: !!get(row, 'loading_slip_deferred'),
+    scheduled_at: get(row, 'scheduled_at'),
+    at_loading_at: get(row, 'at_loading_at'),
+    route_name: get(row, 'route_name'),
+    loading_address: get(row, 'loading_address'),
+    destination_address: get(row, 'destination_address'),
+    tons_loaded: get(row, 'tons_loaded') != null ? Number(get(row, 'tons_loaded')) : null,
+    loading_notes: get(row, 'loading_notes'),
+  }));
+}
+
+export async function assertTripAssignedToDriver(query, tenantId, tripId, userFullName) {
+  const assignments = await listLoadingAssignmentsForDriver(query, tenantId, userFullName);
+  const ok = assignments.some((a) => a.trip_id === gid(tripId));
+  if (!ok) {
+    const err = new Error('This load is not assigned to you');
+    err.status = 403;
+    throw err;
+  }
+}
+
+export async function captureLoadingSlip(query, tenantId, tripId, body, { defer = false } = {}) {
+  const b = body || {};
+  const slipNo = b.loading_slip_no ? String(b.loading_slip_no).trim() : '';
+  if (!defer && !slipNo) throw new Error('Loading slip number required');
+
+  const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId, id: tripId });
+  const trip = tr.recordset?.[0];
+  if (!trip) {
+    const err = new Error('Trip not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const st = await query(`SELECT max_enroute_minutes FROM tracking_tenant_settings WHERE tenant_id = @tenantId`, { tenantId });
+  let maxM = st.recordset?.[0] ? get(st.recordset[0], 'max_enroute_minutes') : 240;
+  if (maxM == null || maxM < 1) maxM = 240;
+
+  const rid = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
+  await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
+
+  const driver = b.driver_name ? String(b.driver_name).trim() : null;
+  const tons = b.tons_loaded !== '' && b.tons_loaded != null ? Number(b.tons_loaded) : null;
+  let notes = b.notes != null ? String(b.notes).trim() : null;
+  if (b.loaded_at) {
+    const stamp = `Loaded at: ${String(b.loaded_at).trim()}`;
+    notes = notes ? `${notes}\n${stamp}` : stamp;
+  }
+
+  await query(
+    `UPDATE fleet_trip SET
+      loading_slip_no = @slip,
+      loading_slip_deferred = @defer,
+      driver_name = COALESCE(@driver, driver_name),
+      activity_stage = N'enroute',
+      status = N'enroute',
+      started_at = COALESCE(started_at, SYSUTCDATETIME()),
+      eta_due_at = DATEADD(minute, @maxM, COALESCE(started_at, SYSUTCDATETIME())),
+      is_overdue = 0,
+      at_loading_at = COALESCE(at_loading_at, SYSUTCDATETIME()),
+      updated_at = SYSUTCDATETIME()
+     WHERE id = @id AND tenant_id = @tenantId`,
+    {
+      tenantId,
+      id: tripId,
+      slip: slipNo || null,
+      defer: defer ? 1 : 0,
+      driver,
+      maxM,
+    }
+  );
+
+  await query(
+    `UPDATE tracking_delivery_record SET
+      loading_slip_no = @slip,
+      loading_slip_deferred = @defer,
+      driver_name = COALESCE(@driver, driver_name),
+      tons_loaded = COALESCE(@tons, tons_loaded),
+      notes = COALESCE(@notes, notes),
+      pending_note = 0,
+      status = N'loading_complete',
+      delivered_at = COALESCE(@loadedAt, delivered_at)
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
+    {
+      tenantId,
+      tripId,
+      slip: slipNo || null,
+      defer: defer ? 1 : 0,
+      driver,
+      tons,
+      notes,
+      loadedAt: b.loaded_at ? new Date(b.loaded_at) : null,
+    }
+  );
+
+  return { ok: true, activity_stage: 'enroute' };
+}
+
+export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
+  const b = body || {};
+  const slipNo = b.loading_slip_no != null ? String(b.loading_slip_no).trim() : null;
+  if (!slipNo) throw new Error('Loading slip number is required');
+
+  const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId, id: tripId });
+  if (!tr.recordset?.[0]) {
+    const err = new Error('Trip not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const tons = b.tons_loaded !== '' && b.tons_loaded != null ? Number(b.tons_loaded) : null;
+  let notes = b.notes != null ? String(b.notes) : null;
+  const driver = b.driver_name != null ? String(b.driver_name).trim() || null : null;
+  if (b.loaded_at) {
+    const stamp = `Loaded at: ${String(b.loaded_at).trim()}`;
+    notes = notes ? `${notes}\n${stamp}` : stamp;
+  }
+
+  await query(
+    `UPDATE fleet_trip SET
+      loading_slip_no = @slip,
+      loading_slip_deferred = 0,
+      driver_name = COALESCE(@driver, driver_name),
+      updated_at = SYSUTCDATETIME()
+     WHERE id = @id AND tenant_id = @tenantId`,
+    { tenantId, id: tripId, slip: slipNo, driver }
+  );
+
+  await query(
+    `UPDATE tracking_delivery_record SET
+      loading_slip_no = @slip,
+      loading_slip_deferred = 0,
+      driver_name = COALESCE(@driver, driver_name),
+      tons_loaded = @tons,
+      notes = @notes,
+      pending_note = 0,
+      delivered_at = COALESCE(@loadedAt, delivered_at)
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
+    {
+      tenantId,
+      tripId,
+      slip: slipNo,
+      driver,
+      tons,
+      notes,
+      loadedAt: b.loaded_at ? new Date(b.loaded_at) : null,
+    }
+  );
+
+  return { ok: true };
 }

@@ -4,7 +4,15 @@ import { useEffect, useRef, useState } from 'react';
  * Guided “AI camera” capture for fuel slips: live preview, tips for a sharp frame,
  * then JPEG capture passed to parent (same pipeline as file upload).
  */
-export default function FuelSlipAiCameraModal({ open, onClose, onCapture, busy }) {
+export default function FuelSlipAiCameraModal({
+  open,
+  onClose,
+  onCapture,
+  busy,
+  title = 'AI camera — slip photo',
+  subtitle = 'Same as uploading: we send this image to read your slip.',
+  captureLabel = 'Capture & read slip',
+}) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -94,9 +102,9 @@ export default function FuelSlipAiCameraModal({ open, onClose, onCapture, busy }
         <div className="p-4 border-b border-surface-100 dark:border-surface-800 flex justify-between items-start gap-2">
           <div>
             <h2 id="fuel-slip-camera-title" className="text-lg font-semibold text-surface-900 dark:text-surface-50">
-              AI camera — slip photo
+              {title}
             </h2>
-            <p className="text-xs text-surface-500 mt-1">Same as uploading: we send this image to read your slip.</p>
+            <p className="text-xs text-surface-500 mt-1">{subtitle}</p>
           </div>
           <button
             type="button"
@@ -140,7 +148,7 @@ export default function FuelSlipAiCameraModal({ open, onClose, onCapture, busy }
               onClick={handleCapture}
               className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium disabled:opacity-50"
             >
-              {busy ? 'Reading slip…' : 'Capture & read slip'}
+              {busy ? 'Reading slip…' : captureLabel}
             </button>
           </div>
         </div>

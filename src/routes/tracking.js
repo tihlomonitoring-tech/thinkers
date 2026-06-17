@@ -14,6 +14,8 @@ import {
   buildLogisticsActivityBoard,
   scheduleTruckForRoute,
   moveTripActivityStage,
+  captureLoadingSlip,
+  updateLoadingSlipFields,
 } from '../lib/logisticsActivityBoard.js';
 import {
   snapshotDeliveryFuelEconomics,
@@ -127,7 +129,7 @@ router.get('/contractor-drivers', async (req, res) => {
     if (!tid) return res.status(400).json({ error: 'No tenant' });
     const truckReg = String(req.query.truck_registration || '').trim();
     const r = await query(
-      `SELECT d.id, d.full_name, d.name, d.surname, d.phone, d.license_number,
+      `SELECT d.id, d.full_name, d.surname, d.phone, d.license_number,
               t.registration AS linked_truck_registration, t.id AS linked_truck_id,
               c.name AS contractor_name
        FROM contractor_drivers d
@@ -136,12 +138,12 @@ router.get('/contractor-drivers', async (req, res) => {
        WHERE d.tenant_id = @tenantId
        ORDER BY
          CASE WHEN @reg <> N'' AND UPPER(REPLACE(t.registration, N' ', N'')) = UPPER(REPLACE(@reg, N' ', N'')) THEN 0 ELSE 1 END,
-         d.full_name, d.name, d.surname`,
+         d.full_name, d.surname`,
       { tenantId: tid, reg: truckReg }
     );
     const drivers = (r.recordset || []).map((row) => {
       const fullName = String(get(row, 'full_name') || '').trim()
-        || [get(row, 'name'), get(row, 'surname')].filter(Boolean).join(' ').trim();
+        || String(get(row, 'surname') || '').trim();
       const linkedReg = String(get(row, 'linked_truck_registration') || '').trim();
       const norm = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, '');
       return {
@@ -2021,63 +2023,36 @@ router.post('/logistics-activity/trips/:id/loading-slip', async (req, res) => {
     const tripId = req.params.id;
     const b = req.body || {};
     const defer = !!b.defer_slip;
-    const slipNo = b.loading_slip_no ? String(b.loading_slip_no).trim() : '';
-    if (!defer && !slipNo) return res.status(400).json({ error: 'Loading slip number required (or use proceed without slip)' });
-
-    const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId: tid, id: tripId });
-    const trip = tr.recordset?.[0];
-    if (!trip) return res.status(404).json({ error: 'Trip not found' });
-
-    const st = await query(`SELECT max_enroute_minutes FROM tracking_tenant_settings WHERE tenant_id = @tenantId`, { tenantId: tid });
-    let maxM = st.recordset?.[0] ? get(st.recordset[0], 'max_enroute_minutes') : 240;
-    if (maxM == null || maxM < 1) maxM = 240;
-
-    await query(
-      `UPDATE fleet_trip SET
-        loading_slip_no = @slip,
-        loading_slip_deferred = @defer,
-        driver_name = COALESCE(@driver, driver_name),
-        activity_stage = N'enroute',
-        status = N'enroute',
-        started_at = COALESCE(started_at, SYSUTCDATETIME()),
-        eta_due_at = DATEADD(minute, @maxM, COALESCE(started_at, SYSUTCDATETIME())),
-        is_overdue = 0,
-        updated_at = SYSUTCDATETIME()
-       WHERE id = @id AND tenant_id = @tenantId`,
-      {
-        tenantId: tid,
-        id: tripId,
-        slip: slipNo || null,
-        defer: defer ? 1 : 0,
-        driver: b.driver_name || null,
-        maxM,
-      }
-    );
-
-    await query(
-      `UPDATE tracking_delivery_record SET
-        loading_slip_no = @slip,
-        loading_slip_deferred = @defer,
-        driver_name = COALESCE(@driver, driver_name),
-        tons_loaded = COALESCE(@tons, tons_loaded),
-        notes = COALESCE(@notes, notes),
-        pending_note = 0,
-        status = N'loading_complete'
-       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
-      {
-        tenantId: tid,
-        tripId,
-        slip: slipNo || null,
-        defer: defer ? 1 : 0,
-        driver: b.driver_name || null,
-        tons: b.tons_loaded != null ? Number(b.tons_loaded) : null,
-        notes: b.notes || null,
-      }
-    );
-
-    res.json({ ok: true, activity_stage: 'enroute' });
+    const result = await captureLoadingSlip(query, tid, tripId, {
+      loading_slip_no: b.loading_slip_no,
+      tons_loaded: b.tons_loaded,
+      driver_name: b.driver_name,
+      notes: b.notes,
+    }, { defer });
+    res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err?.message || 'Loading slip failed' });
+    const code = err.status === 404 ? 404 : err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err?.message || 'Loading slip failed' });
+  }
+});
+
+router.patch('/logistics-activity/trips/:id/loading-slip', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const tripId = req.params.id;
+    const b = req.body || {};
+    const result = await updateLoadingSlipFields(query, tid, tripId, {
+      loading_slip_no: b.loading_slip_no,
+      tons_loaded: b.tons_loaded,
+      driver_name: b.driver_name,
+      notes: b.notes,
+      loaded_at: b.loaded_at,
+    });
+    res.json(result);
+  } catch (err) {
+    const code = err.status === 404 ? 404 : err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err?.message || 'Loading slip update failed' });
   }
 });
 

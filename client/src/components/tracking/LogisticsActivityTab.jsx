@@ -166,14 +166,15 @@ function ScheduleLoadPanel({
   );
 }
 
-function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave, saving }) {
+function SlipModal({ title, fields, initial, truckRegistration, resetKey, onClose, onSave, saving, submitLabel = 'Save' }) {
   const [form, setForm] = useState(initial);
   const [driversLoading, setDriversLoading] = useState(false);
   const [loadedDrivers, setLoadedDrivers] = useState([]);
+  const [driversError, setDriversError] = useState('');
 
   useEffect(() => {
     setForm(initial);
-  }, [initial]);
+  }, [resetKey]);
 
   useEffect(() => {
     if (!truckRegistration) {
@@ -182,13 +183,17 @@ function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave,
     }
     let cancelled = false;
     setDriversLoading(true);
+    setDriversError('');
     trackingApi.contractorDrivers
       .list({ truck_registration: truckRegistration })
       .then((res) => {
         if (!cancelled) setLoadedDrivers(res.drivers || []);
       })
-      .catch(() => {
-        if (!cancelled) setLoadedDrivers([]);
+      .catch((e) => {
+        if (!cancelled) {
+          setLoadedDrivers([]);
+          setDriversError(e?.message || 'Could not load drivers');
+        }
       })
       .finally(() => {
         if (!cancelled) setDriversLoading(false);
@@ -197,14 +202,16 @@ function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave,
   }, [truckRegistration]);
 
   useEffect(() => {
-    if (!loadedDrivers.length || form.driver_id) return;
-    const name = String(initial.driver_name || '').trim().toLowerCase();
-    if (!name) return;
-    const match = loadedDrivers.find((d) => String(d.full_name || '').trim().toLowerCase() === name);
-    if (match) {
-      setForm((prev) => ({ ...prev, driver_id: match.id, driver_name: match.full_name }));
-    }
-  }, [loadedDrivers, initial.driver_name, form.driver_id]);
+    if (!loadedDrivers.length) return;
+    setForm((prev) => {
+      if (prev.driver_id) return prev;
+      const name = String(initial.driver_name || prev.driver_name || '').trim().toLowerCase();
+      if (!name) return prev;
+      const match = loadedDrivers.find((d) => String(d.full_name || '').trim().toLowerCase() === name);
+      if (!match) return prev;
+      return { ...prev, driver_id: match.id, driver_name: match.full_name };
+    });
+  }, [loadedDrivers, resetKey, initial.driver_name]);
 
   const linkedDrivers = loadedDrivers.filter((d) => d.linked_to_truck);
   const otherDrivers = loadedDrivers.filter((d) => !d.linked_to_truck);
@@ -247,7 +254,7 @@ function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave,
                       setForm((prev) => ({ ...prev, driver_id: '__manual__', driver_name: '' }));
                       return;
                     }
-                    const picked = loadedDrivers.find((d) => d.id === id);
+                    const picked = loadedDrivers.find((d) => String(d.id) === String(id));
                     setForm((prev) => ({
                       ...prev,
                       driver_id: id,
@@ -290,6 +297,9 @@ function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave,
                 {form.driver_id && form.driver_id !== '__manual__' && form.driver_name && (
                   <p className="text-xs text-surface-500">Selected: {form.driver_name}</p>
                 )}
+                {driversError && (
+                  <p className="text-xs text-red-600 dark:text-red-400">{driversError}</p>
+                )}
               </div>
             ) : (
               <input
@@ -312,7 +322,7 @@ function SlipModal({ title, fields, initial, truckRegistration, onClose, onSave,
             Cancel
           </button>
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : submitLabel}
           </button>
         </div>
       </form>
@@ -385,6 +395,7 @@ function ActivityCard({
   styles,
   onLoadingSlip,
   onProceedWithoutSlip,
+  onEditLoadingSlip,
   onOffloadingSlip,
   onRedirect,
   onReschedule,
@@ -398,6 +409,7 @@ function ActivityCard({
   const needsLoading = item.activity_stage === 'at_loading';
   const needsOffload = item.activity_stage === 'at_destination';
   const awaitingNext = item.activity_stage === 'awaiting_reschedule';
+  const canEditLoadingSlip = ['enroute', 'at_destination', 'awaiting_reschedule'].includes(item.activity_stage);
   const needsAction = needsLoading || needsOffload || awaitingNext;
   const speed = Number(item.last_speed_kmh);
   const hasSpeed = Number.isFinite(speed);
@@ -514,6 +526,12 @@ function ActivityCard({
             Slip deferred
           </span>
         )}
+        {item.loading_slip_no && canEditLoadingSlip && (
+          <p className="text-[10px] text-brand-700 dark:text-brand-300">
+            Loaded · slip {item.loading_slip_no}
+            {item.tons_loaded != null ? ` · ${item.tons_loaded} t` : ''}
+          </p>
+        )}
         {awaitingNext && item.offloading_slip_no && (
           <p className="text-[10px] text-violet-700 dark:text-violet-300">
             Delivered · slip {item.offloading_slip_no}
@@ -534,6 +552,15 @@ function ActivityCard({
           {needsOffload && (
             <button type="button" onClick={() => onOffloadingSlip(item)} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 font-medium">
               Offloading slip
+            </button>
+          )}
+          {canEditLoadingSlip && (
+            <button
+              type="button"
+              onClick={() => onEditLoadingSlip(item)}
+              className="text-[10px] px-2.5 py-1 rounded-md border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800"
+            >
+              {item.loading_slip_no || item.loading_slip_deferred ? 'Edit loading slip' : 'Capture loading slip'}
             </button>
           )}
           {awaitingNext && (
@@ -739,6 +766,25 @@ export default function LogisticsActivityTab({ setError }) {
   const handleLoadingSave = (form, defer = false) => {
     if (!modal) return;
     return submitLoadingSlip(modal.trip_id, form, defer);
+  };
+
+  const handleLoadingEdit = async (form) => {
+    if (!modal) return;
+    setSaving(true);
+    try {
+      await trackingApi.logisticsActivity.updateLoadingSlip(modal.trip_id, {
+        loading_slip_no: form.loading_slip_no,
+        tons_loaded: form.tons_loaded !== '' && form.tons_loaded != null ? Number(form.tons_loaded) : null,
+        driver_name: form.driver_name,
+        notes: form.notes,
+      });
+      setModal(null);
+      await load({ silent: true });
+    } catch (e) {
+      setError(e?.message || 'Update failed');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const moveTripStage = useCallback(async (tripId, targetStage, fromStage) => {
@@ -1004,6 +1050,7 @@ export default function LogisticsActivityTab({ setError }) {
                         onShowOnMap={showTruckOnMap}
                         onLoadingSlip={setModal}
                         onProceedWithoutSlip={(it) => submitLoadingSlip(it.trip_id, { driver_name: it.driver_name || '' }, true)}
+                        onEditLoadingSlip={(it) => setModal({ ...it, edit_loading_slip: true })}
                         onOffloadingSlip={setModal}
                         onRedirect={(it) => setRedirectTarget({ trip_id: it.trip_id, route_id: '', registration: it.truck_registration })}
                         onReschedule={(it) => {
@@ -1031,11 +1078,18 @@ export default function LogisticsActivityTab({ setError }) {
         </div>
       </section>
 
-      {modal?.activity_stage === 'at_loading' && (
+      {(modal?.activity_stage === 'at_loading' || modal?.edit_loading_slip) && (
         <SlipModal
-          title={`Loading slip — ${modal.truck_registration}`}
+          title={`${modal.edit_loading_slip ? 'Edit loading slip' : 'Loading slip'} — ${modal.truck_registration}`}
           truckRegistration={modal.truck_registration}
-          initial={{ loading_slip_no: '', tons_loaded: '', driver_id: '', driver_name: modal.driver_name || '', notes: '' }}
+          resetKey={`${modal.trip_id}-${modal.edit_loading_slip ? 'edit' : 'capture'}-loading`}
+          initial={{
+            loading_slip_no: modal.loading_slip_no || '',
+            tons_loaded: modal.tons_loaded ?? '',
+            driver_id: '',
+            driver_name: modal.driver_name || '',
+            notes: modal.loading_notes && modal.loading_notes !== 'Awaiting loading slip' ? modal.loading_notes : '',
+          }}
           fields={[
             { key: 'loading_slip_no', label: 'Loading slip number', required: true },
             { key: 'tons_loaded', label: 'Tons loaded', type: 'number', step: '0.001' },
@@ -1043,7 +1097,8 @@ export default function LogisticsActivityTab({ setError }) {
             { key: 'notes', label: 'Remarks', type: 'textarea' },
           ]}
           onClose={() => setModal(null)}
-          onSave={(form) => handleLoadingSave(form, false)}
+          onSave={(form) => (modal.edit_loading_slip ? handleLoadingEdit(form) : handleLoadingSave(form, false))}
+          submitLabel={modal.edit_loading_slip ? 'Update' : 'Save'}
           saving={saving}
         />
       )}
@@ -1051,6 +1106,7 @@ export default function LogisticsActivityTab({ setError }) {
       {modal?.activity_stage === 'at_destination' && (
         <SlipModal
           title={`Offloading slip — ${modal.truck_registration}`}
+          resetKey={`${modal.trip_id}-offloading`}
           initial={{ offloading_slip_no: '', delivery_note_no: '', tons_loaded: modal.tons_loaded ?? '', notes: '' }}
           fields={[
             { key: 'offloading_slip_no', label: 'Offloading slip number', required: true },

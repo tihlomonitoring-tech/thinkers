@@ -1,11 +1,45 @@
 import { Router } from 'express';
+import path from 'path';
+import fs from 'fs';
+import { randomUUID } from 'crypto';
+import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser } from '../middleware/auth.js';
+import {
+  assertTripAssignedToDriver,
+  captureLoadingSlip,
+  gid,
+  listLoadingAssignmentsForDriver,
+  updateLoadingSlipFields,
+} from '../lib/logisticsActivityBoard.js';
+import { parseLoadingSlipImage } from '../lib/loadingSlipVision.js';
 
 const router = Router();
 router.use(requireAuth, loadUser);
 
 function getTenantId(req) { return req.user?.tenant_id || null; }
+
+const uploadsRoot = path.join(process.cwd(), 'uploads', 'operator-loading-slips');
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+const slipUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tid = getTenantId(req) || 'unknown';
+      const dir = path.join(uploadsRoot, tid);
+      ensureDir(dir);
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname || '') || '').replace(/[^a-zA-Z0-9.]/g, '') || '.jpg';
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+}).single('slip');
 
 // ════════════════════════════════════════════════════════════════════
 //  OPERATOR WORK SCHEDULES (time/hours based)
@@ -486,6 +520,70 @@ router.get('/users', async (req, res, next) => {
     );
     res.json({ users: r.recordset || [] });
   } catch (err) { next(err); }
+});
+
+// ════════════════════════════════════════════════════════════════════
+//  DRIVER LOADING SLIPS (operator portal — scan & confirm)
+// ════════════════════════════════════════════════════════════════════
+
+router.get('/loading-assignments', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const assignments = await listLoadingAssignmentsForDriver(query, tenantId, req.user?.full_name);
+    res.json({ assignments, driver_name: req.user?.full_name || null });
+  } catch (err) { next(err); }
+});
+
+router.post('/loading-slips/parse', (req, res, next) => {
+  slipUpload(req, res, async (err) => {
+    if (err) return next(err);
+    try {
+      if (!req.file) return res.status(400).json({ error: 'slip image required' });
+      const rel = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).replace(/\\/g, '/');
+      const buf = fs.readFileSync(req.file.path);
+      const ext = (path.extname(req.file.path) || '.jpg').toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+      const extracted = await parseLoadingSlipImage(buf, mime);
+      res.json({ slip_image_path: rel, extracted });
+    } catch (e) {
+      if (e.status === 503) return res.status(503).json({ error: e.message });
+      next(e);
+    }
+  });
+});
+
+router.post('/loading-slips/:tripId/submit', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const tripId = gid(req.params.tripId);
+    await assertTripAssignedToDriver(query, tenantId, tripId, req.user?.full_name);
+
+    const b = req.body || {};
+    const assignments = await listLoadingAssignmentsForDriver(query, tenantId, req.user?.full_name);
+    const trip = assignments.find((a) => a.trip_id === tripId);
+    const hasSlip = !!(trip?.loading_slip_no && String(trip.loading_slip_no).trim());
+
+    const payload = {
+      loading_slip_no: b.loading_slip_no,
+      tons_loaded: b.tons_loaded,
+      driver_name: b.driver_name || req.user?.full_name,
+      notes: b.notes,
+      loaded_at: b.loaded_at,
+    };
+
+    const result = hasSlip
+      ? await updateLoadingSlipFields(query, tenantId, tripId, payload)
+      : await captureLoadingSlip(query, tenantId, tripId, payload, { defer: false });
+
+    res.json(result);
+  } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message });
+    if (err.status === 404) return res.status(404).json({ error: err.message });
+    if (err.message?.includes('required')) return res.status(400).json({ error: err.message });
+    next(err);
+  }
 });
 
 export default router;
