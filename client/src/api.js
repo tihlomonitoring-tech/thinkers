@@ -3102,6 +3102,56 @@ export const vehicleCompliance = {
   }),
 };
 
+export const vehicleTrackerCompliance = {
+  trucks: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.search) q.set('search', params.search);
+    if (params.contractorId) q.set('contractorId', params.contractorId);
+    if (params.subContractor) q.set('subContractor', params.subContractor);
+    if (params.complianceStatus) q.set('complianceStatus', params.complianceStatus);
+    if (params.enrolledOnly === false || params.enrolledOnly === '0') q.set('enrolledOnly', '0');
+    return request(`/vehicle-tracker-compliance/trucks?${q}`);
+  },
+  truck: (truckId, opts = {}) => {
+    const q = opts.full ? '?detail=1' : '';
+    return request(`/vehicle-tracker-compliance/trucks/${encodeURIComponent(truckId)}${q}`);
+  },
+  submitCheck: (body) => request('/vehicle-tracker-compliance/checks', { method: 'POST', body: JSON.stringify(body) }),
+  history: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.search) q.set('search', params.search);
+    if (params.contractorId) q.set('contractorId', params.contractorId);
+    if (params.subContractor) q.set('subContractor', params.subContractor);
+    if (params.dateFrom) q.set('dateFrom', params.dateFrom);
+    if (params.dateTo) q.set('dateTo', params.dateTo);
+    if (params.limit) q.set('limit', params.limit);
+    return request(`/vehicle-tracker-compliance/history?${q}`);
+  },
+  suspensions: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.search) q.set('search', params.search);
+    if (params.contractorId) q.set('contractorId', params.contractorId);
+    if (params.entityType) q.set('entityType', params.entityType);
+    return request(`/vehicle-tracker-compliance/suspensions?${q}`);
+  },
+  gracePeriods: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.active) q.set('active', params.active);
+    return request(`/vehicle-tracker-compliance/grace-periods?${q}`);
+  },
+  notify: (checkId, body) =>
+    request(`/vehicle-tracker-compliance/checks/${encodeURIComponent(checkId)}/notify`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  grantGrace: (checkId, body) =>
+    request(`/vehicle-tracker-compliance/checks/${encodeURIComponent(checkId)}/grace-period`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  contractors: () => request('/vehicle-tracker-compliance/filters/contractors'),
+};
+
 export const quickSignPublic = {
   getMeta: (token) =>
     fetch(`${API}/quick-sign/public/${encodeURIComponent(token)}`, { credentials: 'include' }).then((res) =>

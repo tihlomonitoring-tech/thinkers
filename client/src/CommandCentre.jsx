@@ -9,6 +9,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth, shiftClock, shiftScore } from './api';
 import { buildShiftReportDownloadFilename, formatShiftReportRef } from './lib/shiftReportPdf.js';
+import { getShiftReportAccess } from './lib/shiftReportAccess.js';
 import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets } from './lib/shiftReportLogo.js';
 import { buildMockSingleOpsShiftReport } from './lib/mockSingleOpsShiftReport.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
@@ -21,6 +22,7 @@ import { ShiftReportTextAssist, ShiftReportSummaryAssist } from './components/Sh
 import { buildShiftReportAiPayload } from './lib/shiftReportAiContext.js';
 import { useShiftReportUndo } from './lib/useShiftReportUndo.js';
 import { buildStyledListSheet, groupRowsByContractorAndSubContractor } from './lib/styledListExcel.js';
+import VehicleTrackerComplianceHub from './components/vehicleTrackerCompliance/VehicleTrackerComplianceHub.jsx';
 
 const TruckUpdateRecordsTab = lazy(() => import('./components/TruckUpdateRecordsTab.jsx'));
 const LogisticsFlowPage = lazy(() => import('./components/LogisticsFlowPage.jsx'));
@@ -112,9 +114,7 @@ const CC_TABS = [
   { id: 'messages', label: 'Messages platform', icon: 'inbox', section: 'Operations' },
   { id: 'requests', label: 'Requests', icon: 'inbox', section: 'Operations' },
   { id: 'library', label: 'Library', icon: 'library', section: 'Operations' },
-  { id: 'compliance', label: 'Fleet and driver compliance', icon: 'shield', section: 'Operations' },
-  { id: 'inspected', label: 'Inspected trucks & drivers', icon: 'clipboard', section: 'Operations' },
-  { id: 'inspection_records', label: 'Truck inspection records', icon: 'list', section: 'Operations' },
+  { id: 'vehicle_tracker_compliance', label: 'Vehicle tracker compliance', icon: 'shield', section: 'Operations' },
   { id: 'vehicle_inspection', label: 'Vehicle inspection', icon: 'truck', section: 'Operations' },
   { id: 'vehicle_inspection_results', label: 'Vehicle inspection and results', icon: 'clipboard', section: 'Operations' },
   { id: 'contractor_block', label: 'Contractor block', icon: 'ban', section: 'Operations' },
@@ -200,20 +200,6 @@ function CCIcon({ name, className }) {
   }
 }
 
-const CC_STORAGE_KEY_INSPECTIONS = 'cc_inspections';
-
-function loadStoredInspections() {
-  try {
-    const raw = localStorage.getItem(CC_STORAGE_KEY_INSPECTIONS);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-
 export default function CommandCentre() {
   const { user } = useAuth();
   const [navHidden, setNavHidden] = useSecondaryNavHidden('command-centre');
@@ -225,7 +211,6 @@ export default function CommandCentre() {
   const [truckAnalysisResumeId, setTruckAnalysisResumeId] = useState(null);
   const [permissions, setPermissions] = useState(null);
   const [users, setUsers] = useState([]);
-  const [inspections, setInspections] = useState(() => loadStoredInspections());
   const [contractorsDetailsList, setContractorsDetailsList] = useState([]);
   const [contractorsDetailsLoading, setContractorsDetailsLoading] = useState(false);
   const [notesPanelOpen, setNotesPanelOpen] = useState(false);
@@ -256,23 +241,6 @@ export default function CommandCentre() {
       cancelled = true;
     };
   }, [isSuperAdmin]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(CC_STORAGE_KEY_INSPECTIONS, JSON.stringify(inspections));
-    } catch (_) {}
-  }, [inspections]);
-
-  // Load compliance inspections from API so Command Centre can see contractor response (Inspected / Truck inspection records)
-  useEffect(() => {
-    const needs = ['compliance', 'inspected', 'inspection_records'];
-    if (!allowedTabs.some((t) => needs.includes(t))) return;
-    let cancelled = false;
-    ccApi.complianceInspections.list()
-      .then((r) => { if (!cancelled && r.inspections) setInspections(r.inspections); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [allowedTabs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -441,7 +409,7 @@ export default function CommandCentre() {
               <h2 className="text-sm font-semibold text-surface-900">Command Centre</h2>
               <InfoHint
                 title="Command Centre"
-                text="Controllers and operations: breakdowns, fleet applications, shift reports, inspections, and related tools."
+                text="Controllers and operations: breakdowns, fleet applications, shift reports, tracker compliance, and related tools."
               />
             </div>
             <Link to="/contractor" className="mt-2 inline-block text-xs text-brand-600 hover:text-brand-700">← Contractor page</Link>
@@ -575,9 +543,17 @@ export default function CommandCentre() {
           {activeTab === 'messages' && canSeeTab('messages') && <TabMessages />}
           {activeTab === 'requests' && canSeeTab('requests') && <TabRequests />}
           {activeTab === 'library' && canSeeTab('library') && <TabLibrary />}
-          {activeTab === 'compliance' && canSeeTab('compliance') && <TabCompliance user={user} inspections={inspections} setInspections={setInspections} />}
-          {activeTab === 'inspected' && canSeeTab('inspected') && <TabInspected inspections={inspections} setInspections={setInspections} />}
-          {activeTab === 'inspection_records' && canSeeTab('inspection_records') && <TabInspectionRecords inspections={inspections} setInspections={setInspections} />}
+          {activeTab === 'vehicle_tracker_compliance' && canSeeTab('vehicle_tracker_compliance') && (
+            <VehicleTrackerComplianceHub
+              mode="checks"
+              portalSubNav
+              readOnly
+              enrolledOnly={false}
+              title="Vehicle tracker compliance"
+              subtitle="Fleet and driver tracker compliance status, grace periods, suspensions, and check history. Compliant checks expire after 48 hours."
+              tenantName={user?.tenant_name}
+            />
+          )}
           {activeTab === 'vehicle_inspection' && canSeeTab('vehicle_inspection') && (
             <Suspense fallback={<TabPanelFallback label="vehicle inspection" />}>
               <VehicleCompliancePanel
@@ -1014,7 +990,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
   const [unresolvedBreakdowns, setUnresolvedBreakdowns] = useState([]);
   const [recentBreakdowns, setRecentBreakdowns] = useState([]);
   const [underAppealCount, setUnderAppealCount] = useState(0);
-  const [inspections, setInspections] = useState([]);
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [timelineDays, setTimelineDays] = useState(30);
   const [deliveryTimeline, setDeliveryTimeline] = useState({ dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } });
@@ -1077,7 +1052,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
     promises.push(ccApi.fleetApplications.list('pending').then((r) => ({ applications: (r.applications || []).length })).catch(() => ({ applications: 0 })));
     promises.push(ccApi.breakdowns.list({ resolved: 'false' }).then((r) => ({ breakdowns: r.breakdowns || [] })).catch(() => ({ breakdowns: [] })));
     promises.push(ccApi.suspensions.list('under_appeal').then((r) => ({ underAppeal: (r.suspensions || []).length })).catch(() => ({ underAppeal: 0 })));
-    promises.push(ccApi.complianceInspections.list().then((r) => ({ inspections: r.inspections || [] })).catch(() => ({ inspections: [] })));
     const reportListApi = dashboardKind === 'single_ops' ? ccApi.singleOpsShiftReports : ccApi.shiftReports;
     promises.push(reportListApi.list(true).then((r) => ({ requests: (r.reports || []).length })).catch(() => ({ requests: 0 })));
     promises.push(ccApi.deliveryTimeline(timelineDays).then((r) => ({ timeline: r })).catch(() => ({ timeline: { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } } })));
@@ -1089,7 +1063,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
       let appCount = 0;
       let breakdownsList = [];
       let appealCount = 0;
-      let inspList = [];
       let reqCount = 0;
       let timeline = { dates: [], routes: [], summary: { total_completed_deliveries: 0, routes_count: 0 } };
       let allReports = [];
@@ -1098,7 +1071,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
         if (r.applications !== undefined) appCount = r.applications;
         if (r.breakdowns) breakdownsList = r.breakdowns;
         if (r.underAppeal !== undefined) appealCount = r.underAppeal;
-        if (r.inspections) inspList = r.inspections;
         if (r.requests !== undefined) reqCount = r.requests;
         if (r.timeline) timeline = r.timeline;
         if (r.allReports) allReports = r.allReports;
@@ -1109,7 +1081,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
       setUnresolvedBreakdowns(breakdownsList);
       setRecentBreakdowns(breakdownsList.slice(0, 5));
       setUnderAppealCount(appealCount);
-      setInspections(inspList);
       setPendingRequestsCount(reqCount);
       const hasTimelineData = Array.isArray(timeline?.routes) && timeline.routes.length > 0;
       setDeliveryTimeline(hasTimelineData ? timeline : buildTimelineFromReports(allReports, timelineDays));
@@ -1118,14 +1089,12 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
     return () => { cancelled = true; };
   }, [dashboardKind, timelineDays]);
 
-  const pendingCompliance = inspections.filter((i) => i.status === 'pending_response' || i.status === 'auto_suspended').length;
   const formatDashboardTime = (d) => d ? new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—';
 
   const kpiCards = [
     { label: 'Pending applications', value: pendingApplications, sub: 'Fleet & driver', tab: 'applications', icon: 'tick', color: 'amber', bg: 'bg-amber-500/10', border: 'border-amber-200', text: 'text-amber-700' },
     { label: 'Unresolved breakdowns', value: unresolvedBreakdowns.length, sub: 'Reported incidents', tab: 'breakdowns', icon: 'alert', color: 'red', bg: 'bg-red-500/10', border: 'border-red-200', text: 'text-red-700' },
     { label: 'Under appeal', value: underAppealCount, sub: 'Reinstatement requests', tab: 'contractor_block', icon: 'ban', color: 'violet', bg: 'bg-violet-500/10', border: 'border-violet-200', text: 'text-violet-700' },
-    { label: 'Compliance pending', value: pendingCompliance, sub: 'Inspections / response due', tab: 'compliance', icon: 'shield', color: 'blue', bg: 'bg-blue-500/10', border: 'border-blue-200', text: 'text-blue-700' },
     { label: 'Report requests', value: pendingRequestsCount, sub: 'Awaiting approval', tab: 'requests', icon: 'inbox', color: 'emerald', bg: 'bg-emerald-500/10', border: 'border-emerald-200', text: 'text-emerald-700' },
   ];
   const shiftProductivityKpi = {
@@ -1146,8 +1115,7 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
   const quickActionDefs = [
     { label: 'Report composition', tab: 'reports', desc: 'Create shift reports', icon: 'file' },
     { label: 'Saved shift reports', tab: 'saved_reports', desc: 'View and approve reports', icon: 'folder' },
-    { label: 'Fleet & driver compliance', tab: 'compliance', desc: 'Run inspections', icon: 'shield' },
-    { label: 'Inspected trucks & drivers', tab: 'inspected', desc: 'Review inspection records', icon: 'clipboard' },
+    { label: 'Vehicle tracker compliance', tab: 'vehicle_tracker_compliance', desc: 'Fleet tracker status & history', icon: 'shield' },
     { label: 'Reported breakdowns', tab: 'breakdowns', desc: 'Incidents and resolutions', icon: 'alert' },
     { label: 'Fleet & driver applications', tab: 'applications', desc: 'Approve or decline', icon: 'tick' },
     { label: 'Contractor block', tab: 'contractor_block', desc: 'Suspend / reinstate', icon: 'ban' },
@@ -1321,12 +1289,7 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
           {/* Compliance & alerts */}
           <section className="app-glass-card shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-surface-100 bg-surface-50/80 flex items-center justify-between">
-              <h2 className="font-semibold text-surface-900">Compliance & alerts</h2>
-              {pendingCompliance > 0 && (canSeeTab?.('compliance') ? (
-                <button type="button" onClick={() => setActiveTab?.('compliance')} className="text-sm font-medium text-brand-600 hover:text-brand-700">Open compliance</button>
-              ) : (
-                <span className="text-xs text-surface-400" title={CC_DASHBOARD_NO_TAB_HINT}>Open compliance</span>
-              ))}
+              <h2 className="font-semibold text-surface-900">Alerts</h2>
             </div>
             <div className="p-4 space-y-3">
               {loading ? (
@@ -1335,10 +1298,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between rounded-lg bg-surface-50 border border-surface-100 p-3">
-                    <span className="text-sm font-medium text-surface-700">Inspections needing response</span>
-                    <span className="text-lg font-bold text-surface-900 tabular-nums">{pendingCompliance}</span>
-                  </div>
                   {underAppealCount > 0 && (
                     <div className="flex items-center justify-between rounded-lg bg-violet-50 border border-violet-100 p-3">
                       <span className="text-sm font-medium text-violet-800">Reinstatement requests</span>
@@ -1357,7 +1316,7 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
                       <span className="text-lg font-bold text-emerald-900 tabular-nums">{pendingApplications}</span>
                     </div>
                   )}
-                  {!loading && pendingCompliance === 0 && underAppealCount === 0 && pendingRequestsCount === 0 && pendingApplications === 0 && (
+                  {!loading && underAppealCount === 0 && pendingRequestsCount === 0 && pendingApplications === 0 && (
                     <p className="text-sm text-surface-500 py-2">No pending alerts</p>
                   )}
                 </>
@@ -1400,8 +1359,6 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
           </span>
           <span className="text-surface-400">|</span>
           <span className="text-surface-600">Breakdowns: {unresolvedBreakdowns.length} unresolved</span>
-          <span className="text-surface-400">|</span>
-          <span className="text-surface-600">Inspections: {inspections.length} total</span>
         </div>
       </div>
     </div>
@@ -3437,7 +3394,6 @@ function TabSavedReports() {
   const [savingReport, setSavingReport] = useState(false);
   const [deletingReport, setDeletingReport] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
-  const [forceEditMode, setForceEditMode] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [savedReportsHelpOpen, setSavedReportsHelpOpen] = useState(false);
@@ -3515,12 +3471,12 @@ function TabSavedReports() {
   };
 
   const normId = (v) => (v != null ? String(v).toLowerCase().trim() : '');
-  const isCreator = report && user && (
-    (report.created_by_user_id != null && user.id != null && normId(report.created_by_user_id) === normId(user.id)) ||
-    (report.created_by_email != null && user.email != null && String(report.created_by_email).toLowerCase().trim() === String(user.email).toLowerCase().trim())
-  );
-  const canEdit = report && isCreator && ['draft', 'provisional', 'rejected'].includes(String(report.status || '').toLowerCase().trim());
-  const canSubmit = report && isCreator && (report.status === 'draft' || report.status === 'rejected');
+  const reportAccess = report && user ? getShiftReportAccess(report, user) : null;
+  const isCreator = !!reportAccess?.isCreator;
+  const isCollaborator = !!reportAccess?.isCollaborator;
+  const statusAllowsEdit = report && ['draft', 'provisional', 'rejected'].includes(String(report.status || '').toLowerCase().trim());
+  const canEditReport = !!(report && user && statusAllowsEdit && reportAccess?.canEdit);
+  const canSubmit = !!(report && user && reportAccess?.canSubmit && (report.status === 'draft' || report.status === 'rejected'));
   const canDownload = report && report.status === 'approved';
   const isApprover = report && user && report.approved_by_user_id != null && normId(report.approved_by_user_id) === normId(user.id);
   const isSuperAdminHere = user?.role === 'super_admin';
@@ -3531,10 +3487,9 @@ function TabSavedReports() {
     reportStatusNorm !== 'approved' &&
     (isCreator || isSuperAdminHere);
   const canRevokeApproval = report && report.status === 'approved' && (isApprover || isSuperAdminHere);
-  const showCommentsToCreator = report && isCreator && (report.status === 'provisional' || report.status === 'pending_approval');
+  const showCommentsToCreator = report && (isCreator || reportAccess?.isController1) && (report.status === 'provisional' || report.status === 'pending_approval');
   const canMarkAddressed = report && isCreator && report.status === 'provisional';
-  const statusAllowsEdit = report && ['draft', 'provisional', 'rejected'].includes(String(report.status || '').toLowerCase().trim());
-  const actuallyReadOnly = !statusAllowsEdit;
+  const actuallyReadOnly = !canEditReport;
   const filteredReports = reports.filter((r) => {
     if (statusFilter && String(r.status || '').toLowerCase() !== statusFilter) return false;
     const q = search.trim().toLowerCase();
@@ -3546,6 +3501,7 @@ function TabSavedReports() {
       routesBlob.includes(q) ||
       String(r.controller1_name || '').toLowerCase().includes(q) ||
       String(r.controller2_name || '').toLowerCase().includes(q) ||
+      String(r.controller3_name || '').toLowerCase().includes(q) ||
       String(r.created_by_name || '').toLowerCase().includes(q) ||
       String(r.status || '').toLowerCase().includes(q) ||
       String(r.report_date || '').toLowerCase().includes(q) ||
@@ -3558,12 +3514,11 @@ function TabSavedReports() {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <button type="button" onClick={() => { setSelectedId(null); setReport(null); setForceEditMode(false); }} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to list</button>
-          <span className="text-xs font-semibold text-surface-500 uppercase">Status: {report.status}</span>
+          <button type="button" onClick={() => { setSelectedId(null); setReport(null); }} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to list</button>
+          <span className="text-xs font-semibold text-surface-500 uppercase">
+            Status: {report.status}{isCollaborator && canEditReport ? ' · Collaborator (edit only)' : ''}
+          </span>
           <div className="flex gap-2">
-            {statusAllowsEdit && actuallyReadOnly && (
-              <button type="button" onClick={() => setForceEditMode(true)} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">Edit report</button>
-            )}
             {canDownload && (
               <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('shift-report-download', { detail: { report, tenantId: user?.tenant_id, tenantName: user?.tenant_name } })); }} className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
             )}
@@ -3656,7 +3611,7 @@ function TabSavedReports() {
         topic="saved shift reports"
       >
         <p>
-          Open a report to view, edit, submit for approval, or download (when approved). Draft reports you created can be deleted; approved reports cannot. While editing, use Undo (or Ctrl+Z) after removing rows or importing from the system.
+          Open a report to view, edit, submit for approval, or download (when approved). Telematics specialists 2 and 3 listed on a report can collaborate — edit and save, but only specialist 1 or the report author can submit. Draft reports you created can be deleted; approved reports cannot.
         </p>
       </CollapsibleSectionHelp>
       <div className="app-glass-segmented mb-2">
@@ -3721,7 +3676,7 @@ function TabSavedReports() {
                 const savedAt = r.created_at ? new Date(r.created_at) : null;
                 const dateStr = savedAt ? savedAt.toLocaleDateString() : '—';
                 const timeStr = savedAt ? savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
-                const controllers = [r.controller1_name, r.controller2_name].filter(Boolean).join(', ') || '—';
+                const controllers = [r.controller1_name, r.controller2_name, r.controller3_name].filter(Boolean).join(', ') || '—';
                 const refStr = formatShiftReportRef(r.ref_number, { isSingleOps: listKind === 'single_ops' });
                 return (
                   <tr key={`${listKind}-${r.id}`} className="app-glass-data-row last:border-b-0">
@@ -4843,7 +4798,7 @@ function TabShiftItems({ setActiveTab }) {
 
   const reportItemCard = (r) => {
     const reportDate = (r.report_date || r.shift_date || r.created_at) ? new Date(r.report_date || r.shift_date || r.created_at).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '—';
-    const controllers = [r.controller1_name, r.controller2_name].filter(Boolean).join(', ') || '—';
+    const controllers = [r.controller1_name, r.controller2_name, r.controller3_name].filter(Boolean).join(', ') || '—';
     const delivered = r.total_loads_delivered != null && r.total_loads_delivered !== '' ? r.total_loads_delivered : '—';
     const incidentCount = Array.isArray(r.incidents) ? r.incidents.length : 0;
     return (
@@ -5852,9 +5807,14 @@ function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' 
               {r.controller1_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller1_email}</p> : null}
             </div>
             <div>
-              <span className="text-xs text-surface-500">Telematics specialist 2 <span className="text-surface-400 font-normal">(optional)</span></span>
+              <span className="text-xs text-surface-500">Telematics specialist 2 <span className="text-surface-400 font-normal">(collaborator)</span></span>
               <p className="font-medium text-surface-900 mt-0.5">{r.controller2_name?.trim() || '—'}</p>
               {r.controller2_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller2_email}</p> : null}
+            </div>
+            <div>
+              <span className="text-xs text-surface-500">Telematics specialist 3 <span className="text-surface-400 font-normal">(collaborator)</span></span>
+              <p className="font-medium text-surface-900 mt-0.5">{r.controller3_name?.trim() || '—'}</p>
+              {r.controller3_email ? <p className="text-sm text-surface-600 mt-0.5">{r.controller3_email}</p> : null}
             </div>
           </div>
         )}
@@ -6180,6 +6140,8 @@ function ShiftReportForm({
       controller1_email: str(get(d, 'controller1_email') || user?.email),
       controller2_name: str(get(d, 'controller2_name')),
       controller2_email: str(get(d, 'controller2_email')),
+      controller3_name: str(get(d, 'controller3_name')),
+      controller3_email: str(get(d, 'controller3_email')),
       total_trucks_scheduled: str(get(d, 'total_trucks_scheduled')),
       balance_brought_down: str(get(d, 'balance_brought_down')),
       total_loads_dispatched: str(get(d, 'total_loads_dispatched')),
@@ -6207,6 +6169,7 @@ function ShiftReportForm({
   const [driversList, setDriversList] = useState([]);
   const [routeList, setRouteList] = useState([]);
   const [controller2Options, setController2Options] = useState([]);
+  const collaboratorOptions = controller2Options;
   const [reportedBreakdowns, setReportedBreakdowns] = useState([]);
   const [selectedBreakdownToImport, setSelectedBreakdownToImport] = useState('');
   const [fleetLoadError, setFleetLoadError] = useState('');
@@ -6481,8 +6444,7 @@ function ShiftReportForm({
     performUndo();
   };
 
-  // "Export from system" - pulls comm logs and non-compliance entries created during this controller's shift
-  // on the Fleet & driver compliance page. Scoped to current shift_date+shift_start..shift_end and current user.
+  // Pull comm logs and non-compliance entries recorded during this controller's shift (scoped to shift window + current user).
   const exportFromSystem = async (target /* 'communication_log' | 'non_compliance' | 'all' */) => {
     setExportFromSystemError('');
     setExportFromSystemMessage('');
@@ -6556,9 +6518,9 @@ function ShiftReportForm({
       if (added.comms) parts.push(`${added.comms} communication${added.comms === 1 ? '' : 's'}`);
       if (added.nc) parts.push(`${added.nc} non-compliance entr${added.nc === 1 ? 'y' : 'ies'}`);
       if (parts.length === 0) {
-        setExportFromSystemMessage('No new entries found for this shift on Fleet & driver compliance.');
+        setExportFromSystemMessage('No new entries found for this shift.');
       } else {
-        setExportFromSystemMessage(`Exported ${parts.join(' and ')} from Fleet & driver compliance for your shift.`);
+        setExportFromSystemMessage(`Exported ${parts.join(' and ')} for your shift.`);
       }
     } catch (e) {
       setExportFromSystemError(e?.message || 'Export from system failed');
@@ -6594,6 +6556,31 @@ function ShiftReportForm({
   const clearController2 = () => {
     pushUndo(captureUndoSnapshot());
     setFormFields((f) => ({ ...f, controller2_name: '', controller2_email: '' }));
+  };
+  const selectedController3 =
+    collaboratorOptions.find((u) => {
+      const selectedEmail = String(formFields.controller3_email || '').trim().toLowerCase();
+      const selectedName = String(formFields.controller3_name || '').trim().toLowerCase();
+      const uEmail = String(u.email || '').trim().toLowerCase();
+      const uName = String(u.full_name || '').trim().toLowerCase();
+      if (selectedEmail && uEmail && uEmail === selectedEmail) return true;
+      if (selectedName && uName && uName === selectedName) return true;
+      return false;
+    }) || null;
+  const handleController3Select = (selectedId) => {
+    if (!selectedId) return;
+    const picked = collaboratorOptions.find((u) => String(u.id) === String(selectedId));
+    if (!picked) return;
+    pushUndo(captureUndoSnapshot());
+    setFormFields((f) => ({
+      ...f,
+      controller3_name: picked.full_name || '',
+      controller3_email: picked.email || '',
+    }));
+  };
+  const clearController3 = () => {
+    pushUndo(captureUndoSnapshot());
+    setFormFields((f) => ({ ...f, controller3_name: '', controller3_email: '' }));
   };
   const routeSetForBreakdowns = useMemo(() => {
     if (reportKind === 'single_ops') {
@@ -6715,7 +6702,7 @@ function ShiftReportForm({
   const hasAnyShiftContent = (payload) => {
     const keys = [
       'route', 'report_date', 'shift_date', 'shift_start', 'shift_end',
-      'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email',
+      'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email', 'controller3_name', 'controller3_email',
       'overall_performance', 'key_highlights', 'outstanding_issues', 'handover_key_info', 'declaration',
     ];
     if (keys.some((k) => String(payload?.[k] || '').trim())) return true;
@@ -7020,9 +7007,9 @@ function ShiftReportForm({
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">
-                Telematics specialist 2 <span className="font-normal normal-case text-surface-400">(optional)</span>
+                Telematics specialist 2 <span className="font-normal normal-case text-surface-400">(collaborator, optional)</span>
               </label>
-              <p className="text-xs text-surface-500 mb-1.5">Choose a teammate or enter name and email below — same layout as Telematics specialist 1.</p>
+              <p className="text-xs text-surface-500 mb-1.5">Collaborators can edit and save the report but cannot submit for approval.</p>
               <select
                 aria-label="Optional: select Telematics specialist 2 from Command Centre team"
                 value={selectedController2 ? String(selectedController2.id) : ''}
@@ -7053,6 +7040,44 @@ function ShiftReportForm({
                 type="email"
                 value={formFields.controller2_email}
                 onChange={set('controller2_email')}
+                placeholder="Email"
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">
+                Telematics specialist 3 <span className="font-normal normal-case text-surface-400">(collaborator, optional)</span>
+              </label>
+              <select
+                aria-label="Optional: select Telematics specialist 3 from Command Centre team"
+                value={selectedController3 ? String(selectedController3.id) : ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) clearController3();
+                  else handleController3Select(v);
+                }}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2"
+              >
+                <option value="">— None: type name &amp; email below —</option>
+                {collaboratorOptions.map((u) => (
+                  <option key={`c3-${u.id}`} value={u.id}>
+                    {u.full_name ? `${u.full_name}${u.email ? ` — ${u.email}` : ''}` : u.email || '—'}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="controller3_name"
+                type="text"
+                value={formFields.controller3_name}
+                onChange={set('controller3_name')}
+                placeholder="Full name"
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-1"
+              />
+              <input
+                name="controller3_email"
+                type="email"
+                value={formFields.controller3_email}
+                onChange={set('controller3_email')}
                 placeholder="Email"
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
               />
@@ -7427,7 +7452,7 @@ function ShiftReportForm({
               type="button"
               onClick={() => exportFromSystem('non_compliance')}
               disabled={exportingFromSystem || !formFields.shift_date || !formFields.shift_start}
-              title={(!formFields.shift_date || !formFields.shift_start) ? 'Set the shift date and start time to use this' : 'Pull non-compliance entries created during your shift on Fleet & driver compliance'}
+              title={(!formFields.shift_date || !formFields.shift_start) ? 'Set the shift date and start time to use this' : 'Pull non-compliance entries recorded during your shift'}
               className="inline-flex items-center gap-1.5 text-sm text-amber-700 hover:text-amber-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
@@ -7517,7 +7542,7 @@ function ShiftReportForm({
               type="button"
               onClick={() => exportFromSystem('communication_log')}
               disabled={exportingFromSystem || !formFields.shift_date || !formFields.shift_start}
-              title={(!formFields.shift_date || !formFields.shift_start) ? 'Set the shift date and start time to use this' : 'Pull communication logs you recorded during your shift on Fleet & driver compliance'}
+              title={(!formFields.shift_date || !formFields.shift_start) ? 'Set the shift date and start time to use this' : 'Pull communication logs recorded during your shift'}
               className="inline-flex items-center gap-1.5 text-sm text-blue-700 hover:text-blue-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
@@ -8173,1670 +8198,6 @@ function TabLibrary() {
             </ul>
           </div>
         </section>
-      )}
-    </div>
-  );
-}
-
-const DRIVER_ROAD_SAFETY_ITEMS = [
-  { id: 'licence', label: 'Valid driver licence (current, correct class)' },
-  { id: 'ppe', label: 'PPE worn (helmet, high-vis, safety boots as required)' },
-  { id: 'sober', label: 'Sober / no alcohol or drug impairment' },
-  { id: 'speed', label: 'Speed and road rules compliance' },
-  { id: 'behaviour', label: 'Roadworthy behaviour and attitude' },
-  { id: 'documentation', label: 'Documentation on hand (licence, permits)' },
-];
-
-const INSPECTION_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-function formatInspectedDateTime(iso) {
-  if (!iso) return '';
-  return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
-}
-
-function getInspectionCountdown(lastInspectedAt) {
-  if (!lastInspectedAt) return null;
-  const last = new Date(lastInspectedAt).getTime();
-  const nextDue = last + INSPECTION_INTERVAL_MS;
-  const now = Date.now();
-  const diff = nextDue - now;
-  const diffAbs = Math.abs(diff);
-  const hours = Math.floor(diffAbs / (60 * 60 * 1000));
-  const mins = Math.floor((diffAbs % (60 * 60 * 1000)) / (60 * 1000));
-  const h = `${hours}h`;
-  const m = mins > 0 ? ` ${mins}m` : '';
-  if (diff >= 0) return { status: 'due_in', text: `Next due in ${h}${m}`, overdue: false };
-  return { status: 'overdue', text: `Overdue by ${h}${m}`, overdue: true };
-}
-
-function InspectionCountdown({ lastInspectedAt }) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), 60 * 1000);
-    return () => clearInterval(id);
-  }, []);
-  if (!lastInspectedAt) return null;
-  const countdown = getInspectionCountdown(lastInspectedAt);
-  if (!countdown) return null;
-  return (
-    <span className={countdown.overdue ? 'text-red-700 font-medium' : 'text-surface-600'}>
-      {formatInspectedDateTime(lastInspectedAt)} · {countdown.text}
-    </span>
-  );
-}
-
-function lastInspectedForTruck(inspections, truckId) {
-  const found = inspections.filter((i) => i.truckId === truckId).sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt))[0];
-  return found ? found.inspectedAt : null;
-}
-
-function lastInspectedForDriver(inspections, driverId) {
-  const found = inspections.filter((i) => i.driverId === driverId).sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt))[0];
-  return found ? found.inspectedAt : null;
-}
-
-function TabCompliance({ user, inspections = [], setInspections }) {
-  const [trucks, setTrucks] = useState([]);
-  const [drivers, setDrivers] = useState([]);
-  const [contractorsList, setContractorsList] = useState([]);
-  const [routesList, setRoutesList] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [truckSearch, setTruckSearch] = useState('');
-  const [selectedTruck, setSelectedTruck] = useState(null);
-  const [selectedContractorId, setSelectedContractorId] = useState('');
-  const [selectedRouteId, setSelectedRouteId] = useState('');
-  const [shiftStartedAt, setShiftStartedAt] = useState(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.toISOString().slice(0, 16);
-  });
-  const [inspectionStarted, setInspectionStarted] = useState(false);
-  const [truckSectionComplete, setTruckSectionComplete] = useState(false);
-  const [driverSearch, setDriverSearch] = useState('');
-  const [selectedDriver, setSelectedDriver] = useState(null);
-  const [driversError, setDriversError] = useState(null);
-  const [driversRetry, setDriversRetry] = useState(0);
-
-  const [gpsStatus, setGpsStatus] = useState('');
-  const [gpsComment, setGpsComment] = useState('');
-  const [cameraStatus, setCameraStatus] = useState('');
-  const [cameraComment, setCameraComment] = useState('');
-  const [cameraVisibility, setCameraVisibility] = useState('');
-  const [cameraVisibilityComment, setCameraVisibilityComment] = useState('');
-
-  const [driverItems, setDriverItems] = useState(() => DRIVER_ROAD_SAFETY_ITEMS.map((item) => ({ id: item.id, status: '', comment: '' })));
-
-  // Post-save inspection panel state
-  const [savedInspection, setSavedInspection] = useState(null); // inspection record after save
-  const [postCommLogs, setPostCommLogs] = useState([]);
-  const [postNonCompliance, setPostNonCompliance] = useState([]);
-  const [postLoadingExtras, setPostLoadingExtras] = useState(false);
-  const [commForm, setCommForm] = useState({ time: '', recipient: '', subject: '', method: '', action_required: '' });
-  const [savingComm, setSavingComm] = useState(false);
-  const [nonCompForm, setNonCompForm] = useState({ driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' });
-  const [savingNonComp, setSavingNonComp] = useState(false);
-  const [graceDays, setGraceDays] = useState(7);
-  const [graceReason, setGraceReason] = useState('');
-  const [grantingGrace, setGrantingGrace] = useState(false);
-  const [resolvingGrace, setResolvingGrace] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setDriversError(null);
-    const trucksPromise = contractorApi.trucks.list()
-      .then((r) => r.trucks || [])
-      .catch(() => []);
-    const driversPromise = contractorApi.drivers.list()
-      .then((r) => r.drivers || [])
-      .catch((err) => {
-        if (!cancelled) setDriversError(err?.message || 'Failed to load drivers');
-        return [];
-      });
-    const contractorsPromise = contractorApi.contractors.list().then((r) => r.contractors || []).catch(() => []);
-    const routesPromise = contractorApi.routes.list().then((r) => r.routes || []).catch(() => []);
-    Promise.all([trucksPromise, driversPromise, contractorsPromise, routesPromise]).then(([truckList, driverList, contrList, routeListR]) => {
-      if (!cancelled) {
-        setTrucks(truckList);
-        setDrivers(driverList);
-        setContractorsList(contrList);
-        setRoutesList(routeListR);
-      }
-    }).finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [driversRetry]);
-
-  // Auto-pick contractor when truck is selected
-  useEffect(() => {
-    if (!selectedTruck) return;
-    const tc = selectedTruck.contractor_id || selectedTruck.contractorId;
-    if (tc) {
-      setSelectedContractorId(String(tc));
-      return;
-    }
-    // try to match by name on existing contractors list
-    const tName = (selectedTruck.contractor_name || selectedTruck.main_contractor || '').toLowerCase().trim();
-    if (tName) {
-      const found = contractorsList.find((c) => (c.name || '').toLowerCase().trim() === tName);
-      if (found) setSelectedContractorId(String(found.id));
-    }
-  }, [selectedTruck, contractorsList]);
-
-  const filteredTrucks = trucks.filter((t) => !truckSearch.trim() || (t.registration || '').toLowerCase().includes(truckSearch.toLowerCase().trim()));
-  const filteredDrivers = drivers.filter((d) => !driverSearch.trim() || [d.full_name, d.id_number, d.license_number].some((v) => (v || '').toLowerCase().includes(driverSearch.toLowerCase().trim())));
-
-  const truckFailCount = [gpsStatus === 'bad', cameraStatus === 'bad' || cameraStatus === 'no_cameras', cameraVisibility === 'bad'].filter(Boolean).length;
-  const recommendSuspendTruck = truckFailCount >= 1;
-  const driverFailing = driverItems.some((d) => d.status === 'bad');
-  const recommendSuspendDriver = driverFailing;
-
-  const truckFormComplete = gpsStatus && cameraStatus && cameraVisibility;
-  const markTruckSectionComplete = () => {
-    if (truckFormComplete) setTruckSectionComplete(true);
-  };
-
-  const updateDriverItem = (index, field, value) => {
-    setDriverItems((prev) => prev.map((p, i) => (i === index ? { ...p, [field]: value } : p)));
-  };
-
-  const [submitError, setSubmitError] = useState('');
-  const [submitSuccess, setSubmitSuccess] = useState('');
-  const [suspendReason, setSuspendReason] = useState('');
-  const [suspending, setSuspending] = useState(false);
-  const [suspendPermanent, setSuspendPermanent] = useState(true);
-  const [suspendDurationDays, setSuspendDurationDays] = useState(7);
-  const [complianceHelpOpen, setComplianceHelpOpen] = useState(false);
-
-  const suspendTruckNow = async () => {
-    if (!selectedTruck) return;
-    setSuspending(true);
-    setSubmitError('');
-    setSubmitSuccess('');
-    try {
-      await ccApi.suspendTruck(selectedTruck.id, suspendReason.trim() || undefined, {
-        permanent: suspendPermanent,
-        duration_days: suspendPermanent ? undefined : suspendDurationDays,
-      });
-      setSubmitSuccess(suspendPermanent
-        ? 'Truck suspended permanently. It will show as Suspended on Inspected trucks & drivers until reinstatement.'
-        : `Truck suspended for ${suspendDurationDays} days. It will show as Suspended on Inspected trucks & drivers until then or reinstatement.`);
-      setSuspendReason('');
-      const r = await ccApi.complianceInspections.list();
-      if (r.inspections) setInspections(r.inspections);
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to suspend truck');
-    } finally {
-      setSuspending(false);
-    }
-  };
-
-  const completeInspection = () => {
-    if (!selectedTruck || !selectedDriver) return;
-    setSubmitError('');
-    setSubmitSuccess('');
-    const inspectedAt = new Date().toISOString();
-    const record = {
-      id: `ins-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      truckId: selectedTruck.id,
-      truckRegistration: selectedTruck.registration || '',
-      truckMakeModel: selectedTruck.make_model || '',
-      driverId: selectedDriver.id,
-      driverName: selectedDriver.full_name || '',
-      driverIdNumber: selectedDriver.id_number || '',
-      licenseNumber: selectedDriver.license_number || '',
-      gpsStatus,
-      gpsComment,
-      cameraStatus,
-      cameraComment,
-      cameraVisibility,
-      cameraVisibilityComment,
-      driverItems: driverItems.map((d) => ({ id: d.id, status: d.status, comment: d.comment })),
-      recommendSuspendTruck,
-      recommendSuspendDriver,
-      inspectedAt,
-    };
-    const shiftIso = (() => {
-      if (!shiftStartedAt) return null;
-      const d = new Date(shiftStartedAt);
-      return Number.isNaN(d.getTime()) ? null : d.toISOString();
-    })();
-    ccApi.complianceInspections.create({
-      truckId: selectedTruck.id,
-      driverId: selectedDriver.id,
-      truckRegistration: record.truckRegistration,
-      truckMakeModel: record.truckMakeModel,
-      driverName: record.driverName,
-      driverIdNumber: record.driverIdNumber,
-      licenseNumber: record.licenseNumber,
-      gpsStatus,
-      gpsComment,
-      cameraStatus,
-      cameraComment,
-      cameraVisibility,
-      cameraVisibilityComment,
-      driverItems: record.driverItems,
-      recommendSuspendTruck,
-      recommendSuspendDriver,
-      contractor_id: selectedContractorId || null,
-      route_id: selectedRouteId || null,
-      shift_started_at: shiftIso,
-    })
-      .then((res) => {
-        const insp = res.inspection;
-        setInspections((prev) => [...prev, { ...record, ...insp, responseDueAt: insp?.responseDueAt }]);
-        setSubmitSuccess('Inspection saved. You can now log communications, add non-compliance entries, and award a grace period below. The contractor must respond within 8 hours or the truck/driver will be automatically suspended.');
-        setSavedInspection(insp || null);
-        setPostCommLogs([]);
-        setPostNonCompliance([]);
-        setNonCompForm({
-          driver_name: record.driverName || '',
-          truck_reg: record.truckRegistration || '',
-          rule_violated: '',
-          time_of_call: '',
-          summary: '',
-          driver_response: '',
-        });
-        setTimeout(() => setSubmitSuccess(''), 12000);
-      })
-      .catch((err) => {
-        setSubmitError(err?.message || 'Failed to save inspection. Added to local list only.');
-        setInspections((prev) => [...prev, record]);
-        resetInspection();
-      });
-  };
-
-  const resetInspection = () => {
-    setSelectedTruck(null);
-    setSelectedContractorId('');
-    setSelectedRouteId('');
-    setInspectionStarted(false);
-    setTruckSectionComplete(false);
-    setSelectedDriver(null);
-    setGpsStatus('');
-    setGpsComment('');
-    setCameraStatus('');
-    setCameraComment('');
-    setCameraVisibility('');
-    setCameraVisibilityComment('');
-    setDriverItems(DRIVER_ROAD_SAFETY_ITEMS.map((item) => ({ id: item.id, status: '', comment: '' })));
-    setSavedInspection(null);
-    setPostCommLogs([]);
-    setPostNonCompliance([]);
-    setCommForm({ time: '', recipient: '', subject: '', method: '', action_required: '' });
-    setNonCompForm({ driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' });
-    setGraceDays(7);
-    setGraceReason('');
-  };
-
-  const startInspection = async () => {
-    if (!selectedTruck) return;
-    setSubmitError('');
-    if (!selectedContractorId) {
-      setSubmitError('Please select the contractor before starting the inspection.');
-      return;
-    }
-    setInspectionStarted(true);
-  };
-
-  const reloadPostExtras = async () => {
-    if (!savedInspection?.id) return;
-    setPostLoadingExtras(true);
-    try {
-      const [commsRes, ncRes] = await Promise.all([
-        ccApi.complianceInspections.listCommLogs(savedInspection.id).catch(() => ({ logs: [] })),
-        ccApi.complianceInspections.listNonCompliance(savedInspection.id).catch(() => ({ items: [] })),
-      ]);
-      setPostCommLogs(commsRes.logs || []);
-      setPostNonCompliance(ncRes.items || []);
-    } finally {
-      setPostLoadingExtras(false);
-    }
-  };
-
-  useEffect(() => {
-    if (savedInspection?.id) reloadPostExtras();
-  }, [savedInspection?.id]);
-
-  const addCommLog = async () => {
-    if (!savedInspection?.id) return;
-    const trimmed = {
-      time: commForm.time || null,
-      recipient: (commForm.recipient || '').trim() || null,
-      subject: (commForm.subject || '').trim() || null,
-      method: (commForm.method || '').trim() || null,
-      action_required: (commForm.action_required || '').trim() || null,
-    };
-    if (!trimmed.recipient && !trimmed.subject && !trimmed.action_required) {
-      setSubmitError('Add at least a recipient, subject, or action required.');
-      return;
-    }
-    setSavingComm(true);
-    setSubmitError('');
-    try {
-      const res = await ccApi.complianceInspections.addCommLog(savedInspection.id, trimmed);
-      setPostCommLogs((prev) => [...prev, res.log]);
-      setCommForm({ time: '', recipient: '', subject: '', method: '', action_required: '' });
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to save communication log');
-    } finally {
-      setSavingComm(false);
-    }
-  };
-
-  const removeCommLog = async (logId) => {
-    if (!savedInspection?.id || !logId) return;
-    try {
-      await ccApi.complianceInspections.deleteCommLog(savedInspection.id, logId);
-      setPostCommLogs((prev) => prev.filter((p) => String(p.id) !== String(logId)));
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to delete log');
-    }
-  };
-
-  const addNonComp = async () => {
-    if (!savedInspection?.id) return;
-    const trimmed = {
-      driver_name: (nonCompForm.driver_name || '').trim() || null,
-      truck_reg: (nonCompForm.truck_reg || '').trim() || null,
-      rule_violated: (nonCompForm.rule_violated || '').trim() || null,
-      time_of_call: (nonCompForm.time_of_call || '').trim() || null,
-      summary: (nonCompForm.summary || '').trim() || null,
-      driver_response: (nonCompForm.driver_response || '').trim() || null,
-    };
-    if (!trimmed.rule_violated && !trimmed.summary) {
-      setSubmitError('Provide at least a rule violated or a summary.');
-      return;
-    }
-    setSavingNonComp(true);
-    setSubmitError('');
-    try {
-      const res = await ccApi.complianceInspections.addNonCompliance(savedInspection.id, trimmed);
-      setPostNonCompliance((prev) => [...prev, res.item]);
-      setNonCompForm({
-        driver_name: trimmed.driver_name || '',
-        truck_reg: trimmed.truck_reg || '',
-        rule_violated: '',
-        time_of_call: '',
-        summary: '',
-        driver_response: '',
-      });
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to save non-compliance');
-    } finally {
-      setSavingNonComp(false);
-    }
-  };
-
-  const removeNonComp = async (itemId) => {
-    if (!savedInspection?.id || !itemId) return;
-    try {
-      await ccApi.complianceInspections.deleteNonCompliance(savedInspection.id, itemId);
-      setPostNonCompliance((prev) => prev.filter((p) => String(p.id) !== String(itemId)));
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to delete non-compliance');
-    }
-  };
-
-  const grantGrace = async () => {
-    if (!savedInspection?.id) return;
-    const days = Number(graceDays);
-    if (!Number.isFinite(days) || days <= 0) {
-      setSubmitError('Pick a grace period duration first.');
-      return;
-    }
-    setGrantingGrace(true);
-    setSubmitError('');
-    try {
-      const res = await ccApi.complianceInspections.grantGracePeriod(savedInspection.id, { days, reason: graceReason });
-      setSavedInspection(res.inspection);
-      setInspections((prev) => prev.map((p) => (String(p.id) === String(res.inspection.id) ? { ...p, ...res.inspection } : p)));
-      setSubmitSuccess(`Grace period of ${days} day${days === 1 ? '' : 's'} granted. The truck will be marked Pending suspension when it expires.`);
-      setTimeout(() => setSubmitSuccess(''), 8000);
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to grant grace period');
-    } finally {
-      setGrantingGrace(false);
-    }
-  };
-
-  const resolveGrace = async () => {
-    if (!savedInspection?.id) return;
-    setResolvingGrace(true);
-    setSubmitError('');
-    try {
-      const res = await ccApi.complianceInspections.resolveGracePeriod(savedInspection.id);
-      setSavedInspection(res.inspection);
-      setInspections((prev) => prev.map((p) => (String(p.id) === String(res.inspection.id) ? { ...p, ...res.inspection } : p)));
-      setSubmitSuccess('Grace period marked as resolved (compliance corrected).');
-      setTimeout(() => setSubmitSuccess(''), 6000);
-    } catch (e) {
-      setSubmitError(e?.message || 'Failed to resolve grace period');
-    } finally {
-      setResolvingGrace(false);
-    }
-  };
-
-  const formatGraceExpiry = (iso) => {
-    if (!iso) return '';
-    try {
-      return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-    } catch { return iso; }
-  };
-
-  const formatInspectedDate = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, { dateStyle: 'short' });
-  };
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <CollapsibleSectionHelp
-          title="Fleet and driver compliance"
-          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
-          open={complianceHelpOpen}
-          setOpen={setComplianceHelpOpen}
-          topic="fleet and driver compliance"
-        >
-          <p>
-            Select a truck, complete the truck inspection, then select the driver and complete the driver inspection. The contractor must
-            respond within 8 hours or the truck/driver will be auto-suspended; they can submit an appeal from the Contractor page.
-          </p>
-        </CollapsibleSectionHelp>
-        {user?.tenant_name && <p className="text-sm font-medium text-surface-700 mt-2">Contractor: {user.tenant_name}</p>}
-      </div>
-
-      {submitSuccess && (
-        <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800 flex justify-between items-start gap-2">
-          <span>{submitSuccess}</span>
-          <button type="button" onClick={() => setSubmitSuccess('')} className="shrink-0 text-green-600 hover:text-green-900">Dismiss</button>
-        </div>
-      )}
-      {submitError && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex justify-between items-start gap-2">
-          <span>{submitError}</span>
-          <button type="button" onClick={() => setSubmitError('')} className="shrink-0 text-amber-600 hover:text-amber-900">Dismiss</button>
-        </div>
-      )}
-
-      {/* Step 1: Search and select truck */}
-      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-          <h3 className="font-semibold text-surface-900">1. Select truck</h3>
-          <p className="text-sm text-surface-500 mt-0.5">Search by registration and click a truck. You must complete the truck inspection before selecting a driver.</p>
-        </div>
-        <div className="p-6">
-          {loading ? (
-            <p className="text-surface-500 text-sm">Loading fleet…</p>
-          ) : (
-            <>
-              <input type="text" value={truckSearch} onChange={(e) => setTruckSearch(e.target.value)} placeholder="Search by registration…" className="mb-4 w-full max-w-md rounded-xl border border-surface-300 px-4 py-2.5 text-sm focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" />
-              {selectedTruck && !inspectionStarted ? (
-                <div className="rounded-xl border-2 border-brand-200 bg-brand-50/50 p-4 space-y-3">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="font-semibold text-surface-900">{selectedTruck.registration || '—'}</span>
-                    <span className="text-sm text-surface-600">{selectedTruck.make_model || ''}</span>
-                    <button type="button" onClick={startInspection} disabled={!selectedContractorId} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed" title={!selectedContractorId ? 'Select the contractor first' : 'Start inspection'}>Start inspection</button>
-                    <button type="button" onClick={() => { setSelectedTruck(null); setSelectedContractorId(''); setSelectedRouteId(''); }} className="text-sm text-surface-500 hover:text-surface-700">Change truck</button>
-                  </div>
-                  {lastInspectedForTruck(inspections, selectedTruck.id) && (
-                    <p className="text-xs text-surface-600">Last inspected: <InspectionCountdown lastInspectedAt={lastInspectedForTruck(inspections, selectedTruck.id)} /></p>
-                  )}
-                  <div className="border-t border-brand-200 pt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Contractor (required)</label>
-                      <select value={selectedContractorId} onChange={(e) => setSelectedContractorId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
-                        <option value="">Select contractor…</option>
-                        {contractorsList.map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </select>
-                      {!selectedContractorId && <p className="text-[11px] text-amber-700 mt-1">Pick the contractor that owns this truck so suspensions and exports are scoped correctly.</p>}
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Applicable route (for export)</label>
-                      <select value={selectedRouteId} onChange={(e) => setSelectedRouteId(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
-                        <option value="">Select route…</option>
-                        {routesList.map((r) => (
-                          <option key={r.id} value={r.id}>{r.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Your shift started at</label>
-                      <input type="datetime-local" value={shiftStartedAt} onChange={(e) => setShiftStartedAt(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                      <p className="text-[11px] text-surface-500 mt-1">Used by the shift report &quot;Export from system&quot; to scope to your shift only.</p>
-                    </div>
-                  </div>
-                  <div className="border-t border-brand-200 pt-3 mt-2">
-                    <p className="text-xs font-medium text-surface-700 mb-1.5">Suspend truck immediately</p>
-                    <p className="text-xs text-surface-500 mb-2">Suspended trucks show status on Inspected trucks &amp; drivers; inspection does not expire until reinstatement.</p>
-                    <div className="flex flex-wrap gap-4 mb-2">
-                      <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                        <input type="radio" name="suspend_type" checked={suspendPermanent} onChange={() => setSuspendPermanent(true)} className="rounded-full" />
-                        <span>Permanent</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                        <input type="radio" name="suspend_type" checked={!suspendPermanent} onChange={() => setSuspendPermanent(false)} className="rounded-full" />
-                        <span>For a period</span>
-                      </label>
-                      {!suspendPermanent && (
-                        <select value={suspendDurationDays} onChange={(e) => setSuspendDurationDays(Number(e.target.value))} className="rounded-lg border border-surface-300 px-2 py-1 text-sm">
-                          <option value={1}>1 day</option>
-                          <option value={7}>7 days</option>
-                          <option value={14}>14 days</option>
-                          <option value={30}>30 days</option>
-                          <option value={90}>90 days</option>
-                          <option value={180}>180 days</option>
-                          <option value={365}>1 year</option>
-                        </select>
-                      )}
-                    </div>
-                    <textarea value={suspendReason} onChange={(e) => setSuspendReason(e.target.value)} placeholder="Reason (optional)" rows={2} className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2" />
-                    <button type="button" disabled={suspending} onClick={suspendTruckNow} className="px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">Suspend truck immediately</button>
-                  </div>
-                </div>
-              ) : selectedTruck ? null : (
-                <ul className="space-y-1 max-h-64 overflow-auto rounded-xl border border-surface-200">
-                  {filteredTrucks.length === 0 ? <li className="px-4 py-4 text-surface-500 text-sm">No trucks found. Try a different search.</li> : filteredTrucks.slice(0, 100).map((t) => {
-                    const inspected = lastInspectedForTruck(inspections, t.id);
-                    const countdown = inspected ? getInspectionCountdown(inspected) : null;
-                    return (
-                      <li key={t.id}>
-                        <button type="button" onClick={() => setSelectedTruck(t)} className="w-full text-left px-4 py-3 hover:bg-surface-50 border-b border-surface-100 last:border-0 flex flex-col gap-0.5">
-                          <div className="flex justify-between items-center gap-2">
-                            <span className="font-medium text-surface-900">{t.registration || '—'}</span>
-                            <span className="text-sm text-surface-500 shrink">{t.make_model || '—'}</span>
-                          </div>
-                          {inspected && (
-                            <div className="text-xs text-surface-600">
-                              {formatInspectedDateTime(inspected)}
-                              {countdown && <span className={countdown.overdue ? ' text-red-700 font-medium' : ''}> · {countdown.text}</span>}
-                            </div>
-                          )}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </>
-          )}
-        </div>
-      </section>
-
-      {/* Step 2: Truck inspection (driver cannot be selected until truck section is complete) */}
-      {inspectionStarted && selectedTruck && (
-        <>
-          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-            <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-              <h3 className="font-semibold text-surface-900">2. Truck inspection</h3>
-              <p className="text-sm text-surface-500 mt-0.5">Vehicle: {selectedTruck.registration} — {selectedTruck.make_model || '—'}. Complete all fields, then click &quot;Truck section complete — select driver&quot;.</p>
-            </div>
-            <div className="p-6 space-y-6">
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                <div className="rounded-xl border border-surface-200 p-4">
-                  <label className="block font-medium text-surface-900 text-sm mb-2">GPS signal status</label>
-                  <select value={gpsStatus} onChange={(e) => setGpsStatus(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2">
-                    <option value="">Select…</option>
-                    <option value="good">Good</option>
-                    <option value="bad">Bad</option>
-                  </select>
-                  <input type="text" value={gpsComment} onChange={(e) => setGpsComment(e.target.value)} placeholder="Comment (optional)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                </div>
-                <div className="rounded-xl border border-surface-200 p-4">
-                  <label className="block font-medium text-surface-900 text-sm mb-2">Camera status</label>
-                  <select value={cameraStatus} onChange={(e) => setCameraStatus(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2">
-                    <option value="">Select…</option>
-                    <option value="good">Good</option>
-                    <option value="bad">Bad</option>
-                    <option value="no_cameras">No cameras</option>
-                  </select>
-                  <input type="text" value={cameraComment} onChange={(e) => setCameraComment(e.target.value)} placeholder="Comment (optional)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                </div>
-                <div className="rounded-xl border border-surface-200 p-4">
-                  <label className="block font-medium text-surface-900 text-sm mb-2">Camera visibility</label>
-                  <select value={cameraVisibility} onChange={(e) => setCameraVisibility(e.target.value)} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2">
-                    <option value="">Select…</option>
-                    <option value="good">Good</option>
-                    <option value="bad">Bad</option>
-                  </select>
-                  <input type="text" value={cameraVisibilityComment} onChange={(e) => setCameraVisibilityComment(e.target.value)} placeholder="Comment (optional)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                </div>
-              </div>
-              <div className={`rounded-xl border-2 p-4 ${recommendSuspendTruck ? 'border-red-300 bg-red-50' : 'border-green-200 bg-green-50/50'}`}>
-                <h4 className="font-semibold text-surface-900 text-sm mb-1">Truck rating & recommendation</h4>
-                <p className="text-sm text-surface-700">
-                  {recommendSuspendTruck ? (
-                    <span className="font-medium text-red-800">Recommend suspension: one or more truck inspection items are bad or missing (GPS, camera status, or camera visibility).</span>
-                  ) : (
-                    <span className="text-green-800">No suspension recommended for this truck based on current inspection.</span>
-                  )}
-                </p>
-              </div>
-              {!truckSectionComplete && (
-                <button type="button" onClick={markTruckSectionComplete} disabled={!truckFormComplete} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                  Truck section complete — select driver
-                </button>
-              )}
-            </div>
-          </section>
-
-          {/* Step 3: Select driver (only after truck section complete) */}
-          {truckSectionComplete && (
-            <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-              <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-                <h3 className="font-semibold text-surface-900">3. Select driver</h3>
-                <p className="text-sm text-surface-500 mt-0.5">Search and click the driver you are inspecting for this truck.</p>
-              </div>
-              <div className="p-6">
-                <input type="text" value={driverSearch} onChange={(e) => setDriverSearch(e.target.value)} placeholder="Search by name, ID or licence…" className="mb-4 w-full max-w-md rounded-xl border border-surface-300 px-4 py-2.5 text-sm focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" />
-                {selectedDriver ? (
-                  <div className="flex flex-wrap items-center gap-3 rounded-xl border-2 border-brand-200 bg-brand-50/50 p-4">
-                    <span className="font-semibold text-surface-900">{selectedDriver.full_name || '—'}</span>
-                    <span className="text-sm text-surface-600">{selectedDriver.id_number || '—'}</span>
-                    {lastInspectedForDriver(inspections, selectedDriver.id) && (
-                      <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-800">Inspected {formatInspectedDate(lastInspectedForDriver(inspections, selectedDriver.id))}</span>
-                    )}
-                    <button type="button" onClick={() => setSelectedDriver(null)} className="text-sm text-surface-500 hover:text-surface-700">Change driver</button>
-                  </div>
-                ) : (
-                  <ul className="space-y-1 max-h-64 overflow-auto rounded-xl border border-surface-200">
-                    {loading ? (
-                      <li className="px-4 py-6 text-surface-500 text-sm text-center">Loading drivers…</li>
-                    ) : driversError ? (
-                      <li className="px-4 py-6 text-red-600 text-sm flex flex-col gap-2">
-                        <span>{driversError}</span>
-                        <button type="button" onClick={() => setDriversRetry((n) => n + 1)} className="text-sm font-medium text-brand-600 hover:underline self-start">Retry loading drivers</button>
-                      </li>
-                    ) : filteredDrivers.length === 0 ? (
-                      <li className="px-4 py-6 text-surface-500 text-sm">
-                        {drivers.length === 0 ? (
-                          <>No drivers in the register. Add drivers on the <Link to="/contractor" className="text-brand-600 hover:underline">Contractor page</Link> first.</>
-                        ) : (
-                          'No drivers found. Try a different search.'
-                        )}
-                      </li>
-                    ) : filteredDrivers.slice(0, 100).map((d) => {
-                      const inspected = lastInspectedForDriver(inspections, d.id);
-                      return (
-                        <li key={d.id}>
-                          <button type="button" onClick={() => setSelectedDriver(d)} className="w-full text-left px-4 py-3 hover:bg-surface-50 border-b border-surface-100 last:border-0 flex justify-between items-center gap-2">
-                            <span className="font-medium text-surface-900">{d.full_name || '—'}</span>
-                            <span className="text-sm text-surface-500">{d.license_number || d.id_number || '—'}</span>
-                            {inspected && <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 shrink-0">Inspected {formatInspectedDate(inspected)}</span>}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* Step 4: Driver road safety (only when driver selected) */}
-          {truckSectionComplete && selectedDriver && (
-            <>
-              <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-                <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-                  <h3 className="font-semibold text-surface-900">4. Driver — road safety</h3>
-                  <p className="text-sm text-surface-500 mt-0.5">Driver: {selectedDriver.full_name || '—'}. If any item fails, the system will recommend driver suspension.</p>
-                </div>
-                <div className="p-6 space-y-4">
-                  {DRIVER_ROAD_SAFETY_ITEMS.map((item, index) => (
-                    <div key={item.id} className="rounded-xl border border-surface-200 p-4 flex flex-wrap items-center gap-4">
-                      <span className="font-medium text-surface-900 text-sm w-48 shrink-0">{item.label}</span>
-                      <select value={driverItems[index]?.status || ''} onChange={(e) => updateDriverItem(index, 'status', e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-32">
-                        <option value="">Select…</option>
-                        <option value="good">Good</option>
-                        <option value="bad">Bad / Fail</option>
-                      </select>
-                      <input type="text" value={driverItems[index]?.comment || ''} onChange={(e) => updateDriverItem(index, 'comment', e.target.value)} placeholder="Comment (optional)" className="flex-1 min-w-[180px] rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                    </div>
-                  ))}
-                  <div className={`rounded-xl border-2 p-4 ${recommendSuspendDriver ? 'border-red-300 bg-red-50' : 'border-green-200 bg-green-50/50'}`}>
-                    <h4 className="font-semibold text-surface-900 text-sm mb-1">Driver recommendation</h4>
-                    <p className="text-sm text-surface-700">
-                      {recommendSuspendDriver ? (
-                        <span className="font-medium text-red-800">Recommend driver suspension: one or more road safety items failed.</span>
-                      ) : (
-                        <span className="text-green-800">No suspension recommended for the driver based on current inspection.</span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </section>
-
-              <div className="flex flex-wrap gap-3">
-                <button type="button" onClick={completeInspection} disabled={!!savedInspection} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">{savedInspection ? 'Inspection saved' : 'Complete inspection'}</button>
-                <button type="button" onClick={resetInspection} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">{savedInspection ? 'New inspection' : 'Cancel / New inspection'}</button>
-              </div>
-            </>
-          )}
-        </>
-      )}
-
-      {/* Post-save: communication log, non-compliance, grace period */}
-      {savedInspection && (
-        <ComplianceFollowUpPanel
-          savedInspection={savedInspection}
-          postCommLogs={postCommLogs}
-          postNonCompliance={postNonCompliance}
-          postLoadingExtras={postLoadingExtras}
-          commForm={commForm}
-          setCommForm={setCommForm}
-          savingComm={savingComm}
-          addCommLog={addCommLog}
-          removeCommLog={removeCommLog}
-          nonCompForm={nonCompForm}
-          setNonCompForm={setNonCompForm}
-          savingNonComp={savingNonComp}
-          addNonComp={addNonComp}
-          removeNonComp={removeNonComp}
-          graceDays={graceDays}
-          setGraceDays={setGraceDays}
-          graceReason={graceReason}
-          setGraceReason={setGraceReason}
-          grantingGrace={grantingGrace}
-          grantGrace={grantGrace}
-          resolvingGrace={resolvingGrace}
-          resolveGrace={resolveGrace}
-          formatGraceExpiry={formatGraceExpiry}
-        />
-      )}
-    </div>
-  );
-}
-
-function ComplianceFollowUpPanel({
-  savedInspection,
-  postCommLogs,
-  postNonCompliance,
-  postLoadingExtras,
-  commForm,
-  setCommForm,
-  savingComm,
-  addCommLog,
-  removeCommLog,
-  nonCompForm,
-  setNonCompForm,
-  savingNonComp,
-  addNonComp,
-  removeNonComp,
-  graceDays,
-  setGraceDays,
-  graceReason,
-  setGraceReason,
-  grantingGrace,
-  grantGrace,
-  resolvingGrace,
-  resolveGrace,
-  formatGraceExpiry,
-}) {
-  const grace = savedInspection?.gracePeriodStatus;
-  const expiry = savedInspection?.gracePeriodExpiresAt;
-  return (
-    <div className="space-y-6">
-      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-          <h3 className="font-semibold text-surface-900">5. Communication log</h3>
-          <p className="text-sm text-surface-500 mt-0.5">Record calls/messages with the contractor about this inspection. These will appear in the shift report &quot;Export from system&quot; for your shift.</p>
-        </div>
-        <div className="p-6 space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100">
-            <input type="time" value={commForm.time} onChange={(e) => setCommForm((p) => ({ ...p, time: e.target.value }))} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <input type="text" value={commForm.recipient} onChange={(e) => setCommForm((p) => ({ ...p, recipient: e.target.value }))} placeholder="Recipient" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <input type="text" value={commForm.subject} onChange={(e) => setCommForm((p) => ({ ...p, subject: e.target.value }))} placeholder="Subject" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <input type="text" value={commForm.method} onChange={(e) => setCommForm((p) => ({ ...p, method: e.target.value }))} placeholder="Method (Call/WhatsApp/Email)" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <input type="text" value={commForm.action_required} onChange={(e) => setCommForm((p) => ({ ...p, action_required: e.target.value }))} placeholder="Action required" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-          </div>
-          <button type="button" onClick={addCommLog} disabled={savingComm} className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
-            {savingComm ? 'Saving…' : '+ Add to communication log'}
-          </button>
-          {postLoadingExtras ? (
-            <p className="text-sm text-surface-500">Loading…</p>
-          ) : postCommLogs.length === 0 ? (
-            <p className="text-sm text-surface-500">No communications logged yet.</p>
-          ) : (
-            <ul className="space-y-2">
-              {postCommLogs.map((log) => (
-                <li key={log.id} className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-surface-200 bg-white px-3 py-2">
-                  <div className="text-sm text-surface-800">
-                    <span className="font-medium">{log.time || ''}</span>
-                    {log.recipient ? <> · {log.recipient}</> : null}
-                    {log.subject ? <> · <span className="font-medium">{log.subject}</span></> : null}
-                    {log.method ? <> · <span className="text-surface-500">({log.method})</span></> : null}
-                    {log.action_required ? <div className="text-xs text-surface-600 mt-0.5">Action: {log.action_required}</div> : null}
-                  </div>
-                  <button type="button" onClick={() => removeCommLog(log.id)} className="text-xs text-red-600 hover:text-red-700">Remove</button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-          <h3 className="font-semibold text-surface-900">6. Non-compliance</h3>
-          <p className="text-sm text-surface-500 mt-0.5">Add specific non-compliance items raised during this inspection. These items appear in the shift report export for your shift.</p>
-        </div>
-        <div className="p-6 space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 p-3 rounded-lg bg-amber-50/50 border border-amber-100">
-            <input type="text" value={nonCompForm.driver_name} onChange={(e) => setNonCompForm((p) => ({ ...p, driver_name: e.target.value }))} placeholder="Driver name" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <input type="text" value={nonCompForm.truck_reg} onChange={(e) => setNonCompForm((p) => ({ ...p, truck_reg: e.target.value }))} placeholder="Truck registration" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <select
-              value={NON_COMPLIANCE_RULE_OPTIONS.includes(nonCompForm.rule_violated) || !nonCompForm.rule_violated ? nonCompForm.rule_violated : '__other__'}
-              onChange={(e) => setNonCompForm((p) => ({ ...p, rule_violated: e.target.value === '__other__' ? '' : e.target.value }))}
-              className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
-            >
-              <option value="">Select rule violated</option>
-              {NON_COMPLIANCE_RULE_OPTIONS.map((rule) => (
-                <option key={rule} value={rule}>{rule}</option>
-              ))}
-              <option value="__other__">Other</option>
-            </select>
-            {!NON_COMPLIANCE_RULE_OPTIONS.includes(nonCompForm.rule_violated) && (
-              <input type="text" value={nonCompForm.rule_violated} onChange={(e) => setNonCompForm((p) => ({ ...p, rule_violated: e.target.value }))} placeholder="Other rule violated" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            )}
-            <input type="text" value={nonCompForm.time_of_call} onChange={(e) => setNonCompForm((p) => ({ ...p, time_of_call: e.target.value }))} placeholder="Time" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm" />
-            <input type="text" value={nonCompForm.summary} onChange={(e) => setNonCompForm((p) => ({ ...p, summary: e.target.value }))} placeholder="Summary" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
-            <input type="text" value={nonCompForm.driver_response} onChange={(e) => setNonCompForm((p) => ({ ...p, driver_response: e.target.value }))} placeholder="Driver response" className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm col-span-2" />
-          </div>
-          <button type="button" onClick={addNonComp} disabled={savingNonComp} className="px-4 py-2 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
-            {savingNonComp ? 'Saving…' : '+ Add non-compliance entry'}
-          </button>
-          {postLoadingExtras ? (
-            <p className="text-sm text-surface-500">Loading…</p>
-          ) : postNonCompliance.length === 0 ? (
-            <p className="text-sm text-surface-500">No non-compliance entries added yet.</p>
-          ) : (
-            <ul className="space-y-2">
-              {postNonCompliance.map((item) => (
-                <li key={item.id} className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2">
-                  <div className="text-sm text-surface-800">
-                    <span className="font-medium">{item.ruleViolated || 'Non-compliance'}</span>
-                    {item.timeOfCall ? <> · {item.timeOfCall}</> : null}
-                    {item.driverName ? <> · {item.driverName}</> : null}
-                    {item.truckReg ? <> · {item.truckReg}</> : null}
-                    {item.summary ? <div className="text-xs text-surface-600 mt-0.5">{item.summary}</div> : null}
-                    {item.driverResponse ? <div className="text-xs text-surface-500 italic mt-0.5">Driver: {item.driverResponse}</div> : null}
-                  </div>
-                  <button type="button" onClick={() => removeNonComp(item.id)} className="text-xs text-red-600 hover:text-red-700">Remove</button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-          <h3 className="font-semibold text-surface-900">7. Grace period</h3>
-          <p className="text-sm text-surface-500 mt-0.5">
-            {grace === 'active' && expiry && <>Active grace period — expires {formatGraceExpiry(expiry)}.</>}
-            {grace === 'expired' && <>Grace period expired{expiry ? ` on ${formatGraceExpiry(expiry)}` : ''}. Truck is <span className="font-medium text-red-700">Pending suspension</span>.</>}
-            {grace === 'resolved' && <>Grace period resolved (compliance corrected).</>}
-            {!grace && <>Award a grace period if you want to give the contractor time to correct non-compliance before suspending.</>}
-          </p>
-        </div>
-        <div className="p-6 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Duration</label>
-              <select value={graceDays} onChange={(e) => setGraceDays(Number(e.target.value))} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
-                <option value={1}>1 day</option>
-                <option value={2}>2 days</option>
-                <option value={3}>3 days</option>
-                <option value={5}>5 days</option>
-                <option value={7}>7 days</option>
-                <option value={14}>14 days</option>
-                <option value={21}>21 days</option>
-                <option value={30}>30 days</option>
-                <option value={60}>60 days</option>
-                <option value={90}>90 days</option>
-              </select>
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-surface-700 uppercase tracking-wider mb-1">Reason (optional)</label>
-              <input type="text" value={graceReason} onChange={(e) => setGraceReason(e.target.value)} placeholder="e.g. Contractor undertaking to fix camera within 7 days" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <button type="button" onClick={grantGrace} disabled={grantingGrace} className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
-              {grantingGrace ? 'Granting…' : grace === 'active' ? 'Update grace period' : 'Award grace period'}
-            </button>
-            {grace === 'active' || grace === 'expired' ? (
-              <button type="button" onClick={resolveGrace} disabled={resolvingGrace} className="px-4 py-2 text-sm font-medium rounded-lg border border-green-200 bg-green-50 text-green-800 hover:bg-green-100 disabled:opacity-50">
-                {resolvingGrace ? 'Saving…' : 'Mark grace period resolved'}
-              </button>
-            ) : null}
-          </div>
-          {grace === 'active' && expiry && (
-            <p className="text-xs text-blue-700">When this grace period expires, the truck will appear under <span className="font-medium">Pending suspension</span> on Inspected trucks &amp; drivers.</p>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function renderGracePeriodCell(i) {
-  if (!i?.gracePeriodStatus) return <span className="text-surface-400">—</span>;
-  const fmt = (iso) => {
-    if (!iso) return '';
-    try { return new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' }); } catch { return iso; }
-  };
-  if (i.gracePeriodStatus === 'active') {
-    return (
-      <span title={i.gracePeriodReason || ''}>
-        <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Granted ({i.gracePeriodDays}d)</span>
-        <span className="block text-[11px] text-surface-600 mt-0.5">Expires {fmt(i.gracePeriodExpiresAt)}</span>
-      </span>
-    );
-  }
-  if (i.gracePeriodStatus === 'expired') {
-    return (
-      <span title={i.gracePeriodReason || ''}>
-        <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">Expired</span>
-        <span className="block text-[11px] text-surface-600 mt-0.5">{fmt(i.gracePeriodExpiresAt)}</span>
-      </span>
-    );
-  }
-  if (i.gracePeriodStatus === 'resolved') {
-    return (
-      <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Resolved</span>
-    );
-  }
-  return <span className="text-surface-400">—</span>;
-}
-
-function TabInspected({ inspections = [], setInspections }) {
-  const [activeSubTab, setActiveSubTab] = useState('trucks'); // 'trucks' | 'drivers'
-  const [truckFilterReg, setTruckFilterReg] = useState('');
-  const [truckFilterFrom, setTruckFilterFrom] = useState('');
-  const [truckFilterTo, setTruckFilterTo] = useState('');
-  const [truckFilterRec, setTruckFilterRec] = useState(''); // '' | 'ok' | 'suspend'
-  const [truckFilterStatus, setTruckFilterStatus] = useState(''); // '' | 'active' | 'suspended'
-  const [driverFilterName, setDriverFilterName] = useState('');
-  const [driverFilterFrom, setDriverFilterFrom] = useState('');
-  const [driverFilterTo, setDriverFilterTo] = useState('');
-  const [driverFilterRec, setDriverFilterRec] = useState(''); // '' | 'ok' | 'suspend'
-  const [sidePanelRecord, setSidePanelRecord] = useState(null); // inspection record to show
-  const [sidePanelHistory, setSidePanelHistory] = useState([]); // other inspections for same truck/driver
-  const [sidePanelViewIndex, setSidePanelViewIndex] = useState(0); // which of [record, ...history] we're viewing
-  const [replyText, setReplyText] = useState('');
-  const [replying, setReplying] = useState(false);
-  const [suspendTruckRecord, setSuspendTruckRecord] = useState(null);
-  const [suspendReason, setSuspendReason] = useState('');
-  const [suspendPermanent, setSuspendPermanent] = useState(true);
-  const [suspendDurationDays, setSuspendDurationDays] = useState(7);
-  const [suspending, setSuspending] = useState(false);
-  const [suspendError, setSuspendError] = useState('');
-  const [suspendSuccess, setSuspendSuccess] = useState('');
-  const [inspectedHelpOpen, setInspectedHelpOpen] = useState(false);
-
-  const truckMap = new Map();
-  inspections.forEach((i) => {
-    const existing = truckMap.get(i.truckId);
-    if (!existing || new Date(i.inspectedAt) > new Date(existing.inspectedAt)) {
-      truckMap.set(i.truckId, i);
-    }
-  });
-  const driverMap = new Map();
-  inspections.forEach((i) => {
-    const existing = driverMap.get(i.driverId);
-    if (!existing || new Date(i.inspectedAt) > new Date(existing.inspectedAt)) {
-      driverMap.set(i.driverId, i);
-    }
-  });
-  let inspectedTrucks = [...truckMap.values()].sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt));
-  let inspectedDrivers = [...driverMap.values()].sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt));
-
-  if (truckFilterReg.trim()) {
-    const q = truckFilterReg.trim().toLowerCase();
-    inspectedTrucks = inspectedTrucks.filter((i) => (i.truckRegistration || '').toLowerCase().includes(q) || (i.truckMakeModel || '').toLowerCase().includes(q));
-  }
-  if (truckFilterFrom) {
-    const from = new Date(truckFilterFrom).setHours(0, 0, 0, 0);
-    inspectedTrucks = inspectedTrucks.filter((i) => new Date(i.inspectedAt).getTime() >= from);
-  }
-  if (truckFilterTo) {
-    const to = new Date(truckFilterTo).setHours(23, 59, 59, 999);
-    inspectedTrucks = inspectedTrucks.filter((i) => new Date(i.inspectedAt).getTime() <= to);
-  }
-  if (truckFilterRec === 'ok') inspectedTrucks = inspectedTrucks.filter((i) => !i.recommendSuspendTruck);
-  if (truckFilterRec === 'suspend') inspectedTrucks = inspectedTrucks.filter((i) => i.recommendSuspendTruck);
-  if (truckFilterStatus === 'active') inspectedTrucks = inspectedTrucks.filter((i) => !i.truckSuspended);
-  if (truckFilterStatus === 'suspended') inspectedTrucks = inspectedTrucks.filter((i) => i.truckSuspended);
-
-  if (driverFilterName.trim()) {
-    const q = driverFilterName.trim().toLowerCase();
-    inspectedDrivers = inspectedDrivers.filter((i) => (i.driverName || '').toLowerCase().includes(q) || (i.driverIdNumber || '').toLowerCase().includes(q) || (i.licenseNumber || '').toLowerCase().includes(q));
-  }
-  if (driverFilterFrom) {
-    const from = new Date(driverFilterFrom).setHours(0, 0, 0, 0);
-    inspectedDrivers = inspectedDrivers.filter((i) => new Date(i.inspectedAt).getTime() >= from);
-  }
-  if (driverFilterTo) {
-    const to = new Date(driverFilterTo).setHours(23, 59, 59, 999);
-    inspectedDrivers = inspectedDrivers.filter((i) => new Date(i.inspectedAt).getTime() <= to);
-  }
-  if (driverFilterRec === 'ok') inspectedDrivers = inspectedDrivers.filter((i) => !i.recommendSuspendDriver);
-  if (driverFilterRec === 'suspend') inspectedDrivers = inspectedDrivers.filter((i) => i.recommendSuspendDriver);
-
-  const formatDate = (iso) => {
-    if (!iso) return '—';
-    return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
-  };
-
-  const openTruckRecord = (inspection) => {
-    const history = inspections.filter((i) => i.truckId === inspection.truckId && i.id !== inspection.id).sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt));
-    setSidePanelRecord(inspection);
-    setSidePanelHistory(history);
-    setSidePanelViewIndex(0);
-  };
-
-  const openDriverRecord = (inspection) => {
-    const history = inspections.filter((i) => i.driverId === inspection.driverId && i.id !== inspection.id).sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt));
-    setSidePanelRecord(inspection);
-    setSidePanelHistory(history);
-    setSidePanelViewIndex(0);
-  };
-
-  const displayRecords = sidePanelRecord ? [sidePanelRecord, ...sidePanelHistory] : [];
-  const viewingRecord = displayRecords[sidePanelViewIndex] || null;
-
-  const runSuspendTruck = async () => {
-    if (!suspendTruckRecord) return;
-    setSuspending(true);
-    setSuspendError('');
-    setSuspendSuccess('');
-    try {
-      await ccApi.suspendTruck(suspendTruckRecord.truckId, suspendReason.trim() || undefined, {
-        permanent: suspendPermanent,
-        duration_days: suspendPermanent ? undefined : suspendDurationDays,
-      });
-      setSuspendSuccess(suspendPermanent
-        ? 'Truck suspended permanently. It will show as Suspended here until reinstatement.'
-        : `Truck suspended for ${suspendDurationDays} days.`);
-      const r = await ccApi.complianceInspections.list();
-      if (r.inspections) setInspections(r.inspections);
-      setSuspendReason('');
-      setTimeout(() => { setSuspendTruckRecord(null); setSuspendSuccess(''); }, 1500);
-    } catch (e) {
-      setSuspendError(e?.message || 'Failed to suspend truck');
-    } finally {
-      setSuspending(false);
-    }
-  };
-
-  return (
-    <div className="flex gap-0">
-      <div className="space-y-4 flex-1 min-w-0">
-        <CollapsibleSectionHelp
-          title="Inspected trucks & drivers"
-          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
-          open={inspectedHelpOpen}
-          setOpen={setInspectedHelpOpen}
-          topic="inspected trucks and drivers"
-        >
-          <p>Switch between trucks and drivers. Use filters and click a row to open the full record in the side panel.</p>
-        </CollapsibleSectionHelp>
-
-        {/* Sub-tabs */}
-        <div className="flex border-b border-surface-200">
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('trucks')}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${activeSubTab === 'trucks' ? 'border-brand-500 text-brand-700 bg-brand-50/50' : 'border-transparent text-surface-600 hover:text-surface-900 hover:bg-surface-50'}`}
-          >
-            Inspected trucks
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('drivers')}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${activeSubTab === 'drivers' ? 'border-brand-500 text-brand-700 bg-brand-50/50' : 'border-transparent text-surface-600 hover:text-surface-900 hover:bg-surface-50'}`}
-          >
-            Inspected drivers
-          </button>
-        </div>
-
-        {activeSubTab === 'trucks' && (
-          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-            <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-              <h3 className="font-semibold text-surface-900">Inspected trucks</h3>
-              <p className="text-sm text-surface-500 mt-0.5">One row per truck (latest inspection).</p>
-              <div className="mt-3 flex flex-wrap gap-3 items-center">
-                <input type="text" value={truckFilterReg} onChange={(e) => setTruckFilterReg(e.target.value)} placeholder="Search registration or make/model" className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm w-56" />
-                <input type="date" value={truckFilterFrom} onChange={(e) => setTruckFilterFrom(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
-                <span className="text-surface-500 text-sm">to</span>
-                <input type="date" value={truckFilterTo} onChange={(e) => setTruckFilterTo(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
-                <select value={truckFilterRec} onChange={(e) => setTruckFilterRec(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm">
-                  <option value="">All recommendations</option>
-                  <option value="ok">OK only</option>
-                  <option value="suspend">Recommend suspension only</option>
-                </select>
-                <select value={truckFilterStatus} onChange={(e) => setTruckFilterStatus(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm">
-                  <option value="">All statuses</option>
-                  <option value="active">Active only</option>
-                  <option value="suspended">Suspended only</option>
-                </select>
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-surface-50 border-b border-surface-200">
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Registration</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Make / model</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Route</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Status</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Last inspected</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Next due (24h)</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Recommendation</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Grace period</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor response</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inspectedTrucks.length === 0 ? (
-                    <tr><td colSpan={11} className="px-4 py-6 text-surface-500 text-center">No trucks match the filters.</td></tr>
-                  ) : (
-                    inspectedTrucks.map((i) => {
-                      const countdown = i.truckSuspended ? null : getInspectionCountdown(i.inspectedAt);
-                      const graceLabel = renderGracePeriodCell(i);
-                      return (
-                        <tr key={i.truckId} onClick={() => openTruckRecord(i)} className="border-b border-surface-100 last:border-0 hover:bg-brand-50 cursor-pointer">
-                          <td className="px-4 py-2 text-surface-700">{i.contractorNameSnapshot || i.contractorName || '—'}</td>
-                          <td className="px-4 py-2 font-medium text-surface-900">{i.truckRegistration || '—'}</td>
-                          <td className="px-4 py-2 text-surface-600">{i.truckMakeModel || '—'}</td>
-                          <td className="px-4 py-2 text-surface-600">{i.routeName || '—'}</td>
-                          <td className="px-4 py-2">
-                            {i.truckSuspended ? (
-                              <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800" title={i.truckSuspensionPermanent ? 'Permanent' : i.truckSuspensionEndsAt ? `Until ${formatDate(i.truckSuspensionEndsAt)}` : ''}>
-                                {i.truckSuspensionPermanent ? 'Suspended (permanent)' : i.truckSuspensionEndsAt ? `Until ${formatDate(i.truckSuspensionEndsAt)}` : 'Suspended'}
-                              </span>
-                            ) : i.pendingSuspension ? (
-                              <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800" title={`Grace period expired${i.gracePeriodExpiresAt ? ` on ${formatDate(i.gracePeriodExpiresAt)}` : ''}`}>Pending suspension</span>
-                            ) : <span className="text-surface-500 text-xs">Active</span>}
-                          </td>
-                          <td className="px-4 py-2 text-surface-600">{formatDate(i.inspectedAt)}</td>
-                          <td className="px-4 py-2">
-                            {i.truckSuspended ? <span className="text-red-700 font-medium">{i.truckSuspensionPermanent ? 'Suspended (permanent)' : i.truckSuspensionEndsAt ? `Until ${formatDate(i.truckSuspensionEndsAt)}` : 'Suspended'}</span> : countdown ? <span className={countdown.overdue ? 'text-red-700 font-medium' : 'text-surface-600'}>{countdown.text}</span> : '—'}
-                          </td>
-                          <td className="px-4 py-2">
-                            {i.recommendSuspendTruck ? (
-                              <span className="text-red-700 font-medium">Recommend suspension</span>
-                            ) : (
-                              <span className="text-green-700">OK</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-2">{graceLabel}</td>
-                          <td className="px-4 py-2">
-                            {(i.contractorRespondedAt || i.status === 'responded' || ((i.responseAttachments || []).length > 0)) ? <span className="text-emerald-700 font-medium">Responded</span> : <span className="text-surface-500">Pending</span>}
-                          </td>
-                          <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                            {!i.truckSuspended && (
-                              <button
-                                type="button"
-                                onClick={() => setSuspendTruckRecord(i)}
-                                className="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700"
-                              >
-                                Suspend
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {activeSubTab === 'drivers' && (
-          <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-            <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-              <h3 className="font-semibold text-surface-900">Inspected drivers</h3>
-              <p className="text-sm text-surface-500 mt-0.5">One row per driver (latest inspection).</p>
-              <div className="mt-3 flex flex-wrap gap-3 items-center">
-                <input type="text" value={driverFilterName} onChange={(e) => setDriverFilterName(e.target.value)} placeholder="Search name, ID or licence" className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm w-56" />
-                <input type="date" value={driverFilterFrom} onChange={(e) => setDriverFilterFrom(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
-                <span className="text-surface-500 text-sm">to</span>
-                <input type="date" value={driverFilterTo} onChange={(e) => setDriverFilterTo(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm" />
-                <select value={driverFilterRec} onChange={(e) => setDriverFilterRec(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm">
-                  <option value="">All recommendations</option>
-                  <option value="ok">OK only</option>
-                  <option value="suspend">Recommend suspension only</option>
-                </select>
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-surface-50 border-b border-surface-200">
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Name</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">ID / Licence</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Last inspected</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Recommendation</th>
-                    <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor response</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inspectedDrivers.length === 0 ? (
-                    <tr><td colSpan={6} className="px-4 py-6 text-surface-500 text-center">No drivers match the filters.</td></tr>
-                  ) : (
-                    inspectedDrivers.map((i) => (
-                      <tr key={i.driverId} onClick={() => openDriverRecord(i)} className="border-b border-surface-100 last:border-0 hover:bg-brand-50 cursor-pointer">
-                        <td className="px-4 py-2 text-surface-700">{i.contractorName || '—'}</td>
-                        <td className="px-4 py-2 font-medium text-surface-900">{i.driverName || '—'}</td>
-                        <td className="px-4 py-2 text-surface-600">{i.driverIdNumber || i.licenseNumber || '—'}</td>
-                        <td className="px-4 py-2 text-surface-600">{formatDate(i.inspectedAt)}</td>
-                        <td className="px-4 py-2">
-                          {i.recommendSuspendDriver ? (
-                            <span className="text-red-700 font-medium">Recommend suspension</span>
-                          ) : (
-                            <span className="text-green-700">OK</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2">
-                          {(i.contractorRespondedAt || i.status === 'responded' || ((i.responseAttachments || []).length > 0)) ? <span className="text-emerald-700 font-medium">Responded</span> : <span className="text-surface-500">Pending</span>}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {/* Suspend truck modal (Inspected trucks) */}
-        {suspendTruckRecord && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { if (!suspending) { setSuspendTruckRecord(null); setSuspendError(''); } }}>
-            <div className="bg-white rounded-xl shadow-lg max-w-md w-full mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-              <div className="p-4 border-b border-surface-200">
-                <h3 className="font-semibold text-surface-900">Suspend truck</h3>
-                <p className="text-sm text-surface-600 mt-0.5">{suspendTruckRecord.truckRegistration || '—'} {suspendTruckRecord.truckMakeModel ? ` · ${suspendTruckRecord.truckMakeModel}` : ''} ({suspendTruckRecord.contractorName || '—'})</p>
-              </div>
-              <div className="p-4 space-y-3">
-                {suspendSuccess && <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">{suspendSuccess}</p>}
-                {suspendError && <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{suspendError}</p>}
-                <div className="flex flex-wrap gap-4">
-                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input type="radio" name="inspected_suspend_type" checked={suspendPermanent} onChange={() => setSuspendPermanent(true)} className="rounded-full" />
-                    <span>Permanent</span>
-                  </label>
-                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input type="radio" name="inspected_suspend_type" checked={!suspendPermanent} onChange={() => setSuspendPermanent(false)} className="rounded-full" />
-                    <span>For a period</span>
-                  </label>
-                  {!suspendPermanent && (
-                    <select value={suspendDurationDays} onChange={(e) => setSuspendDurationDays(Number(e.target.value))} className="rounded-lg border border-surface-300 px-2 py-1 text-sm">
-                      <option value={1}>1 day</option>
-                      <option value={7}>7 days</option>
-                      <option value={14}>14 days</option>
-                      <option value={30}>30 days</option>
-                      <option value={90}>90 days</option>
-                      <option value={180}>180 days</option>
-                      <option value={365}>1 year</option>
-                    </select>
-                  )}
-                </div>
-                <textarea value={suspendReason} onChange={(e) => setSuspendReason(e.target.value)} placeholder="Reason (optional)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                <div className="flex gap-2 justify-end pt-2">
-                  <button type="button" disabled={suspending} onClick={() => { setSuspendTruckRecord(null); setSuspendError(''); }} className="px-3 py-1.5 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50">Cancel</button>
-                  <button type="button" disabled={suspending} onClick={runSuspendTruck} className="px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">{suspending ? 'Suspending…' : 'Suspend truck'}</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Side panel: full inspection record */}
-      {viewingRecord && (
-        <div className="w-full max-w-md shrink-0 border-l border-surface-200/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden flex flex-col dark:border-white/10 dark:bg-surface-900/75">
-          <div className="p-4 border-b border-surface-100 flex justify-between items-center">
-            <h3 className="font-semibold text-surface-900">Inspection record</h3>
-            <button type="button" onClick={() => { setSidePanelRecord(null); setSidePanelHistory([]); }} className="text-surface-500 hover:text-surface-700 p-1" aria-label="Close">×</button>
-          </div>
-          {displayRecords.length > 1 && (
-            <div className="px-4 py-2 border-b border-surface-100 flex gap-2 flex-wrap">
-              {displayRecords.map((r, idx) => (
-                <button key={r.id} type="button" onClick={() => setSidePanelViewIndex(idx)} className={`text-xs px-2 py-1 rounded ${sidePanelViewIndex === idx ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-600 hover:bg-surface-200'}`}>
-                  {idx === 0 ? 'Latest' : formatDate(r.inspectedAt)}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
-            <div>
-              <p className="font-medium text-surface-900">Date &amp; time</p>
-              <p className="text-surface-600">{formatDate(viewingRecord.inspectedAt)}</p>
-            </div>
-            <div>
-              <p className="font-medium text-surface-900">Contractor</p>
-              <p className="text-surface-600">{viewingRecord.contractorNameSnapshot || viewingRecord.contractorName || '—'}</p>
-            </div>
-            {viewingRecord.routeName && (
-              <div>
-                <p className="font-medium text-surface-900">Applicable route</p>
-                <p className="text-surface-600">{viewingRecord.routeName}</p>
-              </div>
-            )}
-            <div>
-              <p className="font-medium text-surface-900">Truck</p>
-              <p className="text-surface-600">{viewingRecord.truckRegistration || '—'} {viewingRecord.truckMakeModel ? ` · ${viewingRecord.truckMakeModel}` : ''}</p>
-              {viewingRecord.truckSuspended && <span className="inline-block mt-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">{viewingRecord.truckSuspensionPermanent ? 'Suspended (permanent)' : viewingRecord.truckSuspensionEndsAt ? `Suspended until ${formatDate(viewingRecord.truckSuspensionEndsAt)}` : 'Suspended'}</span>}
-              {!viewingRecord.truckSuspended && viewingRecord.pendingSuspension && <span className="inline-block mt-1 ml-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">Pending suspension</span>}
-            </div>
-            {viewingRecord.gracePeriodStatus && (
-              <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
-                <p className="font-medium text-surface-900">Grace period</p>
-                {viewingRecord.gracePeriodStatus === 'active' && (
-                  <p className="text-blue-800 text-xs mt-0.5">Granted ({viewingRecord.gracePeriodDays}d) · Expires {formatDate(viewingRecord.gracePeriodExpiresAt)}</p>
-                )}
-                {viewingRecord.gracePeriodStatus === 'expired' && (
-                  <p className="text-orange-800 text-xs mt-0.5">Expired on {formatDate(viewingRecord.gracePeriodExpiresAt)} — truck pending suspension</p>
-                )}
-                {viewingRecord.gracePeriodStatus === 'resolved' && (
-                  <p className="text-green-800 text-xs mt-0.5">Resolved — compliance corrected</p>
-                )}
-                {viewingRecord.gracePeriodReason && <p className="text-surface-600 text-xs mt-1">{viewingRecord.gracePeriodReason}</p>}
-              </div>
-            )}
-            <div>
-              <p className="font-medium text-surface-900">Driver</p>
-              <p className="text-surface-600">{viewingRecord.driverName || '—'}</p>
-              {(viewingRecord.driverIdNumber || viewingRecord.licenseNumber) && <p className="text-surface-500 text-xs mt-0.5">ID: {viewingRecord.driverIdNumber || '—'} · Licence: {viewingRecord.licenseNumber || '—'}</p>}
-            </div>
-            <div className="border-t border-surface-200 pt-3">
-              <p className="font-medium text-surface-900 mb-2">Truck inspection</p>
-              <ul className="space-y-1 text-surface-600">
-                <li>GPS: {viewingRecord.gpsStatus || '—'} {viewingRecord.gpsComment && `— ${viewingRecord.gpsComment}`}</li>
-                <li>Camera: {viewingRecord.cameraStatus || '—'} {viewingRecord.cameraComment && `— ${viewingRecord.cameraComment}`}</li>
-                <li>Visibility: {viewingRecord.cameraVisibility || '—'} {viewingRecord.cameraVisibilityComment && `— ${viewingRecord.cameraVisibilityComment}`}</li>
-              </ul>
-              <p className="mt-2">{viewingRecord.recommendSuspendTruck ? <span className="text-red-700 font-medium">Recommend suspension</span> : <span className="text-green-700">OK</span>}</p>
-            </div>
-            <div className="border-t border-surface-200 pt-3">
-              <p className="font-medium text-surface-900 mb-2">Driver road safety</p>
-              <ul className="space-y-1 text-surface-600">
-                {(viewingRecord.driverItems || []).map((d) => {
-                  const label = DRIVER_ROAD_SAFETY_ITEMS.find((x) => x.id === d.id)?.label || d.id;
-                  return <li key={d.id}>{label}: {d.status || '—'} {d.comment ? `— ${d.comment}` : ''}</li>;
-                })}
-              </ul>
-              <p className="mt-2">{viewingRecord.recommendSuspendDriver ? <span className="text-red-700 font-medium">Recommend suspension</span> : <span className="text-green-700">OK</span>}</p>
-            </div>
-            <div className="border-t border-surface-200 pt-3">
-              <p className="font-medium text-surface-900 mb-1">Next due (24h)</p>
-              <p className="text-surface-600">{viewingRecord.truckSuspended ? (viewingRecord.truckSuspensionPermanent ? 'Suspended (permanent)' : viewingRecord.truckSuspensionEndsAt ? `Suspended until ${formatDate(viewingRecord.truckSuspensionEndsAt)}` : 'Suspended (does not expire until reinstatement)') : (getInspectionCountdown(viewingRecord.inspectedAt)?.text || '—')}</p>
-            </div>
-            {/* Contractor response / feedback — full view including attachments */}
-            <div className="border-t border-surface-200 pt-3 mt-3 bg-surface-50 rounded-lg p-3 -mx-1">
-              <p className="font-medium text-surface-900 mb-2">Contractor response / feedback</p>
-              {(viewingRecord.contractorRespondedAt || viewingRecord.status === 'responded' || ((viewingRecord.responseAttachments || []).length > 0)) ? (
-                <>
-                  {viewingRecord.contractorRespondedAt && <p className="text-surface-600 text-xs mb-2">Responded: {formatDate(viewingRecord.contractorRespondedAt)}</p>}
-                  <div className="bg-white border border-surface-200 rounded-md p-3 mb-3">
-                    <p className="text-surface-800 text-sm whitespace-pre-wrap break-words min-h-[2em]">{viewingRecord.contractorResponseText || '—'}</p>
-                  </div>
-                  {(viewingRecord.responseAttachments || []).length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-surface-700 text-xs font-medium mb-1.5">Attachments ({viewingRecord.responseAttachments.length})</p>
-                      <ul className="space-y-1.5">
-                        {(viewingRecord.responseAttachments || []).map((a) => (
-                          <li key={a.id} className="flex items-center gap-2 flex-wrap">
-                            <span className="text-surface-700 text-sm truncate flex-1 min-w-0" title={a.fileName}>{a.fileName}</span>
-                            <button type="button" onClick={() => openAttachmentWithAuth(ccApi.complianceInspections.attachmentUrl(viewingRecord.id, a.id)).catch((e) => window.alert(e?.message || 'Could not open'))} className="text-xs font-medium text-brand-600 hover:text-brand-700 shrink-0">View</button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <p className="text-surface-500 text-sm">No response yet. Contractor may respond within 8 hours.</p>
-              )}
-              {/* Your reply (Command Centre) */}
-              {(viewingRecord.inspectorReplyText != null || viewingRecord.inspectorRepliedAt) && (
-                <div className="mt-3 pt-3 border-t border-surface-200">
-                  <p className="font-medium text-surface-900 text-xs mb-1">Your reply</p>
-                  {viewingRecord.inspectorRepliedAt && <p className="text-surface-600 text-xs mb-1">Replied: {formatDate(viewingRecord.inspectorRepliedAt)}</p>}
-                  <p className="text-surface-800 text-sm whitespace-pre-wrap break-words">{viewingRecord.inspectorReplyText || '—'}</p>
-                </div>
-              )}
-              {/* Reply to contractor form */}
-              {(viewingRecord.contractorRespondedAt || viewingRecord.status === 'responded' || ((viewingRecord.responseAttachments || []).length > 0)) && setInspections && (
-                <div className="mt-3 pt-3 border-t border-surface-200">
-                  <p className="font-medium text-surface-900 text-xs mb-1.5">Reply to contractor</p>
-                  <textarea value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="Type your reply…" rows={3} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2 resize-y" />
-                  <button type="button" disabled={replying} onClick={async () => {
-                    const text = replyText.trim();
-                    if (!text) return;
-                    setReplying(true);
-                    try {
-                      await ccApi.complianceInspections.reply(viewingRecord.id, text);
-                      const at = new Date().toISOString();
-                      setInspections((prev) => prev.map((i) => i.id === viewingRecord.id ? { ...i, inspectorReplyText: text, inspectorRepliedAt: at } : i));
-                      setSidePanelRecord((prev) => prev?.id === viewingRecord.id ? { ...prev, inspectorReplyText: text, inspectorRepliedAt: at } : prev);
-                      setSidePanelHistory((prev) => prev.map((r) => r.id === viewingRecord.id ? { ...r, inspectorReplyText: text, inspectorRepliedAt: at } : r));
-                      setReplyText('');
-                    } catch (e) {
-                      window.alert(e?.message || 'Failed to send reply');
-                    } finally {
-                      setReplying(false);
-                    }
-                  }} className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Submit reply</button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TabInspectionRecords({ inspections = [], setInspections }) {
-  const [selectedRecord, setSelectedRecord] = useState(null);
-  const [replyText, setReplyText] = useState('');
-  const [replying, setReplying] = useState(false);
-  const [inspectionRecordsHelpOpen, setInspectionRecordsHelpOpen] = useState(false);
-  const sorted = [...inspections].sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt));
-  const formatDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—');
-
-  return (
-    <div className="flex gap-0">
-      <div className="space-y-6 flex-1 min-w-0">
-        <CollapsibleSectionHelp
-          title="Truck inspection records"
-          titleClassName="text-xl font-bold text-surface-900 tracking-tight"
-          open={inspectionRecordsHelpOpen}
-          setOpen={setInspectionRecordsHelpOpen}
-          topic="truck inspection records"
-        >
-          <p>Full trail of all truck inspections. Click a row to view details and contractor response. Trucks must be inspected every 24 hours.</p>
-        </CollapsibleSectionHelp>
-
-        <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
-          <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
-            <h3 className="font-semibold text-surface-900">All inspection records</h3>
-            <p className="text-sm text-surface-500 mt-0.5">Most recent first. Each row is one inspection (truck + driver at a point in time).</p>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-surface-50 border-b border-surface-200">
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Date &amp; time</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Truck</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Driver</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Truck result</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Driver result</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Contractor response</th>
-                  <th className="text-left font-semibold text-surface-700 px-4 py-2">Next due</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.length === 0 ? (
-                  <tr><td colSpan={8} className="px-4 py-6 text-surface-500 text-center">No inspection records yet. Complete an inspection in Fleet and driver compliance.</td></tr>
-                ) : (
-                  sorted.map((r) => {
-                    const countdown = getInspectionCountdown(r.inspectedAt);
-                    return (
-                      <tr key={r.id} onClick={() => setSelectedRecord(r)} className="border-b border-surface-100 last:border-0 hover:bg-brand-50 cursor-pointer">
-                        <td className="px-4 py-2 text-surface-700">{r.contractorName || '—'}</td>
-                        <td className="px-4 py-2 text-surface-700 whitespace-nowrap">{formatInspectedDateTime(r.inspectedAt)}</td>
-                        <td className="px-4 py-2">
-                          <span className="font-medium text-surface-900">{r.truckRegistration || '—'}</span>
-                          {r.truckMakeModel && <span className="text-surface-500 block text-xs">{r.truckMakeModel}</span>}
-                        </td>
-                        <td className="px-4 py-2 text-surface-700">{r.driverName || '—'}</td>
-                        <td className="px-4 py-2">
-                          {r.recommendSuspendTruck ? <span className="text-red-700 font-medium">Recommend suspension</span> : <span className="text-green-700">OK</span>}
-                        </td>
-                        <td className="px-4 py-2">
-                          {r.recommendSuspendDriver ? <span className="text-red-700 font-medium">Recommend suspension</span> : <span className="text-green-700">OK</span>}
-                        </td>
-                        <td className="px-4 py-2">
-                          {(r.contractorRespondedAt || r.status === 'responded' || ((r.responseAttachments || []).length > 0)) ? (
-                            <span className="text-emerald-700 font-medium" title={r.contractorRespondedAt ? formatDate(r.contractorRespondedAt) : ''}>Responded</span>
-                          ) : (
-                            <span className="text-surface-500">Pending</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2">
-                          {countdown ? <span className={countdown.overdue ? 'text-red-700 font-medium' : 'text-surface-600'}>{countdown.text}</span> : '—'}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      {/* Side panel: full record + contractor response */}
-      {selectedRecord && (
-        <div className="w-full max-w-md shrink-0 border-l border-surface-200/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden flex flex-col dark:border-white/10 dark:bg-surface-900/75">
-          <div className="p-4 border-b border-surface-100 flex justify-between items-center">
-            <h3 className="font-semibold text-surface-900">Inspection record</h3>
-            <button type="button" onClick={() => setSelectedRecord(null)} className="text-surface-500 hover:text-surface-700 p-1" aria-label="Close">×</button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
-            <div>
-              <p className="font-medium text-surface-900">Contractor</p>
-              <p className="text-surface-600">{selectedRecord.contractorName || '—'}</p>
-            </div>
-            <div>
-              <p className="font-medium text-surface-900">Date &amp; time</p>
-              <p className="text-surface-600">{formatDate(selectedRecord.inspectedAt)}</p>
-            </div>
-            <div>
-              <p className="font-medium text-surface-900">Truck</p>
-              <p className="text-surface-600">{selectedRecord.truckRegistration || '—'} {selectedRecord.truckMakeModel ? ` · ${selectedRecord.truckMakeModel}` : ''}</p>
-              {selectedRecord.truckSuspended && <span className="inline-block mt-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">{selectedRecord.truckSuspensionPermanent ? 'Suspended (permanent)' : selectedRecord.truckSuspensionEndsAt ? `Suspended until ${formatDate(selectedRecord.truckSuspensionEndsAt)}` : 'Suspended'}</span>}
-            </div>
-            <div>
-              <p className="font-medium text-surface-900">Driver</p>
-              <p className="text-surface-600">{selectedRecord.driverName || '—'}</p>
-            </div>
-            <div className="border-t border-surface-200 pt-3">
-              <p className="font-medium text-surface-900 mb-2">Truck inspection</p>
-              <ul className="space-y-1 text-surface-600">
-                <li>GPS: {selectedRecord.gpsStatus || '—'} {selectedRecord.gpsComment && `— ${selectedRecord.gpsComment}`}</li>
-                <li>Camera: {selectedRecord.cameraStatus || '—'} {selectedRecord.cameraComment && `— ${selectedRecord.cameraComment}`}</li>
-                <li>Visibility: {selectedRecord.cameraVisibility || '—'} {selectedRecord.cameraVisibilityComment && `— ${selectedRecord.cameraVisibilityComment}`}</li>
-              </ul>
-              <p className="mt-2">{selectedRecord.recommendSuspendTruck ? <span className="text-red-700 font-medium">Recommend suspension</span> : <span className="text-green-700">OK</span>}</p>
-            </div>
-            <div className="border-t border-surface-200 pt-3">
-              <p className="font-medium text-surface-900 mb-2">Driver road safety</p>
-              <ul className="space-y-1 text-surface-600">
-                {(selectedRecord.driverItems || []).map((d) => {
-                  const label = DRIVER_ROAD_SAFETY_ITEMS.find((x) => x.id === d.id)?.label || d.id;
-                  return <li key={d.id}>{label}: {d.status || '—'} {d.comment ? `— ${d.comment}` : ''}</li>;
-                })}
-              </ul>
-              <p className="mt-2">{selectedRecord.recommendSuspendDriver ? <span className="text-red-700 font-medium">Recommend suspension</span> : <span className="text-green-700">OK</span>}</p>
-            </div>
-            <div className="border-t border-surface-200 pt-3">
-              <p className="font-medium text-surface-900 mb-1">Next due (24h)</p>
-              <p className="text-surface-600">{selectedRecord.truckSuspended ? (selectedRecord.truckSuspensionPermanent ? 'Suspended (permanent)' : selectedRecord.truckSuspensionEndsAt ? `Suspended until ${formatDate(selectedRecord.truckSuspensionEndsAt)}` : 'Suspended (does not expire until reinstatement)') : (getInspectionCountdown(selectedRecord.inspectedAt)?.text || '—')}</p>
-            </div>
-            {/* Contractor response / feedback — full view including attachments */}
-            <div className="border-t border-surface-200 pt-3 mt-3 bg-surface-50 rounded-lg p-3 -mx-1">
-              <p className="font-medium text-surface-900 mb-2">Contractor response / feedback</p>
-              {(selectedRecord.contractorRespondedAt || selectedRecord.status === 'responded' || ((selectedRecord.responseAttachments || []).length > 0)) ? (
-                <>
-                  {selectedRecord.contractorRespondedAt && <p className="text-surface-600 text-xs mb-2">Responded: {formatDate(selectedRecord.contractorRespondedAt)}</p>}
-                  <div className="bg-white border border-surface-200 rounded-md p-3 mb-3">
-                    <p className="text-surface-800 text-sm whitespace-pre-wrap break-words min-h-[2em]">{selectedRecord.contractorResponseText || '—'}</p>
-                  </div>
-                  {(selectedRecord.responseAttachments || []).length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-surface-700 text-xs font-medium mb-1.5">Attachments ({selectedRecord.responseAttachments.length})</p>
-                      <ul className="space-y-1.5">
-                        {(selectedRecord.responseAttachments || []).map((a) => (
-                          <li key={a.id} className="flex items-center gap-2 flex-wrap">
-                            <span className="text-surface-700 text-sm truncate flex-1 min-w-0" title={a.fileName}>{a.fileName}</span>
-                            <button type="button" onClick={() => openAttachmentWithAuth(ccApi.complianceInspections.attachmentUrl(selectedRecord.id, a.id)).catch((e) => window.alert(e?.message || 'Could not open'))} className="text-xs font-medium text-brand-600 hover:text-brand-700 shrink-0">View</button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <p className="text-surface-500 text-sm">No response yet. Contractor may respond within 8 hours.</p>
-              )}
-              {/* Your reply (Command Centre) */}
-              {(selectedRecord.inspectorReplyText != null || selectedRecord.inspectorRepliedAt) && (
-                <div className="mt-3 pt-3 border-t border-surface-200">
-                  <p className="font-medium text-surface-900 text-xs mb-1">Your reply</p>
-                  {selectedRecord.inspectorRepliedAt && <p className="text-surface-600 text-xs mb-1">Replied: {formatDate(selectedRecord.inspectorRepliedAt)}</p>}
-                  <p className="text-surface-800 text-sm whitespace-pre-wrap break-words">{selectedRecord.inspectorReplyText || '—'}</p>
-                </div>
-              )}
-              {/* Reply to contractor form */}
-              {(selectedRecord.contractorRespondedAt || selectedRecord.status === 'responded' || ((selectedRecord.responseAttachments || []).length > 0)) && setInspections && (
-                <div className="mt-3 pt-3 border-t border-surface-200">
-                  <p className="font-medium text-surface-900 text-xs mb-1.5">Reply to contractor</p>
-                  <textarea value={replyText} onChange={(e) => setReplyText(e.target.value)} placeholder="Type your reply…" rows={3} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm mb-2 resize-y" />
-                  <button type="button" disabled={replying} onClick={async () => {
-                    const text = replyText.trim();
-                    if (!text) return;
-                    setReplying(true);
-                    try {
-                      await ccApi.complianceInspections.reply(selectedRecord.id, text);
-                      const at = new Date().toISOString();
-                      setInspections((prev) => prev.map((i) => i.id === selectedRecord.id ? { ...i, inspectorReplyText: text, inspectorRepliedAt: at } : i));
-                      setSelectedRecord((prev) => prev ? { ...prev, inspectorReplyText: text, inspectorRepliedAt: at } : null);
-                      setReplyText('');
-                    } catch (e) {
-                      window.alert(e?.message || 'Failed to send reply');
-                    } finally {
-                      setReplying(false);
-                    }
-                  }} className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">Submit reply</button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

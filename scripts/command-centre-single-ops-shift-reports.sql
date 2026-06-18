@@ -125,3 +125,9 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_cc_sosce_report' AND o
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_cc_sosor_report' AND object_id = OBJECT_ID('command_centre_single_ops_override_requests'))
   CREATE INDEX IX_cc_sosor_report ON command_centre_single_ops_override_requests(report_id);
 GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'command_centre_single_ops_shift_reports') AND name = N'controller3_name')
+  ALTER TABLE command_centre_single_ops_shift_reports ADD controller3_name NVARCHAR(255) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'command_centre_single_ops_shift_reports') AND name = N'controller3_email')
+  ALTER TABLE command_centre_single_ops_shift_reports ADD controller3_email NVARCHAR(255) NULL;
+GO

@@ -380,6 +380,30 @@ export function vehicleComplianceAlertHtml({
   return wrap(content, 'Vehicle compliance notice', { charcoal: true });
 }
 
+export function vehicleTrackerComplianceAlertHtml({
+  registration,
+  fleetNo,
+  contractorName,
+  tenantName,
+  failReasons,
+  customMessage,
+  checkedAt,
+}) {
+  const reasonList = (failReasons || []).length
+    ? `<ul style="margin:12px 0 0;padding-left:20px;">${failReasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
+    : '<p style="margin:12px 0 0;">Tracker compliance check failed.</p>';
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">Vehicle tracker compliance failure</h1>
+    <p style="margin:0 0 12px;">Truck <strong>${escapeHtml(registration || 'Unknown')}</strong>${fleetNo ? ` (Fleet ${escapeHtml(fleetNo)})` : ''} for <strong>${escapeHtml(contractorName || tenantName || 'haulier')}</strong> did not pass the tracker compliance check.</p>
+    ${checkedAt ? `<p style="margin:0 0 12px;color:#a0aec0;font-size:14px;">Checked: ${escapeHtml(new Date(checkedAt).toLocaleString())}</p>` : ''}
+    ${sectionBar('Issues identified')}
+    ${reasonList}
+    ${customMessage ? `<p style="margin:16px 0 0;"><strong>Message:</strong> ${escapeHtml(customMessage)}</p>` : ''}
+    <p style="margin:20px 0 0;color:#a0aec0;font-size:14px;">Please correct tracker/camera issues urgently. Failure to resolve may result in suspension from route enrollment.</p>
+  `;
+  return wrap(content, 'Vehicle tracker compliance', { charcoal: true });
+}
+
 /** Truck reinstated: to contractor – grey template. */
 export function truckReinstatedToContractorHtml({ truckRegistration, tenantName, appUrl }) {
   const content = `

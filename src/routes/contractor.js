@@ -11,6 +11,7 @@ import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRout
 import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
+import { restoreTrackerComplianceEnrollment } from '../lib/vehicleTrackerCompliance.js';
 import { computeRouteEconomics } from '../lib/routeEconomics.js';
 import { computeRiskAssessment, parseRiskAssessmentJson, defaultRiskAssessment } from '../lib/routeRiskAssessment.js';
 import {
@@ -2443,6 +2444,13 @@ router.patch('/suspensions/:id', async (req, res, next) => {
     const updated = result.recordset[0];
     const entityType = String(getRow(updated, 'entity_type') || '').toLowerCase();
     const entityId = getRow(updated, 'entity_id');
+    if (isReinstating && (entityType === 'truck' || entityType === 'driver') && entityId) {
+      try {
+        await restoreTrackerComplianceEnrollment(query, { tenantId, suspensionId: id });
+      } catch (e) {
+        console.warn('[contractor] tracker compliance enrollment restore failed:', e?.message || e);
+      }
+    }
     if (isReinstating && (entityType === 'truck' || entityType === 'driver') && entityId && isEmailConfigured?.() && sendEmail && (getContractorUserEmails || getTenantUserEmails) && getCommandCentreAndAccessManagementEmails && getRectorEmailsForAlertTypeAndRoutes && getAccessManagementEmails) {
       try {
         const tenantRow = await query(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });

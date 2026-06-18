@@ -104,3 +104,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ce_tenant' AND object_
   CREATE INDEX IX_ce_tenant ON controller_evaluations(tenant_id);
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_sror_report' AND object_id = OBJECT_ID('shift_report_override_requests'))
   CREATE INDEX IX_sror_report ON shift_report_override_requests(shift_report_id);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'command_centre_shift_reports') AND name = N'controller3_name')
+  ALTER TABLE command_centre_shift_reports ADD controller3_name NVARCHAR(255) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'command_centre_shift_reports') AND name = N'controller3_email')
+  ALTER TABLE command_centre_shift_reports ADD controller3_email NVARCHAR(255) NULL;
+GO

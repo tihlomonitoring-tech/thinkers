@@ -46,12 +46,14 @@ import trackingRoutes from './src/routes/tracking.js';
 import companyPoliciesRoutes from './src/routes/companyPolicies.js';
 import tabAccessRoutes from './src/routes/tabAccess.js';
 import vehicleComplianceRoutes from './src/routes/vehicleCompliance.js';
+import vehicleTrackerComplianceRoutes from './src/routes/vehicleTrackerCompliance.js';
 import claimsRoutes from './src/routes/claims.js';
 import orgStructureRoutes from './src/routes/orgStructure.js';
 import truckOnboardingRoutes from './src/routes/truckOnboarding.js';
 import { isEmailConfigured } from './src/lib/emailService.js';
-import { isDbEnvConfigured } from './src/db.js';
+import { isDbEnvConfigured, query } from './src/db.js';
 import { runAutoReinstateSuspensions } from './src/lib/autoReinstateSuspensions.js';
+import { runTrackerComplianceGraceExpiry, runPassedCheckExpiry } from './src/lib/vehicleTrackerCompliance.js';
 import { runPilotListDistributions } from './src/lib/pilotListDistributionRunner.js';
 import { runFuelDataAutoShareDistributions } from './src/lib/fuelDataAutoShareRunner.js';
 import { runTrackingProviderPoll, pollIntervalMs, isTrackingPollEnabled } from './src/lib/trackingProviderPoll.js';
@@ -178,6 +180,7 @@ app.use('/api/logistics-finance', logisticsFinanceRoutes);
 app.use('/api/tracking', trackingRoutes);
 app.use('/api/tab-access', tabAccessRoutes);
 app.use('/api/vehicle-compliance', vehicleComplianceRoutes);
+app.use('/api/vehicle-tracker-compliance', vehicleTrackerComplianceRoutes);
 app.use('/api/claims', claimsRoutes);
 app.use('/api/org-structure', orgStructureRoutes);
 app.use('/api/truck-onboarding', truckOnboardingRoutes);
@@ -221,13 +224,16 @@ app.use('/api', (req, res) => {
       pathLower.includes('compose-shift-report-entry') ||
       pathLower.includes('link-shift-report')) &&
     'Logistics flow → shift report linking requires a restarted API with the latest code. Restart: npm run server (local) or redeploy the Node app (production). Ping: GET /api/command-centre/logistics-flow/shift-report-link/ping should return {"ok":true}.';
+  const vehicleTrackerComplianceHint =
+    pathLower.includes('vehicle-tracker-compliance') &&
+    'Vehicle Tracker Compliance requires a restarted API (routes under /api/vehicle-tracker-compliance). Run: npm run db:vehicle-tracker-compliance && npm run server — then reload Access Management.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || logisticsShiftReportHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || logisticsShiftReportHint || vehicleTrackerComplianceHint || genericHint,
   });
 });
 
@@ -299,6 +305,8 @@ const server = app.listen(PORT, () => {
   const AUTO_REINSTATE_MS = 15 * 60 * 1000;
   setInterval(() => {
     runAutoReinstateSuspensions().catch((e) => console.error('[autoReinstate]', e?.message || e));
+    runTrackerComplianceGraceExpiry(query).catch((e) => console.error('[trackerComplianceGrace]', e?.message || e));
+    runPassedCheckExpiry(query).catch((e) => console.error('[trackerComplianceExpiry]', e?.message || e));
   }, AUTO_REINSTATE_MS);
   // Pilot list distribution (Access Management schedules) — check every minute
   const PILOT_DIST_MS = 60 * 1000;

@@ -37,6 +37,7 @@ import {
 } from '../lib/shiftReportAi.js';
 import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
 import { nextShiftReportRefNumber } from '../lib/shiftReportRefNumbers.js';
+import { canEditShiftReport, canSubmitShiftReport } from '../lib/shiftReportAccess.js';
 import { buildStyledListSheet } from '../lib/distributionExcel.js';
 import { applyTruckChangeRequest, mapChangeRequestRow } from '../lib/fleetChangeRequests.js';
 import { logFleetApplicationHistory, getFleetApplicationHistory } from '../lib/fleetApplicationHistory.js';
@@ -121,9 +122,7 @@ export const CC_TAB_IDS = [
   'messages',
   'requests',
   'library',
-  'compliance',
-  'inspected',
-  'inspection_records',
+  'vehicle_tracker_compliance',
   'vehicle_inspection',
   'vehicle_inspection_results',
   'contractor_block',
@@ -4621,7 +4620,7 @@ const SHIFT_REPORT_STATUSES = ['draft', 'pending_approval', 'provisional', 'appr
 
 const SHIFT_REPORT_SCALAR_KEYS = [
   'id', 'created_by_user_id', 'ref_number', 'route', 'report_date', 'shift_date', 'shift_start', 'shift_end',
-  'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email',
+  'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email', 'controller3_name', 'controller3_email',
   'total_trucks_scheduled', 'balance_brought_down', 'total_loads_dispatched', 'total_pending_deliveries', 'total_loads_delivered',
   'overall_performance', 'key_highlights', 'outstanding_issues', 'handover_key_info', 'declaration', 'shift_conclusion_time',
   'status', 'submitted_at', 'submitted_to_user_id', 'approved_by_user_id', 'approved_at', 'created_at', 'updated_at'
@@ -5977,6 +5976,8 @@ router.post('/shift-reports', async (req, res, next) => {
       controller1_email: b.controller1_email ?? null,
       controller2_name: b.controller2_name ?? null,
       controller2_email: b.controller2_email ?? null,
+      controller3_name: b.controller3_name ?? null,
+      controller3_email: b.controller3_email ?? null,
       total_trucks_scheduled: b.total_trucks_scheduled ?? null,
       balance_brought_down: b.balance_brought_down ?? null,
       total_loads_dispatched: b.total_loads_dispatched ?? null,
@@ -5998,14 +5999,14 @@ router.post('/shift-reports', async (req, res, next) => {
     const result = await query(
       `INSERT INTO command_centre_shift_reports (
         created_by_user_id, tenant_id, ref_number, route, report_date, shift_date, shift_start, shift_end,
-        controller1_name, controller1_email, controller2_name, controller2_email,
+        controller1_name, controller1_email, controller2_name, controller2_email, controller3_name, controller3_email,
         total_trucks_scheduled, balance_brought_down, total_loads_dispatched, total_pending_deliveries, total_loads_delivered,
         overall_performance, key_highlights, truck_updates, incidents, non_compliance_calls, investigations, communication_log,
         outstanding_issues, handover_key_info, declaration, shift_conclusion_time, status
       ) OUTPUT INSERTED.*
       VALUES (
         @created_by_user_id, @tenant_id, @ref_number, @route, @report_date, @shift_date, @shift_start, @shift_end,
-        @controller1_name, @controller1_email, @controller2_name, @controller2_email,
+        @controller1_name, @controller1_email, @controller2_name, @controller2_email, @controller3_name, @controller3_email,
         @total_trucks_scheduled, @balance_brought_down, @total_loads_dispatched, @total_pending_deliveries, @total_loads_delivered,
         @overall_performance, @key_highlights, @truck_updates, @incidents, @non_compliance_calls, @investigations, @communication_log,
         @outstanding_issues, @handover_key_info, @declaration, @shift_conclusion_time, @status
@@ -6020,11 +6021,12 @@ router.post('/shift-reports', async (req, res, next) => {
   }
 });
 
-/** PATCH update shift report (only draft or provisional when creator) */
+/** PATCH update shift report (draft / provisional / rejected — creator, specialist 1, or collaborators 2 & 3) */
 router.patch('/shift-reports/:id', async (req, res, next) => {
   try {
     const getResult = await query(
-      `SELECT r.id, r.status, r.created_by_user_id, creator.email AS creator_email
+      `SELECT r.id, r.status, r.created_by_user_id, r.controller1_email, r.controller2_email, r.controller3_email,
+              creator.email AS creator_email
        FROM command_centre_shift_reports r
        LEFT JOIN users creator ON creator.id = r.created_by_user_id
        WHERE r.id = @id`,
@@ -6034,13 +6036,7 @@ router.patch('/shift-reports/:id', async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: 'Report not found' });
     const status = existing.status != null ? String(existing.status).toLowerCase().trim() : '';
     if (!['draft', 'provisional', 'rejected'].includes(status)) return res.status(400).json({ error: 'Report cannot be edited in current status' });
-    const norm = (v) => (v != null ? String(v).toLowerCase().trim() : '');
-    const creatorId = norm(existing.created_by_user_id);
-    const userId = norm(req.user?.id);
-    const creatorEmail = norm(existing.creator_email);
-    const userEmail = norm(req.user?.email);
-    const isCreator = (creatorId && userId && creatorId === userId) || (creatorEmail && userEmail && creatorEmail === userEmail);
-    if (!isCreator) return res.status(403).json({ error: 'Not allowed to edit this report' });
+    if (!canEditShiftReport(existing, req.user)) return res.status(403).json({ error: 'Not allowed to edit this report' });
 
     const b = req.body || {};
     const payload = {
@@ -6054,6 +6050,8 @@ router.patch('/shift-reports/:id', async (req, res, next) => {
       controller1_email: b.controller1_email,
       controller2_name: b.controller2_name,
       controller2_email: b.controller2_email,
+      controller3_name: b.controller3_name,
+      controller3_email: b.controller3_email,
       total_trucks_scheduled: b.total_trucks_scheduled,
       balance_brought_down: b.balance_brought_down,
       total_loads_dispatched: b.total_loads_dispatched,
@@ -6075,7 +6073,7 @@ router.patch('/shift-reports/:id', async (req, res, next) => {
     const params = { id: req.params.id };
     const fields = [
       'route', 'report_date', 'shift_date', 'shift_start', 'shift_end',
-      'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email',
+      'controller1_name', 'controller1_email', 'controller2_name', 'controller2_email', 'controller3_name', 'controller3_email',
       'total_trucks_scheduled', 'balance_brought_down', 'total_loads_dispatched', 'total_pending_deliveries', 'total_loads_delivered',
       'overall_performance', 'key_highlights', 'truck_updates', 'incidents', 'non_compliance_calls', 'investigations', 'communication_log',
       'outstanding_issues', 'handover_key_info', 'declaration', 'shift_conclusion_time'
@@ -6157,12 +6155,15 @@ router.post('/shift-reports/:id/submit', async (req, res, next) => {
     const { submitted_to_user_id } = req.body || {};
     if (!submitted_to_user_id) return res.status(400).json({ error: 'submitted_to_user_id required' });
     const getResult = await query(
-      `SELECT id, status, created_by_user_id FROM command_centre_shift_reports WHERE id = @id`,
+      `SELECT r.id, r.status, r.created_by_user_id, r.controller1_email, creator.email AS creator_email
+       FROM command_centre_shift_reports r
+       LEFT JOIN users creator ON creator.id = r.created_by_user_id
+       WHERE r.id = @id`,
       { id: req.params.id }
     );
     const existing = getResult.recordset?.[0];
     if (!existing) return res.status(404).json({ error: 'Report not found' });
-    if (existing.created_by_user_id !== req.user.id) return res.status(403).json({ error: 'Not allowed' });
+    if (!canSubmitShiftReport(existing, req.user)) return res.status(403).json({ error: 'Only the report author or telematics specialist 1 can submit' });
     if (existing.status !== 'draft' && existing.status !== 'rejected') return res.status(400).json({ error: 'Only draft or rejected reports can be submitted' });
 
     await query(

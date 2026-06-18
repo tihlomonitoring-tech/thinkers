@@ -9,7 +9,7 @@ import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboard, tsvToKeyMetrics, tsvToBreakdowns, tsvToFleetPerformance } from './lib/monthlyPerfReportHelpers.js';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
-import VehicleCompliancePanel from './components/vehicleCompliance/VehicleCompliancePanel.jsx';
+import VehicleTrackerComplianceHub from './components/vehicleTrackerCompliance/VehicleTrackerComplianceHub.jsx';
 import RouteManagementModal, { RiskBadge } from './components/RouteManagementModal.jsx';
 
 const TABS = [
@@ -19,7 +19,9 @@ const TABS = [
   { id: 'routes', label: 'Route management', icon: 'route', section: 'Routes' },
   { id: 'rectors', label: 'Route rectors', icon: 'users', section: 'Routes' },
   { id: 'reinstatement', label: 'Reinstatement requests', icon: 'reinstatement', section: 'Routes' },
-  { id: 'vehicle_compliance', label: 'Vehicle compliance', icon: 'shield', section: 'Compliance' },
+  { id: 'vehicle_tracker_compliance', label: 'Vehicle Tracker Compliance', icon: 'shield', section: 'Compliance' },
+  { id: 'vehicle_tracker_history', label: 'Vehicle compliance check history', icon: 'history', section: 'Compliance' },
+  { id: 'vehicle_tracker_grace', label: 'Vehicle compliance grace periods', icon: 'clock', section: 'Compliance' },
   { id: 'distribution', label: 'List distribution', icon: 'share', section: 'Distribution' },
   { id: 'pilot-distribution', label: 'Pilot distribution', icon: 'clock', section: 'Distribution' },
   { id: 'distribution-history', label: 'Distribution history', icon: 'history', section: 'Distribution' },
@@ -1904,11 +1906,29 @@ export default function AccessManagement() {
         </div>
       )}
 
-      {activeTab === 'vehicle_compliance' && hasTenant && (
-        <VehicleCompliancePanel
-          mode="compliance"
-          title="Vehicle compliance"
-          subtitle="Inspection and breakdown trends per truck. Notify hauliers, CC rectors, and suspend non-compliant vehicles."
+      {activeTab === 'vehicle_tracker_compliance' && hasTenant && (
+        <VehicleTrackerComplianceHub
+          mode="checks"
+          title="Vehicle Tracker Compliance"
+          subtitle="Inspect enrolled trucks — tracker login, cameras, and tracking updates. Compliant checks remain valid for 48 hours then show as Expired until re-inspected."
+        />
+      )}
+
+      {activeTab === 'vehicle_tracker_history' && hasTenant && (
+        <VehicleTrackerComplianceHub
+          mode="history"
+          title="Vehicle compliance check history"
+          subtitle="All tracker compliance checks. Notify contractors on failures and record grace periods. Compliant checks expire after 48 hours — expired records remain in history."
+          allowExport
+          tenantName={user?.tenant_name}
+        />
+      )}
+
+      {activeTab === 'vehicle_tracker_grace' && hasTenant && (
+        <VehicleTrackerComplianceHub
+          mode="grace"
+          title="Vehicle compliance grace periods"
+          subtitle="Active and past grace periods. When grace expires, trucks (and drivers if checked) are suspended and removed from route enrollment until reinstated."
         />
       )}
 
