@@ -80,5 +80,17 @@ export function createLogisticsFlowApi(request, prefix) {
       request(`${base}/shifts/${encodeURIComponent(shiftId)}/complete`, { method: 'POST', body: '{}' }),
     lookupTruck: (registration) =>
       request(`${base}/trucks/lookup?registration=${encodeURIComponent(registration)}`),
+    shiftReportDrafts: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.route_label) q.set('route_label', params.route_label);
+      return request(`${base}/shift-report-drafts?${q}`);
+    },
+    composeShiftReportEntry: (body) =>
+      request(`${base}/compose-shift-report-entry`, { method: 'POST', body: JSON.stringify(body) }),
+    linkShiftReport: (shiftId, updateId, body) =>
+      request(
+        `${base}/shifts/${encodeURIComponent(shiftId)}/updates/${encodeURIComponent(updateId)}/link-shift-report`,
+        { method: 'POST', body: JSON.stringify(body) }
+      ),
   };
 }

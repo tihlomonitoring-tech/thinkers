@@ -9,6 +9,11 @@ import {
   loadRouteEnrollmentDetail,
   enrichRowsWithRoute,
 } from '../lib/logisticsFlowRouteEnrich.js';
+import {
+  appendTruckUpdateToShiftReport,
+  composeShiftReportEntry,
+  listEditableDraftReports,
+} from '../lib/logisticsFlowShiftReport.js';
 
 const router = Router();
 
@@ -520,6 +525,96 @@ router.patch('/shifts/:id/confirmations', async (req, res, next) => {
     );
     res.json({ ok: true });
   } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/shift-report-drafts', async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    if (!tid) return res.status(403).json({ error: 'Tenant required' });
+    const routeLabel = String(req.query.route_label || req.query.routeLabel || '').trim() || null;
+    const reports = await listEditableDraftReports(query, tid, req.user?.id, { routeLabel });
+    res.json({ reports, suggested: reports[0] || null, aiAvailable: isAiConfigured() });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/compose-shift-report-entry', async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    if (!tid) return res.status(403).json({ error: 'Tenant required' });
+    const b = req.body || {};
+    const rows = b.rows;
+    if (!Array.isArray(rows) || !rows.length) {
+      return res.status(400).json({ error: 'rows array required' });
+    }
+    const routeLabel = String(b.route_label || b.routeLabel || b.meta?.route_label || b.meta?.route || '').trim();
+    const previousEntries = Array.isArray(b.previous_truck_updates) ? b.previous_truck_updates : [];
+    const entry = await composeShiftReportEntry({
+      rows,
+      routeLabel,
+      routeAnalysis: b.route_analysis || b.routeAnalysis || null,
+      parseWarnings: b.parse_warnings || b.parseWarnings || [],
+      whatsappExport: b.whatsapp_export || b.whatsappExport || '',
+      previousEntries,
+      useAi: b.useAi !== false,
+    });
+    res.json({ entry, aiAvailable: isAiConfigured() });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/shifts/:id/updates/:updateId/link-shift-report', async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    if (!tid) return res.status(403).json({ error: 'Tenant required' });
+    const { id: shiftId, updateId } = req.params;
+    const b = req.body || {};
+    const reportId = b.report_id || b.reportId;
+    const reportKind = b.report_kind || b.reportKind || 'shift';
+    if (!reportId) return res.status(400).json({ error: 'report_id required' });
+    if (!b.entry?.summary) return res.status(400).json({ error: 'entry with summary required' });
+
+    const updCheck = await query(
+      `SELECT id, meta_json FROM logistics_flow_updates
+       WHERE id = @updateId AND shift_id = @shiftId AND tenant_id = @tid`,
+      { updateId, shiftId, tid }
+    );
+    if (!updCheck.recordset?.[0]) return res.status(404).json({ error: 'Logistics update not found' });
+
+    const linkResult = await appendTruckUpdateToShiftReport(query, {
+      tenantId: tid,
+      userId: req.user?.id,
+      reportKind,
+      reportId,
+      entry: b.entry,
+    });
+
+    let meta = {};
+    try {
+      meta = JSON.parse(getRow(updCheck.recordset[0], 'meta_json') || '{}');
+    } catch (_) {}
+    meta.shift_report = {
+      report_id: reportId,
+      report_kind: reportKind,
+      ref_number: linkResult.ref_number,
+      entry: linkResult.entry,
+      linked_at: new Date().toISOString(),
+    };
+
+    await query(
+      `UPDATE logistics_flow_updates SET meta_json = @meta WHERE id = @updateId`,
+      { updateId, meta: JSON.stringify(meta) }
+    );
+
+    res.json({ ok: true, ...linkResult });
+  } catch (e) {
+    if (e.status === 403) return res.status(403).json({ error: e.message });
+    if (e.status === 404) return res.status(404).json({ error: e.message });
+    if (e.status === 400) return res.status(400).json({ error: e.message });
     next(e);
   }
 });

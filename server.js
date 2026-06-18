@@ -147,6 +147,9 @@ app.use(
 );
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/command-centre/logistics-flow/shift-report-link/ping', (_req, res) => {
+  res.json({ ok: true, feature: 'logistics-shift-report-link', version: 1 });
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api/tenants', tenantRoutes);
@@ -213,13 +216,18 @@ app.use('/api', (req, res) => {
   const trackingLogisticsHint =
     pathLower.includes('logistics-activity') &&
     'Logistics Activity routes live under /api/tracking/logistics-activity/* (not /api/logistics-activity). Restart the API after pulling: npm run server — then run npm run db:tracking-logistics-activity if the board is empty.';
+  const logisticsShiftReportHint =
+    (pathLower.includes('shift-report-drafts') ||
+      pathLower.includes('compose-shift-report-entry') ||
+      pathLower.includes('link-shift-report')) &&
+    'Logistics flow → shift report linking requires a restarted API with the latest code. Restart: npm run server (local) or redeploy the Node app (production). Ping: GET /api/command-centre/logistics-flow/shift-report-link/ping should return {"ok":true}.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || logisticsShiftReportHint || genericHint,
   });
 });
 

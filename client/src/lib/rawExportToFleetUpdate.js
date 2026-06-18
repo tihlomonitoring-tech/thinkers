@@ -110,6 +110,82 @@ export function destinationFromRouteName(routeName) {
   return s || 'destination';
 }
 
+/** Left-hand side of route name (colliery / load-out). */
+export function originFromRouteName(routeName) {
+  const s = String(routeName || '')
+    .normalize('NFKC')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .replace(/\*/g, '')
+    .trim();
+  const parts = s.split(/\s*(?:→|->|=>)\s*/i);
+  if (parts.length >= 2) {
+    return parts[0]
+      .replace(/\([^)]*\)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  const toSplit = s.split(/\s+To\s+/i);
+  if (toSplit.length >= 2) {
+    return toSplit[0]
+      .replace(/\([^)]*\)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  return '';
+}
+
+function shortOriginLabel(fullOrigin) {
+  let s = String(fullOrigin || '').trim();
+  if (!s) return 'origin';
+  const terminal = hyphenRouteTerminalSite(s);
+  if (terminal) s = terminal;
+  const words = s.split(/\s+/);
+  if (words.length <= 2) {
+    return words.map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+  }
+  return words[0].charAt(0) + words[0].slice(1).toLowerCase();
+}
+
+export function resolveRouteOriginShort(routeLabel) {
+  if (!routeLabel) return 'origin';
+  return shortOriginLabel(originFromRouteName(routeLabel)) || 'origin';
+}
+
+function normalizeSiteToken(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/\bpower\s+station\b/g, ' ps')
+    .replace(/\s*\([do]\)\s*/gi, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function siteNamesMatch(a, b) {
+  const na = normalizeSiteToken(a);
+  const nb = normalizeSiteToken(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const wa = na.split(' ').filter((w) => w.length >= 3);
+  const wb = nb.split(' ').filter((w) => w.length >= 3);
+  return wa.some((x) => wb.some((y) => x === y || x.includes(y) || y.includes(x)));
+}
+
+function extractAtLocation(statusText) {
+  const plain = stripMarkdownBold(statusText);
+  const m = plain.match(/\bat\s+(.+?)(?:\s*\([DO]\)\s*)?$/i);
+  return m ? m[1].trim() : null;
+}
+
+const ORIGIN_SITE_HINTS = /ntshovelo|manungu|colliery|mine|load\s*out|tip\s*bin|stockpile|pit/i;
+
+function isOriginSiteName(name, originLabel, destLabel) {
+  if (!name) return false;
+  if (siteNamesMatch(name, originLabel)) return true;
+  if (destLabel && siteNamesMatch(name, destLabel)) return false;
+  return ORIGIN_SITE_HINTS.test(String(name));
+}
+
 /**
  * Routes saved as "Khashani–kriel" or "Origin - Site": use the segment after the last hyphen
  * as the operational site name (e.g. Queuing at Kriel).
@@ -391,13 +467,12 @@ function normalizeStatusToken(plain) {
     .trim();
 }
 
-function formatStatusForFleetLine(rawStatus, dest) {
+function formatStatusForFleetLine(rawStatus, dest, origin) {
   const d = (dest || 'destination').trim() || 'destination';
+  const o = (origin || 'origin').trim() || 'origin';
   let plain = normalizeStatusToken(stripMarkdownBold(rawStatus));
   const u = plain.toUpperCase();
-  if (/\bat\s+[A-Za-z][A-Za-z0-9\s]{1,40}$/i.test(plain) && !/^\s*QUEU/i.test(plain)) {
-    return wrapFleetStatusBold(plain);
-  }
+  const atLoc = extractAtLocation(plain);
   // Queuing / queueing / queue at (exports vary in spelling and spacing)
   const queuingAt =
     /QUEU(?:E)?ING\s+AT\b/i.test(plain) ||
@@ -414,16 +489,28 @@ function formatStatusForFleetLine(rawStatus, dest) {
     !/\bENROUTE\b/.test(u) &&
     !offloading;
   if (offloading) {
+    if (atLoc && isOriginSiteName(atLoc, o, d)) {
+      return wrapFleetStatusBold(`Loading at ${shortOriginLabel(atLoc) || o}`);
+    }
     return wrapFleetStatusBold(`Offloading at ${d}`);
   }
   if (queuingAt || queuingLoose) {
+    if (atLoc && isOriginSiteName(atLoc, o, d)) {
+      return wrapFleetStatusBold(`Queuing at ${shortOriginLabel(atLoc) || o}`);
+    }
     return wrapFleetStatusBold(`Queuing at ${d}`);
   }
   if (/\bEN[\s-]?ROUTE\b/.test(u) || /\bENROUTE\b/.test(u) || /\bIN\s+TRANSIT\b/.test(u)) {
     return wrapFleetStatusBold(`Enroute to ${d}`);
   }
-  if (/\bLOADING\s+AT\b/.test(u)) {
-    return wrapFleetStatusBold(`Loading at ${d}`);
+  if (/\bLOADING\b/i.test(u)) {
+    if (atLoc && !siteNamesMatch(atLoc, d)) {
+      return wrapFleetStatusBold(`Loading at ${shortOriginLabel(atLoc) || atLoc}`);
+    }
+    return wrapFleetStatusBold(`Loading at ${o}`);
+  }
+  if (atLoc && /\bat\s+[A-Za-z]/i.test(plain)) {
+    return wrapFleetStatusBold(plain);
   }
   if (/\bAT\s+[A-Z0-9]/i.test(plain) && /\b(PARK|YARD|DEPOT)\b/i.test(u)) {
     return wrapFleetStatusBold(plain);
@@ -592,6 +679,8 @@ export function convertRawExportToFleetUpdate(opts) {
       insertedFallbackRoute = true;
     }
     const destForStatus = currentDestShort || shortDestinationLabel(destinationFromRouteName(routeDisplayName)) || 'destination';
+    const originForStatus =
+      shortOriginLabel(originFromRouteName(currentRouteLine || routeDisplayName)) || 'origin';
 
     linesConverted += 1;
     const reg = normalizeRegistration(row.registration);
@@ -604,7 +693,7 @@ export function convertRawExportToFleetUpdate(opts) {
       warnings.push(`${reg}: not on selected route enrolment — company unknown; check paste or route.`);
     }
     const entity = formatEntityParen(entityLabel || 'Unknown');
-    const statusPart = formatStatusForFleetLine(row.rawStatus, destForStatus);
+    const statusPart = formatStatusForFleetLine(row.rawStatus, destForStatus, originForStatus);
     const tons = row.tons.toFixed(2);
     const hours = row.hours.toFixed(2);
     out.push(`${reg} - ${entity} - ${statusPart} - Tons: ${tons} - Hours: ${hours}`);
@@ -624,8 +713,9 @@ export function convertRawExportToFleetUpdate(opts) {
 }
 
 /** Plain status for tables (no WhatsApp asterisks). */
-export function formatPresentableStatus(rawStatus, destShort) {
-  return stripMarkdownBold(formatStatusForFleetLine(rawStatus, destShort));
+export function formatPresentableStatus(rawStatus, destShort, originShort) {
+  const o = originShort || 'origin';
+  return stripMarkdownBold(formatStatusForFleetLine(rawStatus, destShort, o));
 }
 
 export function resolveRouteDestinationShort(routeLabel) {
@@ -639,8 +729,9 @@ export function resolveRouteDestinationShort(routeLabel) {
 export function refineRowForWhatsApp(row, routeLabel) {
   const route = routeLabel || row.route || '';
   const destShort = resolveRouteDestinationShort(route);
+  const originShort = resolveRouteOriginShort(route);
   const imported = row.rawStatus ?? row.status ?? '';
-  const displayStatus = formatPresentableStatus(imported, destShort);
+  const displayStatus = formatPresentableStatus(imported, destShort, originShort);
   const statusBucket = statusBucketForRow(
     { ...row, displayStatus, status: displayStatus },
     destShort
@@ -663,19 +754,20 @@ export const WHATSAPP_STATUS_GROUP_ORDER = [
   { bucket: 'other', title: () => 'Other status' },
 ];
 
-function resolveRowExportStatusPlain(row, destShort) {
+function resolveRowExportStatusPlain(row, destShort, originShort) {
   if (row.statusManuallyEdited) {
     return stripMarkdownBold(row.displayStatus || row.status || '');
   }
   return formatPresentableStatus(
     row.rawStatus || row.displayStatus || row.status || '',
-    destShort
+    destShort,
+    originShort
   );
 }
 
 /** Status bucket for grouping export lines (aligns with truckUpdateInsights.classifyStatus). */
-export function statusBucketForRow(row, destShort) {
-  const plain = resolveRowExportStatusPlain(row, destShort);
+export function statusBucketForRow(row, destShort, originShort) {
+  const plain = resolveRowExportStatusPlain(row, destShort, originShort);
   if (/^offloading\b/i.test(plain) || /\boffloading at\b/i.test(plain)) return 'complete';
   if (/^queuing\b/i.test(plain) || /\bqueuing at\b/i.test(plain)) return 'queue';
   if (/^enroute\b/i.test(plain) || /^en route\b/i.test(plain) || /\benroute to\b/i.test(plain)) {
@@ -710,13 +802,14 @@ function sumGroupTons(rows) {
  * Group reviewed rows for WhatsApp export (status sections, sorted within each group).
  * @returns {Array<{ bucket: string, title: string, rows: object[], truckCount: number, totalTons: number }>}
  */
-export function groupRowsForWhatsAppExport(rows, destShort) {
+export function groupRowsForWhatsAppExport(rows, destShort, originShort) {
   const d = (destShort || 'destination').trim() || 'destination';
+  const o = originShort || 'origin';
   const bySection = new Map();
   for (const row of rows || []) {
     if (!normalizeRegistration(row.registration)) continue;
-    const bucket = row.statusBucket || statusBucketForRow(row, d);
-    const title = resolveRowExportStatusPlain(row, d) || 'Other status';
+    const bucket = row.statusBucket || statusBucketForRow(row, d, o);
+    const title = resolveRowExportStatusPlain(row, d, o) || 'Other status';
     const key = `${bucket}\0${title}`;
     if (!bySection.has(key)) {
       bySection.set(key, { bucket, title, rows: [] });
@@ -747,12 +840,12 @@ export function groupRowsForWhatsAppExport(rows, destShort) {
     );
 }
 
-function formatWhatsAppTruckLine(row, destShort) {
+function formatWhatsAppTruckLine(row, destShort, originShort) {
   const reg = normalizeRegistration(row.registration);
   const entity = formatEntityParen(
     row.suggestedContractor || row.systemContractor || row.entity || 'Unknown'
   );
-  const statusPlain = resolveRowExportStatusPlain(row, destShort);
+  const statusPlain = resolveRowExportStatusPlain(row, destShort, originShort);
   const statusPart = wrapWhatsAppBold(statusPlain);
   const tons = Number(row.tons);
   const hours = Number(row.hours);
@@ -784,6 +877,7 @@ export function buildWhatsAppFleetUpdateFromRows({
     .replace(/\*/g, '')
     .trim();
   const destShort = resolveRouteDestinationShort(routeLine);
+  const originShort = resolveRouteOriginShort(routeLine);
   const validRows = (rows || []).filter((r) => normalizeRegistration(r.registration));
   const truckCount = validRows.length;
   const totalTons = validRows.reduce(
@@ -807,12 +901,12 @@ export function buildWhatsAppFleetUpdateFromRows({
   }
 
   const emitTruckLine = (row) => {
-    const line = formatWhatsAppTruckLine(row, destShort);
+    const line = formatWhatsAppTruckLine(row, destShort, originShort);
     if (line) out.push(line);
   };
 
   if (groupByStatus && validRows.length > 0) {
-    const groups = groupRowsForWhatsAppExport(validRows, destShort);
+    const groups = groupRowsForWhatsAppExport(validRows, destShort, originShort);
     groups.forEach((group, idx) => {
       if (idx > 0) {
         out.push('');

@@ -14,7 +14,9 @@ import {
   getClosedDeliveries,
   withClosedDelivery,
 } from '../lib/logisticsFlowDelivery.js';
+import { formatShiftReportRef } from '../lib/shiftReportPdf.js';
 import InfoHint from './InfoHint.jsx';
+import LogisticsShiftReportLinkModal from './LogisticsShiftReportLinkModal.jsx';
 
 function normReg(reg) {
   return String(reg || '').replace(/[\s\-_/]/g, '').toUpperCase();
@@ -77,6 +79,9 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
   const [reviewFilter, setReviewFilter] = useState('all');
   const [analyticsUpdateFocus, setAnalyticsUpdateFocus] = useState('all');
   const [dismissedPendingBanner, setDismissedPendingBanner] = useState(false);
+  const [shiftReportLinkOpen, setShiftReportLinkOpen] = useState(false);
+  const [shiftReportLinkPayload, setShiftReportLinkPayload] = useState(null);
+  const [shiftReportLinkedRef, setShiftReportLinkedRef] = useState('');
   const parseAbortRef = useRef(null);
 
   const selectedRoute = useMemo(
@@ -475,7 +480,7 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
         isoDate: parseMeta.date,
       });
       setWhatsappExportText(exportText);
-      await logisticsApi.addUpdate(activeId, {
+      const saveRes = await logisticsApi.addUpdate(activeId, {
         rows,
         raw_text: pasteText,
         meta: {
@@ -483,15 +488,30 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
           whatsapp_export: exportText,
           route_id: selectedRouteId || shift?.routeId || null,
           route_label: routeLabelForExport || parseMeta.route || shift?.routeLabel || null,
+          route_analysis: routeAnalysis,
+          parse_warnings: parseWarnings,
         },
         label: `Update ${(updates.length || 0) + 1}`,
       });
+      const savedUpdateId = saveRes?.update?.id;
       setParsedRows([]);
       setPasteText('');
       setDismissedPendingBanner(false);
       setShowExportAfterAccept(true);
       setView('analytics');
       await loadActive();
+      if (portal === 'command_centre' && savedUpdateId) {
+        setShiftReportLinkPayload({
+          shiftId: activeId,
+          updateId: savedUpdateId,
+          rows,
+          routeAnalysis,
+          parseWarnings,
+          parseMeta,
+          whatsappExport: exportText,
+        });
+        setShiftReportLinkOpen(true);
+      }
     } catch (e) {
       setError(e?.message || 'Save failed');
     } finally {
@@ -1077,9 +1097,39 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
                     <div>
                       <h3 className="font-semibold text-emerald-900">Export for WhatsApp</h3>
-                      <p className="text-sm text-emerald-800">Update accepted. Copy this message and send it to your clients.</p>
+                      <p className="text-sm text-emerald-800">
+                        Update accepted. Copy this message and send it to your clients.
+                        {shiftReportLinkedRef && (
+                          <span className="block mt-1 font-medium">
+                            Linked to shift report ref {shiftReportLinkedRef}.
+                          </span>
+                        )}
+                      </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
+                      {portal === 'command_centre' && shift?.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const lastUpdate = routeScopedUpdates[routeScopedUpdates.length - 1];
+                            if (lastUpdate) {
+                              setShiftReportLinkPayload({
+                                shiftId: shift.id,
+                                updateId: lastUpdate.id,
+                                rows: lastUpdate.rows || [],
+                                routeAnalysis: lastUpdate.meta?.route_analysis || routeAnalysis,
+                                parseWarnings: lastUpdate.meta?.parse_warnings || [],
+                                parseMeta: lastUpdate.meta || parseMeta,
+                                whatsappExport: lastUpdate.meta?.whatsapp_export || whatsappExportText || '',
+                              });
+                              setShiftReportLinkOpen(true);
+                            }
+                          }}
+                          className="px-3 py-2 text-sm rounded-lg border border-violet-300 text-violet-800 hover:bg-violet-50"
+                        >
+                          Link to shift report
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={copyWhatsAppExport}
@@ -1448,6 +1498,24 @@ export default function LogisticsFlowPage({ logisticsApi, routesApi, portal = 'c
           )}
         </>
       )}
+
+      <LogisticsShiftReportLinkModal
+        open={shiftReportLinkOpen && portal === 'command_centre'}
+        onClose={() => {
+          setShiftReportLinkOpen(false);
+          setShiftReportLinkPayload(null);
+        }}
+        onLinked={(result) => {
+          setShiftReportLinkedRef(
+            formatShiftReportRef(result.ref_number, {
+              isSingleOps: result.report_kind === 'single_ops',
+            })
+          );
+        }}
+        logisticsApi={logisticsApi}
+        payload={shiftReportLinkPayload}
+        routeLabel={routeLabelForExport || shiftReportLinkPayload?.parseMeta?.route || shift?.routeLabel || ''}
+      />
     </div>
   );
 }
