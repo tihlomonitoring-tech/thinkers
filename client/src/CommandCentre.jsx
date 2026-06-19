@@ -3429,7 +3429,6 @@ function TabSavedReports() {
   }, [listKind]);
 
   useEffect(() => {
-    setForceEditMode(false);
     if (!selectedId) {
       setReport(null);
       setComments([]);
