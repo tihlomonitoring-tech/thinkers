@@ -3,12 +3,13 @@ import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { todayYmd } from '../lib/appTime.js';
 import { processGeofencePositions, syncContractorFleetToTracking } from '../lib/trackingGeofenceEngine.js';
-import { geocodeAddress, drivingRouteAlternatives, locationContextAt, reverseGeocode, parseCoordinateQuery } from '../lib/mapRouting.js';
-import { bufferPolylineToPolygon } from '../lib/routeCorridorGeofence.js';
+import { geocodeAddress, drivingRouteAlternatives, drivingRouteAlternativesDeep, drivingRouteThroughWaypoints, locationContextAt, reverseGeocode, parseCoordinateQuery } from '../lib/mapRouting.js';
+import { bufferPolylineToPolygon, polylineDistanceKm } from '../lib/routeCorridorGeofence.js';
 import { applyTelemetryToTrip } from '../lib/trackingTelemetry.js';
 import { getTripTrailLastKm } from '../lib/tripPositionTrail.js';
 import { sendDeviationAlertEmail } from '../lib/trackingEmailAlerts.js';
 import { getTrackingPollStatus, runTrackingProviderPoll } from '../lib/trackingProviderPoll.js';
+import { compactTruckRegistration } from '../lib/truckRegistration.js';
 import { testFleetcamConnection, listFleetcamDevices } from '../lib/fleetcamConnector.js';
 import {
   buildLogisticsActivityBoard,
@@ -112,7 +113,7 @@ router.get('/contractor-trucks', async (req, res) => {
     );
     const trucks = (r.recordset || []).map((row) => ({
       id: gid(get(row, 'id')),
-      registration: get(row, 'registration'),
+      registration: compactTruckRegistration(get(row, 'registration')),
       fleet_no: get(row, 'fleet_no'),
       make_model: get(row, 'make_model'),
       contractor_name: get(row, 'contractor_name'),
@@ -144,7 +145,7 @@ router.get('/contractor-drivers', async (req, res) => {
     const drivers = (r.recordset || []).map((row) => {
       const fullName = String(get(row, 'full_name') || '').trim()
         || String(get(row, 'surname') || '').trim();
-      const linkedReg = String(get(row, 'linked_truck_registration') || '').trim();
+      const linkedReg = compactTruckRegistration(get(row, 'linked_truck_registration'));
       const norm = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, '');
       return {
         id: gid(get(row, 'id')),
@@ -410,7 +411,7 @@ router.get('/vehicles', async (req, res) => {
       id: gid(get(row, 'id')),
       provider_id: gid(get(row, 'provider_id')),
       provider_name: get(row, 'provider_name'),
-      truck_registration: get(row, 'truck_registration'),
+      truck_registration: compactTruckRegistration(get(row, 'truck_registration')),
       external_vehicle_id: get(row, 'external_vehicle_id'),
       fleet_no: get(row, 'fleet_no'),
       contractor_truck_id: gid(get(row, 'contractor_truck_id')),
@@ -893,7 +894,7 @@ function mapTrip(row) {
   return {
     id: gid(get(row, 'id')),
     trip_ref: get(row, 'trip_ref'),
-    truck_registration: get(row, 'truck_registration'),
+    truck_registration: compactTruckRegistration(get(row, 'truck_registration')),
     contractor_truck_id: gid(get(row, 'contractor_truck_id')),
     contractor_company_name: get(row, 'contractor_company_name'),
     weighbridge_id: gid(get(row, 'weighbridge_id')),
@@ -1167,7 +1168,7 @@ function mapDeliveryRow(row) {
     id: gid(get(row, 'id')),
     trip_id: gid(get(row, 'trip_id')),
     trip_ref: get(row, 'trip_ref'),
-    truck_registration: get(row, 'truck_registration'),
+    truck_registration: compactTruckRegistration(get(row, 'truck_registration')),
     delivered_at: get(row, 'delivered_at'),
     net_weight_kg: get(row, 'net_weight_kg') != null ? Number(get(row, 'net_weight_kg')) : null,
     tons_loaded: get(row, 'tons_loaded') != null ? Number(get(row, 'tons_loaded')) : null,
@@ -1452,7 +1453,7 @@ router.get('/alarms', async (req, res) => {
     const alarms = (r.recordset || []).map((row) => ({
       id: gid(get(row, 'id')),
       trip_id: gid(get(row, 'trip_id')),
-      truck_registration: get(row, 'truck_registration'),
+      truck_registration: compactTruckRegistration(get(row, 'truck_registration')),
       alarm_type: get(row, 'alarm_type'),
       severity: get(row, 'severity'),
       occurred_at: get(row, 'occurred_at'),
@@ -1587,10 +1588,24 @@ router.get('/map/route', async (req, res) => {
     if (![fromLat, fromLng, toLat, toLng].every(Number.isFinite)) {
       return res.status(400).json({ error: 'from_lat, from_lng, to_lat, to_lng required' });
     }
-    const route = await drivingRouteAlternatives(fromLat, fromLng, toLat, toLng);
+    const route = await drivingRouteAlternativesDeep(fromLat, fromLng, toLat, toLng);
     res.json({ route: route[0], alternatives: route });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Route lookup failed' });
+  }
+});
+
+/** Snap user-plotted waypoints to the road network (OSRM). */
+router.post('/map/route-through-waypoints', async (req, res) => {
+  try {
+    const waypoints = Array.isArray(req.body?.waypoints) ? req.body.waypoints : [];
+    if (waypoints.length < 2) {
+      return res.status(400).json({ error: 'At least 2 waypoints required' });
+    }
+    const route = await drivingRouteThroughWaypoints(waypoints);
+    res.json({ route });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Could not snap route to roads' });
   }
 });
 
@@ -1652,7 +1667,10 @@ router.post('/geofences/draw-route', async (req, res) => {
     if (!origin) return res.status(404).json({ error: `Could not locate origin: ${originQuery || 'invalid coordinates'}` });
     if (!dest) return res.status(404).json({ error: `Could not locate destination: ${destQuery || 'invalid coordinates'}` });
 
-    const alternatives = await drivingRouteAlternatives(origin.lat, origin.lng, dest.lat, dest.lng);
+    const findAlternatives = b.find_alternatives !== false;
+    const alternatives = findAlternatives
+      ? await drivingRouteAlternativesDeep(origin.lat, origin.lng, dest.lat, dest.lng)
+      : await drivingRouteAlternatives(origin.lat, origin.lng, dest.lat, dest.lng);
     const selectedIndex = Math.min(
       Math.max(0, Number(b.selected_route_index) || 0),
       alternatives.length - 1
@@ -1662,7 +1680,8 @@ router.post('/geofences/draw-route', async (req, res) => {
       ? b.route_polyline
       : (selected.polyline || []);
     const driving = {
-      distance_km: selected.distance_km,
+      distance_km: polylineDistanceKm(polyline) ?? selected.distance_km,
+      osrm_distance_km: selected.osrm_distance_km ?? selected.distance_km,
       duration_min: selected.duration_min,
       polyline,
     };
@@ -1771,6 +1790,13 @@ router.post('/geofences/draw-route', async (req, res) => {
       }
     );
 
+    if (driving.distance_km != null) {
+      await query(
+        `UPDATE contractor_routes SET distance_km = @dk WHERE id = @id AND tenant_id = @tenantId`,
+        { dk: driving.distance_km, id: routeId, tenantId: tid }
+      );
+    }
+
     res.status(201).json({
       ok: true,
       created,
@@ -1832,6 +1858,17 @@ async function buildFleetDistribution(tenantId) {
        LEFT JOIN contractor_trucks ct ON ct.id = t.contractor_truck_id AND ct.tenant_id = t.tenant_id
        LEFT JOIN contractors c ON c.id = ct.contractor_id AND c.tenant_id = t.tenant_id
        WHERE t.tenant_id = @tenantId AND t.status IN (N'pending', N'enroute', N'deviated', N'overdue')
+       AND ct.id IS NOT NULL
+       AND ct.facility_access = 1
+       AND NOT EXISTS (
+         SELECT 1 FROM contractor_suspensions s
+         WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(ct.id AS NVARCHAR(50))
+           AND s.[status] IN (N'suspended', N'under_appeal')
+       )
+       AND EXISTS (
+         SELECT 1 FROM contractor_route_trucks rt
+         WHERE rt.truck_id = ct.id
+       )
        AND EXISTS (
          SELECT 1
          FROM tracking_vehicle_link v
@@ -1851,7 +1888,7 @@ async function buildFleetDistribution(tenantId) {
     return {
       trip_id: gid(get(row, 'id')),
       trip_ref: get(row, 'trip_ref'),
-      truck_registration: get(row, 'truck_registration'),
+      truck_registration: compactTruckRegistration(get(row, 'truck_registration')),
       contractor_name: get(row, 'contractor_name'),
       driver_name: get(row, 'driver_name') || get(row, 'linked_driver_name'),
       status: get(row, 'status'),

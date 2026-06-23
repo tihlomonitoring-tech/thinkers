@@ -2828,8 +2828,9 @@ router.get('/budgets', requireAuth, loadUser, async (req, res, next) => {
     const tid = req.user?.tenant_id;
     if (!tid) return res.status(400).json({ error: 'No tenant' });
     let sql = `SELECT b.*, u.full_name AS created_by_name, au.full_name AS approved_by_name,
-                (SELECT ISNULL(SUM(bc.allocated_amount), 0) FROM budget_categories bc WHERE bc.budget_id = b.id) AS allocated_total,
-                (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt WHERE bt.budget_id = b.id AND bt.transaction_type = N'expense') AS spent_total
+                (SELECT ISNULL(SUM(bc.allocated_amount), 0) FROM budget_categories bc WHERE bc.budget_id = b.id) AS total_allocated,
+                (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt WHERE bt.budget_id = b.id AND bt.transaction_type IN (N'expense', N'reimbursement')) AS total_spent,
+                (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt WHERE bt.budget_id = b.id AND bt.transaction_type = N'income') AS total_income
                FROM department_budgets b
                LEFT JOIN users u ON u.id = b.created_by_user_id
                LEFT JOIN users au ON au.id = b.approved_by_user_id
@@ -2865,7 +2866,12 @@ router.get('/budgets/:id', requireAuth, loadUser, async (req, res, next) => {
       { id: req.params.id }
     );
     const items = await query(`SELECT li.*, bc.category_name FROM budget_line_items li LEFT JOIN budget_categories bc ON bc.id = li.category_id WHERE li.budget_id = @id ORDER BY bc.sort_order, li.description`, { id: req.params.id });
-    const txns = await query(`SELECT t.*, u.full_name AS recorded_by_name, bc.category_name FROM budget_transactions t LEFT JOIN users u ON u.id = t.recorded_by_user_id LEFT JOIN budget_categories bc ON bc.id = t.category_id WHERE t.budget_id = @id ORDER BY t.transaction_date DESC`, { id: req.params.id });
+    const txns = await query(`SELECT t.*, u.full_name AS recorded_by_name, bc.category_name, bli.description AS line_item_name
+      FROM budget_transactions t
+      LEFT JOIN users u ON u.id = t.recorded_by_user_id
+      LEFT JOIN budget_categories bc ON bc.id = t.category_id
+      LEFT JOIN budget_line_items bli ON bli.id = t.line_item_id
+      WHERE t.budget_id = @id ORDER BY t.transaction_date DESC`, { id: req.params.id });
     res.json({ budget, categories: cats.recordset || [], lineItems: items.recordset || [], transactions: txns.recordset || [] });
   } catch (err) { next(err); }
 });
@@ -3033,6 +3039,39 @@ router.post('/budgets/:budgetId/transactions', requireAuth, loadUser, async (req
   } catch (err) { next(err); }
 });
 
+router.patch('/budgets/transactions/:id', requireAuth, loadUser, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const sets = [];
+    const params = { id: req.params.id };
+    for (const k of ['category_id', 'line_item_id', 'transaction_date', 'amount', 'transaction_type', 'reference', 'description']) {
+      if (b[k] !== undefined) {
+        params[k] = b[k];
+        sets.push(`[${k}] = @${k}`);
+      }
+    }
+    if (b.transaction_type !== undefined) {
+      params.transaction_type = ['expense', 'income', 'adjustment', 'transfer'].includes(b.transaction_type)
+        ? b.transaction_type
+        : 'expense';
+      const idx = sets.findIndex((s) => s.startsWith('[transaction_type]'));
+      if (idx >= 0) sets[idx] = '[transaction_type] = @transaction_type';
+      else sets.push('[transaction_type] = @transaction_type');
+    }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    await query(`UPDATE budget_transactions SET ${sets.join(', ')} WHERE id = @id`, params);
+    const updated = await query(
+      `SELECT t.*, bc.category_name, bli.description AS line_item_name
+       FROM budget_transactions t
+       LEFT JOIN budget_categories bc ON bc.id = t.category_id
+       LEFT JOIN budget_line_items bli ON bli.id = t.line_item_id
+       WHERE t.id = @id`,
+      { id: req.params.id }
+    );
+    res.json({ transaction: updated.recordset?.[0] || null });
+  } catch (err) { next(err); }
+});
+
 router.delete('/budgets/transactions/:id', requireAuth, loadUser, async (req, res, next) => {
   try {
     await query(`DELETE FROM budget_transactions WHERE id = @id`, { id: req.params.id });
@@ -3050,13 +3089,13 @@ router.get('/budgets/:id/summary', requireAuth, loadUser, async (req, res, next)
       `SELECT bc.id, bc.category_name, bc.allocated_amount,
               ISNULL((SELECT SUM(li.estimated_amount) FROM budget_line_items li WHERE li.category_id = bc.id), 0) AS estimated_total,
               ISNULL((SELECT SUM(li.actual_amount) FROM budget_line_items li WHERE li.category_id = bc.id), 0) AS actual_total,
-              ISNULL((SELECT SUM(bt.amount) FROM budget_transactions bt WHERE bt.category_id = bc.id AND bt.transaction_type = N'expense'), 0) AS spent_total
+              ISNULL((SELECT SUM(bt.amount) FROM budget_transactions bt WHERE bt.category_id = bc.id AND bt.transaction_type IN (N'expense', N'reimbursement')), 0) AS total_spent
        FROM budget_categories bc WHERE bc.budget_id = @id ORDER BY bc.sort_order, bc.category_name`,
       { id: req.params.id }
     );
     const monthlySpend = await query(
       `SELECT MONTH(t.transaction_date) AS [month], SUM(t.amount) AS total
-       FROM budget_transactions t WHERE t.budget_id = @id AND t.transaction_type = N'expense'
+       FROM budget_transactions t WHERE t.budget_id = @id AND t.transaction_type IN (N'expense', N'reimbursement')
        GROUP BY MONTH(t.transaction_date) ORDER BY [month]`,
       { id: req.params.id }
     );

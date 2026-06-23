@@ -1,4 +1,5 @@
 import { query } from '../db.js';
+import { syncBudgetTransactionForExpenseEntry } from '../lib/budgetTransactionSync.js';
 import { toYmdFromDbOrString } from './appTime.js';
 
 function normalizeEntryDate(v) {
@@ -69,20 +70,7 @@ export async function createExpenseJournalEntry({
   );
   const entry = r.recordset?.[0] || null;
   if (budgetId && entry) {
-    await query(
-      `INSERT INTO budget_transactions (budget_id, category_id, line_item_id, transaction_date, amount, transaction_type, reference, description, recorded_by_user_id)
-       VALUES (@budgetId, @catId, @lineId, @date, @amount, N'expense', @ref, @desc, @userId)`,
-      {
-        budgetId,
-        catId: budgetCategoryId || null,
-        lineId: budgetLineItemId || null,
-        date: normalizedDate,
-        amount: Number(amount) || 0,
-        ref: entryNumber,
-        desc: description,
-        userId,
-      }
-    );
+    await syncBudgetTransactionForExpenseEntry(entry, userId);
   }
   return entry;
 }

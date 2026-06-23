@@ -1,5 +1,11 @@
 import { todayYmd } from './appTime.js';
 import { haversineMeters } from './geo.js';
+import {
+  distanceProgressAlongPolyline,
+  parseCorridorPolyline,
+  parseMonitorWaypoints,
+  polylineDistanceKm,
+} from './routeCorridorGeofence.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -42,31 +48,109 @@ export function inferActivityStage(trip, openDelivery) {
   return 'scheduled';
 }
 
-export function computeKmRemaining({ activity_stage, last_lat, last_lng, destination_lat, destination_lng, route_distance_km }) {
+function roundKm2(km) {
+  if (km == null || !Number.isFinite(Number(km))) return null;
+  return Math.round(Number(km) * 100) / 100;
+}
+
+export function computeRouteDistances({
+  activity_stage,
+  last_lat,
+  last_lng,
+  destination_lat,
+  destination_lng,
+  route_polyline,
+  route_distance_km,
+  route_distance_source,
+}) {
   const stage = String(activity_stage || '').toLowerCase();
-  if (stage === 'awaiting_reschedule') return 0;
+  const polyline = route_polyline?.length >= 2 ? route_polyline : null;
 
-  const lat = last_lat != null ? Number(last_lat) : null;
-  const lng = last_lng != null ? Number(last_lng) : null;
-  const dLat = destination_lat != null ? Number(destination_lat) : null;
-  const dLng = destination_lng != null ? Number(destination_lng) : null;
+  let totalKm = polyline ? polylineDistanceKm(polyline) : null;
+  let basis = polyline ? 'road' : null;
 
-  if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(dLat) && Number.isFinite(dLng)) {
-    const m = haversineMeters(lat, lng, dLat, dLng);
-    const km = Math.round((m / 1000) * 10) / 10;
-    const routeKm = route_distance_km != null ? Number(route_distance_km) : null;
-    if (Number.isFinite(routeKm) && routeKm > 0 && stage === 'enroute') {
-      return Math.min(km, routeKm);
+  const recordKm = route_distance_km != null ? Number(route_distance_km) : null;
+  if (totalKm == null && Number.isFinite(recordKm) && recordKm > 0) {
+    totalKm = roundKm2(recordKm);
+    basis = route_distance_source || 'record';
+  }
+
+  if (stage === 'awaiting_reschedule' || stage === 'at_destination') {
+    return {
+      route_distance_km: totalKm,
+      km_remaining: 0,
+      km_traveled: totalKm,
+      distance_basis: basis || 'none',
+      off_route_m: null,
+    };
+  }
+
+  if (stage === 'scheduled' || stage === 'at_loading') {
+    return {
+      route_distance_km: totalKm,
+      km_remaining: totalKm,
+      km_traveled: 0,
+      distance_basis: basis || 'none',
+      off_route_m: null,
+    };
+  }
+
+  if (stage === 'enroute') {
+    const lat = last_lat != null ? Number(last_lat) : null;
+    const lng = last_lng != null ? Number(last_lng) : null;
+
+    if (polyline && Number.isFinite(lat) && Number.isFinite(lng)) {
+      const prog = distanceProgressAlongPolyline(polyline, lat, lng);
+      if (prog) {
+        const routeTotal = roundKm2(prog.totalM / 1000);
+        const remaining = roundKm2(prog.remainingM / 1000);
+        const traveled = roundKm2(prog.traveledM / 1000);
+        return {
+          route_distance_km: routeTotal ?? totalKm,
+          km_remaining: remaining,
+          km_traveled: traveled,
+          distance_basis: 'road',
+          off_route_m: prog.offRouteM > 500 ? Math.round(prog.offRouteM) : null,
+        };
+      }
     }
-    return km;
+
+    const dLat = destination_lat != null ? Number(destination_lat) : null;
+    const dLng = destination_lng != null ? Number(destination_lng) : null;
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(dLat) && Number.isFinite(dLng)) {
+      const directKm = roundKm2(haversineMeters(lat, lng, dLat, dLng) / 1000);
+      const capped = totalKm != null ? Math.min(directKm, totalKm) : directKm;
+      const traveled = totalKm != null ? roundKm2(Math.max(0, totalKm - capped)) : null;
+      return {
+        route_distance_km: totalKm,
+        km_remaining: capped,
+        km_traveled: traveled,
+        distance_basis: 'direct',
+        off_route_m: null,
+      };
+    }
+
+    return {
+      route_distance_km: totalKm,
+      km_remaining: totalKm,
+      km_traveled: null,
+      distance_basis: basis || 'none',
+      off_route_m: null,
+    };
   }
 
-  const routeKm = route_distance_km != null ? Number(route_distance_km) : null;
-  if (Number.isFinite(routeKm) && routeKm > 0 && (stage === 'scheduled' || stage === 'at_loading' || stage === 'enroute' || stage === 'at_destination')) {
-    return Math.round(routeKm * 10) / 10;
-  }
+  return {
+    route_distance_km: totalKm,
+    km_remaining: null,
+    km_traveled: null,
+    distance_basis: basis || 'none',
+    off_route_m: null,
+  };
+}
 
-  return null;
+/** @deprecated Use computeRouteDistances — kept for callers expecting km only. */
+export function computeKmRemaining(args) {
+  return computeRouteDistances(args).km_remaining;
 }
 
 function geofenceSpanKm(originCoords, destCoords) {
@@ -79,17 +163,27 @@ function geofenceSpanKm(originCoords, destCoords) {
     return null;
   }
   const m = haversineMeters(oLat, oLng, dLat, dLng);
-  return Math.round((m / 1000) * 10) / 10;
+  return roundKm2(m / 1000);
 }
 
-export function resolveRouteDistanceKm(route, originCoords, destCoords) {
+export function resolveRouteDistanceKm(route, originCoords, destCoords, routePolyline) {
+  if (routePolyline?.length >= 2) {
+    return polylineDistanceKm(routePolyline);
+  }
   const fromRoute = route?.distance_km != null ? Number(route.distance_km) : null;
-  if (Number.isFinite(fromRoute) && fromRoute > 0) return fromRoute;
+  if (Number.isFinite(fromRoute) && fromRoute > 0) return roundKm2(fromRoute);
   const span = geofenceSpanKm(originCoords, destCoords);
-  return span != null && span > 0 ? span : null;
+  return span != null && span > 0 ? roundKm2(span) : null;
 }
 
-export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts, loadingDelivery) {
+export function resolveRouteDistanceSource(routePolyline, route) {
+  if (routePolyline?.length >= 2) return 'road';
+  const fromRoute = route?.distance_km != null ? Number(route.distance_km) : null;
+  if (Number.isFinite(fromRoute) && fromRoute > 0) return 'record';
+  return 'direct';
+}
+
+export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts, loadingDelivery, routePolylineMap) {
   const rid = gid(get(row, 'contractor_route_id')) || gid(get(row, 'route_id'));
   const route = routeMeta?.get(rid);
   const origin = originCoords?.get(rid);
@@ -104,16 +198,21 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
   const lastLng = get(row, 'last_lng') != null ? Number(get(row, 'last_lng')) : null;
   const destLat = dest?.lat ?? null;
   const destLng = dest?.lng ?? null;
-  const routeDistanceKm = resolveRouteDistanceKm(route, origin, dest);
+  const routePolyline = routePolylineMap?.get(rid) || null;
+  const routeDistanceSource = resolveRouteDistanceSource(routePolyline, route);
+  const routeDistanceKm = resolveRouteDistanceKm(route, origin, dest, routePolyline);
 
-  const kmRemaining = computeKmRemaining({
+  const distances = computeRouteDistances({
     activity_stage: stage,
     last_lat: lastLat,
     last_lng: lastLng,
     destination_lat: destLat,
     destination_lng: destLng,
+    route_polyline: routePolyline,
     route_distance_km: routeDistanceKm,
+    route_distance_source: routeDistanceSource,
   });
+  const kmRemaining = distances.km_remaining;
 
   const lastSpeed = get(row, 'last_speed_kmh') != null ? Number(get(row, 'last_speed_kmh')) : null;
   let etaMinutes = null;
@@ -135,8 +234,12 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     destination_name: get(row, 'destination_name') || route?.destination_address || route?.name,
     destination_lat: destLat,
     destination_lng: destLng,
-    route_distance_km: routeDistanceKm,
+    route_distance_km: distances.route_distance_km ?? routeDistanceKm,
+    route_distance_source: routeDistanceSource,
     km_remaining: kmRemaining,
+    km_traveled: distances.km_traveled,
+    distance_basis: distances.distance_basis,
+    off_route_m: distances.off_route_m,
     eta_minutes: etaMinutes,
     activity_stage: stage,
     status: get(row, 'status'),
@@ -250,7 +353,7 @@ export { UNASSIGNED_ROUTE_ID };
 
 /** Active logistics activity board grouped by stage (aviation-style lanes). */
 export async function buildLogisticsActivityBoard(query, tenantId) {
-  const [tripsR, routesR, deliveriesR, geofencesR, alarmsR] = await Promise.all([
+  const [tripsR, routesR, deliveriesR, geofencesR, alarmsR, corridorR, monitorR] = await Promise.all([
     query(
       `SELECT t.*, c.name AS contractor_name,
               (SELECT TOP 1 d.full_name FROM contractor_drivers d
@@ -301,7 +404,31 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
        GROUP BY trip_id, alarm_type`,
       { tenantId }
     ),
+    query(
+      `SELECT contractor_route_id, polygon_json FROM tracking_geofence
+       WHERE tenant_id = @tenantId AND leg = N'corridor' AND contractor_route_id IS NOT NULL`,
+      { tenantId }
+    ),
+    query(
+      `SELECT contractor_route_id, waypoints_json FROM tracking_monitor_route
+       WHERE tenant_id = @tenantId AND contractor_route_id IS NOT NULL AND is_active = 1`,
+      { tenantId }
+    ),
   ]);
+
+  const routePolylineMap = new Map();
+  for (const row of corridorR.recordset || []) {
+    const rid = gid(get(row, 'contractor_route_id'));
+    if (!rid) continue;
+    const pl = parseCorridorPolyline(get(row, 'polygon_json'));
+    if (pl?.length >= 2) routePolylineMap.set(rid, pl);
+  }
+  for (const row of monitorR.recordset || []) {
+    const rid = gid(get(row, 'contractor_route_id'));
+    if (!rid || routePolylineMap.has(rid)) continue;
+    const pl = parseMonitorWaypoints(get(row, 'waypoints_json'));
+    if (pl?.length >= 2) routePolylineMap.set(rid, pl);
+  }
 
   const routeMeta = new Map((routesR.recordset || []).map((r) => [gid(get(r, 'id')), {
     name: get(r, 'name'),
@@ -354,7 +481,8 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       originCoords,
       destCoords,
       alarmCounts,
-      loadingDeliveryByTrip.get(tripId)
+      loadingDeliveryByTrip.get(tripId),
+      routePolylineMap
     );
   });
 
@@ -550,8 +678,8 @@ export async function allocateTripAtLoading(query, tenantId, tripId, trip, contr
 /** Manually move a truck between logistics activity stages. */
 export async function moveTripActivityStage(query, tenantId, tripId, targetStage, options = {}) {
   const stage = String(targetStage || '').toLowerCase();
-  const allowed = ['scheduled', 'at_loading', 'enroute'];
-  if (!allowed.includes(stage)) throw new Error('Stage must be scheduled, at_loading, or enroute');
+  const allowed = ACTIVITY_STAGES.map((s) => s.id);
+  if (!allowed.includes(stage)) throw new Error(`Stage must be one of: ${allowed.join(', ')}`);
 
   const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId, id: tripId });
   const trip = tr.recordset?.[0];
@@ -650,6 +778,35 @@ export async function moveTripActivityStage(query, tenantId, tripId, targetStage
     }
 
     return { activity_stage: 'enroute' };
+  }
+
+  if (stage === 'at_destination') {
+    if (!rid) throw new Error('Assign a route before moving to At destination');
+    await query(
+      `UPDATE fleet_trip SET
+        activity_stage = N'at_destination',
+        at_destination_at = COALESCE(at_destination_at, SYSUTCDATETIME()),
+        status = N'pending',
+        is_overdue = 0,
+        updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { tenantId, id: tripId }
+    );
+    await openDestinationDeliveryRecord(query, tenantId, tripId, trip, rid);
+    return { activity_stage: 'at_destination' };
+  }
+
+  if (stage === 'awaiting_reschedule') {
+    await query(
+      `UPDATE fleet_trip SET
+        activity_stage = N'awaiting_reschedule',
+        status = N'pending',
+        is_overdue = 0,
+        updated_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { tenantId, id: tripId }
+    );
+    return { activity_stage: 'awaiting_reschedule' };
   }
 
   return { activity_stage: stage };

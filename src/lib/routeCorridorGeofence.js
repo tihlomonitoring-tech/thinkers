@@ -47,6 +47,100 @@ export function parseCorridorPolyline(raw) {
 
 export { bearingDeg, offsetPoint };
 
+function haversineM(a, b) {
+  const φ1 = toRad(a.lat);
+  const φ2 = toRad(b.lat);
+  const Δφ = toRad(b.lat - a.lat);
+  const Δλ = toRad(b.lng - a.lng);
+  const x = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+export function polylineDistanceM(points) {
+  if (!points?.length || points.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += haversineM(points[i - 1], points[i]);
+  }
+  return total;
+}
+
+export function polylineDistanceKm(points) {
+  const m = polylineDistanceM(points);
+  if (!m) return null;
+  return Math.round((m / 1000) * 100) / 100;
+}
+
+function clamp01(t) {
+  return Math.max(0, Math.min(1, t));
+}
+
+/** Fraction along segment a→b closest to point p (planar lat/lng projection). */
+function projectionFraction(p, a, b) {
+  const dx = b.lng - a.lng;
+  const dy = b.lat - a.lat;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return 0;
+  return clamp01(((p.lng - a.lng) * dx + (p.lat - a.lat) * dy) / len2);
+}
+
+/**
+ * Distance along a route polyline from start → truck position → end.
+ * Uses perpendicular projection onto each segment (not just vertices).
+ */
+export function distanceProgressAlongPolyline(polyline, lat, lng) {
+  if (!polyline?.length || polyline.length < 2) return null;
+  const p = { lat: Number(lat), lng: Number(lng) };
+  if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) return null;
+
+  let bestOffRouteM = Infinity;
+  let bestTraveledM = 0;
+  let cumM = 0;
+
+  for (let i = 0; i < polyline.length - 1; i += 1) {
+    const a = polyline[i];
+    const b = polyline[i + 1];
+    const segM = haversineM(a, b);
+    const t = projectionFraction(p, a, b);
+    const proj = {
+      lat: a.lat + t * (b.lat - a.lat),
+      lng: a.lng + t * (b.lng - a.lng),
+    };
+    const offM = haversineM(p, proj);
+    const traveledM = cumM + t * segM;
+    if (offM < bestOffRouteM) {
+      bestOffRouteM = offM;
+      bestTraveledM = traveledM;
+    }
+    cumM += segM;
+  }
+
+  const totalM = cumM;
+  return {
+    traveledM: bestTraveledM,
+    remainingM: Math.max(0, totalM - bestTraveledM),
+    totalM,
+    offRouteM: bestOffRouteM,
+  };
+}
+
+export function parseMonitorWaypoints(raw) {
+  if (!raw) return null;
+  let data = raw;
+  if (typeof raw === 'string') {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(data)) return null;
+  const pts = data
+    .map((p) => ({ lat: Number(p.lat ?? p[0]), lng: Number(p.lng ?? p[1]) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  return pts.length >= 2 ? pts : null;
+}
+
 export function bufferPolylineToPolygon(points, bufferM) {
   if (!points?.length || points.length < 2) return [];
   const half = Math.max(50, Number(bufferM) || 400) / 2;

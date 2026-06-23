@@ -1,10 +1,17 @@
 import { query } from '../db.js';
+import { queryWithGuids } from './queryWithGuids.js';
+import { parseGuid } from './guidUtils.js';
 import { logFleetApplicationHistory } from './fleetApplicationHistory.js';
+import {
+  normTruckRegistration,
+  compactTruckRegistration,
+  compactTruckRegistrationNullable,
+} from './truckRegistration.js';
 
 const TRUCK_PATCH_FIELDS = [
   'main_contractor', 'sub_contractor', 'make_model', 'year_model', 'ownership_desc', 'fleet_no',
   'registration', 'trailer_1_reg_no', 'trailer_2_reg_no', 'tracking_provider', 'tracking_username',
-  'tracking_password', 'commodity_type', 'capacity_tonnes',
+  'tracking_password', 'camera_provider', 'camera_username', 'camera_password', 'commodity_type', 'capacity_tonnes',
   'fuel_tank_capacity_litres', 'fuel_consumption_litres_per_100km', 'status',
 ];
 
@@ -16,7 +23,7 @@ function get(row, key) {
 }
 
 export function normReg(registration) {
-  return String(registration || '').trim().toLowerCase();
+  return normTruckRegistration(registration);
 }
 
 export function truckSnapshot(row) {
@@ -34,6 +41,9 @@ export function truckSnapshot(row) {
     tracking_provider: get(row, 'tracking_provider') ?? null,
     tracking_username: get(row, 'tracking_username') ?? null,
     tracking_password: get(row, 'tracking_password') ?? null,
+    camera_provider: get(row, 'camera_provider') ?? null,
+    camera_username: get(row, 'camera_username') ?? null,
+    camera_password: get(row, 'camera_password') ?? null,
     commodity_type: get(row, 'commodity_type') ?? null,
     capacity_tonnes: get(row, 'capacity_tonnes') ?? null,
     fuel_tank_capacity_litres: get(row, 'fuel_tank_capacity_litres') ?? null,
@@ -47,7 +57,10 @@ export function buildTruckProposedFromBody(body, existingRow) {
   const proposed = { ...snap };
   for (const key of TRUCK_PATCH_FIELDS) {
     if (body[key] !== undefined) {
-      if (key === 'registration') proposed.registration = String(body[key] ?? '').trim();
+      if (key === 'registration') proposed.registration = compactTruckRegistration(body[key] ?? '');
+      else if (key === 'trailer_1_reg_no' || key === 'trailer_2_reg_no') {
+        proposed[key] = body[key] !== undefined ? compactTruckRegistrationNullable(body[key]) : proposed[key];
+      }
       else if (key === 'capacity_tonnes') proposed.capacity_tonnes = body.capacity_tonnes != null ? body.capacity_tonnes : null;
       else if (key === 'fuel_tank_capacity_litres' || key === 'fuel_consumption_litres_per_100km') {
         proposed[key] = body[key] != null && body[key] !== '' ? Number(body[key]) : null;
@@ -56,11 +69,18 @@ export function buildTruckProposedFromBody(body, existingRow) {
         if (body.tracking_password !== undefined && body.tracking_password !== '') {
           proposed.tracking_password = body.tracking_password;
         }
+      } else if (key === 'camera_password') {
+        if (body.camera_password !== undefined && body.camera_password !== '') {
+          proposed.camera_password = body.camera_password;
+        }
       } else proposed[key] = body[key] ?? null;
     }
   }
   if (body.tracking_password === undefined || body.tracking_password === '') {
     proposed.tracking_password = snap.tracking_password;
+  }
+  if (body.camera_password === undefined || body.camera_password === '') {
+    proposed.camera_password = snap.camera_password;
   }
   return proposed;
 }
@@ -69,23 +89,25 @@ function snapshotsEqual(a, b) {
   for (const key of TRUCK_PATCH_FIELDS) {
     const av = a[key] == null ? '' : String(a[key]);
     const bv = b[key] == null ? '' : String(b[key]);
-    if (key === 'tracking_password' && !b[key] && !a[key]) continue;
+    if ((key === 'tracking_password' || key === 'camera_password') && !b[key] && !a[key]) continue;
     if (av !== bv) return false;
   }
   return true;
 }
 
 export async function ensureFleetChangeRequestsTable() {
-  await query(`SELECT TOP 0 id FROM contractor_fleet_change_requests`);
+  await queryWithGuids(`SELECT TOP 0 id FROM contractor_fleet_change_requests`, {});
 }
 
 export async function getActiveChangeRequest(entityType, entityId) {
   try {
-    const result = await query(
+    const eid = parseGuid(entityId);
+    if (!eid) return null;
+    const result = await queryWithGuids(
       `SELECT TOP 1 * FROM contractor_fleet_change_requests
        WHERE entity_type = @entityType AND entity_id = @entityId AND cc_status = N'pending'
        ORDER BY created_at DESC`,
-      { entityType, entityId }
+      { entityType, entityId: eid }
     );
     return result.recordset?.[0] || null;
   } catch (e) {
@@ -95,12 +117,14 @@ export async function getActiveChangeRequest(entityType, entityId) {
 }
 
 export async function cancelPendingChangeRequests(entityType, entityId) {
-  await query(
+  const eid = parseGuid(entityId);
+  if (!eid) return;
+  await queryWithGuids(
     `UPDATE contractor_fleet_change_requests
      SET cc_status = N'declined', cc_decline_reason = N'Superseded by a newer change request',
          cc_reviewed_at = SYSUTCDATETIME()
      WHERE entity_type = @entityType AND entity_id = @entityId AND cc_status = N'pending'`,
-    { entityType, entityId }
+    { entityType, entityId: eid }
   );
 }
 
@@ -132,7 +156,14 @@ export async function submitTruckChangeRequest({
 
   await cancelPendingChangeRequests('truck', truckId);
 
-  const insert = await query(
+  const normalizedTenantId = parseGuid(tenantId);
+  const normalizedEntityId = parseGuid(truckId);
+  const normalizedUserId = parseGuid(userId);
+  if (!normalizedTenantId || !normalizedEntityId) {
+    throw new Error('Invalid tenant or truck id for change request');
+  }
+
+  const insert = await queryWithGuids(
     `INSERT INTO contractor_fleet_change_requests (
        tenant_id, entity_type, entity_id, submitted_by_user_id, submitter_role, comment_text,
        proposed_json, previous_json, registration_changed, had_facility_access,
@@ -145,9 +176,9 @@ export async function submitTruckChangeRequest({
        @contractorStatus, N'pending'
      )`,
     {
-      tenantId,
-      entityId: truckId,
-      userId: userId || null,
+      tenantId: normalizedTenantId,
+      entityId: normalizedEntityId,
+      userId: normalizedUserId,
       submitterRole,
       comment: comment || null,
       proposedJson: JSON.stringify(proposed),
@@ -216,6 +247,9 @@ export async function applyTruckChangeRequest(changeRequestId, ccUserId) {
         trailer_1_reg_no = @trailer_1_reg_no, trailer_2_reg_no = @trailer_2_reg_no,
         tracking_provider = @tracking_provider, tracking_username = @tracking_username,
         tracking_password = CASE WHEN @tracking_password IS NULL OR @tracking_password = N'' THEN tracking_password ELSE @tracking_password END,
+        camera_provider = @camera_provider,
+        camera_username = @camera_username,
+        camera_password = CASE WHEN @camera_password IS NULL OR @camera_password = N'' THEN camera_password ELSE @camera_password END,
         commodity_type = @commodity_type, capacity_tonnes = @capacity_tonnes,
         fuel_tank_capacity_litres = @fuel_tank_capacity_litres,
         fuel_consumption_litres_per_100km = @fuel_consumption_litres_per_100km,
@@ -238,6 +272,9 @@ export async function applyTruckChangeRequest(changeRequestId, ccUserId) {
       tracking_provider: proposed.tracking_provider ?? null,
       tracking_username: proposed.tracking_username ?? null,
       tracking_password: proposed.tracking_password ?? null,
+      camera_provider: proposed.camera_provider ?? null,
+      camera_username: proposed.camera_username ?? null,
+      camera_password: proposed.camera_password ?? null,
       commodity_type: proposed.commodity_type ?? null,
       capacity_tonnes: proposed.capacity_tonnes != null ? proposed.capacity_tonnes : null,
       fuel_tank_capacity_litres: proposed.fuel_tank_capacity_litres != null ? proposed.fuel_tank_capacity_litres : null,

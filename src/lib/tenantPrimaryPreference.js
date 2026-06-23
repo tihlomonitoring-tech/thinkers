@@ -132,8 +132,12 @@ export async function resolveUserTenantContext(query, opts) {
   const tenant_ids = orderedTenantIdsFromMembership(memberRows);
   const effectivePrimary = effectivePrimaryTenantId(memberRows, usersRowTenantId);
   const sess = sessionTenantId != null && sessionTenantId !== '' ? String(sessionTenantId) : '';
+  const sessNorm = sess ? String(sess).toLowerCase().replace(/[{}]/g, '') : '';
+  const tenantIdsNorm = tenant_ids.map((t) => String(t).toLowerCase().replace(/[{}]/g, ''));
   const currentTenantId =
-    sess && tenant_ids.includes(sess) ? sess : effectivePrimary || tenant_ids[0] || (usersRowTenantId != null ? String(usersRowTenantId) : null);
+    sessNorm && tenantIdsNorm.includes(sessNorm)
+      ? (tenant_ids[tenantIdsNorm.indexOf(sessNorm)] ?? sess)
+      : effectivePrimary || tenant_ids[0] || (usersRowTenantId != null ? String(usersRowTenantId) : null);
 
   let tenant_name = usersRowTenantName ?? null;
   let tenant_plan = usersRowTenantPlan ?? null;

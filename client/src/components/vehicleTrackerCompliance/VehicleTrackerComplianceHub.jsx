@@ -66,6 +66,19 @@ const emptyForm = () => ({
   notes: '',
 });
 
+function LoginDetailsPanel({ title, provider, username, password }) {
+  return (
+    <div className="rounded-xl bg-surface-50 border border-surface-200 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-surface-500 mb-2">{title}</p>
+      <dl className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+        <div><dt className="text-surface-500">Provider</dt><dd className="font-medium">{provider || '—'}</dd></div>
+        <div><dt className="text-surface-500">Username</dt><dd className="font-medium break-all">{username || '—'}</dd></div>
+        <div><dt className="text-surface-500">Password</dt><dd className="font-medium break-all">{password || '—'}</dd></div>
+      </dl>
+    </div>
+  );
+}
+
 function ChecklistReadonly({ checks, form }) {
   return (
     <div className="space-y-1">
@@ -138,13 +151,19 @@ function TruckDetailModal({ truckId, onClose, readOnly }) {
               </div>
 
               {!readOnly && (
-                <div className="rounded-xl bg-surface-50 border border-surface-200 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-surface-500 mb-2">Tracker login</p>
-                  <dl className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
-                    <div><dt className="text-surface-500">Provider</dt><dd className="font-medium">{truck?.tracking_provider || '—'}</dd></div>
-                    <div><dt className="text-surface-500">Username</dt><dd className="font-medium break-all">{truck?.tracking_username || '—'}</dd></div>
-                    <div><dt className="text-surface-500">Password</dt><dd className="font-medium break-all">{truck?.tracking_password || '—'}</dd></div>
-                  </dl>
+                <div className="space-y-3">
+                  <LoginDetailsPanel
+                    title="Tracker login"
+                    provider={truck?.tracking_provider}
+                    username={truck?.tracking_username}
+                    password={truck?.tracking_password}
+                  />
+                  <LoginDetailsPanel
+                    title="Camera login"
+                    provider={truck?.camera_provider}
+                    username={truck?.camera_username}
+                    password={truck?.camera_password}
+                  />
                 </div>
               )}
 
@@ -255,16 +274,22 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
         <div className="p-5 space-y-5">
           {error && <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
           {loading ? (
-            <p className="text-sm text-surface-500">Loading tracker login…</p>
+            <p className="text-sm text-surface-500">Loading login details…</p>
           ) : (
             <>
-              <div className="rounded-xl bg-surface-50 border border-surface-200 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-surface-500 mb-2">Tracker login details</p>
-                <dl className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
-                  <div><dt className="text-surface-500">Provider</dt><dd className="font-medium">{detail?.tracking_provider || '—'}</dd></div>
-                  <div><dt className="text-surface-500">Username</dt><dd className="font-medium break-all">{detail?.tracking_username || '—'}</dd></div>
-                  <div><dt className="text-surface-500">Password</dt><dd className="font-medium break-all">{detail?.tracking_password || '—'}</dd></div>
-                </dl>
+              <div className="space-y-3">
+                <LoginDetailsPanel
+                  title="Tracker login details"
+                  provider={detail?.tracking_provider}
+                  username={detail?.tracking_username}
+                  password={detail?.tracking_password}
+                />
+                <LoginDetailsPanel
+                  title="Camera login details"
+                  provider={detail?.camera_provider}
+                  username={detail?.camera_username}
+                  password={detail?.camera_password}
+                />
               </div>
 
               <div>

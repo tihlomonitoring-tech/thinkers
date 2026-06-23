@@ -6,6 +6,7 @@ import {
   getRectorEmailsForAlertTypeAndRoutes,
 } from './emailRecipients.js';
 import { vehicleTrackerComplianceAlertHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml } from './emailTemplates.js';
+import { compactTruckRegistration, mapTruckRegistrationFields } from './truckRegistration.js';
 
 /** Compliant checks remain valid for this many hours before requiring re-inspection. */
 export const COMPLIANCE_VALID_HOURS = 48;
@@ -100,7 +101,7 @@ function mapCheckRow(row) {
     driverRoutesRemoved = JSON.parse(getRow(row, 'driver_routes_removed_json') || '[]');
   } catch (_) {}
 
-  return {
+  return mapTruckRegistrationFields({
     id: getRow(row, 'id'),
     tenant_id: getRow(row, 'tenant_id'),
     truck_id: getRow(row, 'truck_id'),
@@ -142,10 +143,13 @@ function mapCheckRow(row) {
     tracking_provider: getRow(row, 'tracking_provider'),
     tracking_username: getRow(row, 'tracking_username'),
     tracking_password: getRow(row, 'tracking_password'),
+    camera_provider: getRow(row, 'camera_provider'),
+    camera_username: getRow(row, 'camera_username'),
+    camera_password: getRow(row, 'camera_password'),
     is_suspended: !!getRow(row, 'is_suspended'),
     current_status_label: getRow(row, 'current_status_label'),
     last_check_at: getRow(row, 'last_check_at'),
-  };
+  });
 }
 
 export async function listEnrolledTrackerTrucks(
@@ -184,6 +188,9 @@ export async function listEnrolledTrackerTrucks(
       t.tracking_provider,
       t.tracking_username,
       t.tracking_password,
+      t.camera_provider,
+      t.camera_username,
+      t.camera_password,
       lc.checked_at AS last_check_at,
       lc.is_compliant AS last_is_compliant,
       lc.status AS last_check_status,
@@ -252,7 +259,7 @@ export async function listEnrolledTrackerTrucks(
     throw e;
   }
 
-  let trucks = rows.map((row) => ({
+  let trucks = rows.map((row) => mapTruckRegistrationFields({
     truck_id: getRow(row, 'truck_id'),
     registration: getRow(row, 'registration'),
     fleet_no: getRow(row, 'fleet_no'),
@@ -262,6 +269,9 @@ export async function listEnrolledTrackerTrucks(
     tracking_provider: getRow(row, 'tracking_provider'),
     tracking_username: getRow(row, 'tracking_username'),
     tracking_password: getRow(row, 'tracking_password'),
+    camera_provider: getRow(row, 'camera_provider'),
+    camera_username: getRow(row, 'camera_username'),
+    camera_password: getRow(row, 'camera_password'),
     last_tracker_inspection_date: getRow(row, 'last_check_at'),
     compliance_expires_at: getRow(row, 'compliance_expires_at'),
     is_compliant:
@@ -293,7 +303,8 @@ export async function listEnrolledTrackerTrucks(
 export async function getTruckTrackerDetail(q, { tenantId, truckId }) {
   const r = await q(
     `SELECT t.id AS truck_id, t.registration, t.fleet_no, t.sub_contractor, t.contractor_id,
-            c.name AS contractor_name, t.tracking_provider, t.tracking_username, t.tracking_password
+            c.name AS contractor_name, t.tracking_provider, t.tracking_username, t.tracking_password,
+            t.camera_provider, t.camera_username, t.camera_password
      FROM contractor_trucks t
      INNER JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = t.tenant_id
      WHERE t.id = @truckId AND t.tenant_id = @tenantId`,
@@ -307,7 +318,7 @@ export async function getTruckTrackerDetail(q, { tenantId, truckId }) {
      WHERE rt.truck_id = @truckId AND r.tenant_id = @tenantId`,
     { truckId, tenantId }
   );
-  return {
+  return mapTruckRegistrationFields({
     truck_id: getRow(row, 'truck_id'),
     registration: getRow(row, 'registration'),
     fleet_no: getRow(row, 'fleet_no'),
@@ -317,8 +328,11 @@ export async function getTruckTrackerDetail(q, { tenantId, truckId }) {
     tracking_provider: getRow(row, 'tracking_provider'),
     tracking_username: getRow(row, 'tracking_username'),
     tracking_password: getRow(row, 'tracking_password'),
+    camera_provider: getRow(row, 'camera_provider'),
+    camera_username: getRow(row, 'camera_username'),
+    camera_password: getRow(row, 'camera_password'),
     routes: (routes.recordset || []).map((rr) => ({ id: getRow(rr, 'id'), name: getRow(rr, 'name') })),
-  };
+  });
 }
 
 export async function createTrackerComplianceCheck(q, { tenantId, userId, truckId, driverId, body }) {

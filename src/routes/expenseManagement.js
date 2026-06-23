@@ -6,6 +6,12 @@ import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import { query } from '../db.js';
 import { requireAuth, loadUser } from '../middleware/auth.js';
+import {
+  syncBudgetTransactionForExpenseEntry,
+  removeBudgetTransactionsForExpenseEntry,
+  entryTypeToBudgetTransactionType,
+  expenseEntryTotalAmount,
+} from '../lib/budgetTransactionSync.js';
 
 const router = Router();
 router.use(requireAuth, loadUser);
@@ -97,12 +103,16 @@ router.get('/entries', async (req, res, next) => {
     const t = tid(req);
     if (!t) return res.status(400).json({ error: 'No tenant' });
     let sql = `SELECT e.*, c.name AS category_name, c.code AS category_code, u.full_name AS recorded_by_name, au.full_name AS approved_by_name,
-                      b.department_name AS budget_department, b.fiscal_year AS budget_year
+                      b.department_name AS budget_department, b.fiscal_year AS budget_year,
+                      bcat.category_name AS budget_category_name,
+                      bli.description AS budget_line_item_name
                FROM expense_entries e
                LEFT JOIN expense_categories c ON c.id = e.category_id
                LEFT JOIN users u ON u.id = e.recorded_by_user_id
                LEFT JOIN users au ON au.id = e.approved_by_user_id
                LEFT JOIN department_budgets b ON b.id = e.budget_id
+               LEFT JOIN budget_categories bcat ON bcat.id = e.budget_category_id
+               LEFT JOIN budget_line_items bli ON bli.id = e.budget_line_item_id
                WHERE e.tenant_id = @t`;
     const params = { t };
     if (req.query.from) { sql += ` AND e.entry_date >= @from`; params.from = req.query.from; }
@@ -125,12 +135,16 @@ router.get('/entries/:id', async (req, res, next) => {
   try {
     const r = await query(
       `SELECT e.*, c.name AS category_name, u.full_name AS recorded_by_name, au.full_name AS approved_by_name,
-              b.department_name AS budget_department, b.fiscal_year AS budget_year
+              b.department_name AS budget_department, b.fiscal_year AS budget_year,
+              bcat.category_name AS budget_category_name,
+              bli.description AS budget_line_item_name
        FROM expense_entries e
        LEFT JOIN expense_categories c ON c.id = e.category_id
        LEFT JOIN users u ON u.id = e.recorded_by_user_id
        LEFT JOIN users au ON au.id = e.approved_by_user_id
        LEFT JOIN department_budgets b ON b.id = e.budget_id
+       LEFT JOIN budget_categories bcat ON bcat.id = e.budget_category_id
+       LEFT JOIN budget_line_items bli ON bli.id = e.budget_line_item_id
        WHERE e.id = @id`,
       { id: req.params.id }
     );
@@ -167,14 +181,11 @@ router.post('/entries', async (req, res, next) => {
         recordedBy: req.user.id,
       }
     );
-    if (b.budget_id && r.recordset?.[0]) {
-      await query(
-        `INSERT INTO budget_transactions (budget_id, category_id, line_item_id, transaction_date, amount, transaction_type, reference, description, recorded_by_user_id)
-         VALUES (@budgetId, @catId, @lineId, @date, @amount, N'expense', @ref, @desc, @userId)`,
-        { budgetId: b.budget_id, catId: b.budget_category_id || null, lineId: b.budget_line_item_id || null, date: b.entry_date, amount: Number(b.amount), ref: entryNumber, desc: b.description, userId: req.user.id }
-      );
+    const entry = r.recordset?.[0] || null;
+    if (entry?.budget_id) {
+      await syncBudgetTransactionForExpenseEntry(entry, req.user.id);
     }
-    res.status(201).json({ entry: r.recordset?.[0] || null });
+    res.status(201).json({ entry });
   } catch (err) { next(err); }
 });
 
@@ -185,6 +196,10 @@ router.patch('/entries/:id', async (req, res, next) => {
     const allowed = ['entry_date', 'category_id', 'department_name', 'budget_id', 'budget_category_id', 'budget_line_item_id', 'is_budgeted', 'entry_type', 'description', 'amount', 'tax_amount', 'currency', 'payment_method', 'reference_number', 'vendor_supplier', 'receipt_number', 'status', 'notes', 'tags', 'rejection_reason'];
     for (const k of allowed) {
       if (b[k] !== undefined) { params[k] = b[k]; sets.push(`[${k}] = @${k}`); }
+    }
+    if (b.budget_id !== undefined) {
+      params.is_budgeted = b.budget_id ? 1 : 0;
+      if (!sets.some((s) => s.startsWith('[is_budgeted]'))) sets.push('[is_budgeted] = @is_budgeted');
     }
     if (b.status === 'approved') {
       sets.push(`approved_by_user_id = @approvedBy`); sets.push(`approved_at = SYSUTCDATETIME()`); params.approvedBy = req.user.id;
@@ -203,6 +218,9 @@ router.patch('/entries/:id', async (req, res, next) => {
     );
     const entry = r.recordset?.[0] || null;
     let journal = null;
+    if (entry) {
+      await syncBudgetTransactionForExpenseEntry(entry, req.user.id);
+    }
     if (entry && ['approved', 'paid'].includes(String(b.status || entry.status)) && !entry.journal_entry_id) {
       try {
         const { postExpenseJournal } = await import('../lib/accountingLedger.js');
@@ -222,6 +240,7 @@ router.patch('/entries/:id', async (req, res, next) => {
 
 router.delete('/entries/:id', async (req, res, next) => {
   try {
+    await removeBudgetTransactionsForExpenseEntry(req.params.id);
     await query(`DELETE FROM expense_entries WHERE id = @id`, { id: req.params.id });
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -496,26 +515,45 @@ router.get('/summary', async (req, res, next) => {
 
     const totals = await query(
       `SELECT COUNT(*) AS total_entries,
-              SUM(CASE WHEN entry_type = N'expense' THEN total_amount ELSE 0 END) AS total_expenses,
+              SUM(CASE WHEN entry_type IN (N'expense', N'reimbursement') THEN total_amount ELSE 0 END) AS total_expenses,
               SUM(CASE WHEN entry_type = N'income' THEN total_amount ELSE 0 END) AS total_income,
-              SUM(CASE WHEN is_budgeted = 1 THEN total_amount ELSE 0 END) AS budgeted_total,
-              SUM(CASE WHEN is_budgeted = 0 THEN total_amount ELSE 0 END) AS unbudgeted_total
+              SUM(CASE WHEN is_budgeted = 0 AND entry_type IN (N'expense', N'reimbursement') THEN total_amount ELSE 0 END) AS unbudgeted_total
        FROM expense_entries e WHERE e.tenant_id = @t${dateFilter}`,
       params
     );
+
+    const budgetFunds = await query(
+      `SELECT
+         (SELECT ISNULL(SUM(total_budget), 0) FROM department_budgets
+          WHERE tenant_id = @t AND [status] IN (N'approved', N'active')) AS total_budget,
+         (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt
+          INNER JOIN department_budgets b ON b.id = bt.budget_id
+          WHERE b.tenant_id = @t AND b.[status] IN (N'approved', N'active')
+            AND bt.transaction_type IN (N'expense', N'reimbursement')) AS total_spent_on_budgets,
+         (SELECT ISNULL(SUM(bt.amount), 0) FROM budget_transactions bt
+          INNER JOIN department_budgets b ON b.id = bt.budget_id
+          WHERE b.tenant_id = @t AND b.[status] IN (N'approved', N'active')
+            AND bt.transaction_type = N'income') AS total_income_on_budgets`,
+      { t }
+    );
+    const bf = budgetFunds.recordset?.[0] || {};
+    const totalBudget = Number(bf.total_budget) || 0;
+    const spentOnBudgets = Number(bf.total_spent_on_budgets) || 0;
+    const incomeOnBudgets = Number(bf.total_income_on_budgets) || 0;
+    const availableFunds = totalBudget + incomeOnBudgets - spentOnBudgets;
 
     const byCat = await query(
       `SELECT c.name AS category_name, c.category_type, COUNT(*) AS count, SUM(e.total_amount) AS total
        FROM expense_entries e
        LEFT JOIN expense_categories c ON c.id = e.category_id
-       WHERE e.tenant_id = @t${dateFilter}
+       WHERE e.tenant_id = @t AND e.entry_type IN (N'expense', N'reimbursement')${dateFilter}
        GROUP BY c.name, c.category_type ORDER BY total DESC`,
       params
     );
 
     const byMonth = await query(
       `SELECT YEAR(e.entry_date) AS [year], MONTH(e.entry_date) AS [month],
-              SUM(CASE WHEN e.entry_type = N'expense' THEN e.total_amount ELSE 0 END) AS expenses,
+              SUM(CASE WHEN e.entry_type IN (N'expense', N'reimbursement') THEN e.total_amount ELSE 0 END) AS expenses,
               SUM(CASE WHEN e.entry_type = N'income' THEN e.total_amount ELSE 0 END) AS income
        FROM expense_entries e WHERE e.tenant_id = @t${dateFilter}
        GROUP BY YEAR(e.entry_date), MONTH(e.entry_date) ORDER BY [year], [month]`,
@@ -523,14 +561,25 @@ router.get('/summary', async (req, res, next) => {
     );
 
     const byDept = await query(
-      `SELECT ISNULL(e.department_name, N'Unassigned') AS department, COUNT(*) AS count, SUM(e.total_amount) AS total
-       FROM expense_entries e WHERE e.tenant_id = @t AND e.entry_type = N'expense'${dateFilter}
+      `SELECT ISNULL(e.department_name, N'Unassigned') AS department, COUNT(*) AS count,
+              SUM(CASE WHEN e.entry_type IN (N'expense', N'reimbursement') THEN e.total_amount ELSE 0 END) AS total
+       FROM expense_entries e WHERE e.tenant_id = @t AND e.entry_type IN (N'expense', N'reimbursement')${dateFilter}
        GROUP BY e.department_name ORDER BY total DESC`,
       params
     );
 
+    const journalIncome = Number(totals.recordset?.[0]?.total_income) || 0;
+    const journalExpenses = Number(totals.recordset?.[0]?.total_expenses) || 0;
+
     res.json({
-      totals: totals.recordset?.[0] || {},
+      totals: {
+        ...(totals.recordset?.[0] || {}),
+        total_budget: totalBudget,
+        total_income_on_budgets: incomeOnBudgets,
+        total_spent_on_budgets: spentOnBudgets,
+        available_funds: availableFunds,
+        net_journal: journalIncome - journalExpenses,
+      },
       byCategory: byCat.recordset || [],
       byMonth: byMonth.recordset || [],
       byDepartment: byDept.recordset || [],

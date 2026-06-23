@@ -1,5 +1,6 @@
 import { getApiBase } from './lib/apiBase.js';
 import { createLogisticsFlowApi } from './lib/logisticsFlowApi.js';
+import { normalizeTruckRegsInData } from './lib/truckKey.js';
 
 // In dev, call API directly so it works even if proxy fails. Override with VITE_API_BASE in client .env.
 const API = getApiBase();
@@ -88,7 +89,7 @@ async function request(path, options = {}) {
     if (data.allowedRadiusMeters != null) err.allowedRadiusMeters = data.allowedRadiusMeters;
     throw err;
   }
-  return data;
+  return normalizeTruckRegsInData(data);
 }
 
 export const auth = {
@@ -221,14 +222,28 @@ export const contractor = {
   trucks: {
     list: () => request('/contractor/trucks'),
     create: (body) => request('/contractor/trucks', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/trucks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    /** Update by truck registration (preferred) or legacy UUID. */
+    update: (idOrRegistration, body) => {
+      const key = String(idOrRegistration || '').trim();
+      if (!key) return Promise.reject(new Error('Truck registration is required.'));
+      return request(`/contractor/trucks/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+    },
     bulk: (body) => request('/contractor/trucks/bulk', { method: 'POST', body: JSON.stringify(body) }),
+    bulkUpdate: (body) => request('/contractor/trucks/bulk-update', { method: 'PATCH', body: JSON.stringify(body) }),
   },
   drivers: {
     list: () => request('/contractor/drivers'),
     create: (body) => request('/contractor/drivers', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id, body) => request(`/contractor/drivers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    update: (id, body) => {
+      const rid = normalizeEntityId(id);
+      if (!rid) return Promise.reject(new Error('Invalid driver id. Refresh the page and try again.'));
+      return request(`/contractor/drivers/${encodeURIComponent(rid)}`, { method: 'PATCH', body: JSON.stringify(body) });
+    },
     bulk: (body) => request('/contractor/drivers/bulk', { method: 'POST', body: JSON.stringify(body) }),
+    bulkUpdate: (body) => request('/contractor/drivers/bulk-update', { method: 'PATCH', body: JSON.stringify(body) }),
   },
   incidents: {
     list: (params = {}) => {
@@ -934,7 +949,7 @@ export const commandCentre = {
         .then(async (res) => {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || res.statusText);
-          return data;
+          return normalizeTruckRegsInData(data);
         })
         .catch((err) => {
           throw wrapNetworkError(err);
@@ -961,7 +976,7 @@ export const commandCentre = {
         .then(async (res) => {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || res.statusText);
-          return data;
+          return normalizeTruckRegsInData(data);
         })
         .catch((err) => {
           throw wrapNetworkError(err);
@@ -2744,6 +2759,7 @@ export const accounting = {
     updateLineItem: (id, body) => acc(`/budgets/line-items/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     removeLineItem: (id) => acc(`/budgets/line-items/${id}`, { method: 'DELETE' }),
     addTransaction: (budgetId, body) => acc(`/budgets/${budgetId}/transactions`, { method: 'POST', body: JSON.stringify(body) }),
+    updateTransaction: (id, body) => acc(`/budgets/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     removeTransaction: (id) => acc(`/budgets/transactions/${id}`, { method: 'DELETE' }),
   },
 };
@@ -2812,6 +2828,10 @@ export const tracking = {
       const q = new URLSearchParams(params).toString();
       return trk(`/map/route?${q}`);
     },
+    routeThroughWaypoints: (waypoints) => trk('/map/route-through-waypoints', {
+      method: 'POST',
+      body: JSON.stringify({ waypoints }),
+    }),
   },
   contractorRoutes: {
     list: () => trk('/contractor-routes'),

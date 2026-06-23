@@ -9,6 +9,7 @@ import { MapPanLock, MapWheelGuard, FitBoundsOnce, FlyToPoint } from './geofence
 import MapPlaceSearch from './MapPlaceSearch.jsx';
 import GeofencePlaceLabels from './GeofencePlaceLabels.jsx';
 import RouteAlternativesMapLayers from './RouteAlternativesMapLayers.jsx';
+import { RouteWaypointDrawHandler, ManualRoutePlotLayers } from './manualRoutePlot.jsx';
 import { landGeofencePlaces } from '../../lib/geofenceLabels.js';
 import {
   CircleDrawHandler,
@@ -161,11 +162,21 @@ export default function GeofenceMapEditor({
   onPlaceSelect,
   routeMarkers = null,
   labelGeofences = null,
+  routeCorridorM = 400,
+  manualRoutePlotActive = false,
+  manualRouteWaypoints = [],
+  manualRouteSnapPreview = null,
+  manualRouteSnapping = false,
+  manualRouteLockEndpoints = false,
+  onManualRouteAddWaypoint,
+  onManualRouteMoveWaypoint,
+  onManualRouteUndo,
   onScaleDraft,
   onDraftSnapshot,
   className = '',
 }) {
   const [mounted, setMounted] = useState(false);
+  const [basemapVariant, setBasemapVariant] = useState('satellite');
   useEffect(() => setMounted(true), []);
 
   const resolveEditColor = editColor || geofenceDisplayColor({ leg: editLeg, fence_type: editFenceType });
@@ -178,7 +189,7 @@ export default function GeofenceMapEditor({
     return [-26.15, 28.12];
   }, [geofences]);
 
-  const drawingActive = !!manualDrawMode;
+  const drawingActive = !!manualDrawMode || manualRoutePlotActive;
   const editingActive = !!(editRing || editCenter);
   const panLocked = mapTool !== 'pan' || drawingActive || mapClickMode;
   const hasResizableDraft = !!(manualCircleDraft || manualPolygonDraft?.ring?.length || editingActive);
@@ -189,7 +200,9 @@ export default function GeofenceMapEditor({
     ? mapClickMode
       ? 'Pick mode — click once (scroll to zoom, drag handles to resize)'
       : drawingActive
-        ? 'Draw mode — scroll to zoom in/out; map position stays put'
+        ? manualRoutePlotActive
+          ? 'Plot custom route — click waypoints in order; route follows each point to the end'
+          : 'Draw mode — scroll to zoom in/out; map position stays put'
         : editingActive
           ? 'Edit mode — drag corner dots to reshape, N/E/S/W handles to resize'
           : 'Tool active — scroll wheel zooms the map'
@@ -203,7 +216,7 @@ export default function GeofenceMapEditor({
 
   if (!mounted) {
     return (
-      <div className={`h-[36rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
+      <div className={`h-[40rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
         Loading map…
       </div>
     );
@@ -213,6 +226,23 @@ export default function GeofenceMapEditor({
     <div className={`rounded-xl border border-surface-200 overflow-hidden z-0 relative overscroll-contain ${className}`}>
       <div className="absolute top-3 left-3 right-3 z-[1000] pointer-events-none flex justify-center">
         <MapPlaceSearch onSelect={onPlaceSelect} savedPlaces={placeLabels} className="w-full max-w-lg pointer-events-auto shadow-lg" />
+      </div>
+
+      <div className="absolute top-14 right-3 z-[1000] flex gap-1 pointer-events-auto shadow-sm">
+        <ToolBtn
+          active={basemapVariant === 'satellite'}
+          onClick={() => setBasemapVariant('satellite')}
+          title="Satellite imagery with roads"
+        >
+          Satellite
+        </ToolBtn>
+        <ToolBtn
+          active={basemapVariant === 'voyager'}
+          onClick={() => setBasemapVariant('voyager')}
+          title="Street map"
+        >
+          Street
+        </ToolBtn>
       </div>
 
       <div className="absolute bottom-3 left-3 z-[1000] flex flex-col gap-2 pointer-events-none max-w-[calc(100%-1.5rem)]">
@@ -245,12 +275,12 @@ export default function GeofenceMapEditor({
       <MapContainer
         center={defaultCenter}
         zoom={9}
-        className="h-[36rem] w-full"
+        className="h-[40rem] w-full"
         scrollWheelZoom="center"
         doubleClickZoom={!drawingActive || manualDrawMode !== 'polygon'}
         zoomControl
       >
-        <FleetMapBasemap />
+        <FleetMapBasemap variant={basemapVariant} showLabels={basemapVariant === 'satellite'} />
         <MapWheelGuard />
         <MapPanLock locked={panLocked} disableDoubleClickZoom={manualDrawMode === 'polygon'} />
         <FitBoundsOnce revision={fitRevision} positions={fitPositions} />
@@ -273,6 +303,13 @@ export default function GeofenceMapEditor({
           active={manualDrawMode === 'freehand' && !manualPolygonDraft}
           onPreview={onFreehandPreview}
           onComplete={onFreehandComplete}
+        />
+        <RouteWaypointDrawHandler
+          active={manualRoutePlotActive}
+          waypoints={manualRouteWaypoints}
+          onAddWaypoint={onManualRouteAddWaypoint}
+          onMoveWaypoint={onManualRouteMoveWaypoint}
+          onUndo={onManualRouteUndo}
         />
 
         {circleDrawPreview && (
@@ -317,7 +354,15 @@ export default function GeofenceMapEditor({
 
         <GeofencePlaceLabels geofences={labelGeofences ?? geofences} />
 
-        <RouteAlternativesMapLayers preview={preview} />
+        <RouteAlternativesMapLayers preview={preview} corridorM={routeCorridorM} />
+
+        <ManualRoutePlotLayers
+          waypoints={manualRouteWaypoints}
+          snapPreview={manualRouteSnapPreview}
+          snapping={manualRouteSnapping}
+          lockEndpoints={manualRouteLockEndpoints}
+          onMoveWaypoint={onManualRouteMoveWaypoint}
+        />
 
         {routeMarkers?.pointA && (
           <>

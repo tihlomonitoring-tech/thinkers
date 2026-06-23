@@ -1,5 +1,6 @@
 import sql from 'mssql';
 import 'dotenv/config';
+import { bindSqlParams } from './lib/sqlGuidParams.js';
 
 const firstNonEmpty = (...values) => values.find((v) => typeof v === 'string' && v.trim().length > 0);
 
@@ -105,11 +106,7 @@ export async function getPool() {
 export async function query(text, params = {}) {
   const p = await getPool();
   const request = p.request();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined) continue;
-    const k = key.startsWith('@') ? key.slice(1) : key;
-    request.input(k, value);
-  }
+  bindSqlParams(request, params, { strict: false });
   return request.query(text);
 }
 

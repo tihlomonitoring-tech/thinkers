@@ -3661,6 +3661,31 @@ const ENTRY_TYPES = ['expense', 'income', 'refund', 'adjustment', 'reimbursement
 const STATUSES = ['draft', 'pending', 'approved', 'rejected', 'paid', 'voided'];
 const PAYMENT_METHODS = ['cash', 'card', 'eft', 'cheque', 'petty_cash', 'company_card', 'reimbursement', 'other'];
 
+const ENTRY_TYPE_STYLES = {
+  income: 'bg-emerald-50 text-emerald-700',
+  refund: 'bg-blue-50 text-blue-700',
+  adjustment: 'bg-violet-50 text-violet-700',
+  reimbursement: 'bg-amber-50 text-amber-800',
+  expense: 'bg-red-50 text-red-700',
+};
+
+function entryAmountDisplay(entry, fmtZar) {
+  const raw = Number(entry?.total_amount ?? entry?.amount ?? 0);
+  const n = Number.isFinite(raw) ? raw : 0;
+  const credit = entry?.entry_type === 'income' || entry?.entry_type === 'refund';
+  const signed = credit ? n : -Math.abs(n);
+  const color = credit ? 'text-emerald-700' : entry?.entry_type === 'adjustment' ? 'text-violet-700' : 'text-red-700';
+  const prefix = signed > 0 ? '+' : signed < 0 ? '−' : '';
+  return { text: `${prefix}${fmtZar(Math.abs(n))}`, color, signed };
+}
+
+function budgetLabel(entry) {
+  if (!entry?.budget_id && !entry?.is_budgeted) return '—';
+  const dept = entry.budget_department || entry.department_name;
+  if (!dept) return 'Linked';
+  return entry.budget_year ? `${dept} (${entry.budget_year})` : dept;
+}
+
 const STATUS_STYLES = {
   draft: 'bg-surface-100 text-surface-700',
   pending: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
@@ -3761,15 +3786,23 @@ function ExpenseManagementTab() {
     loadEntryDetail(entry.id);
   };
 
-  const handleBudgetChange = async (budgetId) => {
-    setForm((f) => ({ ...f, budget_id: budgetId, budget_category_id: '', budget_line_item_id: '', is_budgeted: !!budgetId }));
+  const handleBudgetChange = async (budgetId, { preserveAllocation = false } = {}) => {
+    setForm((f) => ({
+      ...f,
+      budget_id: budgetId,
+      budget_category_id: preserveAllocation ? f.budget_category_id : '',
+      budget_line_item_id: preserveAllocation ? f.budget_line_item_id : '',
+      is_budgeted: !!budgetId,
+    }));
     if (budgetId) {
       try {
         const det = await accountingApi.budgets.get(budgetId);
         setSelectedBudgetCategories(det.categories || []);
         setSelectedBudgetLineItems(det.lineItems || []);
         const bgt = det.budget;
-        if (bgt?.department_name) setForm((f) => ({ ...f, department_name: bgt.department_name }));
+        if (bgt?.department_name && !preserveAllocation) {
+          setForm((f) => ({ ...f, department_name: bgt.department_name }));
+        }
       } catch { setSelectedBudgetCategories([]); setSelectedBudgetLineItems([]); }
     } else {
       setSelectedBudgetCategories([]);
@@ -3781,15 +3814,30 @@ function ExpenseManagementTab() {
   const handleSaveEntry = (e) => {
     e.preventDefault();
     setSaving(true);
-    const body = { ...form, amount: Number(form.amount) || 0, tax_amount: Number(form.tax_amount) || 0 };
+    const body = {
+      ...form,
+      amount: Number(form.amount) || 0,
+      tax_amount: Number(form.tax_amount) || 0,
+      is_budgeted: !!form.budget_id,
+    };
     const promise = editingId ? emApi.entries.update(editingId, body) : emApi.entries.create(body);
     promise
-      .then(() => { setForm({ ...emptyForm }); setEditingId(null); setSubTab('journal'); loadEntries(); loadMeta(); })
+      .then(() => {
+        const savedId = editingId;
+        setForm({ ...emptyForm });
+        setEditingId(null);
+        setSelectedBudgetCategories([]);
+        setSelectedBudgetLineItems([]);
+        setSubTab(savedId && selectedEntry?.id === savedId ? 'entry-detail' : 'journal');
+        loadEntries();
+        loadMeta();
+        if (savedId && selectedEntry?.id === savedId) loadEntryDetail(savedId);
+      })
       .catch(() => {})
       .finally(() => setSaving(false));
   };
 
-  const editEntry = (entry) => {
+  const editEntry = async (entry) => {
     setEditingId(entry.id);
     setForm({
       entry_date: String(entry.entry_date || '').slice(0, 10), category_id: entry.category_id || '', department_name: entry.department_name || '',
@@ -3800,7 +3848,7 @@ function ExpenseManagementTab() {
       vendor_supplier: entry.vendor_supplier || '', receipt_number: entry.receipt_number || '',
       notes: entry.notes || '', tags: entry.tags || '', is_recurring: !!entry.is_recurring, recurring_frequency: entry.recurring_frequency || '',
     });
-    if (entry.budget_id) handleBudgetChange(entry.budget_id);
+    if (entry.budget_id) await handleBudgetChange(entry.budget_id, { preserveAllocation: true });
     setSubTab('record');
   };
 
@@ -3928,17 +3976,29 @@ function ExpenseManagementTab() {
       {subTab === 'dashboard' && (
         <div className="space-y-6">
           {/* Summary cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
             {[
               { label: 'Total entries', value: totals.total_entries || 0, isCurrency: false, color: 'text-surface-900' },
-              { label: 'Total expenses', value: totals.total_expenses || 0, isCurrency: true, color: 'text-red-700' },
-              { label: 'Total income', value: totals.total_income || 0, isCurrency: true, color: 'text-emerald-700' },
-              { label: 'Budgeted spend', value: totals.budgeted_total || 0, isCurrency: true, color: 'text-blue-700' },
+              { label: 'Journal income', value: totals.total_income || 0, isCurrency: true, color: 'text-emerald-700' },
+              { label: 'Journal expenses', value: totals.total_expenses || 0, isCurrency: true, color: 'text-red-700' },
+              { label: 'Net (income − expenses)', value: totals.net_journal ?? ((Number(totals.total_income) || 0) - (Number(totals.total_expenses) || 0)), isCurrency: true, color: (Number(totals.net_journal ?? 0) < 0 ? 'text-red-700' : 'text-emerald-700') },
+              {
+                label: 'Available fund to spend',
+                value: totals.available_funds ?? 0,
+                isCurrency: true,
+                color: Number(totals.available_funds) < 0 ? 'text-red-700' : 'text-blue-700',
+                hint: [
+                  totals.total_budget != null ? `${fmtZar(totals.total_budget)} budget` : null,
+                  totals.total_income_on_budgets != null ? `${fmtZar(totals.total_income_on_budgets)} income` : null,
+                  totals.total_spent_on_budgets != null ? `${fmtZar(totals.total_spent_on_budgets)} spent` : null,
+                ].filter(Boolean).join(' · '),
+              },
               { label: 'Unbudgeted spend', value: totals.unbudgeted_total || 0, isCurrency: true, color: 'text-amber-700' },
             ].map((c) => (
               <div key={c.label} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
                 <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{c.label}</p>
                 <p className={`text-xl font-semibold mt-1 tabular-nums ${c.color}`}>{c.isCurrency ? fmtZar(c.value) : c.value}</p>
+                {c.hint && <p className="text-[10px] text-surface-500 mt-1">{c.hint}</p>}
               </div>
             ))}
           </div>
@@ -3946,7 +4006,7 @@ function ExpenseManagementTab() {
           {/* Category breakdown */}
           {byCategory.length > 0 && (
             <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm">
-              <h3 className="text-sm font-semibold text-surface-900 mb-3">Spend by category</h3>
+              <h3 className="text-sm font-semibold text-surface-900 mb-3">Expense spend by category</h3>
               <div className="space-y-2">
                 {byCategory.map((c, i) => (
                   <div key={i} className="flex items-center gap-3">
@@ -4051,11 +4111,11 @@ function ExpenseManagementTab() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-surface-500 mb-1">Budgeted</label>
+                <label className="block text-xs font-medium text-surface-500 mb-1">Budget link</label>
                 <select value={fBudgeted} onChange={(e) => setFBudgeted(e.target.value)} className="w-full border border-surface-300 rounded-lg px-3 py-1.5 text-sm">
-                  <option value="">All</option>
-                  <option value="1">Budgeted</option>
-                  <option value="0">Unbudgeted</option>
+                  <option value="">All entries</option>
+                  <option value="1">Linked to budget</option>
+                  <option value="0">Not linked</option>
                 </select>
               </div>
               <div className="sm:col-span-2">
@@ -4098,31 +4158,31 @@ function ExpenseManagementTab() {
                   <th className="px-4 py-2.5">Type</th>
                   <th className="px-4 py-2.5">Description</th>
                   <th className="px-4 py-2.5">Category</th>
-                  <th className="px-4 py-2.5">Department</th>
+                  <th className="px-4 py-2.5">Budget</th>
+                  <th className="px-4 py-2.5">Budget category</th>
+                  <th className="px-4 py-2.5">Line item</th>
                   <th className="px-4 py-2.5 text-right">Amount</th>
-                  <th className="px-4 py-2.5">Budgeted</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Actions</th>
                 </tr></thead>
                 <tbody>
-                  {entries.map((e) => (
+                  {entries.map((e) => {
+                    const amt = entryAmountDisplay(e, fmtZar);
+                    return (
                     <tr key={e.id} className="border-b border-surface-50 hover:bg-surface-50 cursor-pointer" onClick={() => openEntry(e)}>
                       <td className="px-4 py-2.5 tabular-nums">{fmtDate(e.entry_date)}</td>
                       <td className="px-4 py-2.5 font-mono text-xs text-brand-600">{e.entry_number}</td>
                       <td className="px-4 py-2.5">
-                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${e.entry_type === 'income' ? 'bg-emerald-50 text-emerald-700' : e.entry_type === 'refund' ? 'bg-blue-50 text-blue-700' : 'bg-red-50 text-red-700'}`}>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium capitalize ${ENTRY_TYPE_STYLES[e.entry_type] || ENTRY_TYPE_STYLES.expense}`}>
                           {e.entry_type}
                         </span>
                       </td>
-                      <td className="px-4 py-2.5 max-w-[200px] truncate">{e.description}</td>
+                      <td className="px-4 py-2.5 max-w-[200px] truncate" title={e.description}>{e.description}</td>
                       <td className="px-4 py-2.5 text-surface-600">{e.category_name || '—'}</td>
-                      <td className="px-4 py-2.5 text-surface-600">{e.department_name || '—'}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtZar(e.total_amount || e.amount)}</td>
-                      <td className="px-4 py-2.5">
-                        <span className={`px-1.5 py-0.5 rounded text-xs ${e.is_budgeted ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-                          {e.is_budgeted ? 'Yes' : 'No'}
-                        </span>
-                      </td>
+                      <td className="px-4 py-2.5 text-surface-600">{budgetLabel(e)}</td>
+                      <td className="px-4 py-2.5 text-surface-600">{e.budget_category_name || '—'}</td>
+                      <td className="px-4 py-2.5 text-surface-600 max-w-[140px] truncate" title={e.budget_line_item_name || ''}>{e.budget_line_item_name || '—'}</td>
+                      <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${amt.color}`}>{amt.text}</td>
                       <td className="px-4 py-2.5">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[e.status] || 'bg-surface-100 text-surface-700'}`}>{e.status}</span>
                       </td>
@@ -4133,7 +4193,8 @@ function ExpenseManagementTab() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -4145,7 +4206,8 @@ function ExpenseManagementTab() {
       {subTab === 'record' && (
         <form onSubmit={handleSaveEntry} className="space-y-5">
           <div className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm space-y-4">
-            <h3 className="text-sm font-semibold text-surface-900">{editingId ? 'Edit expense entry' : 'Record new entry'}</h3>
+            <h3 className="text-sm font-semibold text-surface-900">{editingId ? 'Edit entry' : 'Record new entry'}</h3>
+            <p className="text-xs text-surface-500">Set the journal category and budget category/line item so spend and income post to the correct department budget.</p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div>
@@ -4502,6 +4564,9 @@ function ExpenseManagementTab() {
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 text-sm">
+              <div><p className="text-xs text-surface-500">Budget</p><p className="font-medium">{detailEntry.budget_department ? `${detailEntry.budget_department} (${detailEntry.budget_year || '—'})` : '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Budget category</p><p className="font-medium">{detailEntry.budget_category_name || '—'}</p></div>
+              <div><p className="text-xs text-surface-500">Budget line item</p><p className="font-medium">{detailEntry.budget_line_item_name || '—'}</p></div>
               <div><p className="text-xs text-surface-500">Type</p><p className="font-medium">{detailEntry.entry_type}</p></div>
               <div><p className="text-xs text-surface-500">Category</p><p className="font-medium">{detailEntry.category_name || '—'}</p></div>
               <div><p className="text-xs text-surface-500">Department</p><p className="font-medium">{detailEntry.department_name || '—'}</p></div>
@@ -4557,7 +4622,7 @@ function ExpenseManagementTab() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => editEntry(detailEntry)} className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700">Edit entry</button>
+            <button type="button" onClick={() => editEntry(detailEntry)} className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700">Edit / reallocate</button>
             <button type="button" onClick={() => deleteEntry(detailEntry.id)} className="px-4 py-2 border border-red-300 text-red-700 rounded-lg text-sm font-medium hover:bg-red-50">Delete</button>
           </div>
         </div>
@@ -4739,6 +4804,10 @@ function DepartmentBudgetTab() {
   const [createForm, setCreateForm] = useState({ ...emptyForm });
   const [creating, setCreating] = useState(false);
 
+  const [editingBudget, setEditingBudget] = useState(false);
+  const [budgetEditForm, setBudgetEditForm] = useState({ ...emptyForm });
+  const [budgetEditSaving, setBudgetEditSaving] = useState(false);
+
   // category form
   const [catForm, setCatForm] = useState({ category_name: '', allocated_amount: '', notes: '', account_type_id: '' });
   const [catSaving, setCatSaving] = useState(false);
@@ -4751,8 +4820,10 @@ function DepartmentBudgetTab() {
   const [editingLiId, setEditingLiId] = useState(null);
 
   // transaction form
-  const [txForm, setTxForm] = useState({ category_id: '', line_item_id: '', transaction_date: '', amount: '', transaction_type: 'expense', reference: '', description: '' });
+  const emptyTxForm = { category_id: '', line_item_id: '', transaction_date: '', amount: '', transaction_type: 'expense', reference: '', description: '' };
+  const [txForm, setTxForm] = useState({ ...emptyTxForm });
   const [txSaving, setTxSaving] = useState(false);
+  const [editingTxId, setEditingTxId] = useState(null);
 
   const loadBudgets = useCallback(() => {
     setLoading(true);
@@ -4789,6 +4860,7 @@ function DepartmentBudgetTab() {
 
   const openBudget = (id) => {
     setSelectedId(id);
+    setEditingBudget(false);
     setSubTab('detail');
     loadDetail(id);
   };
@@ -4796,8 +4868,9 @@ function DepartmentBudgetTab() {
   // summary cards
   const totalBudget = budgets.reduce((s, b) => s + Number(b.total_budget || 0), 0);
   const totalAllocated = budgets.reduce((s, b) => s + Number(b.total_allocated || 0), 0);
+  const totalIncome = budgets.reduce((s, b) => s + Number(b.total_income || 0), 0);
   const totalSpent = budgets.reduce((s, b) => s + Number(b.total_spent || 0), 0);
-  const totalRemaining = totalBudget - totalSpent;
+  const totalRemaining = totalBudget + totalIncome - totalSpent;
 
   const uniqueYears = [...new Set(budgets.map((b) => b.fiscal_year))].sort((a, b) => b - a);
   const uniqueDepts = [...new Set(budgets.map((b) => b.department_name).filter(Boolean))].sort();
@@ -4822,6 +4895,45 @@ function DepartmentBudgetTab() {
     accountingApi.budgets.update(selectedId, { status })
       .then(() => { loadDetail(selectedId); loadBudgets(); })
       .catch(() => {});
+  };
+
+  const startEditBudget = () => {
+    const b = detail?.budget;
+    if (!b?.id) return;
+    setBudgetEditForm({
+      department_name: b.department_name || '',
+      fiscal_year: b.fiscal_year || new Date().getFullYear(),
+      fiscal_period: b.fiscal_period || 'annual',
+      period_start: b.period_start ? String(b.period_start).slice(0, 10) : '',
+      period_end: b.period_end ? String(b.period_end).slice(0, 10) : '',
+      total_budget: b.total_budget != null ? String(b.total_budget) : '',
+      currency: b.currency || 'ZAR',
+      notes: b.notes || '',
+    });
+    setEditingBudget(true);
+  };
+
+  const cancelEditBudget = () => {
+    setEditingBudget(false);
+    setBudgetEditForm({ ...emptyForm });
+  };
+
+  const handleSaveBudgetEdit = (e) => {
+    e.preventDefault();
+    if (!selectedId) return;
+    setBudgetEditSaving(true);
+    accountingApi.budgets.update(selectedId, {
+      ...budgetEditForm,
+      fiscal_year: Number(budgetEditForm.fiscal_year) || new Date().getFullYear(),
+      total_budget: Number(budgetEditForm.total_budget) || 0,
+    })
+      .then(() => {
+        setEditingBudget(false);
+        loadDetail(selectedId);
+        loadBudgets();
+      })
+      .catch(() => {})
+      .finally(() => setBudgetEditSaving(false));
   };
 
   /* ── Categories ── */
@@ -4889,10 +5001,36 @@ function DepartmentBudgetTab() {
   const handleSaveTx = (e) => {
     e.preventDefault();
     setTxSaving(true);
-    accountingApi.budgets.addTransaction(selectedId, { ...txForm, amount: Number(txForm.amount) || 0 })
-      .then(() => { setTxForm({ category_id: '', line_item_id: '', transaction_date: '', amount: '', transaction_type: 'expense', reference: '', description: '' }); loadDetail(selectedId); })
+    const body = { ...txForm, amount: Number(txForm.amount) || 0 };
+    const promise = editingTxId
+      ? accountingApi.budgets.updateTransaction(editingTxId, body)
+      : accountingApi.budgets.addTransaction(selectedId, body);
+    promise
+      .then(() => {
+        setTxForm({ ...emptyTxForm });
+        setEditingTxId(null);
+        loadDetail(selectedId);
+      })
       .catch(() => {})
       .finally(() => setTxSaving(false));
+  };
+
+  const editTx = (tx) => {
+    setEditingTxId(tx.id);
+    setTxForm({
+      category_id: tx.category_id || '',
+      line_item_id: tx.line_item_id || '',
+      transaction_date: tx.transaction_date ? String(tx.transaction_date).slice(0, 10) : '',
+      amount: tx.amount ?? '',
+      transaction_type: tx.transaction_type || 'expense',
+      reference: tx.reference || '',
+      description: tx.description || '',
+    });
+  };
+
+  const cancelTxEdit = () => {
+    setEditingTxId(null);
+    setTxForm({ ...emptyTxForm });
   };
 
   const deleteTx = (id) => {
@@ -4909,7 +5047,15 @@ function DepartmentBudgetTab() {
   const budget = detail?.budget || {};
   const bTotal = Number(budget.total_budget || 0);
   const bAllocated = categories.reduce((s, c) => s + Number(c.allocated_amount || 0), 0);
-  const bSpent = transactions.reduce((s, t) => s + (t.transaction_type === 'expense' ? Number(t.amount || 0) : 0), 0);
+  const bSpent = transactions.reduce((s, t) => {
+    if (t.transaction_type === 'income') return s;
+    return s + Number(t.amount || 0);
+  }, 0);
+  const bIncome = transactions.reduce((s, t) => {
+    if (t.transaction_type !== 'income') return s;
+    return s + Number(t.amount || 0);
+  }, 0);
+  const bAvailable = bTotal + bIncome - bSpent;
   const catSummary = summaryData?.categories || [];
   const monthlySpend = summaryData?.monthlySpend || [];
 
@@ -4945,12 +5091,13 @@ function DepartmentBudgetTab() {
       {subTab === 'dashboard' && (
         <div className="space-y-5">
           {/* Summary cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             {[
               { label: 'Total budget', value: totalBudget, color: 'text-surface-900' },
-              { label: 'Total allocated', value: totalAllocated, color: 'text-blue-700' },
+              { label: 'Income (on budgets)', value: totalIncome, color: 'text-emerald-700' },
               { label: 'Total spent', value: totalSpent, color: 'text-amber-700' },
-              { label: 'Remaining', value: totalRemaining, color: totalRemaining < 0 ? 'text-red-700' : 'text-emerald-700' },
+              { label: 'Available to spend', value: totalRemaining, color: totalRemaining < 0 ? 'text-red-700' : 'text-blue-700' },
+              { label: 'Total allocated', value: totalAllocated, color: 'text-surface-700' },
             ].map((c) => (
               <div key={c.label} className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm">
                 <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">{c.label}</p>
@@ -5111,22 +5258,83 @@ function DepartmentBudgetTab() {
                 </div>
 
                 {/* Summary row */}
-                <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-surface-100">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-surface-100">
                   <div>
                     <p className="text-xs text-surface-500">Allocated</p>
                     <p className="text-sm font-semibold text-blue-700 tabular-nums">{formatZarDisplay(bAllocated)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-surface-500">Income</p>
+                    <p className="text-sm font-semibold text-emerald-700 tabular-nums">{formatZarDisplay(bIncome)}</p>
                   </div>
                   <div>
                     <p className="text-xs text-surface-500">Spent</p>
                     <p className="text-sm font-semibold text-amber-700 tabular-nums">{formatZarDisplay(bSpent)}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-surface-500">Remaining</p>
-                    <p className={`text-sm font-semibold tabular-nums ${bTotal - bSpent < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatZarDisplay(bTotal - bSpent)}</p>
+                    <p className="text-xs text-surface-500">Available to spend</p>
+                    <p className={`text-sm font-semibold tabular-nums ${bAvailable < 0 ? 'text-red-700' : 'text-blue-700'}`}>{formatZarDisplay(bAvailable)}</p>
                   </div>
                 </div>
                 <div className="mt-3">
-                  <BudgetUtilBar spent={bSpent} total={bTotal} />
+                  <BudgetUtilBar spent={bSpent} total={bTotal + bIncome} />
+                </div>
+
+                {/* Edit budget */}
+                <div className="mt-4 pt-4 border-t border-surface-100">
+                  {!editingBudget ? (
+                    <button type="button" onClick={startEditBudget} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm font-medium hover:bg-surface-50">
+                      Edit budget details
+                    </button>
+                  ) : (
+                    <form onSubmit={handleSaveBudgetEdit} className="space-y-4 max-w-2xl">
+                      <p className="text-sm font-medium text-surface-800">Edit department budget</p>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Department name</label>
+                        <input value={budgetEditForm.department_name} onChange={(e) => setBudgetEditForm((f) => ({ ...f, department_name: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-surface-600 mb-1">Fiscal year</label>
+                          <input type="number" value={budgetEditForm.fiscal_year} onChange={(e) => setBudgetEditForm((f) => ({ ...f, fiscal_year: Number(e.target.value) }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-surface-600 mb-1">Fiscal period</label>
+                          <select value={budgetEditForm.fiscal_period} onChange={(e) => setBudgetEditForm((f) => ({ ...f, fiscal_period: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm">
+                            <option value="annual">Annual</option>
+                            <option value="quarterly">Quarterly</option>
+                            <option value="monthly">Monthly</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-surface-600 mb-1">Period start</label>
+                          <input type="date" value={budgetEditForm.period_start} onChange={(e) => setBudgetEditForm((f) => ({ ...f, period_start: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-surface-600 mb-1">Period end</label>
+                          <input type="date" value={budgetEditForm.period_end} onChange={(e) => setBudgetEditForm((f) => ({ ...f, period_end: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Total budget (ZAR)</label>
+                        <input type="number" step="0.01" min="0" value={budgetEditForm.total_budget} onChange={(e) => setBudgetEditForm((f) => ({ ...f, total_budget: e.target.value }))} required className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Notes</label>
+                        <textarea value={budgetEditForm.notes} onChange={(e) => setBudgetEditForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-sm" />
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="submit" disabled={budgetEditSaving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                          {budgetEditSaving ? 'Saving…' : 'Save changes'}
+                        </button>
+                        <button type="button" onClick={cancelEditBudget} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
 
                 {/* Status actions */}
@@ -5329,9 +5537,13 @@ function DepartmentBudgetTab() {
               <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
                 <div className="px-5 py-3 bg-surface-50 border-b border-surface-200">
                   <h4 className="text-sm font-semibold text-surface-800">Transactions</h4>
+                  <p className="text-xs text-surface-500 mt-0.5">Record spend or income against budget categories. Edit a row to reallocate it to the correct category or line item.</p>
                 </div>
                 <div className="p-5 space-y-4">
                   <form onSubmit={handleSaveTx} className="space-y-3">
+                    <p className="text-xs font-semibold text-surface-600 uppercase tracking-wider">
+                      {editingTxId ? 'Reallocate transaction' : 'Record transaction'}
+                    </p>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div>
                         <label className="block text-xs font-medium text-surface-600 mb-1">Date</label>
@@ -5346,15 +5558,26 @@ function DepartmentBudgetTab() {
                         <select value={txForm.transaction_type} onChange={(e) => setTxForm((f) => ({ ...f, transaction_type: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
                           <option value="expense">Expense</option>
                           <option value="income">Income</option>
+                          <option value="adjustment">Adjustment</option>
+                          <option value="transfer">Transfer</option>
                         </select>
                       </div>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                       <div>
-                        <label className="block text-xs font-medium text-surface-600 mb-1">Category</label>
-                        <select value={txForm.category_id} onChange={(e) => setTxForm((f) => ({ ...f, category_id: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
-                          <option value="">Select category</option>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Budget category</label>
+                        <select value={txForm.category_id} onChange={(e) => setTxForm((f) => ({ ...f, category_id: e.target.value, line_item_id: '' }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
+                          <option value="">Uncategorised</option>
                           {categories.map((c) => <option key={c.id} value={c.id}>{c.category_name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-surface-600 mb-1">Line item</label>
+                        <select value={txForm.line_item_id} onChange={(e) => setTxForm((f) => ({ ...f, line_item_id: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm">
+                          <option value="">None</option>
+                          {lineItems.filter((l) => !txForm.category_id || l.category_id === txForm.category_id).map((l) => (
+                            <option key={l.id} value={l.id}>{l.description}</option>
+                          ))}
                         </select>
                       </div>
                       <div>
@@ -5366,9 +5589,16 @@ function DepartmentBudgetTab() {
                         <input value={txForm.description} onChange={(e) => setTxForm((f) => ({ ...f, description: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-300 bg-white text-surface-900 text-sm" placeholder="Description" />
                       </div>
                     </div>
-                    <button type="submit" disabled={txSaving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-                      {txSaving ? 'Recording…' : 'Record transaction'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button type="submit" disabled={txSaving} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                        {txSaving ? 'Saving…' : editingTxId ? 'Save reallocation' : 'Record transaction'}
+                      </button>
+                      {editingTxId && (
+                        <button type="button" onClick={cancelTxEdit} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm hover:bg-surface-50">
+                          Cancel
+                        </button>
+                      )}
+                    </div>
                   </form>
 
                   {transactions.length > 0 && (
@@ -5379,6 +5609,8 @@ function DepartmentBudgetTab() {
                             <tr className="bg-surface-50 border-b border-surface-200 text-left">
                               <th className="px-4 py-2 font-medium text-surface-600">Date</th>
                               <th className="px-4 py-2 font-medium text-surface-600">Type</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Category</th>
+                              <th className="px-4 py-2 font-medium text-surface-600">Line item</th>
                               <th className="px-4 py-2 font-medium text-surface-600">Reference</th>
                               <th className="px-4 py-2 font-medium text-surface-600">Description</th>
                               <th className="px-4 py-2 font-medium text-surface-600 text-right">Amount</th>
@@ -5387,17 +5619,20 @@ function DepartmentBudgetTab() {
                           </thead>
                           <tbody className="divide-y divide-surface-100">
                             {transactions.map((tx) => (
-                              <tr key={tx.id} className="hover:bg-surface-50">
+                              <tr key={tx.id} className={`hover:bg-surface-50 ${editingTxId === tx.id ? 'bg-brand-50/50' : ''}`}>
                                 <td className="px-4 py-2 text-surface-700">{formatDate(tx.transaction_date)}</td>
                                 <td className="px-4 py-2">
-                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${tx.transaction_type === 'expense' ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${tx.transaction_type === 'income' ? 'bg-emerald-50 text-emerald-700' : tx.transaction_type === 'expense' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-800'}`}>
                                     {tx.transaction_type}
                                   </span>
                                 </td>
-                                <td className="px-4 py-2 text-surface-600">{tx.reference || '—'}</td>
+                                <td className="px-4 py-2 text-surface-600">{tx.category_name || '—'}</td>
+                                <td className="px-4 py-2 text-surface-600">{tx.line_item_name || '—'}</td>
+                                <td className="px-4 py-2 text-surface-600">{tx.reference || '—'}{tx.expense_entry_id ? <span className="ml-1 text-[10px] text-brand-600">(journal)</span> : ''}</td>
                                 <td className="px-4 py-2 text-surface-600">{tx.description || '—'}</td>
                                 <td className="px-4 py-2 text-right tabular-nums text-surface-900">{formatZarDisplay(Number(tx.amount || 0))}</td>
-                                <td className="px-4 py-2 text-right">
+                                <td className="px-4 py-2 text-right whitespace-nowrap">
+                                  <button type="button" onClick={() => editTx(tx)} className="text-brand-600 hover:text-brand-700 text-sm font-medium mr-2">Edit</button>
                                   <button type="button" onClick={() => deleteTx(tx.id)} className="text-red-600 hover:text-red-700 text-sm font-medium">Delete</button>
                                 </td>
                               </tr>
@@ -5423,7 +5658,7 @@ function DepartmentBudgetTab() {
                       <div className="space-y-3">
                         {catSummary.map((cs) => {
                           const alloc = Number(cs.allocated_amount || 0);
-                          const spent = Number(cs.total_spent || 0);
+                          const spent = Number(cs.total_spent ?? cs.spent_total ?? 0);
                           const pct = alloc > 0 ? Math.min((spent / alloc) * 100, 100) : 0;
                           return (
                             <div key={cs.id || cs.category_name}>

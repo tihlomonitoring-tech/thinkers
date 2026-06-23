@@ -145,13 +145,35 @@ export function polygonCentroid(ring) {
   return { lat, lng };
 }
 
-function haversineM(a, b) {
+export function haversineM(a, b) {
   const φ1 = toRad(a.lat);
   const φ2 = toRad(b.lat);
   const Δφ = toRad(b.lat - a.lat);
   const Δλ = toRad(b.lng - a.lng);
   const x = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+/** Sum of haversine segments along a route polyline (metres). */
+export function polylineDistanceM(points) {
+  if (!points?.length || points.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += haversineM(points[i - 1], points[i]);
+  }
+  return total;
+}
+
+/** Road distance from geometry — 2 decimal km (~10 m precision). */
+export function polylineDistanceKm(points) {
+  const m = polylineDistanceM(points);
+  if (!m) return null;
+  return Math.round((m / 1000) * 100) / 100;
+}
+
+export function formatRouteDistanceKm(km) {
+  if (km == null || !Number.isFinite(Number(km))) return '—';
+  return `${Number(km).toFixed(2)} km`;
 }
 
 /** Push each vertex outward from the polygon centroid by extraM metres. */

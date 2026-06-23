@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { tracking as trackingApi } from '../../api';
 import GeofenceMapEditor from './GeofenceMapEditor.jsx';
 import ManualGeofencePanel from './ManualGeofencePanel.jsx';
 import AlternativeRoutesPanel from './AlternativeRoutesPanel.jsx';
+import ManualRoutePlotPanel from './ManualRoutePlotPanel.jsx';
 import GeofenceColorPicker from './GeofenceColorPicker.jsx';
 import { geofenceDisplayColor, parseGeofenceMeta, colorMetaJson, mergeColorIntoPolygonJson } from '../../lib/geofenceStyle.js';
 import {
@@ -13,6 +14,7 @@ import {
   parseCorridorPolyline,
   parseCorridorMeta,
   scalePolygonRing,
+  polylineDistanceKm,
 } from '../../lib/routeCorridorGeofence.js';
 import { hasValidCoords, parseLatLngPair } from '../../lib/geoCoords.js';
 import { useUndoStack, cloneRing } from '../../lib/useUndoStack.js';
@@ -41,16 +43,32 @@ function routeLetter(index) {
   return String.fromCharCode(65 + Number(index || 0));
 }
 
-function initAltCorridors(alternatives, corridorM, selectedIndex) {
+function initAltCorridors(alternatives, corridorM, selectedIndex, enableAll = false) {
   const alt_corridors = {};
   (alternatives || []).forEach((alt, i) => {
     alt_corridors[i] = {
-      enabled: i === selectedIndex,
+      enabled: enableAll || i === selectedIndex,
       corridor_polygon: bufferPolylineToPolygon(alt.polyline || [], corridorM),
       corridor_manual: false,
     };
   });
   return alt_corridors;
+}
+
+function enrichAlternatives(alternatives) {
+  return (alternatives || []).map((alt) => {
+    if (alt.is_manual && alt.polyline?.length) return alt;
+    const geometryKm = polylineDistanceKm(alt.polyline);
+    return {
+      ...alt,
+      distance_km: geometryKm ?? alt.distance_km,
+      osrm_distance_km: alt.osrm_distance_km ?? alt.distance_km,
+    };
+  });
+}
+
+function countManualRoutes(alternatives) {
+  return (alternatives || []).filter((a) => a.is_manual).length;
 }
 
 function syncCurrentAltCorridor(preview, corridorPolygon, corridorManual) {
@@ -146,6 +164,14 @@ export default function GeofenceRoutesTab({ setError }) {
   const [drawing, setDrawing] = useState(false);
   const [preview, setPreview] = useState(null);
   const [corridorManual, setCorridorManual] = useState(false);
+  const [manualRoutePlotActive, setManualRoutePlotActive] = useState(false);
+  const [manualWaypoints, setManualWaypoints] = useState([]);
+  const [manualRouteSnapPreview, setManualRouteSnapPreview] = useState(null);
+  const [manualRouteSnapping, setManualRouteSnapping] = useState(false);
+  const [manualRouteLabel, setManualRouteLabel] = useState('');
+  const [manualRouteFinalizing, setManualRouteFinalizing] = useState(false);
+  const [manualRouteLockEndpoints, setManualRouteLockEndpoints] = useState(false);
+  const manualSnapSeq = useRef(0);
   const [workflowStep, setWorkflowStep] = useState('land');
   const [mapTool, setMapTool] = useState('pan');
   const [fitRevision, setFitRevision] = useState(0);
@@ -280,6 +306,11 @@ export default function GeofenceRoutesTab({ setError }) {
   const clearHaulRoadPreview = () => {
     setPreview(null);
     setCorridorManual(false);
+    setManualRoutePlotActive(false);
+    setManualWaypoints([]);
+    setManualRouteSnapPreview(null);
+    setManualRouteLabel('');
+    setManualRouteLockEndpoints(false);
     setHaulRoadDirty(false);
   };
 
@@ -332,7 +363,7 @@ export default function GeofenceRoutesTab({ setError }) {
   }, []);
 
   const handleMapClick = (lat, lng) => {
-    if (manualDrawMode) return;
+    if (manualDrawMode || manualRoutePlotActive) return;
     const latStr = lat.toFixed(6);
     const lngStr = lng.toFixed(6);
     if (mapClickTarget === 'origin') {
@@ -528,7 +559,7 @@ export default function GeofenceRoutesTab({ setError }) {
     const polyline = alt.polyline || [];
     const ring = bufferPolylineToPolygon(polyline, corridorM);
     const alt_corridors = extras.alt_corridors
-      || (extras.alternatives ? initAltCorridors(extras.alternatives, corridorM, index) : null);
+      || (extras.alternatives ? initAltCorridors(extras.alternatives, corridorM, index, extras.enableAll !== false) : null);
     const activeCorridor = alt_corridors?.[index]?.corridor_polygon?.length >= 3
       ? alt_corridors[index].corridor_polygon
       : ring;
@@ -573,10 +604,171 @@ export default function GeofenceRoutesTab({ setError }) {
     requestMapFit(positionsFromAlternatives(preview.alternatives));
   };
 
-  const zoomRouteOption = (index) => {
+  const zoomRouteOption = useCallback((index) => {
     const polyline = preview?.alternatives?.[index]?.polyline;
     if (!polyline?.length) return;
     requestMapFit(polyline.map((p) => [p.lat, p.lng]));
+  }, [preview?.alternatives, requestMapFit]);
+
+  const selectedSystemRoute = useMemo(
+    () => routes.find((r) => r.id === drawForm.contractor_route_id),
+    [routes, drawForm.contractor_route_id]
+  );
+
+  useEffect(() => {
+    if (!manualRoutePlotActive || manualWaypoints.length < 2) {
+      setManualRouteSnapPreview(null);
+      return undefined;
+    }
+    const timer = setTimeout(async () => {
+      const seq = manualSnapSeq.current + 1;
+      manualSnapSeq.current = seq;
+      setManualRouteSnapping(true);
+      try {
+        const r = await trackingApi.map.routeThroughWaypoints(manualWaypoints);
+        if (manualSnapSeq.current !== seq) return;
+        setManualRouteSnapPreview(r.route);
+      } catch {
+        if (manualSnapSeq.current === seq) setManualRouteSnapPreview(null);
+      } finally {
+        if (manualSnapSeq.current === seq) setManualRouteSnapping(false);
+      }
+    }, 450);
+    return () => clearTimeout(timer);
+  }, [manualRoutePlotActive, manualWaypoints]);
+
+  const startManualRoutePlot = useCallback(() => {
+    setManualRoutePlotActive(true);
+    setManualWaypoints([]);
+    setManualRouteSnapPreview(null);
+    setManualRouteLabel('');
+    setManualRouteLockEndpoints(false);
+    setMapTool('pan');
+    setMapClickTarget(null);
+    setManualDrawMode(null);
+    setEditing(null);
+  }, []);
+
+  const cancelManualRoutePlot = useCallback(() => {
+    setManualRoutePlotActive(false);
+    setManualWaypoints([]);
+    setManualRouteSnapPreview(null);
+    setManualRouteLabel('');
+    setManualRouteLockEndpoints(false);
+  }, []);
+
+  const seedManualRouteFromAB = useCallback(() => {
+    const pts = [];
+    if (pointACoords) pts.push({ lat: pointACoords.lat, lng: pointACoords.lng });
+    if (pointBCoords) pts.push({ lat: pointBCoords.lat, lng: pointBCoords.lng });
+    if (pts.length < 2) return;
+    setManualWaypoints(pts);
+    setManualRouteLockEndpoints(true);
+    requestMapFit(pts.map((p) => [p.lat, p.lng]));
+  }, [pointACoords, pointBCoords, requestMapFit]);
+
+  const addManualWaypoint = useCallback((pt) => {
+    setManualWaypoints((w) => [...w, pt]);
+  }, []);
+
+  const moveManualWaypoint = useCallback((index, lat, lng) => {
+    setManualWaypoints((w) => w.map((p, i) => (i === index ? { lat, lng } : p)));
+  }, []);
+
+  const undoManualWaypoint = useCallback((action) => {
+    if (action === 'clear') {
+      cancelManualRoutePlot();
+      return;
+    }
+    setManualWaypoints((w) => w.slice(0, -1));
+  }, [cancelManualRoutePlot]);
+
+  const removeManualWaypointAt = useCallback((index) => {
+    setManualWaypoints((w) => {
+      if (manualRouteLockEndpoints && (index === 0 || index === w.length - 1)) return w;
+      return w.filter((_, i) => i !== index);
+    });
+  }, [manualRouteLockEndpoints]);
+
+  const appendManualAlternative = useCallback((snapped, waypoints, label) => {
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    setPreview((p) => {
+      if (!p) return p;
+      const manualSeq = countManualRoutes(p.alternatives) + 1;
+      const newAlt = {
+        ...snapped,
+        uid: `manual-${Date.now()}`,
+        is_manual: true,
+        manual_seq: manualSeq,
+        manual_label: label.trim() || `Custom route ${manualSeq}`,
+        manual_waypoints: waypoints,
+      };
+      const alternatives = [...(p.alternatives || []), newAlt];
+      const idx = alternatives.length - 1;
+      const alt_corridors = { ...(p.alt_corridors || {}) };
+      alt_corridors[idx] = {
+        enabled: true,
+        corridor_polygon: bufferPolylineToPolygon(newAlt.polyline, corridorM),
+        corridor_manual: false,
+      };
+      return { ...p, alternatives, alt_corridors };
+    });
+  }, [drawForm.corridor_m]);
+
+  const finalizeManualRoute = async () => {
+    if (manualWaypoints.length < 2) return;
+    setManualRouteFinalizing(true);
+    setError('');
+    const waypoints = [...manualWaypoints];
+    const label = manualRouteLabel;
+    try {
+      const r = await trackingApi.map.routeThroughWaypoints(waypoints);
+      const snapped = r.route;
+      if (!snapped?.polyline?.length) throw new Error('Could not snap plotted path to roads');
+      appendManualAlternative(snapped, waypoints, label);
+      cancelManualRoutePlot();
+      requestMapFit(snapped.polyline.map((pt) => [pt.lat, pt.lng]));
+    } catch (err) {
+      setError(err?.message || 'Could not add custom route');
+    } finally {
+      setManualRouteFinalizing(false);
+    }
+  };
+
+  const removeManualAlternative = (index) => {
+    if (!preview?.alternatives?.[index]?.is_manual) return;
+    const primaryIndex = preview.selected_route_index ?? 0;
+    let newPrimary = primaryIndex;
+    if (index === primaryIndex) newPrimary = 0;
+    else if (index < primaryIndex) newPrimary = primaryIndex - 1;
+
+    const alternatives = preview.alternatives.filter((_, i) => i !== index);
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    const oldCorridors = preview.alt_corridors || {};
+    const alt_corridors = {};
+    alternatives.forEach((alt, newIdx) => {
+      let oldIdx = newIdx;
+      if (newIdx >= index) oldIdx = newIdx + 1;
+      const old = oldCorridors[oldIdx];
+      alt_corridors[newIdx] = old || {
+        enabled: newIdx === newPrimary,
+        corridor_polygon: bufferPolylineToPolygon(alt.polyline || [], corridorM),
+        corridor_manual: false,
+      };
+    });
+
+    const selected = alternatives[newPrimary] || alternatives[0];
+    setPreview({
+      ...preview,
+      alternatives,
+      selected_route_index: newPrimary,
+      route_polyline: selected?.polyline || preview.route_polyline,
+      corridor_polygon: alt_corridors[newPrimary]?.corridor_polygon || preview.corridor_polygon,
+      alt_corridors,
+      driving: selected
+        ? { distance_km: selected.distance_km, duration_min: selected.duration_min, polyline: selected.polyline }
+        : preview.driving,
+    });
   };
 
   const includeAllRouteOptions = () => {
@@ -591,11 +783,30 @@ export default function GeofenceRoutesTab({ setError }) {
         corridor_polygon: alt_corridors[i]?.corridor_polygon?.length >= 3
           ? alt_corridors[i].corridor_polygon
           : bufferPolylineToPolygon(alt.polyline || [], corridorM),
-        corridor_manual: alt_corridors[i]?.corridor_manual || false,
+        corridor_manual: false,
       };
     });
     setPreview((p) => (p ? { ...p, alt_corridors } : p));
     zoomAllRouteOptions();
+  };
+
+  const excludeAllRouteOptions = () => {
+    if (!preview?.alternatives?.length) return;
+    const primaryIndex = preview.selected_route_index ?? 0;
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    const synced = syncCurrentAltCorridor(preview, preview.corridor_polygon, corridorManual);
+    const alt_corridors = { ...(synced.alt_corridors || initAltCorridors(preview.alternatives, corridorM, primaryIndex)) };
+    preview.alternatives.forEach((alt, i) => {
+      alt_corridors[i] = {
+        ...(alt_corridors[i] || {}),
+        enabled: i === primaryIndex,
+        corridor_polygon: i === primaryIndex
+          ? (preview.corridor_polygon || bufferPolylineToPolygon(alt.polyline || [], corridorM))
+          : alt_corridors[i]?.corridor_polygon,
+      };
+    });
+    setPreview((p) => (p ? { ...p, alt_corridors } : p));
+    zoomRouteOption(primaryIndex);
   };
 
   const drawRouteOnMap = async (opts = {}) => {
@@ -627,13 +838,15 @@ export default function GeofenceRoutesTab({ setError }) {
         payload.dest_lng = d.lng;
       }
       const r = await trackingApi.geofences.drawRoute(payload);
-      const alternatives = r.alternatives?.length ? r.alternatives : [{
+      const existingManual = (preview?.alternatives || []).filter((a) => a.is_manual);
+      const autoAlternatives = enrichAlternatives(r.alternatives?.length ? r.alternatives : [{
         index: 0,
         distance_km: r.driving?.distance_km,
         duration_min: r.driving?.duration_min,
         polyline: r.route_polyline,
-      }];
-      const selectedIndex = r.selected_route_index ?? 0;
+      }]);
+      const alternatives = [...autoAlternatives, ...existingManual];
+      const selectedIndex = Math.min(r.selected_route_index ?? 0, autoAlternatives.length - 1);
       const selected = alternatives[selectedIndex] || alternatives[0];
       const corridorM = Number(drawForm.corridor_m) || 400;
       setDrawForm((f) => ({
@@ -651,8 +864,25 @@ export default function GeofenceRoutesTab({ setError }) {
         origin: r.origin,
         destination: r.destination,
         alternatives,
+        enableAll: autoAlternatives.length > 1,
         mergeSavedGeofences: opts.mergeSavedGeofences || null,
       });
+      if (existingManual.length) {
+        setPreview((p) => {
+          if (!p) return p;
+          const alt_corridors = { ...(p.alt_corridors || {}) };
+          p.alternatives.forEach((alt, i) => {
+            if (alt.is_manual) {
+              alt_corridors[i] = {
+                enabled: true,
+                corridor_polygon: bufferPolylineToPolygon(alt.polyline || [], corridorM),
+                corridor_manual: false,
+              };
+            }
+          });
+          return { ...p, alt_corridors };
+        });
+      }
     } catch (err) {
       setError(err?.message || 'Could not draw route on map');
       setPreview(null);
@@ -818,8 +1048,7 @@ export default function GeofenceRoutesTab({ setError }) {
     const ring = expandPolygonRing(preview.corridor_polygon, extraM);
     setPreview((p) => {
       if (!p) return p;
-      const next = { ...p, corridor_polygon: ring };
-      return syncCurrentAltCorridor(next, ring, true);
+      return syncCurrentAltCorridor({ ...p, corridor_polygon: ring }, ring, true);
     });
     setCorridorManual(true);
   };
@@ -829,8 +1058,7 @@ export default function GeofenceRoutesTab({ setError }) {
     const ring = bufferPolylineToPolygon(preview.route_polyline, Number(drawForm.corridor_m) || 400);
     setPreview((p) => {
       if (!p) return p;
-      const next = { ...p, corridor_polygon: ring };
-      return syncCurrentAltCorridor(next, ring, false);
+      return syncCurrentAltCorridor({ ...p, corridor_polygon: ring }, ring, false);
     });
     setCorridorManual(false);
   };
@@ -1143,6 +1371,15 @@ export default function GeofenceRoutesTab({ setError }) {
         onEditSnapshot={pushEditUndo}
         onScaleDraft={scaleMapDraft}
         onDraftSnapshot={pushDraftUndo}
+        routeCorridorM={Number(drawForm.corridor_m) || 400}
+        manualRoutePlotActive={manualRoutePlotActive}
+        manualRouteWaypoints={manualWaypoints}
+        manualRouteSnapPreview={manualRouteSnapPreview}
+        manualRouteSnapping={manualRouteSnapping}
+        manualRouteLockEndpoints={manualRouteLockEndpoints}
+        onManualRouteAddWaypoint={addManualWaypoint}
+        onManualRouteMoveWaypoint={moveManualWaypoint}
+        onManualRouteUndo={undoManualWaypoint}
       />
 
       {workflowStep === 'land' && (
@@ -1344,27 +1581,50 @@ export default function GeofenceRoutesTab({ setError }) {
               Points or addresses changed — click <strong>Redraw haul road</strong> to refresh routes and corridors on the map.
             </p>
           )}
+          {preview && (
+            <ManualRoutePlotPanel
+              active={manualRoutePlotActive}
+              waypoints={manualWaypoints}
+              snapPreview={manualRouteSnapPreview}
+              snapping={manualRouteSnapping}
+              label={manualRouteLabel}
+              onLabelChange={setManualRouteLabel}
+              onStart={startManualRoutePlot}
+              onCancel={cancelManualRoutePlot}
+              onUndo={() => undoManualWaypoint()}
+              onClear={() => setManualWaypoints([])}
+              onSeedFromAB={seedManualRouteFromAB}
+              onRemoveWaypoint={removeManualWaypointAt}
+              onFinalize={finalizeManualRoute}
+              finalizing={manualRouteFinalizing}
+              canSeedFromAB={!!pointACoords && !!pointBCoords}
+            />
+          )}
           {preview?.alternatives?.length >= 1 && (
             <AlternativeRoutesPanel
               preview={preview}
-              corridorManual={corridorManual}
               onSetPrimary={setPrimaryAlternativeRoute}
               onToggleOption={toggleAltGeofence}
               onIncludeAll={includeAllRouteOptions}
+              onExcludeAll={excludeAllRouteOptions}
               onZoomRoute={zoomRouteOption}
               onZoomAll={zoomAllRouteOptions}
+              onRemoveManual={removeManualAlternative}
+              onStartPlotManual={startManualRoutePlot}
+              systemRouteDistanceKm={selectedSystemRoute?.distance_km}
             />
           )}
           {preview?.corridor_polygon?.length >= 3 && (
-            <div className="flex flex-wrap gap-2 text-xs">
-              <button type="button" onClick={() => expandCorridorOnMap(50)} className="px-2.5 py-1 rounded-md border">Expand +50 m</button>
-              <button type="button" onClick={() => expandCorridorOnMap(100)} className="px-2.5 py-1 rounded-md border">Expand +100 m</button>
-              <button type="button" onClick={resetCorridorShape} className="px-2.5 py-1 rounded-md border">Reset corridor</button>
+            <div className="flex flex-wrap gap-2 text-xs items-center">
+              <span className="text-surface-500">Primary corridor width:</span>
+              <button type="button" onClick={() => expandCorridorOnMap(50)} className="px-2.5 py-1 rounded-md border">+50 m</button>
+              <button type="button" onClick={() => expandCorridorOnMap(100)} className="px-2.5 py-1 rounded-md border">+100 m</button>
+              <button type="button" onClick={resetCorridorShape} className="px-2.5 py-1 rounded-md border">Reset to road</button>
             </div>
           )}
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => drawRouteOnMap()} disabled={drawing} className="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium disabled:opacity-50">
-              {drawing ? 'Drawing…' : preview ? 'Redraw haul road on map' : 'Draw haul road on map'}
+              {drawing ? 'Scanning roads…' : preview ? 'Rescan all routes A → B' : 'Find all routes A → B'}
             </button>
             {preview && (
               <button type="button" onClick={clearHaulRoadPreview} className="rounded-lg border px-4 py-2 text-sm">

@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import { toYmdInAppZone } from '../lib/appTime.js';
 import ExcelJS from 'exceljs';
+import { formatTruckRegistration } from './truckKey.js';
 
 /** Normalize header for matching: lowercase, trim, collapse spaces */
 function norm(s) {
@@ -58,6 +59,14 @@ const TRUCK_HEADER_MAP = {
   'tracking user name': 'tracking_username',
   'password': 'tracking_password',
   'tracking password': 'tracking_password',
+  'camera user name': 'camera_username',
+  'camera username': 'camera_username',
+  'camera password': 'camera_password',
+  'camera tracking provider (fleetcam/cartrack/nest tar/other)': 'camera_provider',
+  'camera tracking provider': 'camera_provider',
+  'camera unit provider (fleetcam/cartrack/nest tar/other)': 'camera_provider',
+  'other camera provider name (if other selected)': 'camera_provider_other',
+  'other camera provider name': 'camera_provider_other',
   'commodity type': 'commodity_type',
   'capacity (tonnes)': 'capacity_tonnes',
   'capacity_tonnes': 'capacity_tonnes',
@@ -77,7 +86,7 @@ function mapTruckRow(obj) {
       if (apiKey === 'capacity_tonnes' || apiKey === 'fuel_tank_capacity_litres' || apiKey === 'fuel_consumption_litres_per_100km') {
         const n = parseFloat(value);
         out[apiKey] = Number.isFinite(n) ? n : null;
-      } else if (apiKey === 'tracking_provider_other') {
+      } else if (apiKey === 'tracking_provider_other' || apiKey === 'camera_provider_other') {
         out[apiKey] = value == null ? null : String(value).trim();
       } else {
         out[apiKey] = value == null ? null : String(value).trim();
@@ -87,7 +96,14 @@ function mapTruckRow(obj) {
   if (out.tracking_provider === 'Other' && out.tracking_provider_other) {
     out.tracking_provider = out.tracking_provider_other;
   }
+  if (out.camera_provider === 'Other' && out.camera_provider_other) {
+    out.camera_provider = out.camera_provider_other;
+  }
   delete out.tracking_provider_other;
+  delete out.camera_provider_other;
+  if (out.registration) out.registration = formatTruckRegistration(out.registration);
+  if (out.trailer_1_reg_no) out.trailer_1_reg_no = formatTruckRegistration(out.trailer_1_reg_no);
+  if (out.trailer_2_reg_no) out.trailer_2_reg_no = formatTruckRegistration(out.trailer_2_reg_no);
   return out;
 }
 
@@ -179,6 +195,10 @@ const TRUCK_TEMPLATE_HEADERS = [
   'Other provider name (if Other selected)',
   'User name',
   'Password',
+  'Camera tracking provider (Fleetcam/Cartrack/Nest Tar/Other)',
+  'Other camera provider name (if Other selected)',
+  'Camera user name',
+  'Camera password',
   'Commodity type',
   'Capacity (tonnes)',
   'Fuel tank capacity (litres)',
@@ -273,6 +293,10 @@ export async function downloadTruckTemplate() {
     '',
     'fleetuser',
     'example',
+    'Fleetcam',
+    '',
+    'camerauser',
+    'cameraexample',
     'Grain',
     '30',
     '800',
@@ -359,8 +383,14 @@ export async function downloadConsolidatedTemplate() {
     '',
     'fleetuser',
     'example',
+    'Fleetcam',
+    '',
+    'camerauser',
+    'cameraexample',
     'Grain',
     '30',
+    '800',
+    '42',
   ]);
   wsTrucks.columns = TRUCK_TEMPLATE_HEADERS.map((_, i) => ({
     width: Math.min(Math.max(TRUCK_TEMPLATE_HEADERS[i]?.length ?? 12, 12), 42),

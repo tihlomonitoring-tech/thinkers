@@ -11,6 +11,10 @@ import JSZip from 'jszip';
 import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
 import SubcontractorFleetsTab from './contractor/SubcontractorFleetsTab.jsx';
 import FleetAdvancedView from './contractor/FleetAdvancedView.jsx';
+import BulkFleetEditPanel from './contractor/BulkFleetEditPanel.jsx';
+import BulkDriverEditPanel from './contractor/BulkDriverEditPanel.jsx';
+import { normalizeTruckRow, normalizeDriverRow, normalizeEntityId } from './lib/entityId.js';
+import { formatTruckRegistration } from './lib/truckKey.js';
 import DriverAdvancedView from './contractor/DriverAdvancedView.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 import FleetChangeDiffTable from './components/FleetChangeDiffTable.jsx';
@@ -453,6 +457,7 @@ export default function Contractor() {
     allow_enrollment: true,
   });
   const [trackingProviderIsOther, setTrackingProviderIsOther] = useState(false);
+  const [cameraProviderIsOther, setCameraProviderIsOther] = useState(false);
   const truckFileRef = useRef(null);
   const driverFileRef = useRef(null);
   const consolidatedFileRef = useRef(null);
@@ -497,6 +502,14 @@ export default function Contractor() {
   const driverLinkedTruckDropdownRef = useRef(null);
   const [savingTruck, setSavingTruck] = useState(false);
   const [fleetChangeComment, setFleetChangeComment] = useState('');
+  const [fleetSelectionMode, setFleetSelectionMode] = useState(false);
+  const [fleetSelectedRegistrations, setFleetSelectedRegistrations] = useState([]);
+  const [fleetBulkEditOpen, setFleetBulkEditOpen] = useState(false);
+  const [fleetBulkApplying, setFleetBulkApplying] = useState(false);
+  const [driverSelectionMode, setDriverSelectionMode] = useState(false);
+  const [driverSelectedIds, setDriverSelectedIds] = useState([]);
+  const [driverBulkEditOpen, setDriverBulkEditOpen] = useState(false);
+  const [driverBulkApplying, setDriverBulkApplying] = useState(false);
   const [savingDriver, setSavingDriver] = useState(false);
   const [expiryRefSearch, setExpiryRefSearch] = useState('');
   const [expiryRefDropdownOpen, setExpiryRefDropdownOpen] = useState(false);
@@ -809,9 +822,14 @@ export default function Contractor() {
   const incidentForPanel = incidentDetail ?? selectedIncident;
   const panelTruckId = getIncidentField(incidentForPanel, 'truck_id');
   const panelDriverId = getIncidentField(incidentForPanel, 'driver_id');
+  const normContractorId = (v) => (v == null ? '' : String(v).trim().toLowerCase().replace(/[{}]/g, ''));
   const byContractor = (list) => {
     if (!selectedContractorId || !Array.isArray(list)) return list || [];
-    return list.filter((x) => (x.contractor_id ?? x.contractor_Id) == selectedContractorId);
+    const sel = normContractorId(selectedContractorId);
+    return list.filter((x) => {
+      const cid = x.contractor_id ?? x.contractor_Id ?? x.contractorId;
+      return cid != null && normContractorId(cid) === sel;
+    });
   };
   const trucksList = byContractor(data.trucks);
   const driversList = byContractor(data.drivers);
@@ -1210,7 +1228,9 @@ export default function Contractor() {
       setContractorsList(contractors);
       setIsSubcontractorUser(Boolean(contextRes.isSubcontractorUser ?? user?.is_subcontractor_user));
       setPortalSubcontractors(Array.isArray(contextRes.subcontractors) ? contextRes.subcontractors : []);
-      if (contractors.length === 1 && !selectedContractorId) setSelectedContractorId(contractors[0].id);
+      if (contractors.length === 1 && !selectedContractorId) {
+        setSelectedContractorId(normalizeEntityId(contractors[0].id) ?? contractors[0].id);
+      }
 
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out. Check your connection and retry.')), 20000));
       const messageContractorId = selectedContractorId || (contractors.length === 1 ? contractors[0].id : null);
@@ -1244,7 +1264,9 @@ export default function Contractor() {
       keys.forEach((key, i) => {
         const r = results[i];
         if (r?.status === 'fulfilled' && Array.isArray(r.value)) {
-          next[key] = r.value;
+          if (key === 'trucks') next[key] = r.value.map(normalizeTruckRow);
+          else if (key === 'drivers') next[key] = r.value.map(normalizeDriverRow);
+          else next[key] = r.value;
         } else {
           next[key] = defaults[key];
           if (r?.status === 'rejected') failed.push(key);
@@ -1341,14 +1363,19 @@ export default function Contractor() {
         year_model: form.year_model?.value?.trim() || null,
         ownership_desc: form.ownership_desc?.value?.trim() || null,
         fleet_no: form.fleet_no?.value?.trim() || null,
-        registration: form.registration?.value?.trim() || '',
-        trailer_1_reg_no: form.trailer_1_reg_no?.value?.trim() || null,
-        trailer_2_reg_no: form.trailer_2_reg_no?.value?.trim() || null,
+        registration: formatTruckRegistration(form.registration?.value || ''),
+        trailer_1_reg_no: formatTruckRegistration(form.trailer_1_reg_no?.value || '') || null,
+        trailer_2_reg_no: formatTruckRegistration(form.trailer_2_reg_no?.value || '') || null,
         tracking_provider: form.tracking_provider?.value === 'Other'
           ? (form.tracking_provider_other?.value?.trim() || 'Other')
           : (form.tracking_provider?.value || null),
         tracking_username: form.tracking_username?.value?.trim() || null,
         tracking_password: form.tracking_password?.value || null,
+        camera_provider: form.camera_provider?.value === 'Other'
+          ? (form.camera_provider_other?.value?.trim() || 'Other')
+          : (form.camera_provider?.value || null),
+        camera_username: form.camera_username?.value?.trim() || null,
+        camera_password: form.camera_password?.value || null,
         commodity_type: form.commodity_type?.value || null,
         capacity_tonnes: form.capacity_tonnes?.value ? parseFloat(form.capacity_tonnes.value) : null,
         fuel_tank_capacity_litres: form.fuel_tank_capacity_litres?.value ? parseFloat(form.fuel_tank_capacity_litres.value) : null,
@@ -1357,6 +1384,7 @@ export default function Contractor() {
       });
       form.reset();
       setTrackingProviderIsOther(false);
+      setCameraProviderIsOther(false);
       if (res?.pendingContractorApproval) {
         setError('');
         alert('Truck submitted for contractor review. You will see it on Fleet once approved.');
@@ -1405,23 +1433,30 @@ export default function Contractor() {
   const saveTruck = async (e) => {
     e.preventDefault();
     const form = e.target;
-    if (!selectedFleetTruck?.id) return;
+    const reg = String(selectedFleetTruck?.registration || '').trim();
+    if (!reg) {
+      setError('Truck registration is missing. Close this panel, click the truck again in the list, and retry.');
+      return;
+    }
     setSavingTruck(true);
     setError('');
     try {
       const newPassword = form.tracking_password?.value?.trim();
+      const newCameraPassword = form.camera_password?.value?.trim();
       const body = {
-        registration: form.registration?.value?.trim() || '',
+        registration: formatTruckRegistration(form.registration?.value || ''),
         main_contractor: form.main_contractor?.value?.trim() || null,
         sub_contractor: form.sub_contractor?.value?.trim() || null,
         make_model: form.make_model?.value?.trim() || null,
         year_model: form.year_model?.value?.trim() || null,
         ownership_desc: form.ownership_desc?.value?.trim() || null,
         fleet_no: form.fleet_no?.value?.trim() || null,
-        trailer_1_reg_no: form.trailer_1_reg_no?.value?.trim() || null,
-        trailer_2_reg_no: form.trailer_2_reg_no?.value?.trim() || null,
+        trailer_1_reg_no: formatTruckRegistration(form.trailer_1_reg_no?.value || '') || null,
+        trailer_2_reg_no: formatTruckRegistration(form.trailer_2_reg_no?.value || '') || null,
         tracking_provider: form.tracking_provider?.value === 'Other' ? (form.tracking_provider_other?.value?.trim() || 'Other') : (form.tracking_provider?.value || null),
         tracking_username: form.tracking_username?.value?.trim() || null,
+        camera_provider: form.camera_provider?.value === 'Other' ? (form.camera_provider_other?.value?.trim() || 'Other') : (form.camera_provider?.value || null),
+        camera_username: form.camera_username?.value?.trim() || null,
         commodity_type: form.commodity_type?.value || null,
         capacity_tonnes: form.capacity_tonnes?.value ? parseFloat(form.capacity_tonnes.value) : null,
         fuel_tank_capacity_litres: form.fuel_tank_capacity_litres?.value ? parseFloat(form.fuel_tank_capacity_litres.value) : null,
@@ -1429,13 +1464,15 @@ export default function Contractor() {
         status: form.status?.value || 'active',
       };
       if (newPassword) body.tracking_password = newPassword;
+      if (newCameraPassword) body.camera_password = newCameraPassword;
       if (fleetChangeComment.trim()) body.change_comment = fleetChangeComment.trim();
-      const res = await contractorApi.trucks.update(selectedFleetTruck.id, body);
+      body.original_registration = reg;
+      const res = await contractorApi.trucks.update(reg, body);
       if (res?.pendingChange) {
         setFleetChangeComment('');
         window.alert(res.message || 'Changes submitted for approval. The truck stays highlighted until accepted.');
       } else if (res?.truck) {
-        setSelectedFleetTruck(res.truck);
+        setSelectedFleetTruck(normalizeTruckRow(res.truck));
         setFleetChangeComment('');
       }
       load();
@@ -1443,6 +1480,55 @@ export default function Contractor() {
       setError(err?.message || 'Failed to save truck');
     } finally {
       setSavingTruck(false);
+    }
+  };
+
+  const handleFleetBulkApply = async (payload) => {
+    setFleetBulkApplying(true);
+    setError('');
+    try {
+      const res = await contractorApi.trucks.bulkUpdate(payload);
+      setFleetBulkEditOpen(false);
+      setFleetSelectionMode(false);
+      setFleetSelectedRegistrations([]);
+      const errResults = (res?.results || []).filter((r) => r.status === 'error');
+      const msg = res?.message || `Updated ${res?.updated ?? 0} truck(s).`;
+      if (errResults.length) {
+        const detail = errResults.slice(0, 8).map((r) => `${r.registration || r.label || 'Truck'}: ${r.error}`).join('\n');
+        window.alert(`${msg}\n\n${detail}${errResults.length > 8 ? '\n…' : ''}`);
+      } else if (res?.pending_change > 0) {
+        window.alert(`${msg}\n\n${res.pending_change} truck(s) were submitted for approval because they have facility access.`);
+      } else {
+        window.alert(msg);
+      }
+      load();
+    } catch (err) {
+      setError(err?.message || 'Bulk update failed');
+    } finally {
+      setFleetBulkApplying(false);
+    }
+  };
+
+  const handleDriverBulkApply = async (payload) => {
+    setDriverBulkApplying(true);
+    setError('');
+    try {
+      const res = await contractorApi.drivers.bulkUpdate(payload);
+      setDriverBulkEditOpen(false);
+      setDriverSelectionMode(false);
+      setDriverSelectedIds([]);
+      const msg = res?.message || `Updated ${res?.updated ?? 0} driver(s).`;
+      if (res?.errors > 0 && res?.errorDetails?.length) {
+        const detail = res.errorDetails.slice(0, 5).map((r) => `${r.label || r.id}: ${r.error}`).join('\n');
+        window.alert(`${msg}\n\n${detail}${res.errorDetails.length > 5 ? '\n…' : ''}`);
+      } else {
+        window.alert(msg);
+      }
+      load();
+    } catch (err) {
+      setError(err?.message || 'Bulk driver update failed');
+    } finally {
+      setDriverBulkApplying(false);
     }
   };
 
@@ -2250,6 +2336,17 @@ export default function Contractor() {
                     )}
                     <input name="tracking_username" placeholder="Tracking user name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                     <input name="tracking_password" type="password" placeholder="Tracking password" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+                    <div className="rounded-lg border border-dashed border-violet-200 bg-violet-50/40 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-violet-800">Camera login</p>
+                      <select name="camera_provider" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" onChange={(e) => setCameraProviderIsOther(e.target.value === 'Other')}>
+                        {TRACKING_PROVIDERS.map((p) => <option key={`cam-${p || 'any'}`} value={p}>{p || 'Camera tracking provider (Fleetcam/Cartrack/Nest Tar/Any)'}</option>)}
+                      </select>
+                      {cameraProviderIsOther && (
+                        <input name="camera_provider_other" placeholder="Enter camera tracking provider name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white border-l-2 border-l-amber-400" />
+                      )}
+                      <input name="camera_username" placeholder="Camera user name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                      <input name="camera_password" type="password" placeholder="Camera password" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                    </div>
                     <select name="commodity_type" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
                       <option value="">Commodity type</option>
                       {COMMODITY_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -2318,12 +2415,24 @@ export default function Contractor() {
                       <span className="text-surface-500"> — link trucks to telematics providers and monitor trips (uses this fleet list).</span>
                     </p>
                   )}
-                  <p className="text-xs text-surface-500 mb-3">Click a row to view and edit full truck details.</p>
+                  <p className="text-xs text-surface-500 mb-3">Click a row to view details, or use <span className="font-medium text-brand-700">Bulk edit</span> to update contractor labels, make/model, and telematics login across multiple trucks.</p>
                   <FleetAdvancedView
                     trucks={trucksList}
-                    onSelectTruck={setSelectedFleetTruck}
-                    selectedTruckId={selectedFleetTruck?.id}
+                    onSelectTruck={(t) => setSelectedFleetTruck(normalizeTruckRow(t))}
+                    selectedTruckRegistration={selectedFleetTruck?.registration}
                     isSubcontractorUser={isSubcontractorUser}
+                    selectionMode={fleetSelectionMode}
+                    onSelectionModeChange={(on) => {
+                      setFleetSelectionMode(on);
+                      if (!on) setFleetSelectedRegistrations([]);
+                    }}
+                    selectedRegistrations={fleetSelectedRegistrations}
+                    onSelectedRegistrationsChange={setFleetSelectedRegistrations}
+                    onBulkEdit={(regs) => {
+                      setFleetSelectedRegistrations(regs);
+                      setFleetBulkEditOpen(true);
+                    }}
+                    bulkEditDisabled={!pageRestrictions.allow_truck_manual}
                   />
                 </div>
               </div>
@@ -2343,9 +2452,18 @@ export default function Contractor() {
                   <form onSubmit={saveTruck} className="flex-1 overflow-y-auto p-4 space-y-3">
                     {(() => {
                       const t = selectedFleetTruck;
-                      const get = (snake, camel) => (t[snake] ?? t[camel]) != null ? String(t[snake] ?? t[camel]).trim() : '';
+                      const get = (snake, camel) => {
+                        const raw = (t[snake] ?? t[camel]) != null ? String(t[snake] ?? t[camel]).trim() : '';
+                        if (!raw) return '';
+                        if (snake === 'registration' || snake === 'trailer_1_reg_no' || snake === 'trailer_2_reg_no') {
+                          return formatTruckRegistration(raw);
+                        }
+                        return raw;
+                      };
                       const trackingProvider = get('tracking_provider', 'trackingProvider');
                       const providerInList = TRACKING_PROVIDERS.some((p) => (p || '') === (trackingProvider || ''));
+                      const cameraProvider = get('camera_provider', 'cameraProvider');
+                      const cameraProviderInList = TRACKING_PROVIDERS.some((p) => (p || '') === (cameraProvider || ''));
                       return (
                         <>
                           {(t.has_pending_change || t.pending_change?.id) && (() => {
@@ -2434,6 +2552,29 @@ export default function Contractor() {
                             <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Tracking password</label>
                             <input name="tracking_password" type="password" placeholder="Leave blank to keep current" autoComplete="new-password" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
                           </div>
+                          <div className="rounded-lg border border-dashed border-violet-200 bg-violet-50/40 p-3 space-y-2">
+                            <p className="text-xs font-semibold text-violet-800">Camera login</p>
+                            <div>
+                              <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Camera tracking provider</label>
+                              <select name="camera_provider" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" defaultValue={cameraProviderInList ? (cameraProvider || '') : 'Other'}>
+                                {TRACKING_PROVIDERS.map((p) => (
+                                  <option key={`cam-${p || 'blank'}`} value={p}>{p || '—'}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Camera tracking provider (if Other)</label>
+                              <input name="camera_provider_other" defaultValue={cameraProviderInList ? '' : cameraProvider} placeholder="Leave blank if not Other" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Camera username</label>
+                              <input name="camera_username" defaultValue={get('camera_username', 'cameraUsername')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Camera password</label>
+                              <input name="camera_password" type="password" placeholder="Leave blank to keep current" autoComplete="new-password" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm bg-white" />
+                            </div>
+                          </div>
                           <div>
                             <label className="block text-xs font-medium text-surface-500 uppercase tracking-wider mb-1">Commodity type</label>
                             <select name="commodity_type" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" defaultValue={get('commodity_type', 'commodityType') || ''}>
@@ -2490,6 +2631,19 @@ export default function Contractor() {
                   </form>
                 </div>
               </div>
+            )}
+
+            {activeTab === 'fleet' && fleetBulkEditOpen && (
+              <BulkFleetEditPanel
+                trucks={trucksList}
+                allTrucks={trucksList}
+                initialSelectedRegistrations={fleetSelectedRegistrations}
+                trackingProviders={TRACKING_PROVIDERS}
+                isSubcontractorUser={isSubcontractorUser}
+                applying={fleetBulkApplying}
+                onClose={() => setFleetBulkEditOpen(false)}
+                onApply={handleFleetBulkApply}
+              />
             )}
 
             {activeTab === 'drivers' && (
@@ -2563,15 +2717,40 @@ export default function Contractor() {
                       Download PDF (Not official)
                     </button>
                   </div>
-                  <p className="text-xs text-surface-500 mb-4">Click a row to view and edit driver details.</p>
+                  <p className="text-xs text-surface-500 mb-4">Click a row to view details, or use <span className="font-medium text-violet-700">Bulk edit</span> to update contact, licence, and truck links across multiple drivers.</p>
                   <DriverAdvancedView
                     drivers={driversList}
                     onSelectDriver={setSelectedRegisterDriver}
                     selectedDriverId={selectedRegisterDriver?.id}
                     isSubcontractorUser={isSubcontractorUser}
+                    selectionMode={driverSelectionMode}
+                    onSelectionModeChange={(on) => {
+                      setDriverSelectionMode(on);
+                      if (!on) setDriverSelectedIds([]);
+                    }}
+                    selectedIds={driverSelectedIds}
+                    onSelectedIdsChange={setDriverSelectedIds}
+                    onBulkEdit={(ids) => {
+                      setDriverSelectedIds(ids);
+                      setDriverBulkEditOpen(true);
+                    }}
+                    bulkEditDisabled={!pageRestrictions.allow_driver_manual}
                   />
                 </div>
               </div>
+            )}
+
+            {activeTab === 'driver-register' && driverBulkEditOpen && (
+              <BulkDriverEditPanel
+                drivers={driversList}
+                allDrivers={driversList}
+                trucks={trucksList}
+                initialSelectedIds={driverSelectedIds}
+                isSubcontractorUser={isSubcontractorUser}
+                applying={driverBulkApplying}
+                onClose={() => setDriverBulkEditOpen(false)}
+                onApply={handleDriverBulkApply}
+              />
             )}
 
             {/* Driver detail panel (Driver register tab) – editable */}

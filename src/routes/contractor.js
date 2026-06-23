@@ -50,6 +50,18 @@ import {
   applyTruckChangeRequest,
   getActiveChangeRequest,
 } from '../lib/fleetChangeRequests.js';
+import { findContractorTruckForUpdate, bulkUpdateContractorTrucks } from '../lib/bulkTruckUpdate.js';
+import {
+  normTruckRegistration,
+  compactTruckRegistration,
+  compactTruckRegistrationNullable,
+  mapTruckRegistrationFields,
+  mapTruckRegistrationFieldsDeep,
+  sqlRegNormExpr,
+} from '../lib/truckRegistration.js';
+import { bulkUpdateContractorDrivers } from '../lib/bulkDriverUpdate.js';
+import { mapRowGuids, parseGuid, rowId, isReservedPathId } from '../lib/guidUtils.js';
+import { queryWithGuids } from '../lib/queryWithGuids.js';
 import logisticsFlowRouter from './logisticsFlow.js';
 
 const router = Router();
@@ -161,7 +173,8 @@ router.use(requireTenant);
 /** Tenant ID for current user (normalized from req.user) */
 function getTenantId(req) {
   const u = req.user || {};
-  return u.tenant_id ?? u.tenant_Id ?? (u.tenant_id !== undefined ? u.tenant_id : undefined);
+  const raw = u.tenant_id ?? u.tenant_Id;
+  return parseGuid(raw) ?? raw ?? undefined;
 }
 
 async function ensureContractorRestrictionTable() {
@@ -225,20 +238,25 @@ function pageRolesNorm(req) {
 async function getHaulierContractorIdsFromDb(req, tenantId) {
   const result = await query(
     `SELECT contractor_id FROM user_contractors WHERE user_id = @userId`,
-    { userId: req.user?.id }
+    { userId: req.user?.id ?? req.session?.userId }
   );
   const rows = result.recordset || [];
-  const ids = [...new Set(rows.map((r) => r.contractor_id ?? r.contractor_Id).filter(Boolean))];
+  const ids = [...new Set(rows.map((r) => parseGuid(r.contractor_id ?? r.contractor_Id)).filter(Boolean))];
   if (ids.length > 0) return ids;
   if (rows.length > 0) return [];
 
+  const tid = parseGuid(tenantId);
+  if (!tid) return [];
   const countResult = await query(
     `SELECT id FROM contractors WHERE tenant_id = @tenantId`,
-    { tenantId }
+    { tenantId: tid }
   );
   const tenantContractors = countResult.recordset || [];
   if (tenantContractors.length === 0) return [];
-  if (tenantContractors.length === 1) return [tenantContractors[0].id ?? tenantContractors[0].Id];
+  if (tenantContractors.length === 1) {
+    const only = parseGuid(tenantContractors[0].id ?? tenantContractors[0].Id);
+    return only ? [only] : [];
+  }
   return [];
 }
 
@@ -434,11 +452,11 @@ router.get('/context', async (req, res, next) => {
     const subcontractors = subcontractorIds.length > 0 ? await getUserSubcontractorDetails(req.user.id) : [];
     res.json({
       ok: true,
-      tenantId,
+      tenantId: parseGuid(tenantId) ?? tenantId,
       tenantName,
-      contractors,
+      contractors: (contractors || []).map((c) => mapRowGuids(c)),
       isSubcontractorUser: subcontractorIds.length > 0,
-      subcontractors,
+      subcontractors: (subcontractors || []).map((s) => mapRowGuids(s)),
     });
   } catch (err) {
     next(err);
@@ -509,39 +527,60 @@ router.patch('/restrictions/page-controls', requireContractorRestrictionManager,
   }
 });
 
-function normReg(registration) {
-  return String(registration || '').trim().toLowerCase();
+function regFieldsFromBody({ registration, trailer_1_reg_no, trailer_2_reg_no } = {}) {
+  return {
+    registration: registration != null ? compactTruckRegistration(registration) : '',
+    trailer_1_reg_no: compactTruckRegistrationNullable(trailer_1_reg_no),
+    trailer_2_reg_no: compactTruckRegistrationNullable(trailer_2_reg_no),
+  };
 }
+
+const TRUCK_APPROVED_SQL = `t.facility_access = 1
+  AND NOT EXISTS (
+    SELECT 1 FROM contractor_suspensions s
+    WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50))
+      AND s.[status] IN (N'suspended', N'under_appeal')
+  )`;
+
+const DRIVER_APPROVED_SQL = `d.facility_access = 1
+  AND NOT EXISTS (
+    SELECT 1 FROM contractor_suspensions s
+    WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50))
+      AND s.[status] IN (N'suspended', N'under_appeal')
+  )`;
 
 // Trucks: duplicate = same tenant + same registration (and same contractor when scoped)
 async function truckRegistrationExists(tenantId, registration, excludeId = null, contractorId = null) {
-  const reg = normReg(registration);
-  if (!reg) return false;
+  const regNorm = normTruckRegistration(registration);
+  if (!regNorm) return false;
   const contractorClause = contractorId != null
     ? ' AND (contractor_id = @contractorId OR (contractor_id IS NULL AND @contractorId IS NULL))'
     : '';
   const result = await query(
-    `SELECT 1 FROM contractor_trucks WHERE tenant_id = @tenantId AND LOWER(LTRIM(RTRIM(registration))) = @regNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
-    { tenantId, regNorm: reg, ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
+    `SELECT 1 FROM contractor_trucks WHERE tenant_id = @tenantId AND ${sqlRegNormExpr('registration')} = @regNorm ${excludeId ? 'AND id <> @excludeId' : ''}${contractorClause}`,
+    { tenantId, regNorm, ...(excludeId && { excludeId }), ...(contractorId !== undefined && { contractorId }) }
   );
   return (result.recordset?.length ?? 0) > 0;
 }
 
 // Drivers: id_number and license_number are unique per tenant (DB: UQ_ct_drivers_*), not per contractor.
 async function driverDuplicateExists(tenantId, id_number, license_number, excludeId = null) {
+  const tid = parseGuid(tenantId);
+  if (!tid) return false;
+  const xid = excludeId ? parseGuid(excludeId) : null;
   const idNum = id_number ? String(id_number).trim() : null;
   const licNum = license_number ? String(license_number).trim() : null;
   if (idNum) {
-    const result = await query(
-      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND id_number IS NOT NULL AND LOWER(LTRIM(RTRIM(id_number))) = @idNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
-      { tenantId, idNumNorm: idNum.toLowerCase(), ...(excludeId && { excludeId }) }
+    const result = await queryWithGuids(
+      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND id_number IS NOT NULL AND LOWER(LTRIM(RTRIM(id_number))) = @idNumNorm ${xid ? 'AND id <> @excludeId' : ''}`,
+      { tenantId: tid, idNumNorm: idNum.toLowerCase(), ...(xid && { excludeId: xid }) }
     );
     if (result.recordset?.length > 0) return true;
   }
   if (licNum) {
-    const result = await query(
-      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND license_number IS NOT NULL AND LOWER(LTRIM(RTRIM(license_number))) = @licNumNorm ${excludeId ? 'AND id <> @excludeId' : ''}`,
-      { tenantId, licNumNorm: licNum.toLowerCase(), ...(excludeId && { excludeId }) }
+    const result = await queryWithGuids(
+      `SELECT 1 FROM contractor_drivers WHERE tenant_id = @tenantId AND license_number IS NOT NULL AND LOWER(LTRIM(RTRIM(license_number))) = @licNumNorm ${xid ? 'AND id <> @excludeId' : ''}`,
+      { tenantId: tid, licNumNorm: licNum.toLowerCase(), ...(xid && { excludeId: xid }) }
     );
     if (result.recordset?.length > 0) return true;
   }
@@ -775,25 +814,26 @@ router.get('/trucks', async (req, res, next) => {
       } else throw err;
     }
     const trucks = (result.recordset || []).map((row) => {
-      const pendingChangeId = row.pending_change_id ?? row.Pending_Change_Id;
-      if (!pendingChangeId) return row;
+      const base = mapTruckRegistrationFieldsDeep(mapRowGuids(row, ['pending_change_id']));
+      const pendingChangeId = base.pending_change_id ?? base.Pending_Change_Id;
+      if (!pendingChangeId) return base;
       let proposed = null;
       let previous = null;
-      const proposedJson = row.pending_change_proposed_json ?? row.Pending_Change_Proposed_Json;
-      const previousJson = row.pending_change_previous_json ?? row.Pending_Change_Previous_Json;
+      const proposedJson = base.pending_change_proposed_json ?? base.Pending_Change_Proposed_Json;
+      const previousJson = base.pending_change_previous_json ?? base.Pending_Change_Previous_Json;
       try { proposed = JSON.parse(proposedJson || '{}'); } catch (_) {}
       try { previous = JSON.parse(previousJson || '{}'); } catch (_) {}
       return {
-        ...row,
+        ...base,
         has_pending_change: true,
         pending_change: {
-          id: pendingChangeId,
-          contractor_status: row.pending_change_contractor_status ?? row.Pending_Change_Contractor_Status,
-          cc_status: row.pending_change_cc_status ?? row.Pending_Change_Cc_Status,
-          registration_changed: !!(row.pending_change_registration_changed ?? row.Pending_Change_Registration_Changed),
-          had_facility_access: !!(row.pending_change_had_facility_access ?? row.Pending_Change_Had_Facility_Access),
-          comment: row.pending_change_comment ?? row.Pending_Change_Comment ?? null,
-          submitter_role: row.pending_change_submitter_role ?? row.Pending_Change_Submitter_Role,
+          id: parseGuid(pendingChangeId) || pendingChangeId,
+          contractor_status: base.pending_change_contractor_status ?? base.Pending_Change_Contractor_Status,
+          cc_status: base.pending_change_cc_status ?? base.Pending_Change_Cc_Status,
+          registration_changed: !!(base.pending_change_registration_changed ?? base.Pending_Change_Registration_Changed),
+          had_facility_access: !!(base.pending_change_had_facility_access ?? base.Pending_Change_Had_Facility_Access),
+          comment: base.pending_change_comment ?? base.Pending_Change_Comment ?? null,
+          submitter_role: base.pending_change_submitter_role ?? base.Pending_Change_Submitter_Role,
           proposed,
           previous,
         },
@@ -834,7 +874,7 @@ router.get('/fleet-change-requests', async (req, res, next) => {
     }
     sql += ' ORDER BY cr.created_at DESC';
     const result = await query(sql, params);
-    const changeRequests = (result.recordset || []).map((r) => ({
+    const changeRequests = (result.recordset || []).map((r) => mapTruckRegistrationFieldsDeep({
       ...mapChangeRequestRow(r),
       truckRegistration: r.truck_registration ?? r.Truck_Registration,
       contractorName: r.contractor_company_name ?? r.Contractor_Company_Name,
@@ -911,6 +951,7 @@ router.post('/trucks', async (req, res, next) => {
     const {
       main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
+      camera_username, camera_password, camera_provider,
       commodity_type, capacity_tonnes, status, contractor_id: bodyContractorId,
     } = req.body || {};
     const fuelFields = parseTruckFuelFields(req.body);
@@ -931,13 +972,14 @@ router.post('/trucks', async (req, res, next) => {
       skipCcApplication = true;
     }
 
-    const regTrim = registration != null ? String(registration).trim() : '';
+    const regFields = regFieldsFromBody({ registration, trailer_1_reg_no, trailer_2_reg_no });
+    const regTrim = regFields.registration;
     if (regTrim && (await truckRegistrationExists(req.user.tenant_id, regTrim, null, contractorId))) {
       return res.status(409).json({ error: 'A truck with this registration already exists under this contractor.' });
     }
     const result = await query(
-      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, fuel_tank_capacity_litres, fuel_consumption_litres_per_100km, [status], contractor_approval_status, added_by_user_id)
-       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @fuel_tank_capacity_litres, @fuel_consumption_litres_per_100km, @status, @contractor_approval_status, @added_by_user_id)`,
+      `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, camera_provider, camera_username, camera_password, commodity_type, capacity_tonnes, fuel_tank_capacity_litres, fuel_consumption_litres_per_100km, [status], contractor_approval_status, added_by_user_id)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @camera_provider, @camera_username, @camera_password, @commodity_type, @capacity_tonnes, @fuel_tank_capacity_litres, @fuel_consumption_litres_per_100km, @status, @contractor_approval_status, @added_by_user_id)`,
       {
         tenantId: req.user.tenant_id,
         contractorId: contractorId || null,
@@ -949,11 +991,14 @@ router.post('/trucks', async (req, res, next) => {
         ownership_desc: ownership_desc || null,
         fleet_no: fleet_no || null,
         registration: regTrim || '',
-        trailer_1_reg_no: trailer_1_reg_no || null,
-        trailer_2_reg_no: trailer_2_reg_no || null,
+        trailer_1_reg_no: regFields.trailer_1_reg_no,
+        trailer_2_reg_no: regFields.trailer_2_reg_no,
         tracking_provider: tracking_provider || null,
         tracking_username: tracking_username || null,
         tracking_password: tracking_password || null,
+        camera_username: camera_username || null,
+        camera_password: camera_password || null,
+        camera_provider: camera_provider || null,
         commodity_type: commodity_type || null,
         capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
         fuel_tank_capacity_litres: fuelFields.fuel_tank_capacity_litres,
@@ -969,26 +1014,86 @@ router.post('/trucks', async (req, res, next) => {
     if (!skipCcApplication) {
       notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truck?.registration].filter(Boolean), req.user?.email);
     }
-    res.status(201).json({ truck, pendingContractorApproval: skipCcApplication });
+    res.status(201).json({ truck: mapTruckRegistrationFieldsDeep(truck), pendingContractorApproval: skipCcApplication });
   } catch (err) {
+    next(err);
+  }
+});
+
+async function resolveTruckIdForTenant(req, rawId) {
+  const tenantId = getTenantId(req);
+  if (!tenantId) return { tenantId: null, truckId: null };
+  let truckId = parseGuid(rawId);
+  if (truckId) return { tenantId, truckId };
+  const reg = normTruckRegistration(rawId);
+  if (!reg || isReservedPathId(rawId)) return { tenantId, truckId: null };
+  const allowed = await getAllowedContractorIds(req);
+  const subIds = await getRequestSubcontractorIds(req);
+  const isSubUser = isSubcontractorPortalUser(subIds);
+  const subScopeCtx = await getRequestSubcontractorScope(req);
+  const row = await findContractorTruckForUpdate({
+    tenantId,
+    registration: rawId,
+    allowedContractorIds: allowed && allowed.length > 0 ? allowed : null,
+    isSubUser,
+    subScopeCtx,
+  });
+  truckId = parseGuid(rowId(row));
+  return { tenantId, truckId };
+}
+
+router.patch('/trucks/bulk-update', async (req, res, next) => {
+  try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_truck_manual) {
+      return res.status(403).json({ error: 'Truck editing is restricted by Access Management.' });
+    }
+    const { ids, registrations, updates, fields, change_comment } = req.body || {};
+    const allowed = await getAllowedContractorIds(req);
+    const allowedFilter = allowed && allowed.length > 0 ? allowed : null;
+    const summary = await bulkUpdateContractorTrucks({
+      req,
+      ids,
+      registrations,
+      updates: updates || {},
+      fields,
+      changeComment: change_comment ?? null,
+      allowedContractorIds: allowedFilter,
+      getContractorName,
+      notifyFleetDriverEmails,
+    });
+    const pending = summary.pending_change > 0;
+    res.json({
+      ...summary,
+      message: pending
+        ? `${summary.pending_change} truck(s) submitted for approval; ${summary.updated} updated immediately.`
+        : `${summary.updated} truck(s) updated.`,
+    });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, summary: err.summary });
+    if (err.message?.includes('uniqueidentifier') || err.message?.includes('Conversion failed')) {
+      return res.status(400).json({ error: 'Invalid id in request. Refresh the page and try again.' });
+    }
     next(err);
   }
 });
 
 router.patch('/trucks/:id', async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const { tenantId, truckId } = await resolveTruckIdForTenant(req, req.params.id);
+    if (!tenantId) return res.status(403).json({ error: 'Contractor features require a tenant. Your account is not linked to a company.' });
+    if (!truckId) return res.status(400).json({ error: 'Truck not found. Check the registration and try again.' });
     const body = req.body || {};
-    const tenantId = getTenantId(req);
     const {
       main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
       registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
+      camera_username, camera_password, camera_provider,
       commodity_type, capacity_tonnes, status,
       fuel_tank_capacity_litres, fuel_consumption_litres_per_100km,
     } = body;
     const existingResult = await query(
       `SELECT t.* FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId`,
-      { id, tenantId }
+      { id: truckId, tenantId }
     );
     const existingRow = existingResult.recordset?.[0];
     if (!existingRow) return res.status(404).json({ error: 'Truck not found' });
@@ -999,15 +1104,16 @@ router.patch('/trucks/:id', async (req, res, next) => {
       const scope = buildTruckScopeClause(await getRequestSubcontractorScope(req), { alias: 't' });
       const scopeCheck = await query(
         `SELECT 1 AS ok FROM contractor_trucks t WHERE t.id = @id AND t.tenant_id = @tenantId${scope.clause}`,
-        { id, tenantId, ...scope.params }
+        { id: truckId, tenantId, ...scope.params }
       );
       if (!scopeCheck.recordset?.length) return res.status(403).json({ error: 'Not permitted for this truck' });
     }
 
-    const regTrim = registration != null ? String(registration).trim() : null;
+    const regFields = regFieldsFromBody({ registration, trailer_1_reg_no, trailer_2_reg_no });
+    const regTrim = registration != null ? regFields.registration : null;
     if (regTrim !== null && regTrim !== '') {
       const existingContractorId = existingRow.contractor_id ?? existingRow.Contractor_Id ?? null;
-      if (await truckRegistrationExists(tenantId, regTrim, id, existingContractorId)) {
+      if (await truckRegistrationExists(tenantId, regTrim, truckId, existingContractorId)) {
         return res.status(409).json({ error: 'Another truck with this registration already exists under this contractor.' });
       }
     }
@@ -1017,7 +1123,7 @@ router.patch('/trucks/:id', async (req, res, next) => {
       try {
         const submitted = await submitTruckChangeRequest({
           tenantId,
-          truckId: id,
+          truckId,
           existingRow,
           body,
           userId: req.user?.id,
@@ -1025,11 +1131,11 @@ router.patch('/trucks/:id', async (req, res, next) => {
           commentText,
         });
         if (submitted.skipped) {
-          return res.json({ truck: existingRow, pendingChange: false });
+          return res.json({ truck: mapRowGuids(existingRow), pendingChange: false });
         }
-        const active = await getActiveChangeRequest('truck', id);
+        const active = await getActiveChangeRequest('truck', truckId);
         return res.json({
-          truck: existingRow,
+          truck: mapRowGuids(existingRow),
           pendingChange: true,
           changeRequest: mapChangeRequestRow(active),
           message: isSubUser
@@ -1053,6 +1159,9 @@ router.patch('/trucks/:id', async (req, res, next) => {
         trailer_1_reg_no = @trailer_1_reg_no, trailer_2_reg_no = @trailer_2_reg_no,
         tracking_provider = @tracking_provider, tracking_username = @tracking_username,
         tracking_password = CASE WHEN @tracking_password_keep = 1 THEN tracking_password ELSE @tracking_password END,
+        camera_username = @camera_username,
+        camera_provider = @camera_provider,
+        camera_password = CASE WHEN @camera_password_keep = 1 THEN camera_password ELSE @camera_password END,
         commodity_type = @commodity_type, capacity_tonnes = @capacity_tonnes,
         fuel_tank_capacity_litres = @fuel_tank_capacity_litres,
         fuel_consumption_litres_per_100km = @fuel_consumption_litres_per_100km,
@@ -1060,21 +1169,25 @@ router.patch('/trucks/:id', async (req, res, next) => {
         updated_at = SYSUTCDATETIME()
        OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
       {
-        id,
-        tenantId: req.user.tenant_id,
+        id: truckId,
+        tenantId,
         main_contractor: main_contractor ?? null,
         sub_contractor: sub_contractor ?? null,
         make_model: make_model ?? null,
         year_model: year_model ?? null,
         ownership_desc: ownership_desc ?? null,
         fleet_no: fleet_no ?? null,
-        registration: registration ?? '',
-        trailer_1_reg_no: trailer_1_reg_no ?? null,
-        trailer_2_reg_no: trailer_2_reg_no ?? null,
+        registration: regTrim ?? compactTruckRegistration(existingRow.registration ?? existingRow.Registration ?? ''),
+        trailer_1_reg_no: trailer_1_reg_no !== undefined ? regFields.trailer_1_reg_no : (existingRow.trailer_1_reg_no ?? existingRow.Trailer_1_Reg_No ?? null),
+        trailer_2_reg_no: trailer_2_reg_no !== undefined ? regFields.trailer_2_reg_no : (existingRow.trailer_2_reg_no ?? existingRow.Trailer_2_Reg_No ?? null),
         tracking_provider: tracking_provider ?? null,
         tracking_username: tracking_username ?? null,
         tracking_password: tracking_password ?? null,
         tracking_password_keep: body.tracking_password === undefined || body.tracking_password === '' ? 1 : 0,
+        camera_username: camera_username ?? null,
+        camera_provider: camera_provider ?? null,
+        camera_password: camera_password ?? null,
+        camera_password_keep: body.camera_password === undefined || body.camera_password === '' ? 1 : 0,
         commodity_type: commodity_type ?? null,
         capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
         fuel_tank_capacity_litres: body.fuel_tank_capacity_litres !== undefined
@@ -1090,7 +1203,7 @@ router.patch('/trucks/:id', async (req, res, next) => {
     const truckRow = result.recordset[0];
     const contractorName = await getContractorName(truckRow.contractor_id);
     notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'truck', [truckRow.registration].filter(Boolean), req.user?.email, 'edited');
-    res.json({ truck: truckRow });
+    res.json({ truck: mapTruckRegistrationFieldsDeep(mapRowGuids(truckRow)) });
   } catch (err) {
     next(err);
   }
@@ -1119,9 +1232,11 @@ router.post('/trucks/bulk', async (req, res, next) => {
       const {
         main_contractor, sub_contractor, make_model, year_model, ownership_desc, fleet_no,
         registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password,
+        camera_username, camera_password, camera_provider,
         commodity_type, capacity_tonnes, status,
       } = row;
-      const regTrim = registration != null ? String(registration).trim() : '';
+      const regFields = regFieldsFromBody({ registration, trailer_1_reg_no, trailer_2_reg_no });
+      const regTrim = regFields.registration;
       if (!regTrim) continue;
       if (await truckRegistrationExists(req.user.tenant_id, regTrim, null, contractorId)) {
         skipped.push(regTrim);
@@ -1130,8 +1245,8 @@ router.post('/trucks/bulk', async (req, res, next) => {
       const subName = isSubCreate ? subResolved.companyName : (sub_contractor || null);
       const rowFuel = parseTruckFuelFields(row);
       const result = await query(
-        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, commodity_type, capacity_tonnes, fuel_tank_capacity_litres, fuel_consumption_litres_per_100km, [status], contractor_approval_status, added_by_user_id)
-         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @commodity_type, @capacity_tonnes, @fuel_tank_capacity_litres, @fuel_consumption_litres_per_100km, @status, @contractor_approval_status, @added_by_user_id)`,
+        `INSERT INTO contractor_trucks (tenant_id, contractor_id, main_contractor, sub_contractor, subcontractor_id, make_model, year_model, ownership_desc, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, tracking_provider, tracking_username, tracking_password, camera_provider, camera_username, camera_password, commodity_type, capacity_tonnes, fuel_tank_capacity_litres, fuel_consumption_litres_per_100km, [status], contractor_approval_status, added_by_user_id)
+         OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @main_contractor, @sub_contractor, @subcontractor_id, @make_model, @year_model, @ownership_desc, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, @tracking_provider, @tracking_username, @tracking_password, @camera_provider, @camera_username, @camera_password, @commodity_type, @capacity_tonnes, @fuel_tank_capacity_litres, @fuel_consumption_litres_per_100km, @status, @contractor_approval_status, @added_by_user_id)`,
         {
           tenantId: req.user.tenant_id,
           contractorId: contractorId || null,
@@ -1143,11 +1258,14 @@ router.post('/trucks/bulk', async (req, res, next) => {
           ownership_desc: ownership_desc || null,
           fleet_no: fleet_no || null,
           registration: regTrim,
-          trailer_1_reg_no: trailer_1_reg_no || null,
-          trailer_2_reg_no: trailer_2_reg_no || null,
+          trailer_1_reg_no: regFields.trailer_1_reg_no,
+          trailer_2_reg_no: regFields.trailer_2_reg_no,
           tracking_provider: tracking_provider || null,
           tracking_username: tracking_username || null,
           tracking_password: tracking_password || null,
+          camera_username: camera_username || null,
+          camera_password: camera_password || null,
+          camera_provider: camera_provider || null,
           commodity_type: commodity_type || null,
           capacity_tonnes: capacity_tonnes != null ? capacity_tonnes : null,
           fuel_tank_capacity_litres: rowFuel.fuel_tank_capacity_litres,
@@ -1224,13 +1342,13 @@ router.get('/drivers', async (req, res, next) => {
         throw colErr;
       }
     }
-    const drivers = rows.map((r) => ({
+    const drivers = rows.map((r) => mapTruckRegistrationFieldsDeep(mapRowGuids({
       ...r,
-      linkedTruckId: r.linked_truck_id ?? null,
+      linkedTruckId: parseGuid(r.linked_truck_id) ?? r.linked_truck_id ?? null,
       linkedTruckRegistration: r.linked_truck_registration ?? null,
       linkedTruckMakeModel: r.linked_truck_make_model ?? null,
       linkedTruckFleetNo: r.linked_truck_fleet_no ?? null,
-    }));
+    })));
     res.json({ drivers });
   } catch (err) {
     next(err);
@@ -1308,6 +1426,39 @@ router.post('/drivers', async (req, res, next) => {
     }
     res.status(201).json({ driver, pendingContractorApproval: skipCcApplication });
   } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/drivers/bulk-update', async (req, res, next) => {
+  try {
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_driver_manual) {
+      return res.status(403).json({ error: 'Driver editing is restricted by Access Management.' });
+    }
+    const { ids, updates, fields } = req.body || {};
+    const summary = await bulkUpdateContractorDrivers({
+      req,
+      ids,
+      updates: updates || {},
+      fields,
+      driverDuplicateExists,
+      getContractorName,
+      notifyFleetDriverEmails,
+    });
+    const errResults = (summary.results || []).filter((r) => r.status === 'error');
+    res.json({
+      ...summary,
+      message: summary.errors > 0
+        ? `${summary.updated} driver(s) updated; ${summary.errors} skipped (see results).`
+        : `${summary.updated} driver(s) updated.`,
+      errorDetails: errResults.length ? errResults : undefined,
+    });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, summary: err.summary });
+    if (err.message?.includes('uniqueidentifier') || err.message?.includes('Conversion failed')) {
+      return res.status(400).json({ error: 'Invalid id in request. Refresh the page and try again.' });
+    }
     next(err);
   }
 });
@@ -2827,7 +2978,7 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
     Object.assign(params, truckScope.params);
     sql += ` ORDER BY t.registration ASC`;
     const result = await query(sql, params);
-    res.json({ trucks: result.recordset });
+    res.json({ trucks: mapTruckRegistrationFieldsDeep(result.recordset) });
   } catch (err) {
     next(err);
   }
@@ -2935,6 +3086,9 @@ router.get('/routes/:id', async (req, res, next) => {
       trucksSql += ` AND t.contractor_id IN (${tPlaceholders})`;
       allowed.forEach((cid, i) => { trucksParams[`tc${i}`] = cid; });
     }
+    if (!portalStrict) {
+      trucksSql += ` AND ${TRUCK_APPROVED_SQL}`;
+    }
     trucksSql += ` ORDER BY t.registration`;
     const driversParams = { id, tenantId };
     let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
@@ -2946,12 +3100,15 @@ router.get('/routes/:id', async (req, res, next) => {
       driversSql += ` AND d.contractor_id IN (${dPlaceholders})`;
       allowed.forEach((cid, i) => { driversParams[`dc${i}`] = cid; });
     }
+    if (!portalStrict) {
+      driversSql += ` AND ${DRIVER_APPROVED_SQL}`;
+    }
     driversSql += ` ORDER BY d.full_name`;
     const trucksResult = await query(trucksSql, trucksParams);
     const driversResult = await query(driversSql, driversParams);
     res.json({
       route,
-      trucks: trucksResult.recordset,
+      trucks: (trucksResult.recordset || []).map((t) => mapTruckRegistrationFieldsDeep(t)),
       drivers: driversResult.recordset,
     });
   } catch (err) {
@@ -4412,7 +4569,7 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
       const key = String(k).split('.').pop().toLowerCase();
       out[key] = r[k];
     }
-    return out;
+    return mapTruckRegistrationFields(out);
   });
   const withRoute = useRoutes && ids.length > 0;
   // Default column set: legacy columns only (no contractor / sub_contractor unless the caller asks for them).
@@ -4955,11 +5112,11 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
       const contractorsOnRouteResult = await query(
         `SELECT DISTINCT t.contractor_id AS cid FROM contractor_route_trucks rt
          INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
-         WHERE rt.route_id IN (${placeholders})
+         WHERE rt.route_id IN (${placeholders}) AND ${TRUCK_APPROVED_SQL}
          UNION
          SELECT DISTINCT d.contractor_id AS cid FROM contractor_route_drivers rd
          INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
-         WHERE rd.route_id IN (${placeholders})`,
+         WHERE rd.route_id IN (${placeholders}) AND ${DRIVER_APPROVED_SQL}`,
         { tenantId, ...routeParams }
       );
       let contractorIdsOnRoute = (contractorsOnRouteResult.recordset || []).map((r) => r.cid ?? r.contractor_id).filter(Boolean);
@@ -4980,8 +5137,7 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
       const generated = new Date();
       const subtitle = `List distribution · Generated ${formatDateForAppTz(generated)}`;
       const entries = [];
-      /** Full route roster for email/pilot (not restricted to facility_access=1 only). */
-      const distListOpts = { includeRouteEnrollmentWithoutAccessFilter: true };
+      const distListOpts = {};
 
       for (const row of contractorsList) {
         const cid = row.id;
@@ -5100,7 +5256,6 @@ export async function distributionSendEmailInternal({ tenantId, userId, userName
               ...baseOpts,
               title: `${contractorName} – ${routeName}`,
               routeName,
-              includeRouteEnrollmentWithoutAccessFilter: true,
             };
             if (listType === 'both' && useExcel) {
               const buf = await buildFleetAndDriverListExcel(query, tid, singleRoute, fleetCols, driverCols, listOpts);
@@ -5679,7 +5834,7 @@ router.get('/subcontractor-fleets', async (req, res, next) => {
       subList = (subResult.recordset || []).map((r) => ({ id: r.id ?? r.Id, company_name: r.company_name ?? r.Company_Name }));
     } catch (_) {}
 
-    res.json({ trucks: trResult.recordset || [], subcontractors: subList });
+    res.json({ trucks: mapTruckRegistrationFieldsDeep(trResult.recordset || []), subcontractors: subList });
   } catch (err) {
     next(err);
   }

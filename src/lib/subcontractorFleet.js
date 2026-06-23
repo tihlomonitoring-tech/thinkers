@@ -1,4 +1,5 @@
 import { query } from '../db.js';
+import { parseGuid } from './guidUtils.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -15,7 +16,7 @@ export async function getUserSubcontractorIds(userId) {
       `SELECT subcontractor_id FROM user_subcontractors WHERE user_id = @userId`,
       { userId }
     );
-    return [...new Set((result.recordset || []).map((r) => get(r, 'subcontractor_id')).filter(Boolean))];
+    return [...new Set((result.recordset || []).map((r) => parseGuid(get(r, 'subcontractor_id'))).filter(Boolean))];
   } catch (e) {
     if (e.message?.includes('Invalid object name')) return [];
     throw e;
@@ -34,9 +35,9 @@ export async function getUserSubcontractorDetails(userId) {
       { userId }
     );
     return (result.recordset || []).map((r) => ({
-      id: get(r, 'id'),
+      id: parseGuid(get(r, 'id')) ?? get(r, 'id'),
       companyName: get(r, 'company_name'),
-      contractorId: get(r, 'contractor_id'),
+      contractorId: parseGuid(get(r, 'contractor_id')) ?? get(r, 'contractor_id'),
     }));
   } catch (e) {
     if (e.message?.includes('Invalid object name')) return [];

@@ -16,7 +16,7 @@ import {
   saveRouteViewPrefs,
 } from '../../lib/logisticsActivityRouteView.js';
 
-const MANUAL_DROP_STAGES = new Set(['scheduled', 'at_loading', 'enroute']);
+const ALL_BOARD_STAGES = new Set(['scheduled', 'at_loading', 'enroute', 'at_destination', 'awaiting_reschedule']);
 
 const ACTIVITY_SEARCH_COLUMNS = [
   { key: 'truck', label: 'Truck', get: (i) => i.truck_registration },
@@ -333,7 +333,8 @@ function SlipModal({ title, fields, initial, truckRegistration, resetKey, onClos
 function formatKmNum(km) {
   if (km == null || !Number.isFinite(Number(km))) return null;
   const n = Number(km);
-  return n >= 100 ? String(Math.round(n)) : String(Math.round(n * 10) / 10);
+  if (n >= 100) return String(Math.round(n));
+  return n.toFixed(2);
 }
 
 function resolveRouteTotalKm(item, routes) {
@@ -350,22 +351,39 @@ function resolveRouteTotalKm(item, routes) {
   return null;
 }
 
+function distanceBasisHint(item) {
+  const basis = item.distance_basis ?? item.distanceBasis;
+  if (basis === 'direct') return ' (direct est.)';
+  if (basis === 'record') return '';
+  return '';
+}
+
 function formatDistanceProgress(item, routes) {
   if (item.activity_stage === 'awaiting_reschedule') return 'Delivered';
+  if (item.activity_stage === 'at_destination') {
+    const totalKm = resolveRouteTotalKm(item, routes);
+    const total = formatKmNum(totalKm);
+    return total != null ? `0/${total} km` : 'At destination';
+  }
   const totalKm = resolveRouteTotalKm(item, routes);
   let leftKm = item.km_remaining ?? item.kmRemaining;
   leftKm = leftKm != null && Number.isFinite(Number(leftKm)) ? Number(leftKm) : null;
   if (leftKm != null && totalKm != null && leftKm > totalKm) leftKm = totalKm;
   const left = formatKmNum(leftKm);
   const total = formatKmNum(totalKm);
-  if (left != null && total != null) return `${left}/${total} km`;
-  if (left != null) return `${left} km left`;
-  if (total != null) return `${total} km`;
+  const hint = distanceBasisHint(item);
+  if (left != null && total != null) return `${left}/${total} km${hint}`;
+  if (left != null) return `${left} km left${hint}`;
+  if (total != null) return `${total} km route`;
   return '—';
 }
 
 function formatKmDone(item, routes) {
   if (item.activity_stage !== 'enroute') return null;
+  const traveled = item.km_traveled ?? item.kmTraveled;
+  if (traveled != null && Number.isFinite(Number(traveled))) {
+    return Math.max(0, Number(traveled));
+  }
   const total = resolveRouteTotalKm(item, routes);
   const left = Number(item.km_remaining ?? item.kmRemaining);
   if (!Number.isFinite(total) || !Number.isFinite(left)) return null;
@@ -373,11 +391,22 @@ function formatKmDone(item, routes) {
 }
 
 function progressPct(item, routes) {
+  const traveled = item.km_traveled ?? item.kmTraveled;
   const total = resolveRouteTotalKm(item, routes);
+  if (traveled != null && Number.isFinite(Number(traveled)) && Number.isFinite(total) && total > 0) {
+    return Math.round(Math.max(0, Math.min(100, (Number(traveled) / total) * 100)));
+  }
   const left = item.km_remaining ?? item.kmRemaining;
   if (!Number.isFinite(total) || total <= 0 || left == null) return null;
   const done = Math.max(0, Math.min(100, ((total - Number(left)) / total) * 100));
   return Math.round(done);
+}
+
+function progressLabel(item) {
+  const basis = item.distance_basis ?? item.distanceBasis;
+  if (basis === 'road') return 'route covered (road distance)';
+  if (basis === 'direct') return 'approx. progress (direct-line est.)';
+  return 'route progress';
 }
 
 function formatEta(minutes) {
@@ -402,6 +431,7 @@ function ActivityCard({
   onCancel,
   onShowOnMap,
   mapActive,
+  isDragging = false,
   draggable = false,
   onDragStart,
   onDragEnd,
@@ -422,12 +452,18 @@ function ActivityCard({
   return (
     <div
       draggable={draggable}
-      onDragStart={onDragStart}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', item.trip_id);
+        onDragStart?.(e);
+      }}
       onDragEnd={onDragEnd}
       className={`rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 border-l-4 ${styles.card} shadow-sm transition-all hover:shadow-md ${
         needsAction ? 'ring-1 ring-brand-200/60 dark:ring-brand-800/40' : ''
-      } ${mapActive ? 'ring-2 ring-sky-400/80 dark:ring-sky-500/50' : ''} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-      title={draggable ? 'Drag to Scheduled, At loading, or En route' : undefined}
+      } ${mapActive ? 'ring-2 ring-sky-400/80 dark:ring-sky-500/50' : ''} ${
+        isDragging ? 'opacity-40 scale-[0.98] ring-2 ring-dashed ring-brand-400' : ''
+      } ${draggable && !isDragging ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      title={draggable ? 'Drag to any column to move this truck' : undefined}
     >
       <div className="p-3 space-y-2.5">
         <div className="flex items-start justify-between gap-2">
@@ -489,7 +525,12 @@ function ActivityCard({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <p className="text-[10px] text-surface-500 mt-0.5 tabular-nums">{pct}% of corridor covered</p>
+              <p className="text-[10px] text-surface-500 mt-0.5 tabular-nums">
+                {pct}% {progressLabel(item)}
+                {item.off_route_m != null && item.off_route_m > 500 && (
+                  <span className="text-amber-600 dark:text-amber-400"> · off corridor</span>
+                )}
+              </p>
             </div>
           )}
         </div>
@@ -599,6 +640,7 @@ export default function LogisticsActivityTab({ setError }) {
   const [geofences, setGeofences] = useState([]);
   const mapPanelRef = useRef(null);
   const [draggingTrip, setDraggingTrip] = useState(null);
+  const [dropHoverStage, setDropHoverStage] = useState(null);
   const [boardSearch, setBoardSearch] = useState({
     global: '',
     columns: emptyColumnValues(ACTIVITY_SEARCH_COLUMNS),
@@ -789,7 +831,7 @@ export default function LogisticsActivityTab({ setError }) {
 
   const moveTripStage = useCallback(async (tripId, targetStage, fromStage) => {
     if (!tripId || !targetStage || fromStage === targetStage) return;
-    if (!MANUAL_DROP_STAGES.has(targetStage)) return;
+    if (!ALL_BOARD_STAGES.has(targetStage)) return;
     try {
       await trackingApi.logisticsActivity.moveStage(tripId, {
         activity_stage: targetStage,
@@ -890,7 +932,7 @@ export default function LogisticsActivityTab({ setError }) {
                 <>
                   Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a{' '}
                   <strong>truck registration</strong> to open its live position on the map.{' '}
-                  <strong>Drag a truck card</strong> to Scheduled, At loading, or En route if it was not scheduled on time.
+                  <strong>Drag a truck card</strong> to any column — the highlighted column shows where it will land when you release.
                 </>
               }
             />
@@ -1004,27 +1046,56 @@ export default function LogisticsActivityTab({ setError }) {
         </div>
       )}
 
-      <section className="app-glass-panel-2xl overflow-hidden rounded-xl border border-surface-200 dark:border-surface-800 shadow-sm">
+      <section className="app-glass-panel-2xl overflow-hidden rounded-xl border border-surface-200 dark:border-surface-800 shadow-sm relative">
+        {draggingTrip && dropHoverStage && (
+          <div className="sticky top-0 z-20 px-4 py-2 bg-brand-600 text-white text-xs font-semibold text-center shadow-md">
+            Drop into: {searchedStages.find((s) => s.id === dropHoverStage)?.label || dropHoverStage}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 min-w-[320px] xl:min-w-[1100px] divide-y md:divide-y-0 md:divide-x divide-surface-200 dark:divide-surface-800">
           {searchedStages.map((stage) => {
             const styles = STAGE_STYLES[stage.id] || STAGE_STYLES.scheduled;
-            const acceptsDrop = MANUAL_DROP_STAGES.has(stage.id);
-            const isDropTarget = draggingTrip && acceptsDrop && draggingTrip.fromStage !== stage.id;
+            const isSameColumn = draggingTrip?.fromStage === stage.id;
+            const isAligned = draggingTrip && dropHoverStage === stage.id;
+            const isValidDrop = draggingTrip && !isSameColumn;
+            const isActiveTarget = isAligned && isValidDrop;
             return (
               <div
                 key={stage.id}
-                className={`flex flex-col min-h-[420px] ${isDropTarget ? 'bg-brand-50/40 dark:bg-brand-950/20' : ''}`}
-                onDragOver={acceptsDrop ? (e) => { e.preventDefault(); } : undefined}
-                onDrop={acceptsDrop ? (e) => {
+                className={`flex flex-col min-h-[420px] transition-all duration-150 ${
+                  isActiveTarget
+                    ? 'ring-2 ring-inset ring-brand-500 bg-brand-50/70 dark:bg-brand-950/35 z-10 shadow-inner'
+                    : draggingTrip && isValidDrop
+                      ? 'ring-1 ring-dashed ring-surface-300/80 dark:ring-surface-600 bg-surface-50/30 dark:bg-surface-900/20'
+                      : draggingTrip && isSameColumn
+                        ? 'opacity-60'
+                        : ''
+                }`}
+                onDragEnter={(e) => {
                   e.preventDefault();
-                  if (draggingTrip) {
-                    moveTripStage(draggingTrip.tripId, stage.id, draggingTrip.fromStage);
-                    setDraggingTrip(null);
+                  if (draggingTrip) setDropHoverStage(stage.id);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = isSameColumn ? 'none' : 'move';
+                  if (draggingTrip) setDropHoverStage(stage.id);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget)) {
+                    setDropHoverStage((prev) => (prev === stage.id ? null : prev));
                   }
-                } : undefined}
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (draggingTrip && !isSameColumn) {
+                    moveTripStage(draggingTrip.tripId, stage.id, draggingTrip.fromStage);
+                  }
+                  setDraggingTrip(null);
+                  setDropHoverStage(null);
+                }}
               >
-                <div className={`px-3 py-3 ${styles.header}`}>
+                <div className={`px-3 py-3 ${styles.header} ${isActiveTarget ? 'bg-brand-100/90 dark:bg-brand-900/50' : ''}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className={`text-sm font-semibold ${styles.title}`}>{stage.label}</p>
@@ -1034,8 +1105,18 @@ export default function LogisticsActivityTab({ setError }) {
                       {stage.count}
                     </span>
                   </div>
+                  {isActiveTarget && (
+                    <p className="mt-2 text-[10px] font-bold uppercase tracking-wide text-brand-800 dark:text-brand-200 bg-brand-200/80 dark:bg-brand-800/60 rounded-md px-2 py-1.5 text-center">
+                      ↓ Release here
+                    </p>
+                  )}
+                  {draggingTrip && isSameColumn && isAligned && (
+                    <p className="mt-2 text-[10px] text-surface-500 text-center">Already in this column</p>
+                  )}
                 </div>
-                <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-surface-50/50 dark:bg-surface-950/30 max-h-[min(78vh,680px)]">
+                <div className={`flex-1 overflow-y-auto p-2 space-y-2 max-h-[min(78vh,680px)] ${
+                  isActiveTarget ? 'bg-brand-50/40 dark:bg-brand-950/20' : 'bg-surface-50/50 dark:bg-surface-950/30'
+                }`}>
                   {stage.items?.length ? (
                     stage.items.map((item) => (
                       <ActivityCard
@@ -1044,9 +1125,13 @@ export default function LogisticsActivityTab({ setError }) {
                         routes={board.routes || []}
                         styles={styles}
                         mapActive={mapTripId === item.trip_id}
+                        isDragging={draggingTrip?.tripId === item.trip_id}
                         draggable
                         onDragStart={() => setDraggingTrip({ tripId: item.trip_id, fromStage: item.activity_stage })}
-                        onDragEnd={() => setDraggingTrip(null)}
+                        onDragEnd={() => {
+                          setDraggingTrip(null);
+                          setDropHoverStage(null);
+                        }}
                         onShowOnMap={showTruckOnMap}
                         onLoadingSlip={setModal}
                         onProceedWithoutSlip={(it) => submitLoadingSlip(it.trip_id, { driver_name: it.driver_name || '' }, true)}

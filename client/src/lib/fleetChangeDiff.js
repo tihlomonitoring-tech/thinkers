@@ -12,6 +12,9 @@ export const TRUCK_CHANGE_FIELD_LABELS = {
   tracking_provider: 'Tracking provider',
   tracking_username: 'Tracking username',
   tracking_password: 'Tracking password',
+  camera_provider: 'Camera tracking provider',
+  camera_username: 'Camera username',
+  camera_password: 'Camera password',
   commodity_type: 'Commodity type',
   capacity_tonnes: 'Capacity (tonnes)',
   fuel_tank_capacity_litres: 'Fuel tank capacity (L)',
@@ -23,7 +26,7 @@ const TRUCK_CHANGE_FIELD_ORDER = Object.keys(TRUCK_CHANGE_FIELD_LABELS);
 
 function normVal(key, v) {
   if (v == null || v === '') return '';
-  if (key === 'tracking_password') return v ? '••••••••' : '';
+  if (key === 'tracking_password' || key === 'camera_password') return v ? '••••••••' : '';
   return String(v).trim();
 }
 
@@ -33,7 +36,7 @@ export function computeTruckChangeRows(previous = {}, proposed = {}) {
   for (const key of TRUCK_CHANGE_FIELD_ORDER) {
     const before = normVal(key, previous[key]);
     const after = normVal(key, proposed[key]);
-    if (key === 'tracking_password') {
+    if (key === 'tracking_password' || key === 'camera_password') {
       const newPwd = proposed[key] != null && String(proposed[key]).trim() !== '' && proposed[key] !== previous[key];
       if (!newPwd && before === after) continue;
       if (!newPwd) continue;
