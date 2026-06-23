@@ -1860,6 +1860,7 @@ async function buildFleetDistribution(tenantId) {
        WHERE t.tenant_id = @tenantId AND t.status IN (N'pending', N'enroute', N'deviated', N'overdue')
        AND ct.id IS NOT NULL
        AND ct.facility_access = 1
+       AND ISNULL(ct.contractor_approval_status, N'approved_contractor') = N'approved_contractor'
        AND NOT EXISTS (
          SELECT 1 FROM contractor_suspensions s
          WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(ct.id AS NVARCHAR(50))
@@ -1868,6 +1869,7 @@ async function buildFleetDistribution(tenantId) {
        AND EXISTS (
          SELECT 1 FROM contractor_route_trucks rt
          WHERE rt.truck_id = ct.id
+           AND rt.route_id = COALESCE(t.contractor_route_id, t.route_id)
        )
        AND EXISTS (
          SELECT 1

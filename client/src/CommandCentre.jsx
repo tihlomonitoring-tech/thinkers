@@ -18,6 +18,7 @@ import { loadExcelJS } from './lib/lazyExceljs.js';
 import { readCachedCcTabs, writeCachedCcTabs } from './lib/ccTabsCache.js';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
+import ListFiltersBar, { FilterField, FILTER_INPUT_CLASS } from './components/ListFiltersBar.jsx';
 import { ShiftReportTextAssist, ShiftReportSummaryAssist } from './components/ShiftReportTextAssist.jsx';
 import { buildShiftReportAiPayload } from './lib/shiftReportAiContext.js';
 import { useShiftReportUndo } from './lib/useShiftReportUndo.js';
@@ -9087,8 +9088,8 @@ function TabApplications() {
   const [showDeclineModal, setShowDeclineModal] = useState(false);
   const [decliningId, setDecliningId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [searchContractor, setSearchContractor] = useState('');
   const [searchAdvanced, setSearchAdvanced] = useState('');
+  const [showApplicationsRefine, setShowApplicationsRefine] = useState(false);
   const [filterTruckOnly, setFilterTruckOnly] = useState('');
   const [filterDriverOnly, setFilterDriverOnly] = useState('');
   const [filterSubcontractor, setFilterSubcontractor] = useState(''); // '' or exact company name from dropdown
@@ -9395,12 +9396,6 @@ function TabApplications() {
   }, [applications]);
 
   const filteredApplications = applications.filter((app) => {
-    if (searchContractor.trim() && !(app.contractorName || '').toLowerCase().includes(searchContractor.trim().toLowerCase())) return false;
-    if (filterSubcontractor.trim()) {
-      const want = filterSubcontractor.trim();
-      const got = (app.subcontractorDisplay || '').trim();
-      if (got !== want) return false;
-    }
     const q = searchAdvanced.trim().toLowerCase();
     if (q) {
       const haystack = [
@@ -9422,6 +9417,11 @@ function TabApplications() {
         app.driverEmail,
       ].map((v) => String(v || '').toLowerCase()).join(' ');
       if (!haystack.includes(q)) return false;
+    }
+    if (filterSubcontractor.trim()) {
+      const want = filterSubcontractor.trim();
+      const got = (app.subcontractorDisplay || '').trim();
+      if (got !== want) return false;
     }
     if (filterType && app.entityType !== filterType) return false;
     if (filterSource && (app.source || 'manual') !== filterSource) return false;
@@ -9445,6 +9445,69 @@ function TabApplications() {
   });
   const pendingInList = filteredApplications.filter((a) => a.status === 'pending');
   const approvedInList = filteredApplications.filter((a) => a.status === 'approved');
+
+  const applicationRefineActiveCount = useMemo(() => [
+    filterSubcontractor,
+    filterType,
+    filterSource,
+    filterTruckOnly,
+    filterDriverOnly,
+    filterDateFrom,
+    filterDateTo,
+    filterDateField !== 'submitted' ? filterDateField : '',
+  ].filter(Boolean).length, [
+    filterSubcontractor, filterType, filterSource, filterTruckOnly, filterDriverOnly,
+    filterDateFrom, filterDateTo, filterDateField,
+  ]);
+
+  const applicationFilterPills = useMemo(() => {
+    const pills = [];
+    if (filterSubcontractor) {
+      pills.push({ key: 'sub', label: `Sub-contractor: ${filterSubcontractor}`, onClear: () => setFilterSubcontractor('') });
+    }
+    if (filterType) {
+      pills.push({ key: 'type', label: `Type: ${filterType === 'truck' ? 'Truck' : 'Driver'}`, onClear: () => setFilterType('') });
+    }
+    if (filterSource) {
+      pills.push({ key: 'source', label: `Source: ${filterSource}`, onClear: () => setFilterSource('') });
+    }
+    if (filterTruckOnly.trim()) {
+      pills.push({ key: 'truck', label: `Truck: ${filterTruckOnly.trim()}`, onClear: () => setFilterTruckOnly('') });
+    }
+    if (filterDriverOnly.trim()) {
+      pills.push({ key: 'driver', label: `Driver: ${filterDriverOnly.trim()}`, onClear: () => setFilterDriverOnly('') });
+    }
+    if (filterDateField !== 'submitted') {
+      pills.push({
+        key: 'dateField',
+        label: `Date: ${filterDateField === 'approval' ? 'Approval' : 'Submitted'}`,
+        onClear: () => setFilterDateField('submitted'),
+      });
+    }
+    if (filterDateFrom) {
+      pills.push({ key: 'from', label: `From: ${filterDateFrom}`, onClear: () => setFilterDateFrom('') });
+    }
+    if (filterDateTo) {
+      pills.push({ key: 'to', label: `To: ${filterDateTo}`, onClear: () => setFilterDateTo('') });
+    }
+    return pills;
+  }, [
+    filterSubcontractor, filterType, filterSource, filterTruckOnly, filterDriverOnly,
+    filterDateField, filterDateFrom, filterDateTo,
+  ]);
+
+  const clearApplicationRefine = () => {
+    setSearchAdvanced('');
+    setFilterType('');
+    setFilterSource('');
+    setFilterTruckOnly('');
+    setFilterDriverOnly('');
+    setFilterSubcontractor('');
+    setFilterDateFrom('');
+    setFilterDateTo('');
+    setFilterDateField('submitted');
+  };
+
   const selectedPendingCount = [...selectedIds].filter((id) => pendingInList.some((a) => a.id === id)).length;
   const selectedApprovedCount = [...selectedIds].filter((id) => approvedInList.some((a) => a.id === id)).length;
   const toggleSelect = (id) => {
@@ -9711,155 +9774,154 @@ function TabApplications() {
           </div>
         )}
 
-        <div className="flex flex-wrap gap-3 items-center">
-          <button
-            type="button"
-            onClick={() => setFilter('pending')}
-            className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'pending' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
-          >
-            Pending
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilter('approved')}
-            className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'approved' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
-          >
-            Approved
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilter('declined')}
-            className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'declined' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
-          >
-            Declined
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilter('all')}
-            className={`px-4 py-2 text-sm font-medium rounded-lg ${filter === 'all' ? 'bg-brand-600 text-white' : 'border border-surface-300 text-surface-700 hover:bg-surface-50'}`}
-          >
-            All
-          </button>
-          <select
-            value={filterDateField}
-            onChange={(e) => setFilterDateField(e.target.value)}
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            aria-label="Date filter field"
-          >
-            <option value="submitted">Date: submitted</option>
-            <option value="approval">Date: approval</option>
-          </select>
-          <input
-            type="date"
-            value={filterDateFrom}
-            onChange={(e) => setFilterDateFrom(e.target.value)}
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            aria-label="From date"
-            title="From date"
-          />
-          <input
-            type="date"
-            value={filterDateTo}
-            onChange={(e) => setFilterDateTo(e.target.value)}
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            aria-label="To date"
-            title="To date"
-          />
-          <input
-            type="text"
-            value={searchContractor}
-            onChange={(e) => setSearchContractor(e.target.value)}
-            placeholder="Search contractor…"
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
-          />
-          <select
-            value={filterSubcontractor}
-            onChange={(e) => setFilterSubcontractor(e.target.value)}
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[200px]"
-            aria-label="Filter by sub-contractor"
-          >
-            <option value="">All sub-contractors</option>
-            {subcontractorOptions.map((name) => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </select>
-          <input
-            type="search"
-            value={searchAdvanced}
-            onChange={(e) => setSearchAdvanced(e.target.value)}
-            placeholder="Advanced search (contractor, sub-contractor, truck reg/model/fleet, driver, status, source)..."
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm min-w-[320px]"
-          />
-          <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
-            <option value="">All types</option>
-            <option value="truck">Truck</option>
-            <option value="driver">Driver</option>
-          </select>
-          <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
-            <option value="">All sources</option>
-            <option value="manual">Manual</option>
-            <option value="import">Import</option>
-          </select>
-          <input
-            type="search"
-            value={filterTruckOnly}
-            onChange={(e) => setFilterTruckOnly(e.target.value)}
-            placeholder="Truck-only filter..."
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
-          />
-          <input
-            type="search"
-            value={filterDriverOnly}
-            onChange={(e) => setFilterDriverOnly(e.target.value)}
-            placeholder="Driver-only filter..."
-            className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-44"
-          />
-          <button
-            type="button"
-            onClick={() => { setSearchContractor(''); setSearchAdvanced(''); setFilterType(''); setFilterSource(''); setFilterTruckOnly(''); setFilterDriverOnly(''); setFilterSubcontractor(''); setFilterDateFrom(''); setFilterDateTo(''); setFilterDateField('submitted'); }}
-            className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50"
-          >
-            Clear filters
-          </button>
-          <button type="button" onClick={exportCsv} disabled={applicationsToExport.length === 0} className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50">
-            Export CSV{selectedIds.size > 0 ? ` (${applicationsToExport.length})` : ''}
-          </button>
-          <label className="flex items-center gap-2 text-sm text-surface-700 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={groupTableBySubContractor}
-              onChange={(e) => setGroupTableBySubContractor(e.target.checked)}
-              className="rounded border-surface-300"
-            />
-            Separate sub-contractors in table
-          </label>
-          <button type="button" onClick={() => setShowExportExcelModal(true)} disabled={applicationsToExport.length === 0} className="px-4 py-2 text-sm font-medium rounded-lg bg-red-700 text-white hover:bg-red-800 disabled:opacity-50">
-            Export Excel{selectedIds.size > 0 ? ` (${applicationsToExport.length} selected)` : ''}
-          </button>
-          <button type="button" onClick={selectAllFiltered} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all visible</button>
-          {pendingInList.length > 0 && (
-            <button type="button" onClick={selectAllPending} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all pending</button>
-          )}
-          {approvedInList.length > 0 && (
-            <button type="button" onClick={selectAllApproved} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Select all approved</button>
-          )}
-          <button type="button" onClick={clearSelection} className="px-3 py-2 text-sm rounded-lg border border-surface-300 text-surface-600 hover:bg-surface-50">Clear selection</button>
-          <button
-            type="button"
-            onClick={openBulkApproveModal}
-            disabled={acting || selectedPendingCount === 0}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-          >
-            {acting ? 'Approving…' : `Bulk approve (${selectedPendingCount})`}
-          </button>
-          <button
-            type="button"
-            onClick={openBulkRevokeModal}
-            disabled={acting || selectedApprovedCount === 0}
-            className="px-4 py-2 text-sm font-medium rounded-lg border border-amber-500 text-amber-900 bg-amber-50 hover:bg-amber-100 disabled:opacity-50"
-          >
-            {acting ? 'Revoking…' : `Bulk revoke (${selectedApprovedCount})`}
-          </button>
+        <div className="rounded-xl border border-surface-200 bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-4 border-b border-surface-100 bg-surface-50/80 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">Application status</p>
+              <div className="flex gap-1 mt-2 p-1 rounded-lg bg-surface-100 w-fit">
+                {[
+                  { id: 'pending', label: 'Pending' },
+                  { id: 'approved', label: 'Approved' },
+                  { id: 'declined', label: 'Declined' },
+                  { id: 'all', label: 'All' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setFilter(tab.id)}
+                    className={`px-3.5 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                      filter === tab.id
+                        ? 'bg-white text-brand-700 shadow-sm'
+                        : 'text-surface-600 hover:text-surface-900'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="text-xs text-surface-500 tabular-nums">
+              {filteredApplications.length} shown · {applications.length} loaded
+            </p>
+          </div>
+
+          <div className="p-4">
+            <ListFiltersBar
+              embedded
+              search={searchAdvanced}
+              onSearch={setSearchAdvanced}
+              searchPlaceholder="Contractor, truck reg, driver, licence, status, source…"
+              showAdvanced={showApplicationsRefine}
+              onToggleAdvanced={() => setShowApplicationsRefine((v) => !v)}
+              activeCount={applicationRefineActiveCount}
+              activePills={applicationFilterPills}
+              onClearAll={clearApplicationRefine}
+              onClearSearch={() => setSearchAdvanced('')}
+              refineTitle="Filter applications"
+              refineColumns="sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4"
+            >
+              <FilterField label="Sub-contractor">
+                <select value={filterSubcontractor} onChange={(e) => setFilterSubcontractor(e.target.value)} className={FILTER_INPUT_CLASS}>
+                  <option value="">All sub-contractors</option>
+                  {subcontractorOptions.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </FilterField>
+              <FilterField label="Entity type">
+                <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className={FILTER_INPUT_CLASS}>
+                  <option value="">All types</option>
+                  <option value="truck">Truck</option>
+                  <option value="driver">Driver</option>
+                </select>
+              </FilterField>
+              <FilterField label="Source">
+                <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={FILTER_INPUT_CLASS}>
+                  <option value="">All sources</option>
+                  <option value="manual">Manual</option>
+                  <option value="import">Import</option>
+                </select>
+              </FilterField>
+              <FilterField label="Date field">
+                <select value={filterDateField} onChange={(e) => setFilterDateField(e.target.value)} className={FILTER_INPUT_CLASS}>
+                  <option value="submitted">Submitted date</option>
+                  <option value="approval">Approval date</option>
+                </select>
+              </FilterField>
+              <FilterField label="From date">
+                <input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={FILTER_INPUT_CLASS} />
+              </FilterField>
+              <FilterField label="To date">
+                <input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={FILTER_INPUT_CLASS} />
+              </FilterField>
+              <FilterField label="Truck registration">
+                <input
+                  type="search"
+                  value={filterTruckOnly}
+                  onChange={(e) => setFilterTruckOnly(e.target.value)}
+                  placeholder="Reg, model, fleet no…"
+                  className={FILTER_INPUT_CLASS}
+                />
+              </FilterField>
+              <FilterField label="Driver">
+                <input
+                  type="search"
+                  value={filterDriverOnly}
+                  onChange={(e) => setFilterDriverOnly(e.target.value)}
+                  placeholder="Name, licence, ID…"
+                  className={FILTER_INPUT_CLASS}
+                />
+              </FilterField>
+            </ListFiltersBar>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-surface-200 bg-white p-4 shadow-sm space-y-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">Selection & export</p>
+          <div className="flex flex-wrap gap-2 items-center">
+            <button type="button" onClick={exportCsv} disabled={applicationsToExport.length === 0} className="px-3.5 py-2 text-sm font-medium rounded-lg border border-surface-200 text-surface-700 hover:bg-surface-50 disabled:opacity-50">
+              Export CSV{selectedIds.size > 0 ? ` (${applicationsToExport.length})` : ''}
+            </button>
+            <button type="button" onClick={() => setShowExportExcelModal(true)} disabled={applicationsToExport.length === 0} className="px-3.5 py-2 text-sm font-medium rounded-lg bg-red-700 text-white hover:bg-red-800 disabled:opacity-50">
+              Export Excel{selectedIds.size > 0 ? ` (${applicationsToExport.length})` : ''}
+            </button>
+            <span className="hidden sm:block w-px h-6 bg-surface-200 mx-1" aria-hidden />
+            <button type="button" onClick={selectAllFiltered} className="px-3 py-2 text-sm rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50">Select visible</button>
+            {pendingInList.length > 0 && (
+              <button type="button" onClick={selectAllPending} className="px-3 py-2 text-sm rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50">Select pending</button>
+            )}
+            {approvedInList.length > 0 && (
+              <button type="button" onClick={selectAllApproved} className="px-3 py-2 text-sm rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50">Select approved</button>
+            )}
+            <button type="button" onClick={clearSelection} className="px-3 py-2 text-sm rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50">Clear selection</button>
+            <label className="flex items-center gap-2 text-sm text-surface-700 cursor-pointer ml-auto">
+              <input
+                type="checkbox"
+                checked={groupTableBySubContractor}
+                onChange={(e) => setGroupTableBySubContractor(e.target.checked)}
+                className="rounded border-surface-300"
+              />
+              Group by sub-contractor
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-2 pt-1 border-t border-surface-100">
+            <button
+              type="button"
+              onClick={openBulkApproveModal}
+              disabled={acting || selectedPendingCount === 0}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              {acting ? 'Approving…' : `Bulk approve (${selectedPendingCount})`}
+            </button>
+            <button
+              type="button"
+              onClick={openBulkRevokeModal}
+              disabled={acting || selectedApprovedCount === 0}
+              className="px-4 py-2 text-sm font-medium rounded-lg border border-amber-500 text-amber-900 bg-amber-50 hover:bg-amber-100 disabled:opacity-50"
+            >
+              {acting ? 'Revoking…' : `Bulk revoke (${selectedApprovedCount})`}
+            </button>
+          </div>
         </div>
 
         {pendingChangeRequests.length > 0 && (
@@ -9875,7 +9937,7 @@ function TabApplications() {
         <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-surface-100 bg-surface-50">
             <h3 className="font-semibold text-surface-900">Contract additions</h3>
-            <p className="text-sm text-surface-500 mt-0.5">Click a row to view full details. Use checkboxes to select applications for export or bulk approve; use filters and Export CSV/Excel.</p>
+            <p className="text-sm text-surface-500 mt-0.5">Click a row for full details. Use filters above to narrow the list; checkboxes support export and bulk approve.</p>
           </div>
           <div className="overflow-x-auto">
             {loading ? (

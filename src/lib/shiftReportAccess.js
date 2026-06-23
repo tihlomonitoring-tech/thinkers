@@ -1,5 +1,22 @@
 /** Shared shift report edit / submit rules (standard + single-ops). */
 
+import { sameGuid } from './guidUtils.js';
+
+export function shiftReportRowValue(row, key) {
+  if (!row) return undefined;
+  const lower = String(key).toLowerCase();
+  for (const k of Object.keys(row)) {
+    if (k && String(k).toLowerCase() === lower) return row[k];
+  }
+  return undefined;
+}
+
+export function isAssignedShiftReportApprover(report, user) {
+  if (!report || !user) return false;
+  if (user.role === 'super_admin') return true;
+  return sameGuid(shiftReportRowValue(report, 'submitted_to_user_id'), user.id);
+}
+
 export function normShiftId(v) {
   return v != null ? String(v).toLowerCase().trim() : '';
 }

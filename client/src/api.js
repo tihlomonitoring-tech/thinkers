@@ -384,6 +384,10 @@ export const contractor = {
     enrollDrivers: (routeId, driverIds) => request(`/contractor/routes/${routeId}/drivers?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
     unenrollTruck: (routeId, truckId) => request(`/contractor/routes/${routeId}/trucks/${truckId}?enrollmentPortal=1`, { method: 'DELETE' }),
     unenrollDriver: (routeId, driverId) => request(`/contractor/routes/${routeId}/drivers/${driverId}?enrollmentPortal=1`, { method: 'DELETE' }),
+    unenrollTrucksBulk: (routeId, truckIds) =>
+      request(`/contractor/routes/${routeId}/trucks/unenroll-bulk?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ truckIds }) }),
+    unenrollDriversBulk: (routeId, driverIds) =>
+      request(`/contractor/routes/${routeId}/drivers/unenroll-bulk?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
   },
   rectorMyRoutes: () => request('/contractor/rector-my-routes'),
   routeFactors: {

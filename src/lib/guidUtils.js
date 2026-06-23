@@ -27,6 +27,15 @@ export function parseGuid(value) {
   return null;
 }
 
+/** Compare two UNIQUEIDENTIFIER values (Buffer, braced string, mixed case). */
+export function sameGuid(a, b) {
+  if (a == null || b == null) return false;
+  const ga = parseGuid(a);
+  const gb = parseGuid(b);
+  if (ga && gb) return ga === gb;
+  return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+}
+
 const DEFAULT_GUID_ROW_KEYS = [
   'id', 'tenant_id', 'contractor_id', 'subcontractor_id', 'linked_truck_id',
   'route_id', 'truck_id', 'driver_id', 'trip_id', 'added_by_user_id', 'user_id',

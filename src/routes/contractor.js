@@ -59,6 +59,24 @@ import {
   mapTruckRegistrationFieldsDeep,
   sqlRegNormExpr,
 } from '../lib/truckRegistration.js';
+import {
+  TRUCK_APPROVED_SQL,
+  DRIVER_APPROVED_SQL,
+  TRUCK_LIST_ELIGIBLE_SQL,
+  DRIVER_LIST_ELIGIBLE_SQL,
+} from '../lib/fleetEnrollmentEligibility.js';
+import {
+  buildSubcontractorScopeKey,
+  SQL_SUBCONTRACTOR_DISPLAY,
+  SQL_SUBCONTRACTOR_NAME_GROUP,
+} from '../lib/fleetFacilityChecklist.js';
+import {
+  TRUCK_ENROLLMENT_SELECT,
+  TRUCK_ENROLLMENT_JOINS,
+  DRIVER_ENROLLMENT_SELECT,
+  DRIVER_ENROLLMENT_JOINS,
+} from '../lib/fleetEnrollmentQueries.js';
+import { mapEnrollmentApprovalFields, mapEnrollmentApprovalFieldsList } from '../lib/mapEnrollmentApprovalFields.js';
 import { bulkUpdateContractorDrivers } from '../lib/bulkDriverUpdate.js';
 import { mapRowGuids, parseGuid, rowId, isReservedPathId } from '../lib/guidUtils.js';
 import { queryWithGuids } from '../lib/queryWithGuids.js';
@@ -535,20 +553,6 @@ function regFieldsFromBody({ registration, trailer_1_reg_no, trailer_2_reg_no } 
   };
 }
 
-const TRUCK_APPROVED_SQL = `t.facility_access = 1
-  AND NOT EXISTS (
-    SELECT 1 FROM contractor_suspensions s
-    WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50))
-      AND s.[status] IN (N'suspended', N'under_appeal')
-  )`;
-
-const DRIVER_APPROVED_SQL = `d.facility_access = 1
-  AND NOT EXISTS (
-    SELECT 1 FROM contractor_suspensions s
-    WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50))
-      AND s.[status] IN (N'suspended', N'under_appeal')
-  )`;
-
 // Trucks: duplicate = same tenant + same registration (and same contractor when scoped)
 async function truckRegistrationExists(tenantId, registration, excludeId = null, contractorId = null) {
   const regNorm = normTruckRegistration(registration);
@@ -690,7 +694,7 @@ router.get('/fleet-truck-approval-summary', async (req, res, next) => {
          MAX(ten.name) AS tenant_name,
          c.id AS contractor_id,
          MAX(c.name) AS contractor_name,
-         MAX(COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)')) AS subcontractor_display,
+         MAX(${SQL_SUBCONTRACTOR_DISPLAY}) AS subcontractor_display,
          MAX(t.subcontractor_id) AS subcontractor_id,
          COUNT(*) AS total_trucks,
          SUM(CASE WHEN t.facility_access = 1 THEN 1 ELSE 0 END) AS integrated_trucks
@@ -709,24 +713,23 @@ router.get('/fleet-truck-approval-summary', async (req, res, next) => {
     }
     sql += subScope.clause;
     Object.assign(params, subScope.params);
-    sql += ` GROUP BY t.tenant_id, c.id,
-         CASE WHEN t.subcontractor_id IS NOT NULL THEN CAST(t.subcontractor_id AS NVARCHAR(36))
-              ELSE N'txt:' + LOWER(LTRIM(RTRIM(ISNULL(t.sub_contractor, N''))))
-         END
-       ORDER BY MAX(c.name),
-         MAX(COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)'))`;
+    sql += ` GROUP BY t.tenant_id, c.id, ${SQL_SUBCONTRACTOR_NAME_GROUP}
+       ORDER BY MAX(c.name), MAX(${SQL_SUBCONTRACTOR_DISPLAY})`;
 
     const result = await query(sql, params);
     const rows = (result.recordset || []).map((r) => {
       const total = Number(r.total_trucks ?? r.Total_Trucks ?? 0);
       const integrated = Number(r.integrated_trucks ?? r.Integrated_Trucks ?? 0);
+      const subcontractorDisplay = r.subcontractor_display ?? r.Subcontractor_Display ?? '';
+      const subcontractorId = r.subcontractor_id ?? r.Subcontractor_Id ?? null;
       return {
         tenantId: r.tenant_id ?? r.Tenant_Id,
         tenantName: r.tenant_name ?? r.Tenant_Name ?? '',
         contractorId: r.contractor_id ?? r.Contractor_Id,
         contractorName: r.contractor_name ?? r.Contractor_Name ?? '',
-        subcontractorId: r.subcontractor_id ?? r.Subcontractor_Id ?? null,
-        subcontractorDisplay: r.subcontractor_display ?? r.Subcontractor_Display ?? '',
+        subcontractorId,
+        subcontractorDisplay,
+        subcontractorScopeKey: buildSubcontractorScopeKey(subcontractorId, subcontractorDisplay),
         totalTrucks: total,
         integratedTrucks: integrated,
         notIntegratedTrucks: Math.max(0, total - integrated),
@@ -2952,14 +2955,11 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
     const allowed = scope.allowed;
-    let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access, t.created_at, t.updated_at
+    let sql = `SELECT t.id, t.registration, t.make_model, t.fleet_no, t.facility_access, t.contractor_approval_status, t.created_at, t.updated_at,
+       ${TRUCK_ENROLLMENT_SELECT}
        FROM contractor_trucks t
-       WHERE t.tenant_id = @tenantId AND t.facility_access = 1
-         AND NOT EXISTS (
-           SELECT 1 FROM contractor_suspensions s
-           WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50))
-             AND s.[status] IN (N'suspended', N'under_appeal')
-         )`;
+       ${TRUCK_ENROLLMENT_JOINS}
+       WHERE t.tenant_id = @tenantId AND ${TRUCK_APPROVED_SQL}`;
     const params = { tenantId };
     if (allowed && allowed.length === 0) {
       return res.json({ trucks: [] });
@@ -2978,7 +2978,9 @@ router.get('/enrollment/approved-trucks', async (req, res, next) => {
     Object.assign(params, truckScope.params);
     sql += ` ORDER BY t.registration ASC`;
     const result = await query(sql, params);
-    res.json({ trucks: mapTruckRegistrationFieldsDeep(result.recordset) });
+    res.json({
+      trucks: (result.recordset || []).map((t) => mapTruckRegistrationFieldsDeep(mapEnrollmentApprovalFields(t))),
+    });
   } catch (err) {
     next(err);
   }
@@ -2992,15 +2994,11 @@ router.get('/enrollment/approved-drivers', async (req, res, next) => {
     const scope = await allowedContractorIdsWithOptionalNarrow(req);
     if (scope.error) return res.status(scope.error.status).json({ error: scope.error.message });
     const allowed = scope.allowed;
-    let sql = `SELECT d.id, d.full_name, d.license_number, d.phone, d.facility_access
+    let sql = `SELECT d.id, d.full_name, d.license_number, d.phone, d.facility_access, d.contractor_approval_status,
+       ${DRIVER_ENROLLMENT_SELECT}
        FROM contractor_drivers d
-       LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
-       WHERE d.tenant_id = @tenantId AND d.facility_access = 1
-         AND NOT EXISTS (
-           SELECT 1 FROM contractor_suspensions s
-           WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50))
-             AND s.[status] IN (N'suspended', N'under_appeal')
-         )`;
+       ${DRIVER_ENROLLMENT_JOINS}
+       WHERE d.tenant_id = @tenantId AND ${DRIVER_APPROVED_SQL}`;
     const params = { tenantId };
     if (allowed && allowed.length === 0) {
       return res.json({ drivers: [] });
@@ -3017,7 +3015,7 @@ router.get('/enrollment/approved-drivers', async (req, res, next) => {
     Object.assign(params, driverSub.params, driverMain.params);
     sql += ` ORDER BY d.full_name ASC`;
     const result = await query(sql, params);
-    res.json({ drivers: result.recordset });
+    res.json({ drivers: mapEnrollmentApprovalFieldsList(result.recordset) });
   } catch (err) {
     next(err);
   }
@@ -3075,41 +3073,41 @@ router.get('/routes/:id', async (req, res, next) => {
     }
     const trucksParams = { id, tenantId };
     let trucksSql = `SELECT rt.truck_id, t.registration, t.make_model, t.fleet_no, t.contractor_id,
-       t.main_contractor, t.sub_contractor,
-       co.name AS contractor_company_name
+       t.main_contractor, t.sub_contractor, t.facility_access, t.contractor_approval_status,
+       co.name AS contractor_company_name,
+       ${TRUCK_ENROLLMENT_SELECT}
        FROM contractor_route_trucks rt
        JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
-       LEFT JOIN contractors co ON co.id = t.contractor_id AND co.tenant_id = @tenantId
+       ${TRUCK_ENROLLMENT_JOINS}
        WHERE rt.route_id = @id`;
     if (allowed && allowed.length > 0) {
       const tPlaceholders = allowed.map((_, i) => `@tc${i}`).join(',');
       trucksSql += ` AND t.contractor_id IN (${tPlaceholders})`;
       allowed.forEach((cid, i) => { trucksParams[`tc${i}`] = cid; });
     }
-    if (!portalStrict) {
-      trucksSql += ` AND ${TRUCK_APPROVED_SQL}`;
-    }
+    trucksSql += ` AND ${TRUCK_APPROVED_SQL}`;
     trucksSql += ` ORDER BY t.registration`;
     const driversParams = { id, tenantId };
-    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id
+    let driversSql = `SELECT rd.driver_id, d.full_name, d.license_number, d.contractor_id,
+       d.facility_access, d.contractor_approval_status,
+       ${DRIVER_ENROLLMENT_SELECT}
        FROM contractor_route_drivers rd
        JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
+       ${DRIVER_ENROLLMENT_JOINS}
        WHERE rd.route_id = @id`;
     if (allowed && allowed.length > 0) {
       const dPlaceholders = allowed.map((_, i) => `@dc${i}`).join(',');
       driversSql += ` AND d.contractor_id IN (${dPlaceholders})`;
       allowed.forEach((cid, i) => { driversParams[`dc${i}`] = cid; });
     }
-    if (!portalStrict) {
-      driversSql += ` AND ${DRIVER_APPROVED_SQL}`;
-    }
+    driversSql += ` AND ${DRIVER_APPROVED_SQL}`;
     driversSql += ` ORDER BY d.full_name`;
     const trucksResult = await query(trucksSql, trucksParams);
     const driversResult = await query(driversSql, driversParams);
     res.json({
       route,
-      trucks: (trucksResult.recordset || []).map((t) => mapTruckRegistrationFieldsDeep(t)),
-      drivers: driversResult.recordset,
+      trucks: (trucksResult.recordset || []).map((t) => mapTruckRegistrationFieldsDeep(mapEnrollmentApprovalFields(t))),
+      drivers: mapEnrollmentApprovalFieldsList(driversResult.recordset),
     });
   } catch (err) {
     next(err);
@@ -3136,8 +3134,7 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
     const addedTruckIds = [];
     for (const truckId of ids) {
       let truckSql = `SELECT 1 FROM contractor_trucks t
-         WHERE t.id = @truckId AND t.tenant_id = @tenantId AND t.facility_access = 1
-           AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))`;
+         WHERE t.id = @truckId AND t.tenant_id = @tenantId AND ${TRUCK_APPROVED_SQL}`;
       const truckParams = { truckId, tenantId };
       if (allowed && allowed.length > 0) {
         const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
@@ -3229,6 +3226,45 @@ router.delete('/routes/:id/trucks/:truckId', async (req, res, next) => {
   }
 });
 
+/** POST bulk unenroll trucks from route (body: { truckIds: [] }). */
+router.post('/routes/:id/trucks/unenroll-bulk', async (req, res, next) => {
+  try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_enrollment) {
+      return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
+    }
+    const tenantId = getTenantId(req);
+    const { id: routeId } = req.params;
+    const ids = Array.isArray(req.body?.truckIds) ? [...new Set(req.body.truckIds.filter(Boolean))] : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'truckIds array is required' });
+    const allowed = await getAllowedForEnrollmentMutation(req);
+    if (allowed && allowed.length === 0) return res.status(403).json({ error: 'Not permitted' });
+    const params = { routeId, tenantId };
+    const idPlaceholders = ids.map((_, i) => `@tid${i}`).join(',');
+    ids.forEach((id, i) => { params[`tid${i}`] = id; });
+    let sql;
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@uc${i}`).join(',');
+      allowed.forEach((cid, i) => { params[`uc${i}`] = cid; });
+      sql = `DELETE rt FROM contractor_route_trucks rt
+        INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
+        WHERE rt.route_id = @routeId AND rt.truck_id IN (${idPlaceholders})
+          AND rt.route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)
+          AND t.contractor_id IN (${ph})`;
+    } else {
+      sql = `DELETE rt FROM contractor_route_trucks rt
+        INNER JOIN contractor_trucks t ON t.id = rt.truck_id AND t.tenant_id = @tenantId
+        WHERE rt.route_id = @routeId AND rt.truck_id IN (${idPlaceholders})
+          AND rt.route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`;
+    }
+    const result = await query(sql, params);
+    res.json({ ok: true, removed: result.rowsAffected?.[0] ?? 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** POST enroll drivers on route (body: { driverIds: [] }). Only drivers belonging to the user's company (when scoped) can be enrolled. */
 router.post('/routes/:id/drivers', async (req, res, next) => {
   try {
@@ -3248,8 +3284,7 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
     let added = 0;
     for (const driverId of ids) {
       let driverSql = `SELECT 1 FROM contractor_drivers d
-         WHERE d.id = @driverId AND d.tenant_id = @tenantId AND d.facility_access = 1
-           AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))`;
+         WHERE d.id = @driverId AND d.tenant_id = @tenantId AND ${DRIVER_APPROVED_SQL}`;
       const driverParams = { driverId, tenantId };
       if (allowed && allowed.length > 0) {
         const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
@@ -3307,6 +3342,45 @@ router.delete('/routes/:id/drivers/:driverId', async (req, res, next) => {
       return res.status(404).json({ error: 'Enrollment not found or not permitted' });
     }
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST bulk unenroll drivers from route (body: { driverIds: [] }). */
+router.post('/routes/:id/drivers/unenroll-bulk', async (req, res, next) => {
+  try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
+    const restrictions = await getContractorPageRestrictionsForTenant(getTenantId(req));
+    if (!restrictions.allow_enrollment) {
+      return res.status(403).json({ error: 'Enrollment actions are restricted by Access Management.' });
+    }
+    const tenantId = getTenantId(req);
+    const { id: routeId } = req.params;
+    const ids = Array.isArray(req.body?.driverIds) ? [...new Set(req.body.driverIds.filter(Boolean))] : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'driverIds array is required' });
+    const allowed = await getAllowedForEnrollmentMutation(req);
+    if (allowed && allowed.length === 0) return res.status(403).json({ error: 'Not permitted' });
+    const params = { routeId, tenantId };
+    const idPlaceholders = ids.map((_, i) => `@did${i}`).join(',');
+    ids.forEach((id, i) => { params[`did${i}`] = id; });
+    let sql;
+    if (allowed && allowed.length > 0) {
+      const ph = allowed.map((_, i) => `@ud${i}`).join(',');
+      allowed.forEach((cid, i) => { params[`ud${i}`] = cid; });
+      sql = `DELETE rd FROM contractor_route_drivers rd
+        INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
+        WHERE rd.route_id = @routeId AND rd.driver_id IN (${idPlaceholders})
+          AND rd.route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)
+          AND d.contractor_id IN (${ph})`;
+    } else {
+      sql = `DELETE rd FROM contractor_route_drivers rd
+        INNER JOIN contractor_drivers d ON d.id = rd.driver_id AND d.tenant_id = @tenantId
+        WHERE rd.route_id = @routeId AND rd.driver_id IN (${idPlaceholders})
+          AND rd.route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`;
+    }
+    const result = await query(sql, params);
+    res.json({ ok: true, removed: result.rowsAffected?.[0] ?? 0 });
   } catch (err) {
     next(err);
   }
@@ -4511,13 +4585,12 @@ const DRIVER_COLUMNS = [
 const OPTIONAL_LIST_COLUMN_KEYS = new Set(['contractor', 'sub_contractor']);
 
 /** Get fleet list data: { headers, keys, rows }. Optional columns = array of keys to include. contractorId = single company; contractorIds = array of company ids.
- *  queryOpts.includeRouteEnrollmentWithoutAccessFilter: when true and routeIds set, include all trucks enrolled on the route (not only facility_access=1). Used for email/pilot distribution so lists match route roster. */
+ *  queryOpts.includeAll: when true, include trucks without facility-access filter (legacy admin export only). */
 async function getFleetListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null, queryOpts = {}) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
   const includeAll = queryOpts.includeAll === true;
-  const skipAccessOnRoute = (queryOpts.includeRouteEnrollmentWithoutAccessFilter === true || includeAll) && useRoutes && ids.length > 0;
-  const accessClause = (skipAccessOnRoute || includeAll) ? '' : ' AND t.facility_access = 1';
+  const accessClause = includeAll ? '' : TRUCK_LIST_ELIGIBLE_SQL;
   let sql;
   const params = { tenantId };
   let contractorClause = '';
@@ -4557,8 +4630,7 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
            FROM contractor_trucks t
            LEFT JOIN contractors c ON c.id = t.contractor_id AND c.tenant_id = @tenantId
            LEFT JOIN contractors sc ON sc.id = t.subcontractor_id AND sc.tenant_id = @tenantId
-           WHERE t.tenant_id = @tenantId${includeAll ? '' : ' AND t.facility_access = 1'}${contractorClause}
-             AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(t.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
+           WHERE t.tenant_id = @tenantId${accessClause}${contractorClause}
            ORDER BY t.registration`;
   }
   const result = await query(sql, params);
@@ -4588,13 +4660,12 @@ async function getFleetListData(query, tenantId, routeIds, columns = null, contr
   return { headers: useCols.map((c) => c.label), keys: useCols.map((c) => c.key), rows };
 }
 
-/** queryOpts.includeRouteEnrollmentWithoutAccessFilter: when true and routeIds set, include all drivers on route enrollments (not only facility_access=1). */
+/** queryOpts.includeAll: when true, include drivers without facility-access filter (legacy admin export only). */
 async function getDriverListData(query, tenantId, routeIds, columns = null, contractorId = null, contractorIds = null, queryOpts = {}) {
   const useRoutes = routeIds && routeIds.length > 0;
   const ids = routeIds || [];
   const includeAll = queryOpts.includeAll === true;
-  const skipAccessOnRoute = (queryOpts.includeRouteEnrollmentWithoutAccessFilter === true || includeAll) && useRoutes && ids.length > 0;
-  const accessClause = (skipAccessOnRoute || includeAll) ? '' : ' AND d.facility_access = 1';
+  const accessClause = includeAll ? '' : DRIVER_LIST_ELIGIBLE_SQL;
   let sql;
   const params = { tenantId };
   let contractorClause = '';
@@ -4626,8 +4697,7 @@ async function getDriverListData(query, tenantId, routeIds, columns = null, cont
            FROM contractor_drivers d
            LEFT JOIN contractors c ON c.id = d.contractor_id AND c.tenant_id = @tenantId
            LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = @tenantId
-           WHERE d.tenant_id = @tenantId${includeAll ? '' : ' AND d.facility_access = 1'}${contractorClause}
-             AND NOT EXISTS (SELECT 1 FROM contractor_suspensions s WHERE s.tenant_id = @tenantId AND s.entity_type = N'driver' AND s.entity_id = CAST(d.id AS NVARCHAR(50)) AND s.[status] IN (N'suspended', N'under_appeal'))
+           WHERE d.tenant_id = @tenantId${accessClause}${contractorClause}
            ORDER BY d.full_name`;
   }
   const result = await query(sql, params);
@@ -4680,7 +4750,7 @@ function distributionFilename(routeName, contractorName, ext, listKind = '') {
 async function buildFleetListCsv(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   if (headers.length === 0) return '\uFEFF';
   const csv = [headers.join(',')].concat(
@@ -4693,7 +4763,7 @@ async function buildFleetListCsv(query, tenantId, routeIds, columns = null, opts
 async function buildDriverListCsv(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   if (headers.length === 0) return '\uFEFF';
   const csv = [headers.join(',')].concat(
@@ -4706,7 +4776,7 @@ async function buildDriverListCsv(query, tenantId, routeIds, columns = null, opt
 async function buildFleetListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const { headers, keys, rows } = await getFleetListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Fleet list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
@@ -4750,7 +4820,7 @@ async function buildFleetListExcel(query, tenantId, routeIds, columns = null, op
 async function buildDriverListExcel(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;
@@ -4792,7 +4862,7 @@ async function buildDriverListExcel(query, tenantId, routeIds, columns = null, o
 
 /** Build one Excel workbook with Fleet list on sheet 1 and Driver list on sheet 2. opts: { companyName, routeName, generated, subtitle, contractorId, groupBy }. */
 async function buildFleetAndDriverListExcel(query, tenantId, routeIds, fleetCols, driverCols, opts = {}) {
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const [fleetData, driverData] = await Promise.all([
     getFleetListData(query, tenantId, routeIds, fleetCols, opts.contractorId ?? null, opts.contractorIds ?? null, listQ),
     getDriverListData(query, tenantId, routeIds, driverCols, opts.contractorId ?? null, opts.contractorIds ?? null, listQ),
@@ -4912,10 +4982,7 @@ function buildDistributionPdf(title, subtitle, headers, rows, keys) {
 async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = {
-    ...(opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {}),
-    ...(opts.includeAll ? { includeAll: true } : {}),
-  };
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const defaultPdfColumns = ['contractor', 'sub_contractor', 'registration', 'make_model', 'fleet_no', 'trailer_1_reg_no', 'trailer_2_reg_no', 'integration_status', 'route_name'];
   const requestedColumns = Array.isArray(columns) && columns.length > 0
     ? columns.filter((c) => !['commodity_type', 'capacity_tonnes'].includes(String(c).toLowerCase()))
@@ -4930,7 +4997,7 @@ async function buildFleetListPdf(query, tenantId, routeIds, columns = null, opts
 async function buildDriverListPdf(query, tenantId, routeIds, columns = null, opts = {}) {
   const contractorId = opts.contractorId ?? null;
   const contractorIds = opts.contractorIds ?? null;
-  const listQ = opts.includeRouteEnrollmentWithoutAccessFilter ? { includeRouteEnrollmentWithoutAccessFilter: true } : {};
+  const listQ = opts.includeAll ? { includeAll: true } : {};
   const { headers, keys, rows } = await getDriverListData(query, tenantId, routeIds, columns, contractorId, contractorIds, listQ);
   const title = opts.title ?? 'Thinkers – Driver list';
   const subtitle = opts.subtitle ?? `Access management – List distribution · Generated ${formatDateForAppTz(new Date())}`;

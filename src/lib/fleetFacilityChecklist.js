@@ -1,9 +1,18 @@
-/** Stable scope key for contractor + sub-contractor grouping (matches fleet-truck-approval-summary SQL). */
-export function buildSubcontractorScopeKey(subcontractorId, subcontractorDisplay = '') {
-  if (subcontractorId) return String(subcontractorId).toLowerCase();
+/** Display label for a truck row's sub-contractor (matches fleet-truck-approval-summary SQL). */
+export const SQL_SUBCONTRACTOR_DISPLAY = `COALESCE(sc.company_name, NULLIF(LTRIM(RTRIM(t.sub_contractor)), ''), N'(Direct / unassigned)')`;
+
+/** GROUP BY key: one row per exact sub-contractor name (case-insensitive, trimmed). */
+export const SQL_SUBCONTRACTOR_NAME_GROUP = `LOWER(LTRIM(RTRIM(${SQL_SUBCONTRACTOR_DISPLAY})))`;
+
+export function normalizeSubcontractorDisplayName(name) {
+  return String(name || '').trim().replace(/[\s\u00a0\t\r\n]+/g, ' ').toLowerCase();
+}
+
+/** Stable scope key per contractor + sub-contractor display name (merges id-linked and text-only rows). */
+export function buildSubcontractorScopeKey(_subcontractorId, subcontractorDisplay = '') {
   const raw = String(subcontractorDisplay || '').trim();
-  if (!raw || raw.toLowerCase() === '(direct / unassigned)') return 'txt:';
-  return `txt:${raw.toLowerCase()}`;
+  if (!raw || normalizeSubcontractorDisplayName(raw) === '(direct / unassigned)') return 'txt:';
+  return `txt:${normalizeSubcontractorDisplayName(raw)}`;
 }
 
 export function scopeKeyForRow(row) {
@@ -70,4 +79,33 @@ export function mapChecklistRow(r, getRow) {
   };
   checklist.progress = computeChecklistProgress(checklist);
   return checklist;
+}
+
+function resolveChecklistDisplayName(mapped, getRow, rawRow) {
+  const fromJoin = getRow(rawRow, 'subcontractor_company_name');
+  if (fromJoin) return fromJoin;
+  const scopeKey = mapped.subcontractorScopeKey || '';
+  if (scopeKey.startsWith('txt:')) {
+    const slug = scopeKey.slice(4).trim();
+    return slug || '(Direct / unassigned)';
+  }
+  return '(Direct / unassigned)';
+}
+
+/** Index checklists by tenant + contractor + normalized sub-contractor name (merges legacy UUID scope keys). */
+export function indexFleetFacilityChecklistsByDisplay(rows, getRow) {
+  const byDisplayScope = {};
+  for (const rawRow of rows || []) {
+    const mapped = mapChecklistRow(rawRow, getRow);
+    if (!mapped) continue;
+    const display = resolveChecklistDisplayName(mapped, getRow, rawRow);
+    const displayScopeKey = buildSubcontractorScopeKey(null, display);
+    const key = `${mapped.tenantId}|${mapped.contractorId}|${displayScopeKey}`;
+    const existing = byDisplayScope[key];
+    const mappedWithKey = { ...mapped, subcontractorScopeKey: displayScopeKey };
+    if (!existing || (mappedWithKey.progress?.completedSteps || 0) > (existing.progress?.completedSteps || 0)) {
+      byDisplayScope[key] = mappedWithKey;
+    }
+  }
+  return byDisplayScope;
 }

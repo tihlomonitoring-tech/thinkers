@@ -59,11 +59,13 @@ export function mapTruckRegistrationFields(row) {
 /** Recursively compact truck registration fields in nested API payloads. */
 export function mapTruckRegistrationFieldsDeep(value) {
   if (value == null) return value;
+  if (value instanceof Date) return value;
   if (Array.isArray(value)) return value.map(mapTruckRegistrationFieldsDeep);
   if (typeof value !== 'object') return value;
   const out = mapTruckRegistrationFields(value);
   for (const key of Object.keys(out)) {
     const v = out[key];
+    if (v instanceof Date) continue;
     if (v && typeof v === 'object') out[key] = mapTruckRegistrationFieldsDeep(v);
   }
   return out;
