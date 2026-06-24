@@ -19,10 +19,18 @@ import { readCachedCcTabs, writeCachedCcTabs } from './lib/ccTabsCache.js';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
 import ListFiltersBar, { FilterField, FILTER_INPUT_CLASS } from './components/ListFiltersBar.jsx';
-import { SaVehicleVerificationPanel } from './components/SaRegistryVerificationPanel.jsx';
+import { SaVehicleVerificationPanel, SaDriverLicenseVerificationPanel } from './components/SaRegistryVerificationPanel.jsx';
 import { ShiftReportTextAssist, ShiftReportSummaryAssist } from './components/ShiftReportTextAssist.jsx';
 import { buildShiftReportAiPayload } from './lib/shiftReportAiContext.js';
 import { useShiftReportUndo } from './lib/useShiftReportUndo.js';
+import {
+  clearShiftReportLocalDraft,
+  isLocalDraftNewer,
+  isSessionAuthError,
+  loadShiftReportLocalDraft,
+  saveShiftReportLocalDraft,
+} from './lib/shiftReportDraftLocal.js';
+import { setShiftReportComposeActive } from './lib/shiftReportSessionGuard.js';
 import { buildStyledListSheet, groupRowsByContractorAndSubContractor } from './lib/styledListExcel.js';
 import VehicleTrackerComplianceHub from './components/vehicleTrackerCompliance/VehicleTrackerComplianceHub.jsx';
 
@@ -3166,7 +3174,7 @@ function TabReports() {
           </button>
         ) : null}
       </div>
-      <div className="app-glass-card overflow-hidden">
+      <div className="app-glass-card overflow-hidden min-h-0">
         {reportsSubTab === 'template' && canAccessShiftTemplates ? (
           <ShiftReportTemplateTab user={user} />
         ) : !reportType ? (
@@ -3563,6 +3571,7 @@ function TabSavedReports() {
           </div>
         </div>
         {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
+        <div className="app-glass-card overflow-hidden min-h-0">
         <ShiftReportForm
           key={String(report.id)}
           reportKind={listKind === 'single_ops' ? 'single_ops' : 'shift'}
@@ -3584,6 +3593,7 @@ function TabSavedReports() {
           showComments={showCommentsToCreator}
           canMarkAddressed={canMarkAddressed}
         />
+        </div>
         {submitModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !submitting && setSubmitModal(false)}>
             <div className="bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6" onClick={(e) => e.stopPropagation()}>
@@ -6180,10 +6190,20 @@ function ShiftReportForm({
   const [shiftReportAiEnabled, setShiftReportAiEnabled] = useState(false);
   const [activeReportId, setActiveReportId] = useState(reportId || initialData?.id || null);
   const [autoSaving, setAutoSaving] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState('idle');
+  const [autosaveError, setAutosaveError] = useState('');
+  const [autosaveErrorKind, setAutosaveErrorKind] = useState(null);
+  const [lastAutosaveAt, setLastAutosaveAt] = useState(null);
+  const [localDraftPrompt, setLocalDraftPrompt] = useState(null);
+  const [autosaveWarnOpen, setAutosaveWarnOpen] = useState(false);
   const autosaveTimerRef = useRef(null);
   const lastAutoSavedSignatureRef = useRef('');
   const undoRestorePendingRef = useRef(false);
   const fieldFocusUndoDoneRef = useRef(false);
+  const autosavePendingSinceRef = useRef(null);
+  const autosaveStuckWarnedRef = useRef(false);
+  const localDraftCheckedRef = useRef(false);
+  const localBackupTimerRef = useRef(null);
 
   useEffect(() => {
     if (reportId && initialData && String(initialData.id) === String(reportId)) {
@@ -6213,11 +6233,47 @@ function ShiftReportForm({
   }, [reportId, initialData?.id]);
 
   useEffect(() => {
+    if (readOnly || !user?.id || !activeReportId) return;
+    const newDraft = loadShiftReportLocalDraft(user.id, reportKind, null);
+    if (!newDraft?.snapshot) return;
+    saveShiftReportLocalDraft(user.id, reportKind, activeReportId, newDraft.snapshot);
+    clearShiftReportLocalDraft(user.id, reportKind, null);
+  }, [readOnly, user?.id, reportKind, activeReportId]);
+
+  useEffect(() => {
     ccApi.shiftReportAi
       .status()
       .then((r) => setShiftReportAiEnabled(!!r.enabled && !!r.ai_configured))
       .catch(() => setShiftReportAiEnabled(false));
   }, []);
+
+  useEffect(() => {
+    if (readOnly) return undefined;
+    setShiftReportComposeActive(true);
+    return () => setShiftReportComposeActive(false);
+  }, [readOnly]);
+
+  useEffect(() => {
+    if (readOnly || !user?.id || localDraftCheckedRef.current) return;
+    localDraftCheckedRef.current = true;
+    const draft = loadShiftReportLocalDraft(user.id, reportKind, activeReportId || reportId);
+    if (draft?.snapshot && isLocalDraftNewer(draft, initialData?.updated_at)) {
+      setLocalDraftPrompt(draft);
+    }
+  }, [readOnly, user?.id, reportKind, reportId, activeReportId, initialData?.updated_at]);
+
+  useEffect(() => {
+    if (readOnly) return undefined;
+    const interval = setInterval(() => {
+      const since = autosavePendingSinceRef.current;
+      if (!since || autosaveStuckWarnedRef.current || autosaveErrorKind === 'session') return;
+      if (Date.now() - since > 8000) {
+        autosaveStuckWarnedRef.current = true;
+        setAutosaveWarnOpen(true);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [readOnly, autosaveErrorKind]);
 
   const getAiContext = useCallback(
     () =>
@@ -6377,6 +6433,35 @@ function ShiftReportForm({
       return { ...undoStateRef.current };
     }
   }, []);
+
+  useEffect(() => {
+    if (readOnly || !user?.id) return undefined;
+    if (localBackupTimerRef.current) clearTimeout(localBackupTimerRef.current);
+    localBackupTimerRef.current = setTimeout(() => {
+      const snapshot = captureUndoSnapshot();
+      saveShiftReportLocalDraft(user.id, reportKind, activeReportId || reportId, snapshot);
+    }, 900);
+    return () => {
+      if (localBackupTimerRef.current) clearTimeout(localBackupTimerRef.current);
+    };
+  }, [
+    readOnly,
+    user?.id,
+    reportKind,
+    activeReportId,
+    reportId,
+    formFields,
+    truckUpdates,
+    incidents,
+    nonComplianceCalls,
+    investigations,
+    commsLog,
+    selectedRoutes,
+    otherRoutesText,
+    truckDeliveries,
+    routeLoadTotals,
+    captureUndoSnapshot,
+  ]);
 
   const restoreUndoSnapshot = useCallback(
     (snap) => {
@@ -6734,12 +6819,20 @@ function ShiftReportForm({
     if (signature === lastAutoSavedSignatureRef.current) return;
     if (saving || readOnly) return;
 
+    autosavePendingSinceRef.current = Date.now();
+    autosaveStuckWarnedRef.current = false;
+    setAutosaveStatus('pending');
+
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = setTimeout(async () => {
       const latestPayload = buildShiftPayload();
-      if (!hasAnyShiftContent(latestPayload)) return;
+      if (!hasAnyShiftContent(latestPayload)) {
+        autosavePendingSinceRef.current = null;
+        return;
+      }
       try {
         setAutoSaving(true);
+        setAutosaveStatus('saving');
         const targetId = activeReportId || reportId;
         if (targetId) {
           await reportApi.update(targetId, latestPayload);
@@ -6748,9 +6841,23 @@ function ShiftReportForm({
           if (res?.report?.id) setActiveReportId(res.report.id);
         }
         lastAutoSavedSignatureRef.current = JSON.stringify(latestPayload);
+        autosavePendingSinceRef.current = null;
+        autosaveStuckWarnedRef.current = false;
+        setAutosaveStatus('saved');
+        setAutosaveError('');
+        setAutosaveErrorKind(null);
+        setAutosaveWarnOpen(false);
+        setLastAutosaveAt(Date.now());
+        if (user?.id) {
+          saveShiftReportLocalDraft(user.id, reportKind, activeReportId || reportId, captureUndoSnapshot());
+        }
         setMessage?.('Auto-saved');
-      } catch (_) {
-        // silent fail to avoid interrupting typing flow
+      } catch (err) {
+        setAutosaveStatus('error');
+        const sessionErr = isSessionAuthError(err);
+        setAutosaveErrorKind(sessionErr ? 'session' : 'other');
+        setAutosaveError(err?.message || 'Auto-save failed');
+        if (sessionErr) setAutosaveWarnOpen(true);
       } finally {
         setAutoSaving(false);
       }
@@ -6776,6 +6883,8 @@ function ShiftReportForm({
     truckDeliveries,
     routeLoadTotals,
     reportApi,
+    user?.id,
+    captureUndoSnapshot,
   ]);
 
   const sections = [
@@ -6816,6 +6925,26 @@ function ShiftReportForm({
     );
   }
 
+  const markManualSaveSuccess = (savedReport) => {
+    const savedId = savedReport?.id || activeReportId || reportId;
+    lastAutoSavedSignatureRef.current = JSON.stringify(buildShiftPayload());
+    autosavePendingSinceRef.current = null;
+    autosaveStuckWarnedRef.current = false;
+    setAutosaveStatus('saved');
+    setAutosaveError('');
+    setAutosaveErrorKind(null);
+    setAutosaveWarnOpen(false);
+    setLastAutosaveAt(Date.now());
+    if (user?.id) clearShiftReportLocalDraft(user.id, reportKind, savedId);
+  };
+
+  const restoreLocalDraft = () => {
+    if (!localDraftPrompt?.snapshot) return;
+    restoreUndoSnapshot(localDraftPrompt.snapshot);
+    setLocalDraftPrompt(null);
+    setMessage?.('Restored unsaved work from this browser.');
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (reportKind === 'single_ops') {
@@ -6843,36 +6972,74 @@ function ShiftReportForm({
     if (targetId) {
       reportApi
         .update(targetId, payload)
-        .then((r) => { onSaved(r.report); setMessage?.('Saved.'); })
-        .catch((err) => setMessage?.(err?.message || 'Save failed'))
+        .then((r) => { markManualSaveSuccess(r.report); onSaved(r.report); setMessage?.('Saved.'); })
+        .catch((err) => {
+          const sessionErr = isSessionAuthError(err);
+          setAutosaveErrorKind(sessionErr ? 'session' : 'other');
+          setAutosaveError(err?.message || 'Save failed');
+          if (sessionErr) setAutosaveWarnOpen(true);
+          setMessage?.(err?.message || 'Save failed');
+        })
         .finally(() => setSaving(false));
     } else {
       reportApi
         .create(payload)
         .then((r) => {
           if (r?.report?.id) setActiveReportId(r.report.id);
+          markManualSaveSuccess(r.report);
           onSaved(r.report);
           setMessage?.('Saved. Go to View saved shift reports to submit for approval.');
         })
-        .catch((err) => setMessage?.(err?.message || 'Save failed'))
+        .catch((err) => {
+          const sessionErr = isSessionAuthError(err);
+          setAutosaveErrorKind(sessionErr ? 'session' : 'other');
+          setAutosaveError(err?.message || 'Save failed');
+          if (sessionErr) setAutosaveWarnOpen(true);
+          setMessage?.(err?.message || 'Save failed');
+        })
         .finally(() => setSaving(false));
     }
   };
 
   const set = (key) => (e) => setFormFields((f) => ({ ...f, [key]: e.target.value }));
+  const autosaveStatusLabel = autoSaving || autosaveStatus === 'saving'
+    ? 'Auto-saving…'
+    : autosaveErrorKind === 'session'
+      ? 'Session expired — sign in to save'
+      : autosaveStatus === 'saved' && lastAutosaveAt
+        ? `Saved ${new Date(lastAutosaveAt).toLocaleTimeString()}`
+        : autosaveStatus === 'error'
+          ? 'Auto-save failed'
+          : autosaveStatus === 'pending'
+            ? 'Unsaved changes…'
+            : '';
   return (
     <>
     <form
       onSubmit={handleSubmit}
       onFocusCapture={handleFormFocusCapture}
       onBlurCapture={handleFormBlurCapture}
-      className="divide-y divide-surface-200/40 dark:divide-white/[0.06]"
+      className="shift-report-form-shell divide-y divide-surface-200/40 dark:divide-white/[0.06]"
     >
-      <div className="app-glass-form-topbar">
+      <div className="shift-report-form-chrome">
+      <div className="app-glass-form-topbar !border-b-0">
         <button type="button" onClick={onBack} className="text-sm text-surface-600 hover:text-surface-900 font-medium">
           {reportId ? '← Back to list' : '← Back to report types'}
         </button>
         <div className="flex flex-wrap gap-2 items-center">
+          {autosaveStatusLabel ? (
+            <span
+              className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                autosaveErrorKind === 'session' || autosaveStatus === 'error'
+                  ? 'bg-red-100 text-red-800'
+                  : autoSaving || autosaveStatus === 'saving'
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'bg-surface-100 text-surface-600'
+              }`}
+            >
+              {autosaveStatusLabel}
+            </span>
+          ) : null}
           <button
             type="button"
             disabled={!canUndo}
@@ -6889,14 +7056,44 @@ function ShiftReportForm({
         </div>
       </div>
 
+      {autosaveErrorKind === 'session' && (
+        <div className="px-6 py-3 bg-red-50 border-b border-red-200 text-red-900 text-sm flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-semibold">Session expired — sign in to save</p>
+            <p className="text-red-800/90 mt-0.5">Your typing is kept in this browser until you sign in again. Use Save shift report after signing in.</p>
+          </div>
+          <Link to="/login" className="shrink-0 px-4 py-2 text-sm rounded-lg bg-red-700 text-white hover:bg-red-800 font-medium">
+            Sign in again
+          </Link>
+        </div>
+      )}
+      {autosaveError && autosaveErrorKind !== 'session' && (
+        <div className="px-6 py-2 bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
+          Auto-save failed: {autosaveError}. Your work is backed up in this browser.
+        </div>
+      )}
+      {localDraftPrompt && (
+        <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 text-amber-950 text-sm flex flex-wrap items-center justify-between gap-3">
+          <p>
+            Unsaved work from this browser was found
+            {localDraftPrompt.savedAt ? ` (${new Date(localDraftPrompt.savedAt).toLocaleString()})` : ''}.
+          </p>
+          <div className="flex gap-2 shrink-0">
+            <button type="button" onClick={restoreLocalDraft} className="px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700">
+              Restore
+            </button>
+            <button type="button" onClick={() => setLocalDraftPrompt(null)} className="px-3 py-1.5 text-sm rounded-lg border border-amber-300 text-amber-900 hover:bg-amber-100">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       {message && <div className="px-6 py-3 bg-green-50 text-green-800 text-sm">{message}</div>}
-      {autoSaving && <div className="px-6 py-2 bg-blue-50 text-blue-800 text-xs">Auto-saving…</div>}
       {fleetLoadError && <div className="px-6 py-2 bg-amber-50 text-amber-800 text-sm">{fleetLoadError}</div>}
       {trucksList.length > 0 || driversList.length > 0 ? (
         <p className="px-6 py-1 text-xs text-surface-500">Trucks and drivers loaded from Contractor portal fleet and driver register. Use search to select.</p>
       ) : null}
 
-      {/* Section nav (sticky on scroll could be added) */}
       <div className="app-glass-form-pill-row">
         {sections.map((s) => (
           <button
@@ -6909,7 +7106,9 @@ function ShiftReportForm({
           </button>
         ))}
       </div>
+      </div>
 
+      <div className="shift-report-form-body">
       <div className="p-6 space-y-8">
         {/* 1. Report information */}
         <SectionBlock title="Report information" open={openSection === 'info'} onToggle={() => setOpenSection((p) => (p === 'info' ? null : 'info'))}>
@@ -7601,14 +7800,51 @@ function ShiftReportForm({
           </div>
         </SectionBlock>
       </div>
+      </div>
 
-      <div className="app-glass-form-footer">
+      <div className="shift-report-form-footer app-glass-form-footer">
         <button type="button" onClick={onBack} className="px-4 py-2 text-sm rounded-lg border border-surface-300/80 bg-white/35 backdrop-blur-sm text-surface-700 hover:bg-white/55 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Cancel</button>
         <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
           {saving ? 'Saving…' : reportKind === 'single_ops' ? 'Save single operations shift report' : 'Save shift report'}
         </button>
       </div>
     </form>
+    {autosaveWarnOpen && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => setAutosaveWarnOpen(false)}>
+        <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()} role="alertdialog" aria-labelledby="autosave-warn-title">
+          <h3 id="autosave-warn-title" className="font-semibold text-surface-900 mb-2">
+            {autosaveErrorKind === 'session' ? 'Session expired — sign in to save' : 'Changes not saved yet'}
+          </h3>
+          <p className="text-sm text-surface-600 mb-4">
+            {autosaveErrorKind === 'session'
+              ? 'Your session ended while you were working. Your typing is backed up in this browser — sign in again, then click Save shift report.'
+              : 'Auto-save has not completed. Check your connection. Your work is backed up in this browser until the server accepts a save.'}
+          </p>
+          <div className="flex justify-end gap-2 flex-wrap">
+            <button type="button" onClick={() => setAutosaveWarnOpen(false)} className="px-4 py-2 text-sm rounded-lg border border-surface-300 text-surface-700">
+              Continue editing
+            </button>
+            {autosaveErrorKind === 'session' ? (
+              <Link to="/login" className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">
+                Sign in again
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setAutosaveWarnOpen(false);
+                  autosaveStuckWarnedRef.current = false;
+                  autosavePendingSinceRef.current = Date.now();
+                }}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+              >
+                OK
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     {showComments && reportId && comments && comments.length > 0 && (
       <div className="mt-4 rounded-xl border-2 border-amber-200 bg-amber-50/50 p-5">
         <h3 className="font-semibold text-surface-900 mb-3 text-base">Reviewer comments – address to complete approval</h3>
@@ -9710,7 +9946,7 @@ function TabApplications() {
             reason so the contractor knows why the addition was not approved.
           </p>
           <p>
-            For truck applications, use <strong>Run NP Tracker check</strong> when you want to verify the registration. A dark-theme PDF
+            For truck applications, use <strong>Run MIE check</strong> when you want to verify the registration. A dark-theme PDF
             report is saved on the server — use <strong>View PDF report</strong> later without re-running the check.
           </p>
         </CollapsibleSectionHelp>
@@ -10068,7 +10304,7 @@ function TabApplications() {
                   {detail.entityType === 'truck' && detail.entity && (
                     <div className="border-t border-surface-200 pt-3 space-y-2">
                       <p className="font-medium text-surface-900">Truck details</p>
-                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">SA register check (NP Tracker)</p>
+                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">SA register check (MIE)</p>
                       <SaVehicleVerificationPanel
                         autoRun={false}
                         fleetApplicationId={detail.id}
@@ -10099,8 +10335,17 @@ function TabApplications() {
                     <div className="border-t border-surface-200 pt-3 space-y-2">
                       <p className="font-medium text-surface-900">Driver details</p>
                       <p className="text-xs text-surface-500 rounded-lg bg-surface-50 border border-surface-200 px-3 py-2">
-                        Registry verification for drivers will be added when MIE is configured. Review licence and ID details manually for now.
+                        Use <strong>Run MIE check</strong> below when MIE is configured on the server. Otherwise review licence and ID details manually.
                       </p>
+                      <SaDriverLicenseVerificationPanel
+                        verifyFn={(body) =>
+                          ccApi.saVerification.driverLicense(body).then((res) => res.verification)
+                        }
+                        licenseNumber={detail.entity.license_number}
+                        idNumber={detail.entity.id_number}
+                        surname={detail.entity.surname}
+                        licenseExpiry={detail.entity.license_expiry}
+                      />
                       <p className="text-surface-600"><span className="text-surface-500">Name:</span> {detail.entity.full_name || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">Surname:</span> {detail.entity.surname || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">ID number:</span> {detail.entity.id_number || '—'}</p>

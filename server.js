@@ -227,13 +227,18 @@ app.use('/api', (req, res) => {
   const vehicleTrackerComplianceHint =
     pathLower.includes('vehicle-tracker-compliance') &&
     'Vehicle Tracker Compliance requires a restarted API (routes under /api/vehicle-tracker-compliance). Run: npm run db:vehicle-tracker-compliance && npm run server — then reload Access Management.';
+  const workScheduleShiftHint =
+    (pathLower.includes('shift-settings') ||
+      pathLower.includes('schedules/fixed') ||
+      pathLower.includes('work-schedules/ping')) &&
+    'Work schedule shift times and fixed-hour bulk routes require the latest API. Run: npm run db:work-schedule-shift-settings — then restart the Node server (npm run server) or redeploy. Ping: GET /api/profile-management/work-schedules/ping should return {"ok":true}.';
   const genericHint =
     'No route matched. Check the URL (including /api prefix and path), that the server process is the latest deployment, and that reverse proxies forward /api to this app.';
   res.status(404).json({
     error: 'API route not found',
     path: req.originalUrl,
     method: req.method,
-    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || logisticsShiftReportHint || vehicleTrackerComplianceHint || genericHint,
+    hint: truckAnalysisHint || logisticsFinanceHint || companyPoliciesHint || creditsHint || trackingLogisticsHint || logisticsShiftReportHint || vehicleTrackerComplianceHint || workScheduleShiftHint || genericHint,
   });
 });
 

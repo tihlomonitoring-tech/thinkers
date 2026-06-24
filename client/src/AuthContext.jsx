@@ -1,15 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { auth as authApi } from './api';
+import { subscribeShiftReportComposeActive } from './lib/shiftReportSessionGuard.js';
 
 const AuthContext = createContext(null);
 
-/** Inactivity timeout in ms (10 minutes). Log out when there is no user activity for this long. */
+/** Default inactivity timeout (10 minutes). */
 const INACTIVITY_MS = 10 * 60 * 1000;
+/** While a shift report form is open, allow longer idle time before sign-out. */
+const INACTIVITY_MS_SHIFT_REPORT = 3 * 60 * 60 * 1000;
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const inactivityTimerRef = useRef(null);
+  const shiftReportOpenRef = useRef(false);
+  const logoutRef = useRef(async () => {});
+  const rescheduleInactivityRef = useRef(() => {});
 
   const loadUser = useCallback(async () => {
     try {
@@ -22,46 +28,36 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  useEffect(() => {
-    loadUser();
-  }, [loadUser]);
-
   const logout = useCallback(async () => {
     await authApi.logout();
     setUser(null);
   }, []);
 
-  const login = async (email, password, location) => {
-    await authApi.login(email, password, location);
-    const data = await authApi.me();
-    const u = data.user ?? null;
-    setUser(u);
-    return u;
-  };
+  logoutRef.current = logout;
 
-  const switchTenant = async (tenantId) => {
-    const data = await authApi.switchTenant(tenantId);
-    await loadUser();
-    return data;
-  };
+  useEffect(() => {
+    loadUser();
+  }, [loadUser]);
 
-  // Inactivity timeout: log out after 10 minutes with no activity (keeps the system secure and efficient)
   useEffect(() => {
     if (!user) {
       if (inactivityTimerRef.current) {
         clearTimeout(inactivityTimerRef.current);
         inactivityTimerRef.current = null;
       }
-      return;
+      return undefined;
     }
 
     const scheduleLogout = () => {
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      const timeoutMs = shiftReportOpenRef.current ? INACTIVITY_MS_SHIFT_REPORT : INACTIVITY_MS;
       inactivityTimerRef.current = setTimeout(() => {
         inactivityTimerRef.current = null;
-        logout();
-      }, INACTIVITY_MS);
+        logoutRef.current();
+      }, timeoutMs);
     };
+
+    rescheduleInactivityRef.current = scheduleLogout;
 
     const onActivity = () => scheduleLogout();
 
@@ -77,7 +73,28 @@ export function AuthProvider({ children }) {
         inactivityTimerRef.current = null;
       }
     };
-  }, [user, logout]);
+  }, [user]);
+
+  useEffect(() => {
+    return subscribeShiftReportComposeActive((open) => {
+      shiftReportOpenRef.current = open;
+      rescheduleInactivityRef.current();
+    });
+  }, []);
+
+  const login = async (email, password, location) => {
+    await authApi.login(email, password, location);
+    const data = await authApi.me();
+    const u = data.user ?? null;
+    setUser(u);
+    return u;
+  };
+
+  const switchTenant = async (tenantId) => {
+    const data = await authApi.switchTenant(tenantId);
+    await loadUser();
+    return data;
+  };
 
   return (
     <AuthContext.Provider value={{ user, loading, login, logout, refresh: loadUser, switchTenant }}>

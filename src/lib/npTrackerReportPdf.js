@@ -68,6 +68,12 @@ function drawTable(doc, startY, title, rows) {
   return y + 14;
 }
 
+function providerDisplayName(provider) {
+  if (provider === 'mie') return 'MIE';
+  if (provider === 'nps') return 'NP Tracker';
+  return provider || '—';
+}
+
 export function buildNpTrackerReportPdfBuffer({ application, verification, checkedAt, checkedByName }) {
   const v = verification?.verified || {};
   const app = application || {};
@@ -82,10 +88,11 @@ export function buildNpTrackerReportPdfBuffer({ application, verification, check
 
     drawPageBackground(doc);
     let y = PAGE.margin;
+    const providerName = providerDisplayName(verification?.provider);
     y = drawTitle(
       doc,
       y,
-      'NP Tracker — SA Vehicle Register Check',
+      `${providerName} — SA Vehicle Register Check`,
       `Generated ${checkedAt ? new Date(checkedAt).toLocaleString() : new Date().toLocaleString()}${checkedByName ? ` · ${checkedByName}` : ''}`
     );
 
@@ -104,14 +111,14 @@ export function buildNpTrackerReportPdfBuffer({ application, verification, check
     y = drawTable(doc, y, 'Register check result', [
       ['Status', statusLabel(verification?.status)],
       ['Message', verification?.message],
-      ['Provider', verification?.provider === 'nps' ? 'NP Tracker' : verification?.provider],
+      ['Provider', providerDisplayName(verification?.provider)],
       ['Checked at', verification?.checkedAt ? new Date(verification.checkedAt).toLocaleString() : '—'],
       ['Registration match', verification?.registrationMatch == null ? '—' : verification.registrationMatch ? 'Yes' : 'No'],
       ['Make/model match', verification?.makeModelMatch == null ? '—' : verification.makeModelMatch ? 'Yes' : 'No'],
       ['Suspect flag', v.suspectFlag ? 'Yes' : 'No'],
     ]);
 
-    y = drawTable(doc, y, 'Vehicle details (NP Tracker register)', [
+    y = drawTable(doc, y, `Vehicle details (${providerName} register)`, [
       ['Plate', v.plate || verification?.registration],
       ['VIN', v.vin],
       ['Make', v.make],
@@ -129,8 +136,11 @@ export function buildNpTrackerReportPdfBuffer({ application, verification, check
       y = PAGE.margin;
     }
 
-    doc.fillColor(MUTED).font('Helvetica').fontSize(8).text(
-      'NP Tracker may withhold part of the VIN for security. Re-run the check in Command Centre when register data changes.',
+    const footerNote =
+      verification?.provider === 'nps'
+        ? 'NP Tracker may withhold part of the VIN for security. Re-run the check in Command Centre when register data changes.'
+        : 'Re-run the MIE check in Command Centre when register data changes.';
+    doc.fillColor(MUTED).font('Helvetica').fontSize(8).text(footerNote,
       PAGE.margin,
       PAGE.h - PAGE.margin - 20,
       { width: PAGE.w - PAGE.margin * 2, align: 'center' }

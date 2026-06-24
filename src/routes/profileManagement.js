@@ -31,6 +31,13 @@ import { SA_LEAVE_TYPES } from '../lib/saLeaveTypes.js';
 import { registerEmployeeOnboardingRoutes } from '../lib/employeeOnboardingRoutes.js';
 import { registerEmployeeGraceCreditsRoutes } from './employeeGraceCredits.js';
 import { registerWrittenWarningsRoutes } from './writtenWarnings.js';
+import {
+  DEFAULT_SHIFT_SETTINGS,
+  normalizeTimeHm,
+  resolveEntryTimes,
+  shiftSettingsFromRow,
+  isoWeekdayFromYmd,
+} from '../lib/workScheduleShiftTimes.js';
 
 const router = Router();
 const uploadsBase = path.join(process.cwd(), 'uploads', 'profile-management');
@@ -47,6 +54,89 @@ function canAccessTenant(req, tenantId) {
   if (!tid) return false;
   if (Array.isArray(req.user?.tenant_ids)) return req.user.tenant_ids.includes(tenantId);
   return tid === tenantId;
+}
+
+async function loadTenantShiftSettings(tenantId) {
+  try {
+    const r = await query(
+      `SELECT day_start, day_end, night_start, night_end FROM tenant_shift_settings WHERE tenant_id = @tenantId`,
+      { tenantId }
+    );
+    return shiftSettingsFromRow(r.recordset?.[0], getRow);
+  } catch {
+    return { ...DEFAULT_SHIFT_SETTINGS };
+  }
+}
+
+async function upsertTenantShiftSettings(tenantId, settings, updatedBy) {
+  const dayStart = normalizeTimeHm(settings.day_start) || DEFAULT_SHIFT_SETTINGS.day_start;
+  const dayEnd = normalizeTimeHm(settings.day_end) || DEFAULT_SHIFT_SETTINGS.day_end;
+  const nightStart = normalizeTimeHm(settings.night_start) || DEFAULT_SHIFT_SETTINGS.night_start;
+  const nightEnd = normalizeTimeHm(settings.night_end) || DEFAULT_SHIFT_SETTINGS.night_end;
+  try {
+    await query(
+      `MERGE tenant_shift_settings AS t
+       USING (SELECT @tenantId AS tenant_id) AS s ON t.tenant_id = s.tenant_id
+       WHEN MATCHED THEN UPDATE SET day_start = @dayStart, day_end = @dayEnd, night_start = @nightStart, night_end = @nightEnd, updated_at = SYSUTCDATETIME(), updated_by = @updatedBy
+       WHEN NOT MATCHED THEN INSERT (tenant_id, day_start, day_end, night_start, night_end, updated_by) VALUES (@tenantId, @dayStart, @dayEnd, @nightStart, @nightEnd, @updatedBy);`,
+      { tenantId, dayStart, dayEnd, nightStart, nightEnd, updatedBy: updatedBy || null }
+    );
+  } catch (err) {
+    if (err?.message?.includes('tenant_shift_settings')) {
+      const e = new Error('Shift time settings are not set up. Run: npm run db:work-schedule-shift-settings');
+      e.statusCode = 503;
+      throw e;
+    }
+    throw err;
+  }
+  return { day_start: dayStart, day_end: dayEnd, night_start: nightStart, night_end: nightEnd };
+}
+
+function mapScheduleEntryRow(r, settings) {
+  const shiftType = getRow(r, 'shift_type') || 'day';
+  const times = resolveEntryTimes(shiftType, settings, {
+    start_time: getRow(r, 'start_time'),
+    end_time: getRow(r, 'end_time'),
+  });
+  return {
+    id: getRow(r, 'entry_id') ?? getRow(r, 'id'),
+    entry_id: getRow(r, 'entry_id') ?? getRow(r, 'id'),
+    work_date: getRow(r, 'work_date'),
+    shift_type: shiftType,
+    notes: getRow(r, 'notes'),
+    start_time: getRow(r, 'start_time') || times.start_time,
+    end_time: getRow(r, 'end_time') || times.end_time,
+    schedule_title: getRow(r, 'schedule_title'),
+    schedule_kind: getRow(r, 'schedule_kind'),
+  };
+}
+
+async function insertScheduleEntry(scheduleId, workDate, shiftType, notes, settings, explicitTimes = {}) {
+  const times = resolveEntryTimes(shiftType, settings, explicitTimes);
+  try {
+    await query(
+      `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes, start_time, end_time)
+       VALUES (@scheduleId, @workDate, @shiftType, @notes, @startTime, @endTime)`,
+      {
+        scheduleId,
+        workDate,
+        shiftType,
+        notes: notes || null,
+        startTime: times.start_time,
+        endTime: times.end_time,
+      }
+    );
+  } catch (err) {
+    if (err?.message?.includes('start_time') || err?.message?.includes('Invalid column')) {
+      await query(
+        `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes)
+         VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
+        { scheduleId, workDate, shiftType, notes: notes || null }
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 function normalizeEmployeeDetailsFolderName(name) {
@@ -151,6 +241,11 @@ const employeeDetailsAttachmentUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 }).array('files', 30);
 
+/** Public ping — verify this API build includes work schedule shift-time routes. */
+router.get('/work-schedules/ping', (req, res) => {
+  res.json({ ok: true, feature: 'work-schedule-shift-settings', version: 1 });
+});
+
 router.use(requireAuth);
 router.use(loadUser);
 
@@ -160,7 +255,9 @@ router.get('/schedules', requirePageAccess('management'), async (req, res, next)
     const tenantId = req.user.tenant_id;
     const userId = req.query.user_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
-    let sqlQuery = `SELECT s.id, s.user_id, s.title, s.period_start, s.period_end, s.created_at, u.full_name AS user_name, u.email AS user_email
+    let sqlQuery = `SELECT s.id, s.user_id, s.title, s.period_start, s.period_end, s.created_at,
+      ISNULL(s.schedule_kind, N'rotating') AS schedule_kind,
+      u.full_name AS user_name, u.email AS user_email
        FROM work_schedules s
        LEFT JOIN users u ON u.id = s.user_id
        WHERE s.tenant_id = @tenantId`;
@@ -172,6 +269,181 @@ router.get('/schedules', requirePageAccess('management'), async (req, res, next)
     sqlQuery += ' ORDER BY s.period_start DESC';
     const result = await query(sqlQuery, params);
     res.json({ schedules: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/shift-settings', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const settings = await loadTenantShiftSettings(tenantId);
+    res.json({ settings });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/shift-settings', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const body = req.body || {};
+    const current = await loadTenantShiftSettings(tenantId);
+    const settings = await upsertTenantShiftSettings(
+      tenantId,
+      {
+        day_start: body.day_start ?? current.day_start,
+        day_end: body.day_end ?? current.day_end,
+        night_start: body.night_start ?? current.night_start,
+        night_end: body.night_end ?? current.night_end,
+      },
+      req.user.id
+    );
+    let updated_entries = 0;
+    if (body.apply_to_existing) {
+      const userIds = Array.isArray(body.user_ids) ? body.user_ids.map(String).filter(Boolean) : [];
+      const fromDate = body.from_date ? String(body.from_date).slice(0, 10) : null;
+      const toDate = body.to_date ? String(body.to_date).slice(0, 10) : null;
+      const params = {
+        tenantId,
+        dayStart: settings.day_start,
+        dayEnd: settings.day_end,
+        nightStart: settings.night_start,
+        nightEnd: settings.night_end,
+      };
+      let userFilter = '';
+      if (userIds.length) {
+        userIds.forEach((id, i) => {
+          params[`u${i}`] = id;
+        });
+        userFilter = ` AND s.user_id IN (${userIds.map((_, i) => `@u${i}`).join(', ')})`;
+      }
+      let dateFilter = '';
+      if (fromDate) {
+        params.fromDate = fromDate;
+        dateFilter += ' AND e.work_date >= @fromDate';
+      }
+      if (toDate) {
+        params.toDate = toDate;
+        dateFilter += ' AND e.work_date <= @toDate';
+      }
+      try {
+        const dayR = await query(
+          `UPDATE e SET start_time = @dayStart, end_time = @dayEnd
+           FROM work_schedule_entries e
+           INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+           WHERE s.tenant_id = @tenantId AND e.shift_type = N'day'${userFilter}${dateFilter}`,
+          params
+        );
+        const nightR = await query(
+          `UPDATE e SET start_time = @nightStart, end_time = @nightEnd
+           FROM work_schedule_entries e
+           INNER JOIN work_schedules s ON s.id = e.work_schedule_id
+           WHERE s.tenant_id = @tenantId AND e.shift_type = N'night'${userFilter}${dateFilter}`,
+          params
+        );
+        updated_entries = (dayR.rowsAffected?.[0] || 0) + (nightR.rowsAffected?.[0] || 0);
+      } catch (updErr) {
+        if (!updErr?.message?.includes('start_time')) throw updErr;
+      }
+    }
+    res.json({ settings, updated_entries });
+  } catch (err) {
+    if (err?.statusCode === 503) return res.status(503).json({ error: err.message });
+    next(err);
+  }
+});
+
+router.post('/schedules/fixed/bulk', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const body = req.body || {};
+    const userIds = Array.isArray(body.user_ids) ? [...new Set(body.user_ids.map(String).filter(Boolean))] : [];
+    const periodStart = body.period_start ? String(body.period_start).slice(0, 10) : null;
+    const periodEnd = body.period_end ? String(body.period_end).slice(0, 10) : null;
+    const startTime = normalizeTimeHm(body.start_time);
+    const endTime = normalizeTimeHm(body.end_time);
+    const weekdays = Array.isArray(body.weekdays) && body.weekdays.length
+      ? body.weekdays.map((d) => parseInt(d, 10)).filter((d) => d >= 1 && d <= 7)
+      : [1, 2, 3, 4, 5];
+    const skipExisting = body.skip_existing !== false;
+    const titleBase = String(body.title || 'Fixed hours').trim() || 'Fixed hours';
+    if (!userIds.length) return res.status(400).json({ error: 'user_ids required' });
+    if (!periodStart || !periodEnd || periodStart > periodEnd) {
+      return res.status(400).json({ error: 'Valid period_start and period_end required' });
+    }
+    if (!startTime || !endTime) return res.status(400).json({ error: 'start_time and end_time required' });
+
+    const tz = getAppTimeZone();
+    const start = new Date(`${periodStart}T12:00:00.000Z`);
+    const title =
+      periodStart.slice(0, 7) === periodEnd.slice(0, 7)
+        ? `${titleBase} — ${start.toLocaleString('en-ZA', { month: 'short', year: 'numeric', timeZone: tz })}`
+        : `${titleBase} — ${periodStart} to ${periodEnd}`;
+
+    let schedulesCreated = 0;
+    let entriesCreated = 0;
+    let entriesSkipped = 0;
+
+    for (const userId of userIds) {
+      const u = await query(
+        `SELECT u.id FROM users u
+         WHERE u.id = @userId
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`,
+        { userId, tenantId }
+      );
+      if (!u.recordset?.length) continue;
+
+      let scheduleId = null;
+      try {
+        const ins = await query(
+          `INSERT INTO work_schedules (tenant_id, user_id, title, period_start, period_end, created_by, schedule_kind)
+           OUTPUT INSERTED.id
+           VALUES (@tenantId, @userId, @title, @periodStart, @periodEnd, @createdBy, N'fixed')`,
+          { tenantId, userId, title, periodStart, periodEnd, createdBy: req.user.id }
+        );
+        scheduleId = getRow(ins.recordset[0], 'id');
+      } catch (insErr) {
+        if (insErr?.message?.includes('schedule_kind')) {
+          const ins = await query(
+            `INSERT INTO work_schedules (tenant_id, user_id, title, period_start, period_end, created_by)
+             OUTPUT INSERTED.id
+             VALUES (@tenantId, @userId, @title, @periodStart, @periodEnd, @createdBy)`,
+            { tenantId, userId, title, periodStart, periodEnd, createdBy: req.user.id }
+          );
+          scheduleId = getRow(ins.recordset[0], 'id');
+        } else throw insErr;
+      }
+      if (!scheduleId) continue;
+      schedulesCreated++;
+
+      for (let cur = periodStart; cur <= periodEnd; cur = addCalendarDays(cur, 1)) {
+        const wd = isoWeekdayFromYmd(cur);
+        if (!weekdays.includes(wd)) continue;
+        if (skipExisting) {
+          const ex = await query(
+            `SELECT TOP 1 e.id FROM work_schedule_entries e
+             INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
+             WHERE e.work_date = @workDate`,
+            { tenantId, userId, workDate: cur }
+          );
+          if (ex.recordset?.length) {
+            entriesSkipped++;
+            continue;
+          }
+        }
+        await insertScheduleEntry(scheduleId, cur, 'fixed', body.notes || null, DEFAULT_SHIFT_SETTINGS, {
+          start_time: startTime,
+          end_time: endTime,
+        });
+        entriesCreated++;
+      }
+    }
+
+    res.status(201).json({ schedules_created: schedulesCreated, entries_created: entriesCreated, entries_skipped: entriesSkipped, title });
   } catch (err) {
     next(err);
   }
@@ -255,16 +527,14 @@ router.post('/schedules/bulk', requirePageAccess('management'), async (req, res,
     );
     const scheduleId = getRow(ins.recordset[0], 'id');
     if (!scheduleId) return res.status(500).json({ error: 'Failed to create schedule' });
+    const shiftSettings = await loadTenantShiftSettings(tenantId);
     let dayIndex = 0;
     let inserted = 0;
     for (let cur = periodStart; cur <= periodEnd; cur = addCalendarDays(cur, 1)) {
       const dateStr = cur;
       const slot = normalized[dayIndex % normalized.length];
       if (slot === 'day' || slot === 'night') {
-        await query(
-          `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes) VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
-          { scheduleId, workDate: dateStr, shiftType: slot, notes: null }
-        );
+        await insertScheduleEntry(scheduleId, dateStr, slot, null, shiftSettings);
         inserted++;
       }
       dayIndex++;
@@ -380,18 +650,17 @@ router.post('/schedules/:id/entries', requirePageAccess('management'), async (re
     const row = sched.recordset[0];
     if (!row) return res.status(404).json({ error: 'Schedule not found' });
     if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const shiftSettings = await loadTenantShiftSettings(getRow(row, 'tenant_id'));
     const arr = Array.isArray(entries) ? entries : [];
+    let added = 0;
     for (const e of arr) {
-      const { work_date, shift_type, notes } = e || {};
+      const { work_date, shift_type, notes, start_time, end_time } = e || {};
       if (!work_date || !shift_type) continue;
-      const st = shift_type === 'night' ? 'night' : 'day';
-      await query(
-        `INSERT INTO work_schedule_entries (work_schedule_id, work_date, shift_type, notes)
-         VALUES (@scheduleId, @workDate, @shiftType, @notes)`,
-        { scheduleId: id, workDate: work_date, shiftType: st, notes: notes || null }
-      );
+      const st = shift_type === 'night' ? 'night' : shift_type === 'fixed' ? 'fixed' : 'day';
+      await insertScheduleEntry(id, work_date, st, notes, shiftSettings, { start_time, end_time });
+      added++;
     }
-    res.status(201).json({ added: arr.length });
+    res.status(201).json({ added });
   } catch (err) {
     next(err);
   }
@@ -438,24 +707,19 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
     const y = year != null ? parseInt(year, 10) : def.year;
     const start = calendarMonthStartYmd(y, m);
     const end = calendarMonthEndYmd(y, m);
+    const shiftSettings = await loadTenantShiftSettings(tenantId);
     const result = await query(
-      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes, s.title AS schedule_title
+      `SELECT e.id AS entry_id, e.work_date, e.shift_type, e.notes, e.start_time, e.end_time, s.title AS schedule_title, ISNULL(s.schedule_kind, N'rotating') AS schedule_kind
        FROM work_schedule_entries e
        INNER JOIN work_schedules s ON s.id = e.work_schedule_id AND s.tenant_id = @tenantId AND s.user_id = @userId
        WHERE e.work_date >= @start AND e.work_date <= @end
        ORDER BY e.work_date`,
       { tenantId, userId, start, end }
     );
-    const entries = (result.recordset || []).map((r) => ({
-      entry_id: getRow(r, 'entry_id'),
-      work_date: getRow(r, 'work_date'),
-      shift_type: getRow(r, 'shift_type'),
-      notes: getRow(r, 'notes'),
-      schedule_title: getRow(r, 'schedule_title'),
-    }));
+    const entries = (result.recordset || []).map((r) => mapScheduleEntryRow(r, shiftSettings));
     const leaveMap = await loadLeaveSpansMap(tenantId, [userId], start, end);
     const leave_spans = leaveMap.get(String(userId)) || [];
-    res.json({ entries, leave_spans });
+    res.json({ entries, leave_spans, shift_settings: shiftSettings });
   } catch (err) {
     next(err);
   }
@@ -1107,19 +1371,25 @@ router.get('/schedules/:id/entries', requirePageAccess('management'), async (req
     const row = sched.recordset[0];
     if (!row) return res.status(404).json({ error: 'Schedule not found' });
     if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
-    const result = await query(
-      `SELECT e.id, e.work_date, e.shift_type, e.notes
-       FROM work_schedule_entries e
-       WHERE e.work_schedule_id = @id ORDER BY e.work_date`,
-      { id }
-    );
-    const entries = (result.recordset || []).map((r) => ({
-      id: getRow(r, 'id'),
-      work_date: getRow(r, 'work_date'),
-      shift_type: getRow(r, 'shift_type'),
-      notes: getRow(r, 'notes'),
-    }));
-    res.json({ schedule_user_id: getRow(row, 'user_id'), schedule_user_name: getRow(row, 'user_name'), entries });
+    const shiftSettings = await loadTenantShiftSettings(getRow(row, 'tenant_id'));
+    let result;
+    try {
+      result = await query(
+        `SELECT e.id, e.work_date, e.shift_type, e.notes, e.start_time, e.end_time
+         FROM work_schedule_entries e
+         WHERE e.work_schedule_id = @id ORDER BY e.work_date`,
+        { id }
+      );
+    } catch {
+      result = await query(
+        `SELECT e.id, e.work_date, e.shift_type, e.notes
+         FROM work_schedule_entries e
+         WHERE e.work_schedule_id = @id ORDER BY e.work_date`,
+        { id }
+      );
+    }
+    const entries = (result.recordset || []).map((r) => mapScheduleEntryRow(r, shiftSettings));
+    res.json({ schedule_user_id: getRow(row, 'user_id'), schedule_user_name: getRow(row, 'user_name'), entries, shift_settings: shiftSettings });
   } catch (err) {
     next(err);
   }

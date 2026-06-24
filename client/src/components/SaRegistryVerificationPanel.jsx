@@ -55,6 +55,12 @@ function displayValue(v) {
   return s;
 }
 
+function providerLabel(provider) {
+  if (provider === 'mie') return 'MIE';
+  if (provider === 'nps') return 'NP Tracker';
+  return null;
+}
+
 export function SaVehicleVerificationPanel({
   verifyFn,
   registration,
@@ -68,9 +74,9 @@ export function SaVehicleVerificationPanel({
   const [state, setState] = useState({ loading: false, result: null, error: '', hasRun: false, pdfAvailable: false });
 
   const loadSavedReport = useCallback(() => {
-    if (!fleetApplicationId || !fleetApplicationsApi?.npTrackerReport) return Promise.resolve(null);
-    return fleetApplicationsApi
-      .npTrackerReport(fleetApplicationId)
+    const loadReport = fleetApplicationsApi?.mieReport || fleetApplicationsApi?.npTrackerReport;
+    if (!fleetApplicationId || !loadReport) return Promise.resolve(null);
+    return loadReport(fleetApplicationId)
       .then((res) => {
         const report = res?.report;
         if (!report?.verification) return null;
@@ -93,9 +99,11 @@ export function SaVehicleVerificationPanel({
       return;
     }
     setState((s) => ({ ...s, loading: true, error: '' }));
+    const runSaved =
+      fleetApplicationsApi?.runMieVerify || fleetApplicationsApi?.runNpTrackerVerify;
     const runPromise =
-      fleetApplicationId && fleetApplicationsApi?.runNpTrackerVerify
-        ? fleetApplicationsApi.runNpTrackerVerify(fleetApplicationId).then((res) => res.report)
+      fleetApplicationId && runSaved
+        ? runSaved(fleetApplicationId).then((res) => res.report)
         : verifyFn({ registration: reg, makeModel: makeModel || undefined, vin: vin || undefined }).then((verification) => ({
             verification,
             pdfAvailable: false,
@@ -130,10 +138,11 @@ export function SaVehicleVerificationPanel({
   const { loading, result, error, hasRun, pdfAvailable } = state;
   const status = result?.status;
   const verified = result?.verified || {};
-  const providerLabel = result?.provider === 'mie' ? 'MIE' : result?.provider === 'nps' ? 'NP Tracker' : null;
-  const pdfUrl = fleetApplicationId && fleetApplicationsApi?.npTrackerPdfUrl
-    ? fleetApplicationsApi.npTrackerPdfUrl(fleetApplicationId)
-    : null;
+  const sourceLabel = providerLabel(result?.provider) || 'MIE';
+  const pdfUrl =
+    fleetApplicationId && (fleetApplicationsApi?.miePdfUrl || fleetApplicationsApi?.npTrackerPdfUrl)
+      ? (fleetApplicationsApi.miePdfUrl || fleetApplicationsApi.npTrackerPdfUrl)(fleetApplicationId)
+      : null;
 
   const openPdf = () => {
     if (!pdfUrl) return;
@@ -143,7 +152,7 @@ export function SaVehicleVerificationPanel({
   const downloadPdf = () => {
     if (!pdfUrl) return;
     const regSlug = String(registration || 'vehicle').replace(/[^a-zA-Z0-9-]/g, '_');
-    downloadAttachmentWithAuth(pdfUrl, `np-tracker-${regSlug}.pdf`).catch((e) =>
+    downloadAttachmentWithAuth(pdfUrl, `mie-register-${regSlug}.pdf`).catch((e) =>
       window.alert(e?.message || 'Could not download PDF report')
     );
   };
@@ -161,7 +170,7 @@ export function SaVehicleVerificationPanel({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {loading ? (
-            <span className="text-xs text-surface-500">Querying NP Tracker…</span>
+            <span className="text-xs text-surface-500">Querying MIE…</span>
           ) : hasRun ? (
             <>
               <StatusIcon status={status} />
@@ -176,7 +185,7 @@ export function SaVehicleVerificationPanel({
               </p>
             </>
           ) : (
-            <p className="text-sm text-surface-700">SA register check (NP Tracker)</p>
+            <p className="text-sm text-surface-700">SA register check (MIE)</p>
           )}
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
@@ -186,7 +195,7 @@ export function SaVehicleVerificationPanel({
             disabled={loading}
             className="text-xs font-medium px-2.5 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
           >
-            {loading ? 'Running…' : hasRun ? 'Run again' : 'Run NP Tracker check'}
+            {loading ? 'Running…' : hasRun ? 'Run again' : 'Run MIE check'}
           </button>
           {pdfAvailable && pdfUrl && (
             <>
@@ -211,7 +220,7 @@ export function SaVehicleVerificationPanel({
 
       {!hasRun && !loading && (
         <p className="text-xs text-surface-500">
-          The check does not run automatically. Click <strong>Run NP Tracker check</strong> when you want to verify this registration.
+          The check does not run automatically. Click <strong>Run MIE check</strong> when you want to verify this registration.
           {fleetApplicationId ? ' The PDF report is saved and can be viewed later without re-running the check.' : ''}
         </p>
       )}
@@ -224,13 +233,13 @@ export function SaVehicleVerificationPanel({
 
       {!loading && result && (
         <>
-          {providerLabel && (
-            <p className="text-xs text-surface-500">Source: {providerLabel} · {result.checkedAt ? new Date(result.checkedAt).toLocaleString() : ''}</p>
+          {sourceLabel && (
+            <p className="text-xs text-surface-500">Source: {sourceLabel} · {result.checkedAt ? new Date(result.checkedAt).toLocaleString() : ''}</p>
           )}
           <div className="space-y-0.5 pt-1 border-t border-surface-200/80">
             <DetailRow label="Plate (register)" value={displayValue(verified.plate || result.registration)} />
             <DetailRow label="VIN" value={displayValue(verified.vin)} />
-            {!displayValue(verified.vin) && hasRun && (
+            {!displayValue(verified.vin) && hasRun && result?.provider === 'nps' && (
               <p className="text-xs text-surface-500 italic">NP Tracker may withhold part of the VIN. Open the PDF report for the full saved register snapshot.</p>
             )}
             <DetailRow label="Make" value={displayValue(verified.make)} />
@@ -246,7 +255,7 @@ export function SaVehicleVerificationPanel({
                 </a>
               </DetailRow>
             )}
-            {verified.suspectFlag && (
+            {verified.suspectFlag && result?.provider === 'nps' && (
               <p className="text-xs text-amber-800 font-medium">Flagged on NP Tracker suspect database</p>
             )}
           </div>
@@ -255,7 +264,7 @@ export function SaVehicleVerificationPanel({
           </p>
           {status === 'unavailable' && (
             <p className="text-xs text-surface-500">
-              Add NPS_API_TOKEN to the server environment (free account at npscloud.co.za → NPS-API) and restart the API.
+              Add MIE_API_BASE_URL and MIE_API_KEY to the server environment (contact mie.co.za for enterprise API access) and restart the API.
             </p>
           )}
         </>
@@ -309,15 +318,15 @@ export function SaDriverLicenseVerificationPanel({ verifyFn, licenseNumber, idNu
               </p>
             </>
           ) : (
-            <p className="text-sm text-surface-700">Driver licence check</p>
+            <p className="text-sm text-surface-700">Driver licence check (MIE)</p>
           )}
         </div>
         <button type="button" onClick={runVerify} disabled={loading} className="text-xs font-medium text-brand-600 hover:text-brand-700 disabled:opacity-50">
-          {loading ? 'Running…' : hasRun ? 'Run again' : 'Run check'}
+          {loading ? 'Running…' : hasRun ? 'Run again' : 'Run MIE check'}
         </button>
       </div>
       {!hasRun && !loading && (
-        <p className="text-xs text-surface-500">Click Run check when you want to verify this licence.</p>
+        <p className="text-xs text-surface-500">Click Run MIE check when you want to verify this licence.</p>
       )}
       {!loading && result && (
         <>
@@ -342,7 +351,7 @@ export function SaDriverLicenseVerificationPanel({ verifyFn, licenseNumber, idNu
             {result.message || state.error}
           </p>
           {status === 'unavailable' && (
-            <p className="text-xs text-surface-500">Driver licence checks against eNaTIS require MIE enterprise API access.</p>
+            <p className="text-xs text-surface-500">Add MIE_API_BASE_URL and MIE_API_KEY to the server environment and restart the API.</p>
           )}
         </>
       )}

@@ -5,17 +5,17 @@ function npsConfigured() {
   return !!String(process.env.NPS_API_TOKEN || '').trim();
 }
 
-/** Vehicle checks: NP Tracker by default; MIE optional later. */
+/** Vehicle checks: MIE by default; NP Tracker optional fallback. */
 export function getSaVerificationConfig() {
-  const providerPref = String(process.env.SA_VERIFY_PROVIDER || 'nps').trim().toLowerCase();
+  const providerPref = String(process.env.SA_VERIFY_PROVIDER || 'mie').trim().toLowerCase();
   const mie = mieConfigured();
   const nps = npsConfigured();
   let vehicleProvider = null;
   if (providerPref === 'mie' && mie) vehicleProvider = 'mie';
   else if (providerPref === 'nps' && nps) vehicleProvider = 'nps';
   else if (providerPref === 'auto') {
-    if (nps) vehicleProvider = 'nps';
-    else if (mie) vehicleProvider = 'mie';
+    if (mie) vehicleProvider = 'mie';
+    else if (nps) vehicleProvider = 'nps';
   } else if (providerPref === 'nps' || providerPref === 'mie') {
     vehicleProvider = null;
   }
@@ -38,7 +38,8 @@ export async function verifySaVehicle(input = {}) {
       configured: false,
       provider: null,
       status: 'unavailable',
-      message: 'Truck registration verification is not configured. Set NPS_API_TOKEN in server environment (register at npscloud.co.za).',
+      message:
+        'Truck registration verification is not configured. Set MIE_API_BASE_URL and MIE_API_KEY in server environment (contact mie.co.za for enterprise API access).',
       checkedAt: new Date().toISOString(),
     };
   }

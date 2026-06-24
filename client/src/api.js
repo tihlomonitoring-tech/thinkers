@@ -872,10 +872,17 @@ export const commandCentre = {
       request(`/command-centre/fleet-applications/${id}/revoke-approval`, { method: 'PATCH', body: JSON.stringify(body) }),
     bulkRevokeApproval: (ids, body = {}) =>
       request('/command-centre/fleet-applications/bulk-revoke-approval', { method: 'POST', body: JSON.stringify({ ids, ...body }) }),
-    npTrackerReport: (id) => request(`/command-centre/fleet-applications/${id}/np-tracker-report`),
+    mieReport: (id) => request(`/command-centre/fleet-applications/${id}/mie-report`),
+    runMieVerify: (id) =>
+      request(`/command-centre/fleet-applications/${id}/mie-verify`, { method: 'POST', body: '{}' }),
+    miePdfUrl: (id) => `${API}/command-centre/fleet-applications/${encodeURIComponent(id)}/mie-report/pdf`,
+    /** @deprecated use mieReport */
+    npTrackerReport: (id) => request(`/command-centre/fleet-applications/${id}/mie-report`),
+    /** @deprecated use runMieVerify */
     runNpTrackerVerify: (id) =>
-      request(`/command-centre/fleet-applications/${id}/np-tracker-verify`, { method: 'POST', body: '{}' }),
-    npTrackerPdfUrl: (id) => `${API}/command-centre/fleet-applications/${encodeURIComponent(id)}/np-tracker-report/pdf`,
+      request(`/command-centre/fleet-applications/${id}/mie-verify`, { method: 'POST', body: '{}' }),
+    /** @deprecated use miePdfUrl */
+    npTrackerPdfUrl: (id) => `${API}/command-centre/fleet-applications/${encodeURIComponent(id)}/mie-report/pdf`,
   },
   saVerification: {
     config: () => request('/command-centre/sa-verification/config'),
@@ -2006,9 +2013,14 @@ export const profileManagement = {
     list: (userId) => pm(`/schedules${userId ? `?user_id=${userId}` : ''}`),
     create: (body) => pm('/schedules', { method: 'POST', body: JSON.stringify(body) }),
     generateBulk: (body) => pm('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
+    generateFixedBulk: (body) => pm('/schedules/fixed/bulk', { method: 'POST', body: JSON.stringify(body) }),
     deleteAllForUser: (userId) => pm(`/schedules/by-user/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
     getEntries: (id) => pm(`/schedules/${id}/entries`),
     addEntries: (id, entries) => pm(`/schedules/${id}/entries`, { method: 'POST', body: JSON.stringify({ entries }) }),
+    shiftSettings: {
+      get: () => pm('/shift-settings'),
+      update: (body) => pm('/shift-settings', { method: 'PATCH', body: JSON.stringify(body) }),
+    },
   },
   mySchedule: (params) => {
     const q = new URLSearchParams(params).toString();

@@ -343,6 +343,21 @@ html.dark .overflow-x-auto::-webkit-scrollbar-thumb:hover {
     background-color: rgb(15 23 42 / 0.32);
   }
 
+  /* Shift report compose: fixed chrome (toolbar + section tabs), scrollable body only */
+  .shift-report-form-shell {
+    @apply flex flex-col min-h-0;
+    max-height: min(calc(100dvh - 7rem), calc(100vh - 7rem));
+  }
+  .shift-report-form-chrome {
+    @apply shrink-0 z-20;
+  }
+  .shift-report-form-body {
+    @apply flex-1 min-h-0 overflow-y-auto overscroll-contain;
+  }
+  .shift-report-form-footer {
+    @apply shrink-0 z-10;
+  }
+
   .app-glass-form-footer {
     @apply p-4 border-t backdrop-blur-md flex justify-end gap-2;
     border-color: rgb(226 232 240 / 0.55);

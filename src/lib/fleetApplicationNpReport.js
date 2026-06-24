@@ -10,8 +10,8 @@ function getRow(row, key) {
   return entry ? entry[1] : undefined;
 }
 
-function npReportRelPath(tenantId, applicationId) {
-  return `np-tracker-reports/${tenantId}/${applicationId}.pdf`;
+function registryReportRelPath(tenantId, applicationId) {
+  return `mie-reports/${tenantId}/${applicationId}.pdf`;
 }
 
 export async function loadFleetApplicationDetail(query, applicationId) {
@@ -104,7 +104,7 @@ export async function getFleetApplicationNpReport(query, applicationId) {
 export async function runAndSaveFleetApplicationNpReport(query, { applicationId, userId, applicationPayload }) {
   const app = applicationPayload;
   if (!app || app.entityType !== 'truck' || !app.entity) {
-    const err = new Error('NP Tracker checks apply to truck applications only');
+    const err = new Error('MIE register checks apply to truck applications only');
     err.status = 400;
     throw err;
   }
@@ -128,7 +128,7 @@ export async function runAndSaveFleetApplicationNpReport(query, { applicationId,
     checkedByName: null,
   });
 
-  const relPdf = npReportRelPath(tenantId || 'unknown', applicationId);
+  const relPdf = registryReportRelPath(tenantId || 'unknown', applicationId);
   const absPdf = path.join(process.cwd(), 'uploads', relPdf);
   fs.mkdirSync(path.dirname(absPdf), { recursive: true });
   fs.writeFileSync(absPdf, pdfBuffer);

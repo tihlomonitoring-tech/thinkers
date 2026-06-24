@@ -3989,7 +3989,8 @@ router.get('/breakdowns/:id/attachments/:type', async (req, res, next) => {
 });
 
 /** GET one fleet application with full truck or driver details */
-router.get('/fleet-applications/:id/np-tracker-report', async (req, res, next) => {
+/** GET saved MIE / SA register report for a fleet application */
+async function getFleetRegistryReportHandler(req, res, next) {
   try {
     const { id } = req.params;
     const report = await getFleetApplicationNpReport(query, id);
@@ -3997,27 +3998,27 @@ router.get('/fleet-applications/:id/np-tracker-report', async (req, res, next) =
   } catch (err) {
     next(err);
   }
-});
+}
 
-/** GET saved NP Tracker PDF report (inline view / download) */
-router.get('/fleet-applications/:id/np-tracker-report/pdf', async (req, res, next) => {
+/** GET saved register PDF report (inline view / download) */
+async function getFleetRegistryReportPdfHandler(req, res, next) {
   try {
     const { id } = req.params;
     const report = await getFleetApplicationNpReport(query, id);
-    if (!report?.pdfAvailable) return res.status(404).json({ error: 'NP Tracker report PDF not found. Run the check first.' });
+    if (!report?.pdfAvailable) return res.status(404).json({ error: 'MIE report PDF not found. Run the check first.' });
     const fullPath = resolveNpReportPdfPath(report.pdfStoredPath);
     if (!fullPath) return res.status(404).json({ error: 'Report PDF file missing on server' });
     const reg = String(report.registration || 'vehicle').replace(/[^a-zA-Z0-9-]/g, '_');
     res.type('application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="np-tracker-${reg}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="mie-register-${reg}.pdf"`);
     fs.createReadStream(fullPath).pipe(res);
   } catch (err) {
     next(err);
   }
-});
+}
 
-/** POST run NP Tracker check, save JSON + dark PDF report for this application */
-router.post('/fleet-applications/:id/np-tracker-verify', async (req, res, next) => {
+/** POST run MIE register check, save JSON + dark PDF report for this application */
+async function postFleetRegistryVerifyHandler(req, res, next) {
   try {
     const { id } = req.params;
     const application = await loadFleetApplicationDetail(query, id);
@@ -4032,7 +4033,16 @@ router.post('/fleet-applications/:id/np-tracker-verify', async (req, res, next) 
     if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
-});
+}
+
+router.get('/fleet-applications/:id/mie-report', getFleetRegistryReportHandler);
+router.get('/fleet-applications/:id/np-tracker-report', getFleetRegistryReportHandler);
+
+router.get('/fleet-applications/:id/mie-report/pdf', getFleetRegistryReportPdfHandler);
+router.get('/fleet-applications/:id/np-tracker-report/pdf', getFleetRegistryReportPdfHandler);
+
+router.post('/fleet-applications/:id/mie-verify', postFleetRegistryVerifyHandler);
+router.post('/fleet-applications/:id/np-tracker-verify', postFleetRegistryVerifyHandler);
 
 /** GET one fleet application with full truck or driver details */
 router.get('/fleet-applications/:id', async (req, res, next) => {

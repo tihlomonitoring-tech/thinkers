@@ -36,6 +36,7 @@ import {
   toYmdFromDbOrString,
   wallMonthYearInAppZone,
 } from './lib/appTime.js';
+import { DEFAULT_SHIFT_SETTINGS, formatShiftWindow, shiftLabel } from './lib/workScheduleShiftTimes.js';
 import { taskLegendDotClass, taskLegendSurfaceClass, taskLegendLabel } from './lib/taskProgressLegend.js';
 import TaskColourLegend from './components/TaskColourLegend.jsx';
 
@@ -58,9 +59,6 @@ const TABS = [
   { id: 'organisational_structure', label: 'Organisational structure' },
   { id: 'system_settings', label: 'System settings' },
 ];
-
-const SHIFT_DAY = '06:00 – 18:00';
-const SHIFT_NIGHT = '18:00 – 06:00';
 
 const COLLEAGUE_FILTER_STORAGE_KEY = 'profile.workSchedule.colleagueFilter';
 const COLLEAGUE_VIEW_MODE_KEY = 'profile.workSchedule.colleagueViewMode';
@@ -549,6 +547,7 @@ export default function Profile() {
   const [calendarMonth, setCalendarMonth] = useState(() => wallMonthYearInAppZone().monthIndex0);
   const [calendarYear, setCalendarYear] = useState(() => wallMonthYearInAppZone().year);
   const [scheduleEntries, setScheduleEntries] = useState([]);
+  const [shiftSettings, setShiftSettings] = useState({ ...DEFAULT_SHIFT_SETTINGS });
   const [myLeaveSpans, setMyLeaveSpans] = useState([]);
   const [leaveBalance, setLeaveBalance] = useState([]);
   const [leaveApplications, setLeaveApplications] = useState([]);
@@ -810,6 +809,7 @@ export default function Profile() {
       .then((d) => {
         setScheduleEntries(d.entries || []);
         setMyLeaveSpans(d.leave_spans || []);
+        setShiftSettings({ ...DEFAULT_SHIFT_SETTINGS, ...(d.shift_settings || {}) });
       })
       .catch(() => {
         setScheduleEntries([]);
@@ -1229,8 +1229,8 @@ export default function Profile() {
                           )}
                           <span className="text-surface-700 font-medium text-center w-full shrink-0">{day}</span>
                           {shift && (
-                            <span className={`text-[10px] leading-tight w-full truncate ${shift.shift_type === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}>
-                              {shift.shift_type === 'day' ? 'Day' : 'Night'}
+                            <span className={`text-[10px] leading-tight w-full truncate ${shift.shift_type === 'fixed' ? 'text-teal-700' : shift.shift_type === 'day' ? 'text-amber-700' : 'text-indigo-700'}`}>
+                              {shift.shift_type === 'fixed' ? 'Fixed' : shift.shift_type === 'day' ? 'Day' : 'Night'}
                             </span>
                           )}
                           {peerLinesShown.map((pl) => (
@@ -1293,7 +1293,7 @@ export default function Profile() {
                       title="Calendar legend"
                       text="Shift colours, swap dots, and task progress dots (tasks assigned to you with a due date)."
                       bullets={[
-                        `Day: ${SHIFT_DAY}; Night: ${SHIFT_NIGHT}.`,
+                        `Day: ${formatShiftWindow(shiftSettings.day_start, shiftSettings.day_end)}; Night: ${formatShiftWindow(shiftSettings.night_start, shiftSettings.night_end)}; Fixed: custom hours.`,
                         !ccTeamPanelCollapsed
                           ? 'Extra lines under the day list selected Command Centre teammates (Name · Day/Night).'
                           : 'Teammate lines are hidden — use Show team picker to compare shifts on the calendar.',
@@ -1335,6 +1335,7 @@ export default function Profile() {
                       selectedDate={selectedScheduleDate}
                       onClose={() => setSelectedScheduleDate(null)}
                       onHideDayDetailsRail={collapseDayDetailsRail}
+                      shiftSettings={shiftSettings}
                       scheduleEntries={scheduleEntries}
                       scheduleEvents={scheduleEvents}
                       myTasks={myTasks}
@@ -1360,6 +1361,7 @@ export default function Profile() {
                     selectedDate={null}
                     onClose={() => setSelectedScheduleDate(null)}
                     onHideDayDetailsRail={() => setDayDetailsRailExpanded(false)}
+                    shiftSettings={shiftSettings}
                     scheduleEntries={scheduleEntries}
                     scheduleEvents={scheduleEvents}
                     myTasks={myTasks}
@@ -1819,6 +1821,7 @@ function ScheduleSidePanel({
   onClose,
   /** Collapses the day-details rail and clears the selected date (full calendar width). */
   onHideDayDetailsRail,
+  shiftSettings = DEFAULT_SHIFT_SETTINGS,
   scheduleEntries,
   scheduleEvents,
   myTasks,
@@ -1920,7 +1923,7 @@ function ScheduleSidePanel({
           {shift ? (
             <div className="space-y-2">
               <p className="text-surface-800">
-                {shift.shift_type === 'night' ? 'Night' : 'Day'} ({shift.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
+                {shiftLabel(shift, shiftSettings)}
                 {shift.notes && <span className="block text-surface-600 mt-0.5">{shift.notes}</span>}
               </p>
               {shift.entry_id && (
@@ -1964,7 +1967,7 @@ function ScheduleSidePanel({
                 <li key={row.user_id} className="text-sm flex flex-wrap gap-x-1">
                   <span className="font-medium">{row.name}</span>
                   <span className="text-surface-600">
-                    — {row.shift_type === 'night' ? 'Night' : 'Day'} ({row.shift_type === 'night' ? SHIFT_NIGHT : SHIFT_DAY})
+                    — {shiftLabel(row, shiftSettings)}
                   </span>
                 </li>
               ))}
