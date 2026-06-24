@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useAuth } from '../AuthContext';
 import { orgStructure as orgApi } from '../api';
-import { buildOrgTree } from '../lib/orgChartTree.js';
+import { buildOrgTree, countOrgTreeNodes, orphanedManagerAssignments } from '../lib/orgChartTree.js';
+import { printOrgChartVisual, downloadOrgChartPdf } from '../lib/orgChartExport.js';
 import OrgChartTreeDiagram from './OrgChartTreeDiagram.jsx';
 import InfoHint from './InfoHint.jsx';
 
@@ -21,6 +23,7 @@ function userLabel(u) {
 }
 
 export default function OrgStructureManagementSection({ onError }) {
+  const { user } = useAuth();
   const [sub, setSub] = useState('overview');
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -68,6 +71,31 @@ export default function OrgStructureManagementSection({ onError }) {
   const assignments = bundle?.assignments || [];
   const tenantUsers = bundle?.tenant_users || [];
   const roots = useMemo(() => buildOrgTree(assignments), [assignments]);
+  const chartNodeCount = useMemo(() => countOrgTreeNodes(roots), [roots]);
+  const orphaned = useMemo(() => orphanedManagerAssignments(assignments, roots), [assignments, roots]);
+
+  const exportOpts = useMemo(
+    () => ({ title: 'Organisational structure', tenantName: user?.tenant_name || '' }),
+    [user?.tenant_name]
+  );
+
+  const handlePrint = () => {
+    onError?.('');
+    try {
+      printOrgChartVisual(roots, exportOpts);
+    } catch (e) {
+      onError?.(e?.message || 'Could not open print view');
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    onError?.('');
+    try {
+      await downloadOrgChartPdf(roots, exportOpts);
+    } catch (e) {
+      onError?.(e?.message || 'Could not download PDF');
+    }
+  };
 
   const run = async (fn) => {
     setBusy(true);
@@ -199,8 +227,8 @@ export default function OrgStructureManagementSection({ onError }) {
             {[
               ['Departments', departments.length],
               ['Positions', positions.length],
-              ['Assignments', assignments.length],
-              ['Employees on chart', assignments.filter((a) => a.user_id).length],
+              ['On chart', chartNodeCount],
+              ['Employees filled', assignments.filter((a) => a.user_id).length],
             ].map(([label, n]) => (
               <div key={label} className="rounded-xl border border-surface-200 p-4 dark:border-surface-700">
                 <p className="text-xs text-surface-500">{label}</p>
@@ -208,14 +236,39 @@ export default function OrgStructureManagementSection({ onError }) {
               </div>
             ))}
           </div>
-          <div>
-            <p className="text-sm font-medium mb-2">Organisation chart ({roots.length} top-level)</p>
-            <OrgChartTreeDiagram
-              roots={roots}
-              interactive={false}
-              emptyMessage="Add assignments with line managers to build the reporting tree."
-            />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium">
+              Organisation chart ({roots.length} top-level root{roots.length === 1 ? '' : 's'})
+              {orphaned.length > 0 && (
+                <span className="ml-2 text-xs font-normal text-sky-700 dark:text-sky-300">
+                  · {orphaned.length} with manager not on chart
+                </span>
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handlePrint}
+                disabled={!roots.length || busy}
+                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-300 hover:bg-surface-50 disabled:opacity-50 dark:border-surface-600 dark:hover:bg-surface-800"
+              >
+                Print chart
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={!roots.length || busy}
+                className="px-3 py-1.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                Download PDF
+              </button>
+            </div>
           </div>
+          <OrgChartTreeDiagram
+            roots={roots}
+            interactive={false}
+            emptyMessage="Add assignments with line managers to build the reporting tree."
+          />
         </div>
       )}
 

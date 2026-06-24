@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useAuth } from '../AuthContext';
 import { orgStructure as orgApi, downloadAttachmentWithAuth } from '../api';
-import { buildOrgTree, escalationChain } from '../lib/orgChartTree.js';
+import { buildOrgTree, escalationChain, countOrgTreeNodes, orphanedManagerAssignments } from '../lib/orgChartTree.js';
+import { printOrgChartVisual, downloadOrgChartPdf } from '../lib/orgChartExport.js';
 import OrgChartTreeDiagram from './OrgChartTreeDiagram.jsx';
 import InfoHint from './InfoHint.jsx';
 
@@ -99,6 +101,7 @@ function PersonDetailPanel({ person, assignments, attachments, onClose, onDownlo
 }
 
 export default function OrgStructureView({ onError }) {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [bundle, setBundle] = useState(null);
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -123,6 +126,31 @@ export default function OrgStructureView({ onError }) {
 
   const assignments = bundle?.assignments || [];
   const roots = useMemo(() => buildOrgTree(assignments), [assignments]);
+  const chartNodeCount = useMemo(() => countOrgTreeNodes(roots), [roots]);
+  const orphaned = useMemo(() => orphanedManagerAssignments(assignments, roots), [assignments, roots]);
+
+  const exportOpts = useMemo(
+    () => ({ title: 'Organisational structure', tenantName: user?.tenant_name || '' }),
+    [user?.tenant_name]
+  );
+
+  const handlePrint = () => {
+    onError?.('');
+    try {
+      printOrgChartVisual(roots, exportOpts);
+    } catch (e) {
+      onError?.(e?.message || 'Could not open print view');
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    onError?.('');
+    try {
+      await downloadOrgChartPdf(roots, exportOpts);
+    } catch (e) {
+      onError?.(e?.message || 'Could not download PDF');
+    }
+  };
 
   const filteredRoots = useMemo(() => {
     if (!search.trim() && !deptFilter) return roots;
@@ -200,16 +228,45 @@ export default function OrgStructureView({ onError }) {
             Reporting tree with linked nodes. Click an employee for role details, responsibilities, and escalation path.
           </p>
         </div>
-        <InfoHint text="Lines show reporting relationships from line managers to their teams." />
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handlePrint}
+            disabled={!roots.length}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-300 hover:bg-surface-50 disabled:opacity-50 dark:border-surface-600 dark:hover:bg-surface-800"
+          >
+            Print chart
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
+            disabled={!roots.length}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            Download PDF
+          </button>
+          <InfoHint text="Print and PDF include the full structure (all roots and nodes), not just what matches your search." />
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
         <span className="inline-flex items-center rounded-full bg-surface-100 px-3 py-1 text-xs font-medium dark:bg-surface-800">
-          {headcount} on structure
+          {chartNodeCount} on chart
+        </span>
+        <span className="inline-flex items-center rounded-full bg-surface-100 px-3 py-1 text-xs font-medium dark:bg-surface-800">
+          {headcount} filled
         </span>
         {vacant > 0 && (
           <span className="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-100">
             {vacant} vacant
+          </span>
+        )}
+        {orphaned.length > 0 && (
+          <span
+            className="inline-flex items-center rounded-full bg-sky-100 px-3 py-1 text-xs font-medium text-sky-900 dark:bg-sky-950 dark:text-sky-100"
+            title="These people report to a manager who is not on the chart, so they appear at the top level."
+          >
+            {orphaned.length} unlinked manager{orphaned.length === 1 ? '' : 's'}
           </span>
         )}
       </div>
@@ -237,7 +294,7 @@ export default function OrgStructureView({ onError }) {
       </div>
 
       <div className="flex flex-col lg:flex-row gap-4 items-start">
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 w-full min-w-0">
           <OrgChartTreeDiagram
             roots={filteredRoots}
             selectedUserId={selectedUserId}

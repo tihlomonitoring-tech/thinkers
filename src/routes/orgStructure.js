@@ -7,6 +7,7 @@ import fs from 'fs';
 import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { parseGuid, sameGuid } from '../lib/guidUtils.js';
 
 const router = Router();
 router.use(requireAuth, loadUser);
@@ -60,14 +61,14 @@ function mapPosition(r) {
 }
 
 function mapAssignment(r) {
-  const uid = getRow(r, 'user_id');
+  const uid = parseGuid(getRow(r, 'user_id'));
   return {
-    id: getRow(r, 'id'),
-    tenant_id: getRow(r, 'tenant_id'),
+    id: parseGuid(getRow(r, 'id')) || getRow(r, 'id'),
+    tenant_id: parseGuid(getRow(r, 'tenant_id')) || getRow(r, 'tenant_id'),
     user_id: uid,
-    position_id: getRow(r, 'position_id'),
-    manager_user_id: getRow(r, 'manager_user_id'),
-    escalation_user_id: getRow(r, 'escalation_user_id'),
+    position_id: parseGuid(getRow(r, 'position_id')) || getRow(r, 'position_id'),
+    manager_user_id: parseGuid(getRow(r, 'manager_user_id')),
+    escalation_user_id: parseGuid(getRow(r, 'escalation_user_id')),
     effective_from: getRow(r, 'effective_from'),
     effective_to: getRow(r, 'effective_to'),
     is_primary: getRow(r, 'is_primary') !== false && getRow(r, 'is_primary') !== 0,
@@ -152,7 +153,7 @@ function tablesMissing(err) {
 /** Profile + management read */
 router.get(
   '/bundle',
-  requirePageAccess(['profile', 'management']),
+  requirePageAccess(['profile', 'management', 'operator_profile']),
   async (req, res, next) => {
     try {
       const t = tid(req);
@@ -170,12 +171,12 @@ router.get(
 
 router.get(
   '/person/:userId',
-  requirePageAccess(['profile', 'management']),
+  requirePageAccess(['profile', 'management', 'operator_profile']),
   async (req, res, next) => {
     try {
       const t = tid(req);
       const bundle = await loadBundle(t);
-      const person = bundle.assignments.find((a) => String(a.user_id) === String(req.params.userId));
+      const person = bundle.assignments.find((a) => sameGuid(a.user_id, req.params.userId));
       if (!person) return res.status(404).json({ error: 'Person not on organisational structure' });
       const attachments = await query(
         `SELECT * FROM org_position_attachments WHERE position_id = @pid ORDER BY created_at DESC`,
@@ -191,7 +192,7 @@ router.get(
 
 router.get(
   '/positions/:id/attachments/:attId/download',
-  requirePageAccess(['profile', 'management']),
+  requirePageAccess(['profile', 'management', 'operator_profile']),
   async (req, res, next) => {
     try {
       const t = tid(req);
