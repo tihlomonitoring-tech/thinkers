@@ -34,6 +34,15 @@ export const SP = {
   TEAM_LEADER_PULSE_HOURS_AFTER_SHIFT: 12,
   TEAM_LEADER_PULSE_ON: 10,
   TEAM_LEADER_PULSE_MISSED: -30,
+  /** Colleague performance evaluation — avg answer score (1–3) on feedback received. */
+  PE_RECEIVED_STRONG: 15,
+  PE_RECEIVED_OK: 5,
+  PE_RECEIVED_WEAK: -10,
+  /** Management employee evaluation (HR evaluations table) — free-text rating. */
+  HR_EVAL_EXCELLENT: 20,
+  HR_EVAL_GOOD: 10,
+  HR_EVAL_NEUTRAL: 0,
+  HR_EVAL_POOR: -20,
 };
 
 /** SAST = UTC+2 (Africa/Johannesburg, no DST) */
@@ -180,6 +189,29 @@ export function taskCompletionPoints(dueYmd, completedAtMs, status) {
   return { points: SP.TASK_LATE, detail: 'completed_late' };
 }
 
+export function hrEvaluationRatingPoints(ratingRaw) {
+  const s = String(ratingRaw || '').toLowerCase().trim();
+  if (!s) return { points: 0, detail: 'no_rating' };
+  if (/exceed|outstanding|excellent|exceptional|^5$|^4$/.test(s)) {
+    return { points: SP.HR_EVAL_EXCELLENT, detail: 'hr_excellent' };
+  }
+  if (/below|unsatisf|poor|need|under|^1$|^2$/.test(s)) {
+    return { points: SP.HR_EVAL_POOR, detail: 'hr_poor' };
+  }
+  if (/meet|satisf|good|^3$/.test(s)) {
+    return { points: SP.HR_EVAL_GOOD, detail: 'hr_good' };
+  }
+  return { points: SP.HR_EVAL_NEUTRAL, detail: 'hr_neutral' };
+}
+
+export function peerEvaluationQualityPoints(avgScore) {
+  const avg = Number(avgScore);
+  if (!Number.isFinite(avg)) return { points: 0, detail: 'no_scores', avg: null };
+  if (avg >= 2.5) return { points: SP.PE_RECEIVED_STRONG, detail: 'strong_peer_feedback', avg };
+  if (avg >= 2.0) return { points: SP.PE_RECEIVED_OK, detail: 'satisfactory_peer_feedback', avg };
+  return { points: SP.PE_RECEIVED_WEAK, detail: 'weak_peer_feedback', avg };
+}
+
 export function emptyScoreBreakdown() {
   return {
     punctuality: { points: 0, events: [] },
@@ -188,6 +220,7 @@ export function emptyScoreBreakdown() {
     reportTiming: { points: 0, events: [] },
     teamProgress: { points: 0, events: [] },
     dailyPulse: { points: 0, events: [] },
+    performanceEvaluation: { points: 0, events: [] },
   };
 }
 
@@ -198,6 +231,7 @@ export function sumBreakdown(b) {
     (b.tasks?.points || 0) +
     (b.reportTiming?.points || 0) +
     (b.teamProgress?.points || 0) +
-    (b.dailyPulse?.points || 0)
+    (b.dailyPulse?.points || 0) +
+    (b.performanceEvaluation?.points || 0)
   );
 }

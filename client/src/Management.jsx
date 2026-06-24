@@ -17,6 +17,7 @@ import PerformanceEvaluationAuditorResultsSection from './components/Performance
 import EmployeeDetailsManagementSection from './components/EmployeeDetailsManagementSection.jsx';
 import ComposeOnboardmentSection from './components/ComposeOnboardmentSection.jsx';
 import OrgStructureManagementSection from './components/OrgStructureManagementSection.jsx';
+import CareerDevelopmentManagementSection from './components/CareerDevelopmentManagementSection.jsx';
 import {
   downloadClaimsExcel,
   downloadClaimsPdf,
@@ -44,7 +45,7 @@ const SECTIONS = [
   { id: 'perf_eval_questions', label: 'Edit evaluation questionnaires' },
   { id: 'auditor_results', label: 'Auditor results' },
   { id: 'pip', label: 'Performance improvement' },
-  { id: 'growth', label: 'Employee growth' },
+  { id: 'career_development', label: 'Career & personal development' },
   { id: 'company_library_policy', label: 'Company library (hours)' },
   { id: 'claims', label: 'Claims & reimbursements' },
   { id: 'org_structure', label: 'Organisational structure' },
@@ -1103,22 +1104,8 @@ export default function Management() {
             />
           )}
 
-          {activeSection === 'growth' && (
-            <div className="space-y-6">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-semibold text-surface-900">Employee growth</h1>
-                <InfoHint
-                  title="Employee growth"
-                  text="Structure career growth — goals, development paths, and inspiration. Use Configure growth structure to define career levels, development plans, and resources for employees."
-                />
-              </div>
-              <div className="app-glass-card p-6">
-                <p className="text-sm text-surface-700 mb-2">Configure growth structure</p>
-                <button type="button" className="mt-3 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">
-                  Edit growth structure
-                </button>
-              </div>
-            </div>
+          {activeSection === 'career_development' && (
+            <CareerDevelopmentManagementSection onError={setError} />
           )}
 
           {activeSection === 'company_library_policy' && user?.role === 'super_admin' && (

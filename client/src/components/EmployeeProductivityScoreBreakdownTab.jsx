@@ -110,7 +110,7 @@ export default function EmployeeProductivityScoreBreakdownTab({ data, loading, o
           <h2 className="text-lg font-semibold text-surface-900">Score breakdown</h2>
           <InfoHint
             title="Detailed score analysis"
-            text="See every event that added or subtracted points for each employee: clock-ins, evaluations, tasks, report submissions, team objectives, management ratings, and team-leader daily pulse. Totals match the overview roster."
+            text="See every event that added or subtracted points for each employee: clock-ins, evaluations, tasks, report submissions, team objectives, management ratings, team-leader daily pulse, and performance evaluations. Totals match the overview roster."
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">

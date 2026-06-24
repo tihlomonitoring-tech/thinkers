@@ -110,6 +110,7 @@ export const auth = {
     }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   me: () => request('/auth/me'),
+  myTenants: () => request('/auth/my-tenants'),
   switchTenant: (tenantId) => request('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenant_id: tenantId }) }),
   forgotPassword: (body) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify(body) }),
   resetPassword: (body) => request('/auth/reset-password', { method: 'POST', body: JSON.stringify(body) }),
@@ -276,8 +277,11 @@ export const contractor = {
       }).catch((err) => { throw wrapNetworkError(err); }),
     /** Fetch an attachment as blob (for view/download). Uses credentials. */
     getAttachmentBlob: (id, type) =>
-      fetch(`${API}/contractor/incidents/${id}/attachments/${type}`, { credentials: 'include' }).then((res) => {
-        if (!res.ok) throw new Error(res.status === 404 ? 'Attachment not found' : 'Failed to load attachment');
+      fetch(`${API}/contractor/incidents/${encodeURIComponent(id != null ? String(id) : '')}/attachments/${encodeURIComponent(type)}`, { credentials: 'include' }).then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || (res.status === 404 ? 'Attachment not found' : 'Failed to load attachment'));
+        }
         return res.blob();
       }).catch((err) => { throw wrapNetworkError(err); }),
     createWithAttachments: (formData) =>
@@ -868,6 +872,27 @@ export const commandCentre = {
       request(`/command-centre/fleet-applications/${id}/revoke-approval`, { method: 'PATCH', body: JSON.stringify(body) }),
     bulkRevokeApproval: (ids, body = {}) =>
       request('/command-centre/fleet-applications/bulk-revoke-approval', { method: 'POST', body: JSON.stringify({ ids, ...body }) }),
+    npTrackerReport: (id) => request(`/command-centre/fleet-applications/${id}/np-tracker-report`),
+    runNpTrackerVerify: (id) =>
+      request(`/command-centre/fleet-applications/${id}/np-tracker-verify`, { method: 'POST', body: '{}' }),
+    npTrackerPdfUrl: (id) => `${API}/command-centre/fleet-applications/${encodeURIComponent(id)}/np-tracker-report/pdf`,
+  },
+  saVerification: {
+    config: () => request('/command-centre/sa-verification/config'),
+    vehicle: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.registration) q.set('registration', params.registration);
+      if (params.makeModel) q.set('makeModel', params.makeModel);
+      if (params.vin) q.set('vin', params.vin);
+      return request(`/command-centre/sa-verification/vehicle?${q.toString()}`);
+    },
+    driverLicense: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.licenseNumber) q.set('licenseNumber', params.licenseNumber);
+      if (params.idNumber) q.set('idNumber', params.idNumber);
+      if (params.surname) q.set('surname', params.surname);
+      return request(`/command-centre/sa-verification/driver-license?${q.toString()}`);
+    },
   },
   /** Rectors (users in access_route_factors) for "Notify rectors" when approving fleet applications */
   rectors: () => request('/command-centre/rectors'),
@@ -1015,10 +1040,13 @@ export const commandCentre = {
       return request(`/command-centre/breakdowns${q.toString() ? `?${q.toString()}` : ''}`);
     },
     get: (id) => request(`/command-centre/breakdowns/${id}`),
-    resolve: (id, resolutionNote) =>
+    resolve: (id, resolutionNote, opts = {}) =>
       request(`/command-centre/breakdowns/${id}/resolve`, {
         method: 'PATCH',
-        body: JSON.stringify({ resolution_note: resolutionNote }),
+        body: JSON.stringify({
+          resolution_note: resolutionNote,
+          notify_rectors: opts.notifyRectors === true,
+        }),
       }),
     notifyRector: (id, rectorUserIds) =>
       request(`/command-centre/breakdowns/${id}/notify-rector`, {
@@ -2047,6 +2075,12 @@ export const profileManagement = {
     downloadUrl: (id) => `${API}/profile-management/employee-details/attachments/${encodeURIComponent(id)}/download`,
     directory: () => pm('/employee-details/directory'),
     getForUser: (userId) => pm(`/employee-details/user/${encodeURIComponent(userId)}`),
+  },
+  careerDevelopment: {
+    directory: () => pm('/career-development/directory'),
+    getForUser: (userId) => pm(`/career-development/user/${encodeURIComponent(userId)}`),
+    cvViewUrl: (userId, cvId) =>
+      `${API}/profile-management/career-development/user/${encodeURIComponent(userId)}/cv/${encodeURIComponent(cvId)}/download`,
   },
   warnings: { list: () => pm('/warnings'), listAll: () => pm('/warnings/all'), create: (body) => pm('/warnings', { method: 'POST', body: JSON.stringify(body) }) },
   rewards: { list: () => pm('/rewards'), listAll: () => pm('/rewards/all'), create: (body) => pm('/rewards', { method: 'POST', body: JSON.stringify(body) }) },

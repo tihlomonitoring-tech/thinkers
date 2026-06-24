@@ -223,6 +223,31 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+/** Tenants the signed-in user may switch to (no tenants page role required). */
+router.get('/my-tenants', async (req, res, next) => {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const ctx = await resolveUserTenantContext(query, {
+      userId: req.session.userId,
+      sessionTenantId: req.session.tenantId,
+    });
+    const ids = [...new Set((ctx.tenant_ids || []).map((t) => String(t)).filter(Boolean))];
+    if (!ids.length) return res.json({ tenants: [] });
+    const tenants = [];
+    for (const id of ids) {
+      const r = await query(`SELECT id, name, slug FROM tenants WHERE id = @id`, { id });
+      const row = r.recordset?.[0];
+      if (row) tenants.push(row);
+    }
+    tenants.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    res.json({ tenants });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** Switch current tenant (user must belong to that tenant). */
 router.post('/switch-tenant', async (req, res, next) => {
   if (!req.session?.userId) {

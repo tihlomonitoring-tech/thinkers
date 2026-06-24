@@ -1817,6 +1817,140 @@ router.get('/employee-details/user/:userId', requirePageAccess('management'), as
   }
 });
 
+// —— Career & personal development (management read-only) ——
+async function assertTenantMember(userId, tenantId) {
+  const mem = await query(
+    `SELECT 1 AS ok FROM users u
+     WHERE u.id = @userId AND u.status = N'active'
+       AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`,
+    { userId, tenantId }
+  );
+  return !!mem.recordset?.length;
+}
+
+router.get('/career-development/directory', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.json({ employees: [] });
+    const result = await query(
+      `SELECT u.id AS user_id, u.full_name, u.email,
+              cp.updated_at AS plan_updated_at,
+              (SELECT COUNT(*) FROM user_career_milestones m WHERE m.user_id = u.id AND m.tenant_id = @tenantId) AS milestone_count,
+              (SELECT COUNT(*) FROM user_cv_uploads c WHERE c.user_id = u.id AND c.tenant_id = @tenantId) AS cv_count
+       FROM users u
+       LEFT JOIN user_personal_career_plan cp ON cp.user_id = u.id AND cp.tenant_id = @tenantId
+       WHERE u.status = N'active'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+       ORDER BY u.full_name`,
+      { tenantId }
+    );
+    res.json({
+      employees: (result.recordset || []).map((r) => ({
+        user_id: getRow(r, 'user_id'),
+        full_name: getRow(r, 'full_name'),
+        email: getRow(r, 'email'),
+        plan_updated_at: getRow(r, 'plan_updated_at') || null,
+        milestone_count: Number(getRow(r, 'milestone_count') || 0),
+        cv_count: Number(getRow(r, 'cv_count') || 0),
+      })),
+    });
+  } catch (err) {
+    const m = String(err?.message || '').toLowerCase();
+    if (m.includes('invalid object') || m.includes('does not exist')) {
+      return res.json({ employees: [] });
+    }
+    next(err);
+  }
+});
+
+router.get('/career-development/user/:userId', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    if (!(await assertTenantMember(userId, tenantId))) return res.status(404).json({ error: 'User not in tenant' });
+
+    const urow = await query(`SELECT full_name, email FROM users WHERE id = @userId`, { userId });
+    const u = urow.recordset?.[0];
+
+    let plan = { goals_json: '[]', objectives_json: '[]', professional_summary: '', updated_at: null };
+    try {
+      const pr = await query(
+        `SELECT goals_json, objectives_json, professional_summary, updated_at
+         FROM user_personal_career_plan WHERE user_id = @userId AND tenant_id = @tenantId`,
+        { userId, tenantId }
+      );
+      const row = pr.recordset?.[0];
+      if (row) {
+        plan = {
+          goals_json: getRow(row, 'goals_json') || '[]',
+          objectives_json: getRow(row, 'objectives_json') || '[]',
+          professional_summary: getRow(row, 'professional_summary') || '',
+          updated_at: getRow(row, 'updated_at') || null,
+        };
+      }
+    } catch (_) {}
+
+    let milestones = [];
+    try {
+      const mr = await query(
+        `SELECT id, title, description, milestone_date, status, display_order, created_at, updated_at
+         FROM user_career_milestones WHERE user_id = @userId AND tenant_id = @tenantId
+         ORDER BY display_order ASC, milestone_date DESC, created_at DESC`,
+        { userId, tenantId }
+      );
+      milestones = mr.recordset || [];
+    } catch (_) {}
+
+    let cvUploads = [];
+    try {
+      const cr = await query(
+        `SELECT id, file_name, content_type, uploaded_at FROM user_cv_uploads
+         WHERE user_id = @userId AND tenant_id = @tenantId ORDER BY uploaded_at DESC`,
+        { userId, tenantId }
+      );
+      cvUploads = cr.recordset || [];
+    } catch (_) {}
+
+    res.json({
+      user: {
+        id: userId,
+        full_name: u ? getRow(u, 'full_name') : null,
+        email: u ? getRow(u, 'email') : null,
+      },
+      plan,
+      milestones,
+      cv_uploads: cvUploads,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/career-development/user/:userId/cv/:cvId/download', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { userId, cvId } = req.params;
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    if (!(await assertTenantMember(userId, tenantId))) return res.status(403).json({ error: 'Forbidden' });
+    const r = await query(
+      `SELECT file_path, file_name, content_type FROM user_cv_uploads
+       WHERE id = @cvId AND user_id = @userId AND tenant_id = @tenantId`,
+      { cvId, userId, tenantId }
+    );
+    const row = r.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const fullPath = path.join(process.cwd(), 'uploads', getRow(row, 'file_path'));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    const ct = getRow(row, 'content_type');
+    if (ct) res.type(ct);
+    res.setHeader('Content-Disposition', `inline; filename="${(getRow(row, 'file_name') || 'cv').replace(/"/g, '')}"`);
+    res.sendFile(fullPath);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // —— Warnings & rewards ——
 router.get('/warnings', requirePageAccess('profile'), async (req, res, next) => {
   try {

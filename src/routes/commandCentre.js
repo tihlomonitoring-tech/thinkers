@@ -6,7 +6,7 @@ import multer from 'multer';
 import ExcelJS from 'exceljs';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
-import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails, getSuperAdminEmailsForTenant } from '../lib/emailRecipients.js';
+import { getTenantUserEmails, getContractorUserEmails, getContractorOnlyUserEmails, getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getBreakdownResolvedEmailRecipients, parseNotifyRectorsFlag, getRectorEmailsForAlertTypeAndRoutes, getAccessManagementEmails, getSuperAdminEmailsForTenant } from '../lib/emailRecipients.js';
 import {
   applicationApprovedHtml,
   applicationBulkApprovedHtml,
@@ -38,10 +38,18 @@ import {
 import { registerCommandCentreSingleOpsShiftReports } from './commandCentreSingleOpsShiftReports.js';
 import { nextShiftReportRefNumber } from '../lib/shiftReportRefNumbers.js';
 import { canEditShiftReport, canSubmitShiftReport, isAssignedShiftReportApprover } from '../lib/shiftReportAccess.js';
-import { sameGuid } from '../lib/guidUtils.js';
+import { sameGuid, parseGuid } from '../lib/guidUtils.js';
+import { resolveIncidentUploadPath, attachmentContentType } from '../lib/incidentUploadPaths.js';
+import { getSaVerificationConfig, verifySaDriverLicense, verifySaVehicle } from '../lib/saVehicleVerification/index.js';
 import { buildStyledListSheet } from '../lib/distributionExcel.js';
 import { applyTruckChangeRequest, mapChangeRequestRow } from '../lib/fleetChangeRequests.js';
 import { logFleetApplicationHistory, getFleetApplicationHistory } from '../lib/fleetApplicationHistory.js';
+import {
+  getFleetApplicationNpReport,
+  loadFleetApplicationDetail,
+  resolveNpReportPdfPath,
+  runAndSaveFleetApplicationNpReport,
+} from '../lib/fleetApplicationNpReport.js';
 import {
   buildSubcontractorScopeKey,
   mapChecklistRow,
@@ -391,6 +399,11 @@ router.post('/shift-report-ai/generate-summary', async (req, res, next) => {
   }
 });
 
+/** Normalize user id from API body/query or SQL row for grant lookups. */
+function normalizeGrantUserId(value) {
+  return parseGuid(value);
+}
+
 /** GET my allowed tabs. Super_admin gets all; others get from grants. */
 router.get('/my-tabs', async (req, res, next) => {
   try {
@@ -401,15 +414,9 @@ router.get('/my-tabs', async (req, res, next) => {
       `SELECT tab_id FROM command_centre_grants WHERE user_id = @userId`,
       { userId: req.user.id }
     );
-    let tabs = (result.recordset || []).map((r) => r.tab_id).filter((id) => CC_TAB_IDS.includes(id));
-    if (tabs.length > 0) {
-      if (!tabs.includes('breakdowns') && CC_TAB_IDS.includes('breakdowns')) {
-        tabs = [...tabs, 'breakdowns'];
-      }
-      if (!tabs.includes('command_centre_settings') && CC_TAB_IDS.includes('command_centre_settings')) {
-        tabs = [...tabs, 'command_centre_settings'];
-      }
-    }
+    const tabs = (result.recordset || [])
+      .map((r) => getRow(r, 'tab_id'))
+      .filter((id) => id && CC_TAB_IDS.includes(id));
     res.json({ tabs });
   } catch (err) {
     next(err);
@@ -427,10 +434,18 @@ router.get('/permissions', requireSuperAdmin, async (req, res, next) => {
     );
     const byUser = {};
     for (const row of result.recordset || []) {
-      if (!byUser[row.user_id]) {
-        byUser[row.user_id] = { user_id: row.user_id, full_name: row.full_name, email: row.email, tabs: [] };
+      const userId = normalizeGrantUserId(getRow(row, 'user_id'));
+      const tabId = getRow(row, 'tab_id');
+      if (!userId || !tabId || !CC_TAB_IDS.includes(tabId)) continue;
+      if (!byUser[userId]) {
+        byUser[userId] = {
+          user_id: userId,
+          full_name: getRow(row, 'full_name'),
+          email: getRow(row, 'email'),
+          tabs: [],
+        };
       }
-      byUser[row.user_id].tabs.push(row.tab_id);
+      if (!byUser[userId].tabs.includes(tabId)) byUser[userId].tabs.push(tabId);
     }
     res.json({ permissions: Object.values(byUser), allTabIds: CC_TAB_IDS });
   } catch (err) {
@@ -442,13 +457,18 @@ router.get('/permissions', requireSuperAdmin, async (req, res, next) => {
 router.post('/permissions', requireSuperAdmin, async (req, res, next) => {
   try {
     const { user_id, tab_id } = req.body || {};
-    if (!user_id || !tab_id || !CC_TAB_IDS.includes(tab_id)) {
+    const userId = normalizeGrantUserId(user_id);
+    if (!userId || !tab_id || !CC_TAB_IDS.includes(tab_id)) {
       return res.status(400).json({ error: 'user_id and tab_id (valid tab) required' });
+    }
+    const grantedBy = parseGuid(req.user?.id);
+    if (!grantedBy) {
+      return res.status(400).json({ error: 'Invalid session user id' });
     }
     await query(
       `IF NOT EXISTS (SELECT 1 FROM command_centre_grants WHERE user_id = @userId AND tab_id = @tabId)
        INSERT INTO command_centre_grants (user_id, tab_id, granted_by_user_id) VALUES (@userId, @tabId, @grantedBy)`,
-      { userId: user_id, tabId: tab_id, grantedBy: req.user.id }
+      { userId, tabId: tab_id, grantedBy }
     );
     res.status(201).json({ granted: true });
   } catch (err) {
@@ -460,12 +480,13 @@ router.post('/permissions', requireSuperAdmin, async (req, res, next) => {
 router.delete('/permissions', requireSuperAdmin, async (req, res, next) => {
   try {
     const { user_id, tab_id } = req.query;
-    if (!user_id || !tab_id) {
+    const userId = normalizeGrantUserId(user_id);
+    if (!userId || !tab_id || !CC_TAB_IDS.includes(String(tab_id))) {
       return res.status(400).json({ error: 'user_id and tab_id query params required' });
     }
     const result = await query(
       `DELETE FROM command_centre_grants WHERE user_id = @userId AND tab_id = @tabId`,
-      { userId: user_id, tabId: tab_id }
+      { userId, tabId: String(tab_id) }
     );
     res.json({ revoked: (result.rowsAffected?.[0] ?? 0) > 0 });
   } catch (err) {
@@ -1872,6 +1893,41 @@ router.get('/rectors-with-routes', async (req, res, next) => {
       route_name: getRow(r, 'route_name') || '—',
     }));
     res.json({ rectors: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** SA vehicle / driver registry verification (MIE or NP Tracker — see .env.example). */
+router.get('/sa-verification/config', async (req, res) => {
+  res.json(getSaVerificationConfig());
+});
+
+router.get('/sa-verification/vehicle', async (req, res, next) => {
+  try {
+    const registration = req.query.registration || req.query.reg || req.query.plate;
+    const makeModel = req.query.makeModel || req.query.make_model;
+    const vin = req.query.vin;
+    const verification = await verifySaVehicle({
+      registration: registration != null ? String(registration) : '',
+      makeModel: makeModel != null ? String(makeModel) : undefined,
+      vin: vin != null ? String(vin) : undefined,
+    });
+    res.json({ verification });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/sa-verification/driver-license', async (req, res, next) => {
+  try {
+    const verification = await verifySaDriverLicense({
+      licenseNumber: req.query.licenseNumber || req.query.license_number,
+      idNumber: req.query.idNumber || req.query.id_number,
+      surname: req.query.surname,
+      barcode: req.query.barcode,
+    });
+    res.json({ verification });
   } catch (err) {
     next(err);
   }
@@ -3725,11 +3781,12 @@ router.get('/breakdowns/:id', async (req, res, next) => {
   }
 });
 
-/** PATCH resolve breakdown: set resolution_note, resolved_at; notify rector, driver, contractor */
+/** PATCH resolve breakdown: set resolution_note, resolved_at; optionally notify rectors; always notify driver & contractor when emails exist */
 router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
   try {
     const { id } = req.params;
     const resolutionNote = (req.body?.resolution_note ?? req.body?.resolutionNote ?? '').toString().trim();
+    const notifyRectors = parseNotifyRectorsFlag(req.body?.notify_rectors, req.body?.notifyRectors);
     if (!resolutionNote) return res.status(400).json({ error: 'Resolution note is required.' });
     const updateResult = await query(
       `UPDATE contractor_incidents SET resolved_at = SYSUTCDATETIME(), resolution_note = @resolution_note
@@ -3778,14 +3835,16 @@ router.patch('/breakdowns/:id/resolve', async (req, res, next) => {
     }
     (async () => {
       try {
-        if (!isEmailConfigured() || !sendEmail || !getCommandCentreAndRectorEmailsForRoute) return;
-        const ccRectorEmails = await getCommandCentreAndRectorEmailsForRoute(query, routeId);
-        const driverEmail = (row?.driver_email || '').trim();
-        const tenantId = row?.tenant_id || updated.tenant_id;
-        const contractorEmails = tenantId && incidentContractorId ? await getContractorUserEmails(query, tenantId, incidentContractorId) : [];
-        const allTo = [...new Set([...ccRectorEmails, ...(driverEmail ? [driverEmail] : []), ...contractorEmails])];
+        if (!isEmailConfigured() || !sendEmail) return;
+        const allTo = await getBreakdownResolvedEmailRecipients(query, {
+          notifyRectors,
+          routeId,
+          driverEmail: row?.driver_email,
+          tenantId: row?.tenant_id || updated.tenant_id,
+          contractorId: incidentContractorId,
+        });
         const mask = (e) => (e && e.includes('@') ? e.slice(0, 2) + '***@' + e.split('@')[1] : e);
-        console.log('[commandCentre] Breakdown resolved: CC/Rector=', ccRectorEmails.length, 'driver=', !!driverEmail, 'contractor=', contractorEmails.length, 'total=', allTo.length);
+        console.log('[commandCentre] Breakdown resolved: notifyRectors=', notifyRectors, 'total=', allTo.length);
         if (allTo.length === 0) return;
         const html = breakdownResolvedHtml({
           ref: `INC-${String(updated.id).replace(/-/g, '').slice(0, 8).toUpperCase()}`,
@@ -3903,6 +3962,10 @@ function getBreakdownAttachmentPath(row, type) {
   return null;
 }
 
+function breakdownAttachmentContentType(filePath) {
+  return attachmentContentType(filePath);
+}
+
 /** GET breakdown attachment file (view in browser / PDF generation). Works for open and resolved breakdowns. */
 router.get('/breakdowns/:id/attachments/:type', async (req, res, next) => {
   try {
@@ -3916,11 +3979,57 @@ router.get('/breakdowns/:id/attachments/:type', async (req, res, next) => {
     if (!row) return res.status(404).json({ error: 'Not found' });
     const filePath = getBreakdownAttachmentPath(row, type);
     if (!filePath || typeof filePath !== 'string') return res.status(404).json({ error: 'Attachment not found' });
-    const relativePath = String(filePath).replace(/^[/\\]+/, '').replace(/\\/g, path.sep);
-    const fullPath = path.join(process.cwd(), 'uploads', relativePath);
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found on server', code: 'FILE_NOT_ON_SERVER' });
+    const fullPath = resolveIncidentUploadPath(filePath);
+    if (!fullPath) return res.status(404).json({ error: 'File not found on server', code: 'FILE_NOT_ON_SERVER' });
+    res.type(breakdownAttachmentContentType(fullPath));
     res.sendFile(fullPath, { headers: { 'Content-Disposition': 'inline' } });
   } catch (err) {
+    next(err);
+  }
+});
+
+/** GET one fleet application with full truck or driver details */
+router.get('/fleet-applications/:id/np-tracker-report', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const report = await getFleetApplicationNpReport(query, id);
+    res.json({ report });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET saved NP Tracker PDF report (inline view / download) */
+router.get('/fleet-applications/:id/np-tracker-report/pdf', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const report = await getFleetApplicationNpReport(query, id);
+    if (!report?.pdfAvailable) return res.status(404).json({ error: 'NP Tracker report PDF not found. Run the check first.' });
+    const fullPath = resolveNpReportPdfPath(report.pdfStoredPath);
+    if (!fullPath) return res.status(404).json({ error: 'Report PDF file missing on server' });
+    const reg = String(report.registration || 'vehicle').replace(/[^a-zA-Z0-9-]/g, '_');
+    res.type('application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="np-tracker-${reg}.pdf"`);
+    fs.createReadStream(fullPath).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST run NP Tracker check, save JSON + dark PDF report for this application */
+router.post('/fleet-applications/:id/np-tracker-verify', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const application = await loadFleetApplicationDetail(query, id);
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const saved = await runAndSaveFleetApplicationNpReport(query, {
+      applicationId: id,
+      userId: req.user?.id,
+      applicationPayload: application,
+    });
+    res.json({ report: saved });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });

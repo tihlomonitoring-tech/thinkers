@@ -35,6 +35,8 @@ export const PATH_PAGE_IDS = {
 /** page_id values that also grant access to onboarding_admin screen */
 const PAGE_ROLE_ALIASES = {
   onboarding_admin: ['onboarding_admin', 'command_centre', 'management'],
+  /** Command Centre and management users open Profile → Productivity score from the CC dashboard. */
+  profile: ['profile', 'command_centre', 'management', 'team_leader_admin', 'performance_evaluations'],
 };
 
 export const ALL_PATHS_ORDER = ['/profile', '/operator-profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/operator-management', '/company-library', '/policy-development', '/quick-sign', '/users', '/tenants', '/contractor', '/command-centre', '/onboarding-admin', '/report-generation', '/office-admin', '/fuel-supply-management', '/fuel-customer-orders', '/fuel-data', '/access-management', '/rector', '/tasks', '/case-management', '/recruitment', '/letters', '/accounting-management', '/logistics-finance-management', '/tracking-management'];

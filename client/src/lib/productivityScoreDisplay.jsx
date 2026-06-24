@@ -5,6 +5,7 @@ export const SCORE_CATEGORIES = [
   'reportTiming',
   'teamProgress',
   'dailyPulse',
+  'performanceEvaluation',
 ];
 
 export const CAT_LABELS = {
@@ -14,6 +15,7 @@ export const CAT_LABELS = {
   reportTiming: 'Shift report hand-in timing',
   teamProgress: 'Team progress (objectives & ratings)',
   dailyPulse: 'Daily pulse (team leaders)',
+  performanceEvaluation: 'Employee & colleague performance evaluations',
 };
 
 export const CAT_LABELS_SHORT = {
@@ -23,6 +25,7 @@ export const CAT_LABELS_SHORT = {
   reportTiming: 'Report timing',
   teamProgress: 'Team progress',
   dailyPulse: 'Daily pulse',
+  performanceEvaluation: 'Performance evals',
 };
 
 function fmtDate(v) {
@@ -74,6 +77,19 @@ export function describeScoreEvent(ev, category) {
       if (d === 'pulse_missed') return `${pts} · Daily pulse missed (after deadline) · ${ev.shift_type} · ${fmtDate(ev.work_date)}`;
       if (d === 'pending') return `${pts} · Daily pulse pending · ${fmtDate(ev.work_date)}`;
       return `${pts} · ${d} · ${fmtDate(ev.work_date)}`;
+    case 'performanceEvaluation':
+      if (d === 'participation_given_met') return `${pts} · Gave ≥ ${ev.min_required ?? 5} peer evaluations · ${ev.period_title || 'period'}`;
+      if (d === 'participation_given_incomplete') return `${pts} · Gave ${ev.evaluations_given ?? 0}/${ev.min_required ?? 5} peer evaluations · ${ev.period_title || 'period'}`;
+      if (d === 'participation_received_met') return `${pts} · Received ≥ ${ev.min_required ?? 5} peer evaluations · ${ev.period_title || 'period'}`;
+      if (d === 'participation_received_incomplete') return `${pts} · Received ${ev.evaluations_received ?? 0}/${ev.min_required ?? 5} peer evaluations · ${ev.period_title || 'period'}`;
+      if (d === 'strong_peer_feedback') return `${pts} · Strong colleague feedback (avg ${ev.avg_score != null ? Number(ev.avg_score).toFixed(2) : '—'}/3) · ${ev.relationship_type || 'peer'}${ev.period_title ? ` · ${ev.period_title}` : ''}`;
+      if (d === 'satisfactory_peer_feedback') return `${pts} · Satisfactory colleague feedback (avg ${ev.avg_score != null ? Number(ev.avg_score).toFixed(2) : '—'}/3) · ${ev.relationship_type || 'peer'}`;
+      if (d === 'weak_peer_feedback') return `${pts} · Below-target colleague feedback (avg ${ev.avg_score != null ? Number(ev.avg_score).toFixed(2) : '—'}/3) · ${ev.relationship_type || 'peer'}`;
+      if (d === 'hr_excellent') return `${pts} · Management evaluation — excellent · ${ev.period || 'period'}${ev.at ? ` · ${fmtDateTime(ev.at)}` : ''}`;
+      if (d === 'hr_good') return `${pts} · Management evaluation — satisfactory · ${ev.period || 'period'}`;
+      if (d === 'hr_poor') return `${pts} · Management evaluation — needs improvement · ${ev.period || 'period'}`;
+      if (d === 'hr_neutral') return `${pts} · Management evaluation recorded · ${ev.period || 'period'}`;
+      return `${pts} · ${d}${ev.period_title ? ` · ${ev.period_title}` : ''}`;
     default:
       return `${pts} · ${d}`;
   }
@@ -102,6 +118,9 @@ export function ScoringRulesPanel({ scoring }) {
         </li>
         <li>
           Daily pulse: +{sc.dailyPulse?.onTime ?? 10} within {sc.dailyPulse?.withinHoursAfterShiftEnd ?? 12}h after shift end; {sc.dailyPulse?.missed ?? -30} if missed.
+        </li>
+        <li>
+          Performance evaluations: colleague feedback avg ≥ 2.5 → +{sc.performanceEvaluation?.receivedStrong ?? 15}; ≥ 2.0 → +{sc.performanceEvaluation?.receivedOk ?? 5}; below 2.0 → {sc.performanceEvaluation?.receivedWeak ?? -10}. Participation per period: give {sc.performanceEvaluation?.participation?.min_required ?? 5} peers (+{sc.performanceEvaluation?.participation?.given_complete_points ?? 5} / {sc.performanceEvaluation?.participation?.given_incomplete_points ?? -10}); receive {sc.performanceEvaluation?.participation?.min_required ?? 5} (+{sc.performanceEvaluation?.participation?.received_complete_points ?? 5} / {sc.performanceEvaluation?.participation?.received_incomplete_points ?? -5}). Management HR evaluations: excellent +{sc.performanceEvaluation?.hrExcellent ?? 20}, satisfactory +{sc.performanceEvaluation?.hrGood ?? 10}, needs improvement {sc.performanceEvaluation?.hrPoor ?? -20}.
         </li>
       </ul>
     </div>

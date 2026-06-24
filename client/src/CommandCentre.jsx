@@ -19,6 +19,7 @@ import { readCachedCcTabs, writeCachedCcTabs } from './lib/ccTabsCache.js';
 import { CollapsibleSectionHelp } from './components/CollapsibleSectionHelp.jsx';
 import InfoHint from './components/InfoHint.jsx';
 import ListFiltersBar, { FilterField, FILTER_INPUT_CLASS } from './components/ListFiltersBar.jsx';
+import { SaVehicleVerificationPanel } from './components/SaRegistryVerificationPanel.jsx';
 import { ShiftReportTextAssist, ShiftReportSummaryAssist } from './components/ShiftReportTextAssist.jsx';
 import { buildShiftReportAiPayload } from './lib/shiftReportAiContext.js';
 import { useShiftReportUndo } from './lib/useShiftReportUndo.js';
@@ -2330,7 +2331,7 @@ function TabBreakdowns() {
     if (!resolveModal?.breakdown?.id || !(resolveModal.resolutionNote || '').trim()) return;
     const note = resolveModal.resolutionNote.trim();
     ccApi.breakdowns
-      .resolve(resolveModal.breakdown.id, note)
+      .resolve(resolveModal.breakdown.id, note, { notifyRectors: resolveModal.notifyRectors === true })
       .then(() => {
         setResolveModal(null);
         loadList();
@@ -2383,38 +2384,21 @@ function TabBreakdowns() {
     try {
       const detail = b.id === selectedBreakdown?.id ? selectedBreakdown : await ccApi.breakdowns.get(b.id).then((r) => r.breakdown);
       const ref = breakdownRef(b.id);
-      const truckName = detail.truck_registration || '—';
-      const driverName = detail.driver_name || '—';
-      const routeName = detail.route_name || null;
-      const typeLabel = breakdownTypeLabel(detail.type);
-      const attachmentLabels = INCIDENT_ATTACHMENT_LABELS.filter((a) => detail[a.pathKey]).map((a) => a.label);
-      if (detail.offloading_slip_path) attachmentLabels.push('Offloading slip');
-      const tenantId = detail.tenant_id;
-      const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId });
-      const attachmentImages = [];
-      for (const { type, pathKey } of INCIDENT_ATTACHMENT_LABELS) {
-        if (!detail[pathKey]) continue;
-        try {
-          const blob = await fetch(ccApi.breakdowns.attachmentUrl(b.id, type), { credentials: 'include' }).then((r) => (r.ok ? r.blob() : null));
-          if (blob && blob.type && blob.type.startsWith('image/')) {
-            const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onloadend = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
-            attachmentImages.push({ label: INCIDENT_ATTACHMENT_LABELS.find((a) => a.type === type)?.label || type, dataUrl });
-          }
-        } catch (_) {}
-      }
-      const { generateBreakdownPdf } = await import('./lib/breakdownPdfReport.js');
-      const doc = generateBreakdownPdf({
+      const { buildBreakdownPdfDocument } = await import('./lib/breakdownPdfReport.js');
+      const doc = await buildBreakdownPdfDocument({
         incident: detail,
         ref,
-        truckName,
-        driverName,
-        typeLabel,
-        routeName,
-        attachmentLabels,
-        attachmentImages,
+        truckName: detail.truck_registration || '—',
+        driverName: detail.driver_name || '—',
+        typeLabel: breakdownTypeLabel(detail.type),
+        routeName: detail.route_name || null,
+        tenantId: detail.tenant_id,
+        fetchAttachmentBlob: async (type) => {
+          const r = await fetch(ccApi.breakdowns.attachmentUrl(b.id, type), { credentials: 'include' });
+          return r.ok ? r.blob() : null;
+        },
         formatDateTime,
         formatDate: formatDateShort,
-        logoDataUrl: logoDataUrl || undefined,
       });
       doc.save(`${ref}-report.pdf`);
     } catch (e) {
@@ -2441,7 +2425,7 @@ function TabBreakdowns() {
           setOpen={setBreakdownsHelpOpen}
           topic="reported breakdowns"
         >
-          <p>View all reported breakdowns. Click a row to open details in the side panel. Resolve with resolution notes; rector, driver and contractor are notified by email.</p>
+          <p>View all reported breakdowns. Click a row to open details in the side panel. Resolve with resolution notes; you can choose whether to notify rectors. Driver and contractor are always emailed when resolving.</p>
         </CollapsibleSectionHelp>
         {error && <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 px-4 py-2 text-sm">{error}</div>}
 
@@ -2624,7 +2608,7 @@ function TabBreakdowns() {
 
                   <div className="flex flex-col gap-2 pt-2 border-t border-surface-200">
                     {!selectedBreakdown.resolved_at && (
-                      <button type="button" onClick={() => { setResolveModal({ breakdown: selectedBreakdown, resolutionNote: '' }); }} className="w-full py-2.5 px-4 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700">Resolve</button>
+                      <button type="button" onClick={() => { setResolveModal({ breakdown: selectedBreakdown, resolutionNote: '', notifyRectors: true }); }} className="w-full py-2.5 px-4 text-sm font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700">Resolve</button>
                     )}
                     <button type="button" onClick={() => downloadPdf(selectedBreakdown)} disabled={downloadingPdf} className="w-full py-2.5 px-4 text-sm font-medium rounded-lg border border-brand-200 text-brand-700 hover:bg-brand-50 disabled:opacity-50">Download PDF report</button>
                   </div>
@@ -2640,12 +2624,31 @@ function TabBreakdowns() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setResolveModal(null)}>
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-semibold text-surface-900 mb-2">Resolve breakdown</h3>
-            <p className="text-sm text-surface-600 mb-3">{breakdownRef(resolveModal.breakdown?.id)} – {resolveModal.breakdown?.title || 'Incident'}. Resolution notes are required. Only rectors for this breakdown’s route (if any), plus driver and contractor, will be notified by email. If no route is linked, use “Notify rector” after saving to select who to notify.</p>
+            <p className="text-sm text-surface-600 mb-3">
+              {breakdownRef(resolveModal.breakdown?.id)} – {resolveModal.breakdown?.title || 'Incident'}. Resolution notes are required.
+              The driver and contractor will always be emailed when their addresses are on file.
+            </p>
             <label className="block text-sm font-medium text-surface-700 mb-1">Resolution notes *</label>
             <textarea value={resolveModal.resolutionNote} onChange={(e) => setResolveModal((m) => ({ ...m, resolutionNote: e.target.value }))} placeholder="Enter resolution details…" rows={4} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <label className="mt-4 flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={resolveModal.notifyRectors === true}
+                onChange={(e) => setResolveModal((m) => ({ ...m, notifyRectors: e.target.checked }))}
+                className="mt-0.5 rounded border-surface-300"
+              />
+              <span className="text-sm text-surface-700">
+                <span className="font-medium text-surface-900">Notify rector(s)</span>
+                <span className="block text-xs text-surface-500 mt-0.5">
+                  When checked, route rectors assigned to this breakdown are emailed. Uncheck to resolve without notifying any assigned rector (route contacts, rector page users, or route-factor emails).
+                </span>
+              </span>
+            </label>
             <div className="flex gap-2 mt-4">
               <button type="button" onClick={() => setResolveModal(null)} className="px-3 py-2 rounded-lg border border-surface-300 text-surface-700 text-sm font-medium hover:bg-surface-50">Cancel</button>
-              <button type="button" onClick={handleResolveSubmit} disabled={!(resolveModal.resolutionNote || '').trim()} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">Save & notify</button>
+              <button type="button" onClick={handleResolveSubmit} disabled={!(resolveModal.resolutionNote || '').trim()} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                {resolveModal.notifyRectors === true ? 'Save & notify rectors' : 'Save resolution'}
+              </button>
             </div>
           </div>
         </div>
@@ -9706,6 +9709,10 @@ function TabApplications() {
             View all contract additions (including imports). Review full details, then approve to grant facility access or decline with a
             reason so the contractor knows why the addition was not approved.
           </p>
+          <p>
+            For truck applications, use <strong>Run NP Tracker check</strong> when you want to verify the registration. A dark-theme PDF
+            report is saved on the server — use <strong>View PDF report</strong> later without re-running the check.
+          </p>
         </CollapsibleSectionHelp>
 
         <div className="flex gap-2 border-b border-surface-200">
@@ -10061,7 +10068,18 @@ function TabApplications() {
                   {detail.entityType === 'truck' && detail.entity && (
                     <div className="border-t border-surface-200 pt-3 space-y-2">
                       <p className="font-medium text-surface-900">Truck details</p>
-                      <p className="text-surface-600"><span className="text-surface-500">Registration:</span> {detail.entity.registration || '—'}</p>
+                      <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">SA register check (NP Tracker)</p>
+                      <SaVehicleVerificationPanel
+                        autoRun={false}
+                        fleetApplicationId={detail.id}
+                        fleetApplicationsApi={ccApi.fleetApplications}
+                        registration={detail.entity.registration}
+                        makeModel={detail.entity.make_model}
+                      />
+                      <p className="text-surface-600 flex items-center gap-2 flex-wrap">
+                        <span className="text-surface-500">Registration:</span>
+                        <span>{detail.entity.registration || '—'}</span>
+                      </p>
                       <p className="text-surface-600"><span className="text-surface-500">Make / model:</span> {detail.entity.make_model || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">Year model:</span> {detail.entity.year_model || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">Ownership:</span> {detail.entity.ownership_desc || '—'}</p>
@@ -10080,6 +10098,9 @@ function TabApplications() {
                   {detail.entityType === 'driver' && detail.entity && (
                     <div className="border-t border-surface-200 pt-3 space-y-2">
                       <p className="font-medium text-surface-900">Driver details</p>
+                      <p className="text-xs text-surface-500 rounded-lg bg-surface-50 border border-surface-200 px-3 py-2">
+                        Registry verification for drivers will be added when MIE is configured. Review licence and ID details manually for now.
+                      </p>
                       <p className="text-surface-600"><span className="text-surface-500">Name:</span> {detail.entity.full_name || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">Surname:</span> {detail.entity.surname || '—'}</p>
                       <p className="text-surface-600"><span className="text-surface-500">ID number:</span> {detail.entity.id_number || '—'}</p>
@@ -11187,10 +11208,19 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
   const [adminPanel, setAdminPanel] = useState('tab_access');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(null);
+  const [accessError, setAccessError] = useState('');
   const [aiEnabled, setAiEnabled] = useState(true);
   const [aiConfigured, setAiConfigured] = useState(false);
   const [aiSaving, setAiSaving] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
+
+  const normUserId = (id) => (id == null ? '' : String(id).trim().toLowerCase());
+
+  const reloadPermissions = () =>
+    ccApi.permissions().then((permRes) => {
+      setPermissions(permRes.permissions || []);
+      return permRes.permissions || [];
+    });
 
   const canManageAi =
     user?.role === 'super_admin' || user?.role === 'tenant_admin';
@@ -11202,6 +11232,7 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
       .then(([permRes, usersRes]) => {
         setPermissions(permRes.permissions || []);
         setUsers(usersRes.users || []);
+        setAccessError('');
       })
       .catch(() => setPermissions([]))
       .finally(() => setLoading(false));
@@ -11220,30 +11251,34 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
 
   const handleGrant = (userId, tabId) => {
     setSaving(`${userId}-${tabId}`);
+    setAccessError('');
     ccApi.grantPermission(userId, tabId)
-      .then(() => {
-        setPermissions((prev) => {
-          const next = prev.map((p) => (p.user_id === userId ? { ...p, tabs: [...(p.tabs || []), tabId] } : p));
-          if (!next.find((p) => p.user_id === userId)) next.push({ user_id: userId, full_name: '', email: '', tabs: [tabId] });
-          return next;
-        });
-      })
+      .then(() => reloadPermissions())
+      .catch((err) => setAccessError(err?.message || 'Failed to grant access'))
       .finally(() => setSaving(null));
   };
 
   const handleRevoke = (userId, tabId) => {
     setSaving(`${userId}-${tabId}`);
+    setAccessError('');
     ccApi.revokePermission(userId, tabId)
-      .then(() => {
-        setPermissions((prev) => prev.map((p) => (p.user_id === userId ? { ...p, tabs: (p.tabs || []).filter((t) => t !== tabId) } : p)));
+      .then((res) => {
+        if (res?.revoked === false) {
+          throw new Error('No matching tab grant was found to revoke');
+        }
+        return reloadPermissions();
       })
+      .catch((err) => setAccessError(err?.message || 'Failed to revoke access'))
       .finally(() => setSaving(null));
   };
 
   if (!isSuperAdmin) return null;
   if (loading && adminPanel === 'tab_access') return <p className="text-surface-500">Loading permissions…</p>;
 
-  const permByUser = (permissions || []).reduce((acc, p) => { acc[p.user_id] = p; return acc; }, {});
+  const permByUser = (permissions || []).reduce((acc, p) => {
+    acc[normUserId(p.user_id)] = p;
+    return acc;
+  }, {});
 
   return (
     <div className="space-y-6">
@@ -11310,6 +11345,12 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
       {adminPanel === 'tab_access' && (
         <>
       <p className="text-sm text-surface-600">Grant or revoke Command Centre tab access for users. Only super admins see this.</p>
+      {accessError && (
+        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex justify-between gap-2">
+          <span>{accessError}</span>
+          <button type="button" onClick={() => setAccessError('')} className="shrink-0 text-red-800 hover:underline">Dismiss</button>
+        </div>
+      )}
       <div className="app-glass-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -11325,7 +11366,7 @@ function ManageTabAccess({ isSuperAdmin, permissions, setPermissions, users, set
             </thead>
             <tbody>
               {(users || []).map((u) => {
-                const grants = permByUser[u.id]?.tabs || [];
+                const grants = permByUser[normUserId(u.id)]?.tabs || [];
                 return (
                   <tr key={u.id} className="border-b border-surface-100">
                     <td className="px-4 py-2">

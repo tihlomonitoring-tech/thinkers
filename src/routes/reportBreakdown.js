@@ -6,6 +6,7 @@ import { query } from '../db.js';
 import { getCommandCentreAndRectorEmailsForRoute } from '../lib/emailRecipients.js';
 import { breakdownReportHtml, breakdownConfirmationToDriverHtml } from '../lib/emailTemplates.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, parseDateTimeInAppTz } from '../lib/emailService.js';
+import { incidentAttachmentRelPath, resolveIncidentUploadPath, attachmentContentType } from '../lib/incidentUploadPaths.js';
 
 const router = Router();
 const uploadDir = path.join(process.cwd(), 'uploads', 'incidents');
@@ -184,17 +185,15 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
     const insertedRow = result.recordset[0];
     const incidentId = insertedRow.id;
 
-    const dir = path.join(uploadDir, tenantId);
+    const dir = path.join(uploadDir, parseGuid(tenantId) || tenantId);
     fs.mkdirSync(dir, { recursive: true });
-    const ext = (name) => (path.extname(name) || '.bin').replace(/[^a-zA-Z0-9.]/g, '');
-    const rel = (file, key) => `incidents/${tenantId}/${incidentId}_${key}${ext(file.originalname)}`;
     const full = (relative) => path.join(process.cwd(), 'uploads', relative);
     const write = (file, relative) => fs.writeFileSync(full(relative), file.buffer);
 
-    const loadingSlipPath = rel(loadingSlip, 'loading_slip');
-    const seal1Path = rel(seal1, 'seal_1');
-    const seal2Path = rel(seal2, 'seal_2');
-    const picturePath = rel(pictureProblem, 'picture_problem');
+    const loadingSlipPath = incidentAttachmentRelPath(tenantId, incidentId, 'loading_slip', loadingSlip.originalname);
+    const seal1Path = incidentAttachmentRelPath(tenantId, incidentId, 'seal_1', seal1.originalname);
+    const seal2Path = incidentAttachmentRelPath(tenantId, incidentId, 'seal_2', seal2.originalname);
+    const picturePath = incidentAttachmentRelPath(tenantId, incidentId, 'picture_problem', pictureProblem.originalname);
     write(loadingSlip, loadingSlipPath);
     write(seal1, seal1Path);
     write(seal2, seal2Path);

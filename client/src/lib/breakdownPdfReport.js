@@ -1,4 +1,152 @@
 import { jsPDF } from 'jspdf';
+import { loadShiftReportLogoDataUrl } from './shiftReportLogo.js';
+
+export const BREAKDOWN_ATTACHMENT_DEFS = [
+  { type: 'loading_slip', label: 'Loading slip', pathKey: 'loading_slip_path' },
+  { type: 'seal_1', label: 'Seal 1', pathKey: 'seal_1_path' },
+  { type: 'seal_2', label: 'Seal 2', pathKey: 'seal_2_path' },
+  { type: 'picture_problem', label: 'Picture of the problem', pathKey: 'picture_problem_path' },
+];
+
+function getAttachmentPath(row, pathKey) {
+  if (!row) return null;
+  const v = row[pathKey] ?? row[pathKey.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
+  if (v != null && v !== '') return String(v);
+  const lower = pathKey.toLowerCase().replace(/_/g, '');
+  for (const [k, val] of Object.entries(row)) {
+    if (k && k.toLowerCase().replace(/_/g, '') === lower && val != null && val !== '') return String(val);
+  }
+  return null;
+}
+
+const ALL_BREAKDOWN_ATTACHMENT_DEFS = [
+  ...BREAKDOWN_ATTACHMENT_DEFS,
+  { type: 'offloading_slip', label: 'Offloading slip', pathKey: 'offloading_slip_path' },
+];
+
+let pdfjsModule = null;
+async function getPdfjs() {
+  if (!pdfjsModule) {
+    pdfjsModule = await import('pdfjs-dist');
+    pdfjsModule.GlobalWorkerOptions.workerSrc = new URL(
+      'pdfjs-dist/build/pdf.worker.min.mjs',
+      import.meta.url
+    ).toString();
+  }
+  return pdfjsModule;
+}
+
+async function pdfBlobToJpegDataUrl(blob) {
+  const pdfjs = await getPdfjs();
+  const buf = await blob.arrayBuffer();
+  const doc = await pdfjs.getDocument({ data: buf }).promise;
+  const page = await doc.getPage(1);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(1200 / baseViewport.width, 1.5);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+async function blobToRenderableImageDataUrl(blob, filePathHint = '') {
+  if (!blob || blob.size === 0) return null;
+  const hint = String(filePathHint || '');
+  const hintIsPdf = /\.pdf$/i.test(hint);
+  const hintIsImage = /\.(jpe?g|png|gif|webp|bmp)$/i.test(hint);
+  const blobIsPdf = (blob.type && blob.type.includes('pdf')) || hintIsPdf;
+
+  if (blobIsPdf) {
+    try {
+      return await pdfBlobToJpegDataUrl(blob);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  let dataUrl = await blobToDataUrl(blob);
+  if (/^data:image\//i.test(dataUrl)) return dataUrl;
+
+  if (hintIsImage || (blob.type && blob.type.startsWith('image/'))) {
+    const ext = (hint.match(/\.(\w+)$/i)?.[1] || '').toLowerCase();
+    const mimeByExt = {
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      bmp: 'image/bmp',
+    };
+    const mime = mimeByExt[ext] || (blob.type?.startsWith('image/') ? blob.type : null);
+    if (mime && /^data:[^;]+;base64,/.test(dataUrl)) {
+      dataUrl = dataUrl.replace(/^data:[^;]+/, `data:${mime}`);
+      if (/^data:image\//i.test(dataUrl)) return dataUrl;
+    }
+  }
+
+  return null;
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Build a breakdown PDF document (shared by Command Centre and Contractor).
+ * Loads tenant/CC logo, embeds image attachments, then renders the report layout.
+ */
+export async function buildBreakdownPdfDocument({
+  incident,
+  ref,
+  truckName,
+  driverName,
+  typeLabel,
+  routeName,
+  tenantId,
+  fetchAttachmentBlob,
+  formatDateTime,
+  formatDate,
+}) {
+  const logoDataUrl = await loadShiftReportLogoDataUrl({ tenantId });
+  const attachmentLabels = ALL_BREAKDOWN_ATTACHMENT_DEFS
+    .filter((a) => getAttachmentPath(incident, a.pathKey))
+    .map((a) => a.label);
+
+  const attachmentImages = [];
+  for (const { type, pathKey, label } of ALL_BREAKDOWN_ATTACHMENT_DEFS) {
+    const filePath = getAttachmentPath(incident, pathKey);
+    if (!filePath) continue;
+    try {
+      const blob = await fetchAttachmentBlob(type);
+      if (!blob) continue;
+      const dataUrl = await blobToRenderableImageDataUrl(blob, filePath);
+      if (dataUrl) attachmentImages.push({ label, dataUrl });
+    } catch (_) { /* skip failed attachment */ }
+  }
+
+  return generateBreakdownPdf({
+    incident,
+    ref,
+    truckName,
+    driverName,
+    typeLabel,
+    routeName,
+    attachmentLabels,
+    attachmentImages,
+    formatDateTime,
+    formatDate,
+    logoDataUrl: logoDataUrl || undefined,
+  });
+}
 
 const MARGIN = 18;
 const PAGE_WIDTH = 210;

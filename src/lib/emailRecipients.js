@@ -3,6 +3,31 @@
  * @param {Function} query - db query function (query(sql, params))
  */
 
+function normalizeEmailKey(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function addEmailToSet(set, email) {
+  const key = normalizeEmailKey(email);
+  if (key && key.includes('@')) set.add(key);
+}
+
+/** Parse notify_rectors API flag. Default true when omitted. */
+export function parseNotifyRectorsFlag(...values) {
+  for (const v of values) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string') {
+      const s = v.trim().toLowerCase();
+      if (s === 'false' || s === '0' || s === 'no') return false;
+      if (s === 'true' || s === '1' || s === 'yes') return true;
+      continue;
+    }
+    if (v === false || v === 0) return false;
+    if (v === true || v === 1) return true;
+  }
+  return true;
+}
+
 /** All users who have Command Centre access (tab grant or page), or Rector/Access Management page, or are route factors. */
 export async function getCommandCentreAndRectorEmails(query) {
   const emails = new Set();
@@ -62,7 +87,7 @@ export async function getCommandCentreAndRectorEmails(query) {
   return list;
 }
 
-/** All users who are rectors (rector page role or in access_route_factors). Use to exclude from notifications that must not go to rectors (e.g. fleet/driver added by contractor). */
+/** All assigned rector emails: rector page role, route-factor users, and factor contact emails. */
 export async function getAllRectorEmails(query) {
   const emails = new Set();
   const getRowEmail = (row) => {
@@ -77,16 +102,21 @@ export async function getAllRectorEmails(query) {
        WHERE r.page_id = N'rector' AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
     );
     for (const row of pageResult?.recordset ?? []) {
-      const e = getRowEmail(row);
-      if (e) emails.add(e);
+      addEmailToSet(emails, getRowEmail(row));
     }
-    const factorsResult = await query(
+    const factorsUserResult = await query(
       `SELECT DISTINCT u.email FROM access_route_factors f INNER JOIN users u ON u.id = f.user_id
        WHERE f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`
     );
-    for (const row of factorsResult?.recordset ?? []) {
-      const e = getRowEmail(row);
-      if (e) emails.add(e);
+    for (const row of factorsUserResult?.recordset ?? []) {
+      addEmailToSet(emails, getRowEmail(row));
+    }
+    const factorsDirectResult = await query(
+      `SELECT DISTINCT f.email FROM access_route_factors f
+       WHERE f.email IS NOT NULL AND LTRIM(RTRIM(f.email)) <> N''`
+    );
+    for (const row of factorsDirectResult?.recordset ?? []) {
+      addEmailToSet(emails, getRowEmail(row));
     }
   } catch (err) {
     console.warn('[emailRecipients] getAllRectorEmails:', err?.message || err);
@@ -145,6 +175,61 @@ export async function getRectorEmailsForAlertType(query, alertType) {
     console.warn('[emailRecipients] getRectorEmailsForAlertType:', err?.message || err);
   }
   return Array.from(emails);
+}
+
+/** Rector emails assigned to a route only (access_route_factors users + contact emails). */
+export async function getRectorEmailsForRoute(query, routeId) {
+  if (routeId == null || routeId === '') return [];
+  const emails = new Set();
+  const getRowEmail = (row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = Object.keys(row).find((k) => k.toLowerCase() === 'email');
+    const e = (key ? row[key] : row.email ?? row.Email ?? '').toString().trim();
+    return e && e.includes('@') ? e : null;
+  };
+  const add = (e) => {
+    const key = normalizeEmailKey(e);
+    if (key && key.includes('@')) emails.set(key, String(e).trim());
+  };
+  try {
+    const userResult = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.route_id = @routeId AND f.user_id IS NOT NULL AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`,
+      { routeId }
+    );
+    for (const row of userResult?.recordset ?? []) {
+      add(getRowEmail(row));
+    }
+    const directResult = await query(
+      `SELECT DISTINCT f.email FROM access_route_factors f
+       WHERE f.route_id = @routeId AND f.email IS NOT NULL AND LTRIM(RTRIM(f.email)) <> N''`,
+      { routeId }
+    );
+    for (const row of directResult?.recordset ?? []) {
+      add(getRowEmail(row));
+    }
+  } catch (err) {
+    console.warn('[emailRecipients] getRectorEmailsForRoute:', err?.message || err);
+  }
+  return Array.from(emails.values());
+}
+
+/** Recipients for breakdown-resolved emails from Command Centre. */
+export async function getBreakdownResolvedEmailRecipients(query, { notifyRectors, routeId, driverEmail, tenantId, contractorId }) {
+  const rectorRouteEmails = notifyRectors ? await getRectorEmailsForRoute(query, routeId) : [];
+  const contractorEmails = tenantId && contractorId ? await getContractorUserEmails(query, tenantId, contractorId) : [];
+  const driver = String(driverEmail || '').trim();
+  let allTo = [...new Set([
+    ...rectorRouteEmails,
+    ...(driver && driver.includes('@') ? [driver] : []),
+    ...contractorEmails,
+  ])];
+  if (!notifyRectors) {
+    const rectorBlocklist = new Set(await getAllRectorEmails(query));
+    allTo = allTo.filter((e) => e && !rectorBlocklist.has(normalizeEmailKey(e)));
+  }
+  return allTo;
 }
 
 /**

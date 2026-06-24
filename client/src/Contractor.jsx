@@ -5,10 +5,9 @@ import { useAuth } from './AuthContext';
 import { canAccessPage } from './lib/pageAccess.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
-import { contractor as contractorApi, tenants as tenantsApi, openAttachmentWithAuth, tabAccess as tabAccessApi, users as usersApi } from './api';
+import { contractor as contractorApi, openAttachmentWithAuth, tabAccess as tabAccessApi, users as usersApi } from './api';
 import { parseExcelFile, downloadTruckTemplate, downloadDriverTemplate, downloadConsolidatedTemplate, parseConsolidatedFile } from './lib/excelImport.js';
-import JSZip from 'jszip';
-import { generateBreakdownPdf } from './lib/breakdownPdfReport.js';
+import { buildBreakdownPdfDocument } from './lib/breakdownPdfReport.js';
 import SubcontractorFleetsTab from './contractor/SubcontractorFleetsTab.jsx';
 import FleetAdvancedView from './contractor/FleetAdvancedView.jsx';
 import BulkFleetEditPanel from './contractor/BulkFleetEditPanel.jsx';
@@ -491,7 +490,6 @@ export default function Contractor() {
   const resolveFormRef = useRef(null);
   const offloadingSlipRef = useRef(null);
   const [attachmentLoading, setAttachmentLoading] = useState(null); // type being loaded
-  const [downloadingReport, setDownloadingReport] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [uploadingOffloadingSlip, setUploadingOffloadingSlip] = useState(false);
   const offloadingSlipLaterRef = useRef(null);
@@ -826,12 +824,30 @@ export default function Contractor() {
     return '.bin';
   }
 
+  function mimeForAttachmentType(type) {
+    return type === 'offloading_slip' ? 'application/pdf' : 'image/jpeg';
+  }
+
+  function normalizeAttachmentBlob(blob, type, pathValue) {
+    if (!blob) return blob;
+    if (blob.type) return blob;
+    const hint = String(pathValue || '').toLowerCase();
+    if (hint.endsWith('.pdf')) return new Blob([blob], { type: 'application/pdf' });
+    if (hint.endsWith('.png')) return new Blob([blob], { type: 'image/png' });
+    if (hint.endsWith('.gif')) return new Blob([blob], { type: 'image/gif' });
+    if (hint.endsWith('.webp')) return new Blob([blob], { type: 'image/webp' });
+    return new Blob([blob], { type: mimeForAttachmentType(type) });
+  }
+
   const viewAttachment = async (type) => {
     if (!incidentForPanel?.id) return;
     setAttachmentLoading(type);
     setError('');
     try {
-      const blob = await contractorApi.incidents.getAttachmentBlob(incidentForPanel.id, type);
+      const pathKey = INCIDENT_ATTACHMENTS.find((a) => a.type === type)?.pathKey
+        || (type === 'offloading_slip' ? 'offloading_slip_path' : null);
+      const raw = await contractorApi.incidents.getAttachmentBlob(incidentForPanel.id, type);
+      const blob = normalizeAttachmentBlob(raw, type, pathKey ? getIncidentPath(incidentForPanel, pathKey) : null);
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank', 'noopener');
       setTimeout(() => URL.revokeObjectURL(url), 60000);
@@ -847,7 +863,10 @@ export default function Contractor() {
     setAttachmentLoading(type);
     setError('');
     try {
-      const blob = await contractorApi.incidents.getAttachmentBlob(incidentForPanel.id, type);
+      const pathKey = INCIDENT_ATTACHMENTS.find((a) => a.type === type)?.pathKey
+        || (type === 'offloading_slip' ? 'offloading_slip_path' : null);
+      const raw = await contractorApi.incidents.getAttachmentBlob(incidentForPanel.id, type);
+      const blob = normalizeAttachmentBlob(raw, type, pathKey ? getIncidentPath(incidentForPanel, pathKey) : null);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -861,126 +880,38 @@ export default function Contractor() {
     }
   };
 
-  const downloadFullReport = async () => {
-    if (!incidentForPanel?.id) return;
-    setDownloadingReport(true);
-    setError('');
-    try {
-      const zip = new JSZip();
-      const i = incidentForPanel;
-      const truck = trucksList.find((t) => String(t.id || '').toLowerCase() === String(i.truck_id || '').toLowerCase());
-      const driver = driversList.find((d) => String(d.id || '').toLowerCase() === String(i.driver_id || '').toLowerCase());
-      const truckName = (i.truck_id && truck && truck.registration) ? truck.registration : '';
-      const driverName = (i.driver_id && driver && driver.full_name) ? driver.full_name : '';
-      const reportText = [
-        `Incident Report: ${i.title}`,
-        `Type: ${i.type}`,
-        `Severity: ${i.severity || '—'}`,
-        `Reported: ${formatDate(i.reported_at)}`,
-        `Truck: ${truckName || '—'}`,
-        `Driver: ${driverName || '—'}`,
-        '',
-        'Description:',
-        i.description || '—',
-        '',
-        'Actions taken:',
-        i.actions_taken || '—',
-        '',
-        i.resolved_at ? `Resolved: ${formatDate(i.resolved_at)}` : 'Status: Open',
-      ].join('\n');
-      zip.file('report.txt', reportText);
-      for (const { type, label, pathKey } of INCIDENT_ATTACHMENTS) {
-        if (!getIncidentPath(i, pathKey)) continue;
-        const blob = await contractorApi.incidents.getAttachmentBlob(i.id, type);
-        const ext = extFromBlob(blob);
-        zip.file(`${label.replace(/\s+/g, '_')}${ext}`, blob);
-      }
-      const content = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(content);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `incident-report-${i.id.slice(0, 8)}.zip`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDownloadingReport(false);
-    }
-  };
-
-  const downloadPdfReport = () => {
+  const downloadPdfReport = async () => {
     if (!incidentForPanel?.id) return;
     setDownloadingPdf(true);
     setError('');
-    const runPdf = (logoDataUrl, attachmentImages = []) => {
-      try {
-        const i = incidentForPanel;
-        const truck = trucksList.find((t) => String(t.id || '').toLowerCase() === String(i.truck_id || '').toLowerCase());
-        const driver = driversList.find((d) => String(d.id || '').toLowerCase() === String(i.driver_id || '').toLowerCase());
-        const truckName = (i.truck_id && truck && truck.registration) ? truck.registration : '—';
-        const driverName = (i.driver_id && driver && driver.full_name) ? driver.full_name : '—';
-        const attachmentLabels = INCIDENT_ATTACHMENTS.filter(({ pathKey }) => getIncidentPath(i, pathKey)).map(({ label }) => label);
-        if (getIncidentField(i, 'offloading_slip_path')) attachmentLabels.push('Offloading slip');
-        const routeId = getIncidentField(i, 'route_id');
-        const route = (data.routes || []).find((r) => String(r.id) === String(routeId));
-        const routeName = route?.name || null;
-        const doc = generateBreakdownPdf({
-          incident: i,
-          ref: incidentRef(i),
-          truckName,
-          driverName,
-          typeLabel: incidentTypeLabel(getIncidentField(i, 'type')),
-          routeName,
-          attachmentLabels,
-          attachmentImages,
-          formatDateTime,
-          formatDate,
-          logoDataUrl: logoDataUrl || undefined,
-        });
-        doc.save(`${incidentRef(i)}-report.pdf`);
-      } catch (err) {
-        setError(err?.message || 'Failed to generate PDF');
-      } finally {
-        setDownloadingPdf(false);
-      }
-    };
-    const tihloLogoFallback = () =>
-      fetch('/logos/tihlo-logo.png', { credentials: 'include' })
-        .then((r) => (r.ok ? r.blob() : null))
-        .then((blob) => (blob ? new Promise((resolve, reject) => { const r = new FileReader(); r.onloadend = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); }) : null))
-        .catch(() => null);
-
-    const resolveLogo = (tenantId) => {
-      if (tenantId) {
-        return fetch(tenantsApi.logoUrl(tenantId), { credentials: 'include' })
-          .then((r) => (r.ok ? r.blob() : null))
-          .then((blob) => (blob ? new Promise((resolve, reject) => { const r = new FileReader(); r.onloadend = () => resolve(r.result); r.onerror = () => resolve(null); r.readAsDataURL(blob); }) : null))
-          .catch(() => null)
-          .then((dataUrl) => dataUrl || tihloLogoFallback());
-      }
-      return tihloLogoFallback();
-    };
-
-    const resolveAttachmentImages = async (incidentId) => {
-      const out = [];
-      for (const { type, label, pathKey } of INCIDENT_ATTACHMENTS) {
-        if (!getIncidentPath(incidentForPanel, pathKey)) continue;
-        try {
-          const blob = await contractorApi.incidents.getAttachmentBlob(incidentId, type);
-          if (blob && blob.type && blob.type.startsWith('image/')) {
-            const dataUrl = await new Promise((resolve, reject) => { const r = new FileReader(); r.onloadend = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
-            out.push({ label, dataUrl });
+    try {
+      const fresh = await contractorApi.incidents.get(incidentForPanel.id);
+      const detail = fresh?.incident || incidentForPanel;
+      const ref = incidentRef(detail);
+      const doc = await buildBreakdownPdfDocument({
+        incident: detail,
+        ref,
+        truckName: detail.truck_registration || '—',
+        driverName: detail.driver_name || '—',
+        typeLabel: incidentTypeLabel(getIncidentField(detail, 'type')),
+        routeName: detail.route_name || null,
+        tenantId: user?.tenant_id,
+        fetchAttachmentBlob: async (type) => {
+          try {
+            return await contractorApi.incidents.getAttachmentBlob(detail.id, type);
+          } catch (_) {
+            return null;
           }
-        } catch (_) { /* skip failed attachment */ }
-      }
-      return out;
-    };
-
-    resolveLogo(user?.tenant_id)
-      .then((logoDataUrl) => resolveAttachmentImages(incidentForPanel.id).then((attachmentImages) => ({ logoDataUrl, attachmentImages })))
-      .then(({ logoDataUrl, attachmentImages }) => runPdf(logoDataUrl, attachmentImages))
-      .catch(() => runPdf(null, []));
+        },
+        formatDateTime,
+        formatDate,
+      });
+      doc.save(`${ref}-report.pdf`);
+    } catch (err) {
+      setError(err?.message || 'Failed to generate PDF');
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   useEffect(() => {
@@ -3160,36 +3091,14 @@ export default function Contractor() {
                           )
                         )}
                       </div>
-                      <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                      <div className="mt-3 pt-2 border-t border-surface-200">
                         <button
                           type="button"
                           onClick={downloadPdfReport}
-                          disabled={downloadingPdf || downloadingReport}
-                          className="flex-1 py-2.5 px-3 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                          disabled={downloadingPdf}
+                          className="w-full py-2.5 px-4 text-sm font-medium rounded-lg border border-brand-200 text-brand-700 hover:bg-brand-50 disabled:opacity-50"
                         >
-                          {downloadingPdf ? (
-                            <>
-                              <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden />
-                              Generating…
-                            </>
-                          ) : (
-                            'Download PDF report'
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={downloadFullReport}
-                          disabled={downloadingReport || downloadingPdf}
-                          className="flex-1 py-2.5 px-3 text-sm font-medium rounded-lg border-2 border-brand-200 text-brand-700 hover:bg-brand-50 disabled:opacity-50 flex items-center justify-center gap-2"
-                        >
-                          {downloadingReport ? (
-                            <>
-                              <span className="inline-block w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" aria-hidden />
-                              Preparing…
-                            </>
-                          ) : (
-                            'Download full report (ZIP)'
-                          )}
+                          {downloadingPdf ? 'Generating PDF…' : 'Download PDF report'}
                         </button>
                       </div>
                     </div>

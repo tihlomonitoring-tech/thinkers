@@ -6,7 +6,7 @@ import Sidebar, { useSidebarState } from './components/Sidebar';
 import ThemeToggle from './components/ThemeToggle';
 import AppAttributionFooter from './components/AppAttributionFooter.jsx';
 import AppShellBackground from './components/AppShellBackground.jsx';
-import { tenants as tenantsApi, commandCentre as ccApi } from './api';
+import { auth as authApi, commandCentre as ccApi } from './api';
 import { PATH_PAGE_IDS, canAccessPage, getFirstAllowedPath } from './lib/pageAccess.js';
 import { cancelAutoHideNav, AUTO_HIDE_NAV_FIRE } from './lib/autoHideNav.js';
 
@@ -54,7 +54,7 @@ export default function Layout() {
 
   useEffect(() => {
     if (user?.tenant_ids?.length > 1) {
-      tenantsApi.list().then((d) => setTenantList(d.tenants || [])).catch(() => setTenantList([]));
+      authApi.myTenants().then((d) => setTenantList(d.tenants || [])).catch(() => setTenantList([]));
     } else {
       setTenantList([]);
     }

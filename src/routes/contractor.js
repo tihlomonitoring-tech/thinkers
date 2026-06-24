@@ -79,6 +79,7 @@ import {
 import { mapEnrollmentApprovalFields, mapEnrollmentApprovalFieldsList } from '../lib/mapEnrollmentApprovalFields.js';
 import { bulkUpdateContractorDrivers } from '../lib/bulkDriverUpdate.js';
 import { mapRowGuids, parseGuid, rowId, isReservedPathId } from '../lib/guidUtils.js';
+import { incidentAttachmentRelPath, resolveIncidentUploadPath, attachmentContentType } from '../lib/incidentUploadPaths.js';
 import { queryWithGuids } from '../lib/queryWithGuids.js';
 import logisticsFlowRouter from './logisticsFlow.js';
 
@@ -1604,33 +1605,12 @@ router.get('/incidents', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     const { dateFrom, dateTo, type, resolved } = req.query || {};
-    const allowed = await getAllowedContractorIds(req);
-    const subScopeCtx = await getRequestSubcontractorScope(req);
     let sql = `SELECT i.* FROM contractor_incidents i WHERE i.tenant_id = @tenantId`;
     const params = { tenantId };
-    if (allowed && allowed.length === 0 && !isSubcontractorPortalUser(subScopeCtx.ids)) {
-      return res.json({ incidents: [] });
-    }
-    if (allowed && allowed.length > 0) {
-      const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
-      sql += ` AND i.contractor_id IN (${placeholders})`;
-      allowed.forEach((id, i) => { params[`c${i}`] = id; });
-    }
-    if (isSubcontractorPortalUser(subScopeCtx.ids)) {
-      const truckScope = buildTruckScopeClause(subScopeCtx, { alias: 't' });
-      const driverScope = buildDriverSubcontractorClause(subScopeCtx, { driverAlias: 'd', truckAlias: 'lt' });
-      sql += ` AND (
-        (i.truck_id IS NOT NULL AND EXISTS (
-          SELECT 1 FROM contractor_trucks t WHERE t.id = i.truck_id AND t.tenant_id = @tenantId${truckScope.clause}
-        ))
-        OR (i.driver_id IS NOT NULL AND EXISTS (
-          SELECT 1 FROM contractor_drivers d
-          LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = d.tenant_id
-          WHERE d.id = i.driver_id AND d.tenant_id = @tenantId${driverScope.clause}
-        ))
-      )`;
-      Object.assign(params, truckScope.params, driverScope.params);
-    }
+    const scoped = await appendIncidentAccessScope(req, sql, params);
+    if (scoped.blocked) return res.json({ incidents: [] });
+    sql = scoped.sql;
+    Object.assign(params, scoped.params);
     if (dateFrom) { sql += ` AND reported_at >= @dateFrom`; params.dateFrom = dateFrom; }
     if (dateTo) { sql += ` AND reported_at <= @dateTo`; params.dateTo = dateTo; }
     if (type && String(type).trim()) { sql += ` AND [type] = @type`; params.type = String(type).trim(); }
@@ -1687,15 +1667,74 @@ function normalizeIncidentRow(row) {
   };
 }
 
+/** Apply the same contractor / subcontractor scope used by GET /incidents list. */
+async function appendIncidentAccessScope(req, sql, params) {
+  const allowed = await getAllowedContractorIds(req);
+  const subScopeCtx = await getRequestSubcontractorScope(req);
+  if (allowed && allowed.length === 0 && !isSubcontractorPortalUser(subScopeCtx.ids)) {
+    return { sql: `${sql} AND 1=0`, params, blocked: true };
+  }
+  if (allowed && allowed.length > 0) {
+    const placeholders = allowed.map((_, i) => `@c${i}`).join(',');
+    sql += ` AND (
+      i.contractor_id IN (${placeholders})
+      OR (
+        i.contractor_id IS NULL AND (
+          (i.truck_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM contractor_trucks t WHERE t.id = i.truck_id AND t.tenant_id = @tenantId AND t.contractor_id IN (${placeholders})
+          ))
+          OR (i.driver_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM contractor_drivers d WHERE d.id = i.driver_id AND d.tenant_id = @tenantId AND d.contractor_id IN (${placeholders})
+          ))
+        )
+      )
+    )`;
+    allowed.forEach((id, i) => { params[`c${i}`] = id; });
+  }
+  if (isSubcontractorPortalUser(subScopeCtx.ids)) {
+    const truckScope = buildTruckScopeClause(subScopeCtx, { alias: 't' });
+    const driverScope = buildDriverSubcontractorClause(subScopeCtx, { driverAlias: 'd', truckAlias: 'lt' });
+    sql += ` AND (
+      (i.truck_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM contractor_trucks t WHERE t.id = i.truck_id AND t.tenant_id = @tenantId${truckScope.clause}
+      ))
+      OR (i.driver_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM contractor_drivers d
+        LEFT JOIN contractor_trucks lt ON lt.id = d.linked_truck_id AND lt.tenant_id = d.tenant_id
+        WHERE d.id = i.driver_id AND d.tenant_id = @tenantId${driverScope.clause}
+      ))
+    )`;
+    Object.assign(params, truckScope.params, driverScope.params);
+  }
+  return { sql, params, blocked: false };
+}
+
 router.get('/incidents/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const result = await query(
-      `SELECT * FROM contractor_incidents WHERE id = @id AND tenant_id = @tenantId`,
-      { id, tenantId: req.user.tenant_id }
-    );
+    const tenantId = getTenantId(req);
+    let sql = `SELECT i.*, tr.registration AS truck_registration, r.name AS route_name,
+              d.full_name AS driver_name, d.surname AS driver_surname
+       FROM contractor_incidents i
+       LEFT JOIN contractor_trucks tr ON tr.id = i.truck_id
+       LEFT JOIN contractor_routes r ON r.id = i.route_id
+       LEFT JOIN contractor_drivers d ON d.id = i.driver_id
+       WHERE i.id = @id AND i.tenant_id = @tenantId`;
+    const params = { id, tenantId };
+    const scoped = await appendIncidentAccessScope(req, sql, params);
+    const result = await query(scoped.sql, scoped.params);
     if (!result.recordset?.length) return res.status(404).json({ error: 'Incident not found' });
-    const incident = normalizeIncidentRow(result.recordset[0]);
+    const row = result.recordset[0];
+    const incident = normalizeIncidentRow(row);
+    const driverFirst = pick(row, 'driver_name');
+    const driverSurname = pick(row, 'driver_surname');
+    if (driverFirst || driverSurname) {
+      incident.driver_name = [driverFirst, driverSurname].filter(Boolean).join(' ').trim() || null;
+    }
+    const truckReg = pick(row, 'truck_registration');
+    if (truckReg != null) incident.truck_registration = String(truckReg);
+    const routeName = pick(row, 'route_name');
+    if (routeName != null) incident.route_name = String(routeName);
     res.json({ incident });
   } catch (err) {
     next(err);
@@ -1781,13 +1820,12 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
     const dir = path.join(uploadDir, tenantId);
     fs.mkdirSync(dir, { recursive: true });
     const ext = (name) => (path.extname(name) || '.bin').replace(/[^a-zA-Z0-9.]/g, '');
-    const rel = (file, key) => `incidents/${tenantId}/${incidentId}_${key}${ext(file.originalname)}`;
     const full = (relative) => path.join(process.cwd(), 'uploads', relative);
     const write = (file, relative) => fs.writeFileSync(full(relative), file.buffer);
-    const loadingSlipPath = rel(loadingSlip, 'loading_slip');
-    const seal1Path = rel(seal1, 'seal_1');
-    const seal2Path = rel(seal2, 'seal_2');
-    const picturePath = rel(pictureProblem, 'picture_problem');
+    const loadingSlipPath = incidentAttachmentRelPath(tenantId, incidentId, 'loading_slip', loadingSlip.originalname);
+    const seal1Path = incidentAttachmentRelPath(tenantId, incidentId, 'seal_1', seal1.originalname);
+    const seal2Path = incidentAttachmentRelPath(tenantId, incidentId, 'seal_2', seal2.originalname);
+    const picturePath = incidentAttachmentRelPath(tenantId, incidentId, 'picture_problem', pictureProblem.originalname);
     write(loadingSlip, loadingSlipPath);
     write(seal1, seal1Path);
     write(seal2, seal2Path);
@@ -1907,7 +1945,7 @@ router.patch('/incidents/:id/resolve', resolveUpload, async (req, res, next) => 
       const dir = path.join(uploadDir, tenantId);
       fs.mkdirSync(dir, { recursive: true });
       const ext = (name) => (path.extname(name) || '.pdf').replace(/[^a-zA-Z0-9.]/g, '');
-      offloadingSlipPath = `incidents/${tenantId}/${id}_offloading_slip${ext(file.originalname)}`;
+      offloadingSlipPath = incidentAttachmentRelPath(tenantId, id, 'offloading_slip', file.originalname);
       const fullPath = path.join(process.cwd(), 'uploads', offloadingSlipPath);
       fs.writeFileSync(fullPath, file.buffer);
     }
@@ -2017,7 +2055,7 @@ router.patch('/incidents/:id/offloading-slip', resolveUpload, async (req, res, n
     const dir = path.join(uploadDir, tenantId);
     fs.mkdirSync(dir, { recursive: true });
     const ext = (name) => (path.extname(name) || '.pdf').replace(/[^a-zA-Z0-9.]/g, '');
-    const relPath = `incidents/${tenantId}/${id}_offloading_slip${ext(file.originalname)}`;
+    const relPath = incidentAttachmentRelPath(tenantId, id, 'offloading_slip', file.originalname);
     const fullPath = path.join(process.cwd(), 'uploads', relPath);
     fs.writeFileSync(fullPath, file.buffer);
     const result = await query(
@@ -2049,21 +2087,31 @@ router.patch('/incidents/:id', async (req, res, next) => {
 
 const ATTACHMENT_TYPES = ['loading_slip', 'seal_1', 'seal_2', 'picture_problem', 'offloading_slip'];
 const ATTACHMENT_COL = { loading_slip: 'loading_slip_path', seal_1: 'seal_1_path', seal_2: 'seal_2_path', picture_problem: 'picture_problem_path', offloading_slip: 'offloading_slip_path' };
+
+function getIncidentAttachmentPath(row, type) {
+  const col = ATTACHMENT_COL[type];
+  if (!col || !row) return null;
+  const val = pick(row, col);
+  return val != null && val !== '' ? String(val) : null;
+}
+
 router.get('/incidents/:id/attachments/:type', async (req, res, next) => {
   try {
     const { id, type } = req.params;
     if (!ATTACHMENT_TYPES.includes(type)) return res.status(400).json({ error: 'Invalid attachment type' });
-    const incident = await query(
-      `SELECT tenant_id, loading_slip_path, seal_1_path, seal_2_path, picture_problem_path, offloading_slip_path FROM contractor_incidents WHERE id = @id`,
-      { id }
-    );
-    if (!incident.recordset?.length || incident.recordset[0].tenant_id !== req.user.tenant_id) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-    const filePath = incident.recordset[0][ATTACHMENT_COL[type]];
+    const tenantId = getTenantId(req);
+    let sql = `SELECT i.tenant_id, i.loading_slip_path, i.seal_1_path, i.seal_2_path, i.picture_problem_path, i.offloading_slip_path
+       FROM contractor_incidents i WHERE i.id = @id AND i.tenant_id = @tenantId`;
+    const params = { id, tenantId };
+    const scoped = await appendIncidentAccessScope(req, sql, params);
+    const incident = await query(scoped.sql, scoped.params);
+    const row = incident.recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const filePath = getIncidentAttachmentPath(row, type);
     if (!filePath) return res.status(404).json({ error: 'Attachment not found' });
-    const fullPath = path.join(process.cwd(), 'uploads', filePath);
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    const fullPath = resolveIncidentUploadPath(filePath);
+    if (!fullPath) return res.status(404).json({ error: 'File not found' });
+    res.type(attachmentContentType(fullPath));
     res.sendFile(fullPath, { headers: { 'Content-Disposition': 'inline' } });
   } catch (err) {
     next(err);

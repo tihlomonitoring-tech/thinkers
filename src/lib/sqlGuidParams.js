@@ -8,6 +8,8 @@ const NOT_GUID_PARAMS = new Set([
   'idnumnorm',
   'licnumnorm',
   'regnorm',
+  // Tab slugs (NVARCHAR), not UNIQUEIDENTIFIER — e.g. dashboard, breakdowns
+  'tabid',
 ]);
 
 const EXPLICIT_GUID_KEYS = new Set([
@@ -45,7 +47,6 @@ const EXPLICIT_GUID_KEYS = new Set([
   'did',
   'obid',
   'fenceid',
-  'tabid',
   'periodid',
   'submissionid',
   'evaluateeid',
@@ -64,6 +65,8 @@ const EXPLICIT_GUID_KEYS = new Set([
   'reviewedbyuserid',
   'contractorreviewedbyuserid',
   'submittedbyuserid',
+  'grantedby',
+  'grantedbyuserid',
 ]);
 
 export function isGuidSqlParam(key) {

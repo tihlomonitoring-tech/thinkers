@@ -9,10 +9,6 @@ const FONT = 'helvetica';
 const FONT_SIZE_BODY = 9;
 const FONT_SIZE_TABLE = 8;
 
-/** Warm cream page fill (matches app light shell tone). */
-const CREAM_PAGE = [255, 252, 245];
-const WATERMARK_OPACITY = 0.13;
-
 const BLACK = [0, 0, 0];
 const TABLE_BORDER = [60, 60, 60];
 const TEXT_DARK = [33, 33, 33];
@@ -30,38 +26,16 @@ const CELL_PAD = 1.5;
 const LINE_HEIGHT = 4;
 const SECTION_GAP = 5;
 
-/** Set while generating a PDF so new pages get the same backdrop. */
-let activePdfBackgroundDataUrl = null;
-
-function paintShiftReportPageBackground(doc, backgroundDataUrl) {
-  doc.setFillColor(...CREAM_PAGE);
+function paintShiftReportPageBackground(doc) {
+  doc.setFillColor(255, 255, 255);
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, 'F');
-  if (!backgroundDataUrl) return;
-  try {
-    const format = /data:image\/jpe?g/i.test(backgroundDataUrl) ? 'JPEG' : 'PNG';
-    doc.saveGraphicsState();
-    if (typeof doc.GState === 'function') {
-      doc.setGState(new doc.GState({ opacity: WATERMARK_OPACITY }));
-    }
-    doc.addImage(backgroundDataUrl, format, 0, 0, PAGE_WIDTH, PAGE_HEIGHT, undefined, 'FAST');
-    doc.restoreGraphicsState();
-    doc.saveGraphicsState();
-    if (typeof doc.GState === 'function') {
-      doc.setGState(new doc.GState({ opacity: 0.42 }));
-    }
-    doc.setFillColor(...CREAM_PAGE);
-    doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, 'F');
-    doc.restoreGraphicsState();
-  } catch (_) {
-    // cream fill already applied
-  }
 }
 
 function checkNewPage(doc, yRef, needSpace = 30) {
   const minY = PAGE_HEIGHT - FOOTER_MARGIN - (needSpace || 20);
   if (yRef.current > minY) {
     doc.addPage();
-    paintShiftReportPageBackground(doc, activePdfBackgroundDataUrl);
+    paintShiftReportPageBackground(doc);
     yRef.current = MARGIN;
   }
 }
@@ -409,15 +383,13 @@ export function buildShiftReportDownloadFilename(report, options = {}) {
 /**
  * Generate shift report PDF.
  * @param {Object} report - Shift report from API
- * @param {Object} options - Optional: { logoDataUrl, backgroundDataUrl } — background uses app shell mining photo as watermark
+ * @param {Object} options - Optional: { logoDataUrl }
  */
 export function generateShiftReportPdf(report, options = {}) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const yRef = { current: MARGIN };
   const logoDataUrl = options.logoDataUrl;
-  const backgroundDataUrl = options.backgroundDataUrl || null;
-  activePdfBackgroundDataUrl = backgroundDataUrl;
-  paintShiftReportPageBackground(doc, backgroundDataUrl);
+  paintShiftReportPageBackground(doc);
 
   const logoFormat = logoDataUrl && /data:image\/jpe?g/i.test(logoDataUrl) ? 'JPEG' : 'PNG';
 
@@ -584,10 +556,9 @@ export function generateShiftReportPdf(report, options = {}) {
     doc.setPage(p);
     doc.setFont(FONT, 'normal');
     doc.setFontSize(8);
-    doc.setTextColor(100, 95, 88);
+    doc.setTextColor(120, 120, 120);
     doc.text(`Generated ${new Date().toLocaleString()} · Page ${p} of ${totalPages}`, MARGIN, PAGE_HEIGHT - 10);
   }
 
-  activePdfBackgroundDataUrl = null;
   return doc;
 }
