@@ -114,7 +114,7 @@ const CC_TABS = [
   { id: 'single_operations_dashboard', label: 'Single operations dashboard', icon: 'dashboard', section: 'Overview' },
   { id: 'data_presentation', label: 'Data presentation', icon: 'chart', section: 'Overview' },
   { id: 'reports', label: 'Report composition', icon: 'file', section: 'Operations' },
-  { id: 'saved_reports', label: 'View saved shift reports', icon: 'folder', section: 'Operations' },
+  { id: 'saved_reports', label: 'View composed reports', icon: 'folder', section: 'Operations' },
   { id: 'trends', label: 'Trends', icon: 'chart', section: 'Analytics' },
   { id: 'truck_update_records', label: 'Truck update records', icon: 'truck', section: 'Analytics' },
   { id: 'logistics_flow', label: 'Logistics flow & updates', icon: 'route', section: 'Analytics' },
@@ -305,12 +305,16 @@ export default function CommandCentre() {
   useEffect(() => {
     const handler = (e) => {
       const report = e.detail?.report ?? e.detail;
+      const tenantId = e.detail?.tenantId ?? user?.tenant_id;
       if (!report) return;
       (async () => {
         try {
-          const { generateInvestigationReportPdf } = await import('./lib/investigationReportPdf.js');
-          const doc = generateInvestigationReportPdf(report);
-          doc.save(`investigation-report-${report.id || report.case_number || 'download'}.pdf`);
+          const [{ generateInvestigationReportPdf, buildInvestigationReportFilename }, pdfAssets] = await Promise.all([
+            import('./lib/investigationReportPdf.js'),
+            loadShiftReportPdfAssets({ tenantId }),
+          ]);
+          const doc = generateInvestigationReportPdf(report, pdfAssets);
+          doc.save(buildInvestigationReportFilename(report));
         } catch (err) {
           setError(err?.message || 'Failed to generate PDF');
         }
@@ -318,7 +322,7 @@ export default function CommandCentre() {
     };
     window.addEventListener('investigation-report-download', handler);
     return () => window.removeEventListener('investigation-report-download', handler);
-  }, []);
+  }, [user?.tenant_id]);
 
   // When allowed tabs load, if current tab isn't in the list, switch to first allowed tab so content always shows
   useEffect(() => {
@@ -1124,7 +1128,7 @@ function TabDashboard({ setActiveTab, canSeeTab, dashboardKind = 'standard', tit
 
   const quickActionDefs = [
     { label: 'Report composition', tab: 'reports', desc: 'Create shift reports', icon: 'file' },
-    { label: 'Saved shift reports', tab: 'saved_reports', desc: 'View and approve reports', icon: 'folder' },
+    { label: 'Composed reports', tab: 'saved_reports', desc: 'View, approve and download reports', icon: 'folder' },
     { label: 'Vehicle tracker compliance', tab: 'vehicle_tracker_compliance', desc: 'Fleet tracker status & history', icon: 'shield' },
     { label: 'Reported breakdowns', tab: 'breakdowns', desc: 'Incidents and resolutions', icon: 'alert' },
     { label: 'Fleet & driver applications', tab: 'applications', desc: 'Approve or decline', icon: 'tick' },
@@ -3195,7 +3199,7 @@ function TabReports() {
           <ShiftReportForm
             user={user}
             onBack={() => { setReportType(null); setMessage(''); }}
-            onSaved={() => { setMessage('Shift report saved. Go to View saved shift reports to submit for approval.'); setReportType(null); }}
+            onSaved={() => { setMessage('Shift report saved. Go to View composed reports to submit for approval.'); setReportType(null); }}
             saving={saving}
             setSaving={setSaving}
             message={message}
@@ -3208,7 +3212,7 @@ function TabReports() {
             reportKind="single_ops"
             user={user}
             onBack={() => { setReportType(null); setMessage(''); }}
-            onSaved={() => { setMessage('Single operations shift report saved. Open View saved shift reports, choose Single operations, then submit for approval.'); setReportType(null); }}
+            onSaved={() => { setMessage('Single operations shift report saved. Open View composed reports, choose Single operations, then submit for approval.'); setReportType(null); }}
             saving={saving}
             setSaving={setSaving}
             message={message}
@@ -3220,7 +3224,7 @@ function TabReports() {
           <InvestigationReportForm
             user={user}
             onBack={() => { setReportType(null); setMessage(''); }}
-            onSaved={() => { setMessage('Investigation report saved. Go to View saved shift reports or Library to approve and add to Library.'); setReportType(null); }}
+            onSaved={() => { setMessage('Investigation report saved. Go to View composed reports or Library to approve and add to Library.'); setReportType(null); }}
             saving={saving}
             setSaving={setSaving}
             message={message}
@@ -3385,14 +3389,151 @@ function ShiftReportTemplateTab({ user }) {
   );
 }
 
+/** Read-only, print-friendly view of a single investigation report. */
+function InvestigationReportDetail({ report }) {
+  if (!report) return null;
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
+  const statusNorm = String(report.status || '').toLowerCase().trim();
+  const transactions = Array.isArray(report.transactions) ? report.transactions : [];
+  const parties = Array.isArray(report.parties) ? report.parties : [];
+  const recommendations = Array.isArray(report.recommendations) ? report.recommendations.filter(Boolean) : [];
+
+  const Field = ({ label, value }) => (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-400">{label}</p>
+      <p className="text-sm text-surface-800 mt-0.5 break-words">{value || '—'}</p>
+    </div>
+  );
+  const Section = ({ title, children }) => (
+    <section className="app-glass-card overflow-hidden">
+      <div className="px-5 py-3 border-b border-surface-100 bg-gradient-to-r from-surface-50 to-white">
+        <h4 className="font-semibold text-surface-900 text-sm">{title}</h4>
+      </div>
+      <div className="p-5">{children}</div>
+    </section>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="app-glass-card overflow-hidden">
+        <div className="px-6 py-5 bg-gradient-to-r from-amber-50 to-white border-b border-surface-100 flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-amber-700">Investigation report</p>
+            <h3 className="text-xl font-bold text-surface-900 mt-0.5">{report.case_number || 'Investigation'}</h3>
+            <p className="text-sm text-surface-500 mt-1">
+              {[report.type, report.created_by_name, report.date_occurred ? `Occurred ${fmtDate(report.date_occurred)}` : null].filter(Boolean).join('  ·  ')}
+            </p>
+          </div>
+          <span className={`text-xs font-medium px-3 py-1 rounded-full ${statusNorm === 'approved' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
+            {report.status || 'draft'}
+          </span>
+        </div>
+      </div>
+
+      <Section title="Case information">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="Case number" value={report.case_number} />
+          <Field label="Type" value={report.type} />
+          <Field label="Priority" value={report.priority} />
+          <Field label="Status" value={report.status} />
+          <Field label="Date occurred" value={fmtDate(report.date_occurred)} />
+          <Field label="Date reported" value={fmtDate(report.date_reported)} />
+          <Field label="Location" value={report.location} />
+          <Field label="Compiled by" value={report.created_by_name} />
+        </div>
+      </Section>
+
+      <Section title="Investigator">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Name" value={report.investigator_name} />
+          <Field label="Reported by" value={report.reported_by_name ? `${report.reported_by_name}${report.reported_by_position ? ` (${report.reported_by_position})` : ''}` : '—'} />
+        </div>
+      </Section>
+
+      <Section title="Description">
+        <p className="text-sm text-surface-700 whitespace-pre-wrap">{report.description || '—'}</p>
+      </Section>
+
+      {transactions.length > 0 && (
+        <Section title="Transaction details">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-surface-500 border-b border-surface-200">
+                  <th className="py-2 pr-3 font-semibold">Ref</th>
+                  <th className="py-2 pr-3 font-semibold">Date</th>
+                  <th className="py-2 pr-3 font-semibold">Location</th>
+                  <th className="py-2 pr-3 font-semibold">Type</th>
+                  <th className="py-2 pr-3 font-semibold">Truck reg</th>
+                  <th className="py-2 font-semibold">Tonnage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {transactions.map((t, i) => (
+                  <tr key={i} className="border-b border-surface-100 last:border-b-0 text-surface-700">
+                    <td className="py-2 pr-3">{t.ref || '—'}</td>
+                    <td className="py-2 pr-3">{t.date || '—'}</td>
+                    <td className="py-2 pr-3">{t.location || '—'}</td>
+                    <td className="py-2 pr-3">{t.type || '—'}</td>
+                    <td className="py-2 pr-3">{t.truck_reg || '—'}</td>
+                    <td className="py-2">{t.tonnage != null && t.tonnage !== '' ? t.tonnage : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
+      {parties.length > 0 && (
+        <Section title="Involved parties">
+          <div className="space-y-3">
+            {parties.map((p, i) => (
+              <div key={i} className="rounded-lg border border-surface-200 bg-surface-50/50 p-3">
+                <p className="font-medium text-surface-900">{p.name || '—'}{p.role ? <span className="text-surface-500 font-normal"> · {p.role}</span> : null}</p>
+                {p.statement ? <p className="text-sm text-surface-600 mt-1 whitespace-pre-wrap">{p.statement}</p> : null}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Section title="Evidence notes">
+          <p className="text-sm text-surface-700 whitespace-pre-wrap">{report.evidence_notes || '—'}</p>
+        </Section>
+        <Section title="Finding summary">
+          <p className="text-sm text-surface-700 whitespace-pre-wrap">{report.finding_summary || '—'}</p>
+        </Section>
+      </div>
+
+      <Section title="Recommendations">
+        {recommendations.length ? (
+          <ul className="list-disc pl-5 space-y-1 text-sm text-surface-700">
+            {recommendations.map((rec, i) => <li key={i} className="whitespace-pre-wrap">{rec}</li>)}
+          </ul>
+        ) : (
+          <p className="text-sm text-surface-500">—</p>
+        )}
+      </Section>
+
+      <Section title="Additional notes">
+        <p className="text-sm text-surface-700 whitespace-pre-wrap">{report.additional_notes || '—'}</p>
+      </Section>
+    </div>
+  );
+}
+
 function TabSavedReports() {
   const { user } = useAuth();
-  /** Standard shift reports vs single-operations (separate API + DB tables). */
+  /** Standard shift reports, single-operations, or investigation reports. */
   const [listKind, setListKind] = useState('shift');
   const listKindRef = useRef(listKind);
   listKindRef.current = listKind;
   const selectedIdRef = useRef(null);
   const [reports, setReports] = useState([]);
+  const reportsRef = useRef([]);
+  reportsRef.current = reports;
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
   selectedIdRef.current = selectedId;
@@ -3405,12 +3546,19 @@ function TabSavedReports() {
   const [submitting, setSubmitting] = useState(false);
   const [savingReport, setSavingReport] = useState(false);
   const [deletingReport, setDeletingReport] = useState(false);
+  const [approvingInv, setApprovingInv] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [savedReportsHelpOpen, setSavedReportsHelpOpen] = useState(false);
 
-  const listApiForKind = (kind) => (kind === 'single_ops' ? ccApi.singleOpsShiftReports : ccApi.shiftReports);
+  const isInvestigation = listKind === 'investigation';
+  const listApiForKind = (kind) =>
+    kind === 'investigation'
+      ? ccApi.investigationReports
+      : kind === 'single_ops'
+        ? ccApi.singleOpsShiftReports
+        : ccApi.shiftReports;
   const listApi = () => listApiForKind(listKindRef.current);
 
   const loadList = () => {
@@ -3443,6 +3591,13 @@ function TabSavedReports() {
   useEffect(() => {
     if (!selectedId) {
       setReport(null);
+      setComments([]);
+      return;
+    }
+    if (listKindRef.current === 'investigation') {
+      // Investigation reports come back in full from the list endpoint (no GET-by-id).
+      const found = (reportsRef.current || []).find((x) => String(x.id) === String(selectedId)) || null;
+      setReport(found);
       setComments([]);
       return;
     }
@@ -3505,6 +3660,13 @@ function TabSavedReports() {
     if (statusFilter && String(r.status || '').toLowerCase() !== statusFilter) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
+    if (isInvestigation) {
+      return [r.case_number, r.type, r.priority, r.status, r.location, r.investigator_name, r.created_by_name, r.description]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+    }
     const routesBlob = Array.isArray(r.routes) && r.routes.length ? r.routes.join(' ').toLowerCase() : '';
     const refStr = formatShiftReportRef(r.ref_number, { isSingleOps: listKind === 'single_ops' });
     return (
@@ -3520,6 +3682,48 @@ function TabSavedReports() {
       String(r.ref_number || '').includes(q)
     );
   });
+
+  if (isInvestigation && selectedId && report && String(report.id) === String(selectedId)) {
+    const invStatusNorm = String(report.status || '').toLowerCase().trim();
+    const canApproveInv = invStatusNorm !== 'approved';
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <button type="button" onClick={() => { setSelectedId(null); setReport(null); }} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to list</button>
+          <span className="text-xs font-semibold text-surface-500 uppercase">Status: {report.status || '—'}</span>
+          <div className="flex gap-2">
+            <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('investigation-report-download', { detail: { report, tenantId: user?.tenant_id } })); }}
+              className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700"
+            >
+              Download PDF
+            </a>
+            {canApproveInv && (
+              <button
+                type="button"
+                disabled={approvingInv}
+                onClick={() => {
+                  setApprovingInv(true);
+                  setError('');
+                  ccApi.investigationReports
+                    .approve(selectedId)
+                    .then((r) => { if (r?.report) setReport(r.report); loadList(); })
+                    .catch((err) => setError(err?.message || 'Approve failed'))
+                    .finally(() => setApprovingInv(false));
+                }}
+                className="px-4 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {approvingInv ? 'Approving…' : 'Approve & add to Library'}
+              </button>
+            )}
+          </div>
+        </div>
+        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-2">{error}</div>}
+        <InvestigationReportDetail report={report} />
+      </div>
+    );
+  }
 
   if (selectedId && report && String(report.id) === String(selectedId)) {
     return (
@@ -3617,14 +3821,14 @@ function TabSavedReports() {
   return (
     <div className="space-y-6">
       <CollapsibleSectionHelp
-        title="View saved shift reports"
+        title="View composed reports"
         titleClassName="text-lg font-semibold text-surface-900"
         open={savedReportsHelpOpen}
         setOpen={setSavedReportsHelpOpen}
-        topic="saved shift reports"
+        topic="composed reports"
       >
         <p>
-          Open a report to view, edit, submit for approval, or download (when approved). Telematics specialists 2 and 3 listed on a report can collaborate — edit and save, but only specialist 1 or the report author can submit. Draft reports you created can be deleted; approved reports cannot.
+          Open a report to view, edit, submit for approval, or download (when approved). Telematics specialists 2 and 3 listed on a report can collaborate — edit and save, but only specialist 1 or the report author can submit. Draft reports you created can be deleted; approved reports cannot. Use the <strong>Investigation reports</strong> tab to view, download (professional PDF), or approve your investigation reports.
         </p>
       </CollapsibleSectionHelp>
       <div className="app-glass-segmented mb-2">
@@ -3641,6 +3845,13 @@ function TabSavedReports() {
           className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${listKind === 'single_ops' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
         >
           Single operations shift reports
+        </button>
+        <button
+          type="button"
+          onClick={() => setListKind('investigation')}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${listKind === 'investigation' ? 'bg-brand-600 text-white shadow-sm' : 'app-glass-pill-idle'}`}
+        >
+          Investigation reports
         </button>
       </div>
       <div className="app-glass-toolbar p-4">
@@ -3669,7 +3880,54 @@ function TabSavedReports() {
         <p className="text-surface-500">Loading…</p>
       ) : filteredReports.length === 0 ? (
         <div className="app-glass-card p-8 text-center text-surface-600">
-          {listKind === 'single_ops' ? 'No single operations shift reports yet. Create one from Report composition (Single operations shift report).' : 'No shift reports yet. Create one from Report composition.'}
+          {isInvestigation
+            ? 'No investigation reports yet. Create one from Report composition (Investigation report).'
+            : listKind === 'single_ops'
+              ? 'No single operations shift reports yet. Create one from Report composition (Single operations shift report).'
+              : 'No shift reports yet. Create one from Report composition.'}
+        </div>
+      ) : isInvestigation ? (
+        <div className="app-glass-table">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="app-glass-thead-row">
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">Case #</th>
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">Saved date</th>
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">Type</th>
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">Priority</th>
+                <th className="text-left font-semibold text-surface-700 px-4 py-3">Status</th>
+                <th className="text-right font-semibold text-surface-700 px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredReports.map((r) => {
+                const savedAt = r.created_at ? new Date(r.created_at) : null;
+                const dateStr = savedAt ? `${savedAt.toLocaleDateString()} ${savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '—';
+                const isApproved = String(r.status || '').toLowerCase() === 'approved';
+                return (
+                  <tr key={`investigation-${r.id}`} className="app-glass-data-row last:border-b-0">
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => { setReport(r); setSelectedId(r.id); }} className="font-medium text-brand-600 hover:text-brand-700 text-left">
+                        {r.case_number || 'Investigation'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-surface-700">{dateStr}</td>
+                    <td className="px-4 py-3 text-surface-700">{r.type || '—'}</td>
+                    <td className="px-4 py-3 text-surface-700">{r.priority || '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${isApproved ? 'bg-green-100 text-green-800' : 'bg-surface-100 text-surface-600'}`}>{r.status || 'draft'}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="inline-flex gap-2">
+                        <button type="button" onClick={() => { setReport(r); setSelectedId(r.id); }} className="px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50">View</button>
+                        <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('investigation-report-download', { detail: { report: r, tenantId: user?.tenant_id } })); }} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700">Download</a>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       ) : (
         <div className="app-glass-table">
@@ -4962,7 +5220,7 @@ function TabShiftItems({ setActiveTab }) {
                   <button type="button" onClick={() => setSelectedReportId(null)} className="p-2 rounded-lg hover:bg-surface-100 text-surface-500">✕</button>
                 </div>
                 <div className="p-6">
-                  <p className="text-sm text-surface-600 mb-4">Go to View saved shift reports to open and edit this report, or use the link below.</p>
+                  <p className="text-sm text-surface-600 mb-4">Go to View composed reports to open and edit this report, or use the link below.</p>
                   <button type="button" onClick={() => { if (setActiveTab) setActiveTab('saved_reports'); setSelectedReportId(null); }} className="px-4 py-2 rounded-xl bg-brand-600 text-white font-medium text-sm hover:bg-brand-700">Go to saved reports</button>
                 </div>
               </div>
@@ -6988,7 +7246,7 @@ function ShiftReportForm({
           if (r?.report?.id) setActiveReportId(r.report.id);
           markManualSaveSuccess(r.report);
           onSaved(r.report);
-          setMessage?.('Saved. Go to View saved shift reports to submit for approval.');
+          setMessage?.('Saved. Go to View composed reports to submit for approval.');
         })
         .catch((err) => {
           const sessionErr = isSessionAuthError(err);

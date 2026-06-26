@@ -102,7 +102,7 @@ export default function Layout() {
   const commandCentreTabTargets = canAccessPage(user, 'command_centre') ? [
     { id: 'cc:dashboard', label: 'Command Centre · Main dashboard', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'dashboard', keywords: ['overview', 'home'] },
     { id: 'cc:reports', label: 'Command Centre · Report composition', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'reports', keywords: ['shift', 'create report', 'compose'] },
-    { id: 'cc:saved_reports', label: 'Command Centre · View saved shift reports', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'saved_reports', keywords: ['saved', 'history', 'approved report'] },
+    { id: 'cc:saved_reports', label: 'Command Centre · View composed reports', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'saved_reports', keywords: ['saved', 'composed', 'history', 'approved report', 'investigation'] },
     { id: 'cc:trends', label: 'Command Centre · Trends', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'trends', keywords: ['analytics', 'graph', 'insights'] },
     { id: 'cc:requests', label: 'Command Centre · Requests', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'requests', keywords: ['pending', 'approval request'] },
     { id: 'cc:messages', label: 'Command Centre · Messages platform', path: '/command-centre', section: 'Command Centre', commandCentreTab: 'messages', keywords: ['chat', 'communication'] },
