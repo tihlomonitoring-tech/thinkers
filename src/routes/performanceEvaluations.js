@@ -94,6 +94,7 @@ router.get('/evaluatee-options', requirePageAccess('performance_evaluations'), a
        FROM users u
        WHERE u.status = 'active'
          AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+         AND (EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = N'profile') OR u.role = N'super_admin')
          AND u.id <> @selfId
        ORDER BY u.full_name`,
       { tenantId, selfId }

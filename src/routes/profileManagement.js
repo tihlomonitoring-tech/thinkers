@@ -9,6 +9,7 @@ import {
   scheduleCreatedHtml,
   leaveAppliedHtml,
   leaveReviewedHtml,
+  leaveAutoApprovedHtml,
   warningIssuedHtml,
   rewardIssuedHtml,
   shiftSwapRequestedHtml,
@@ -1401,7 +1402,7 @@ router.get('/leave/types', requirePageAccess('profile'), async (req, res, next) 
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.json({ types: [] });
     const result = await query(
-      `SELECT id, name, default_days_per_year, sector, description, sort_order
+      `SELECT id, name, default_days_per_year, sector, description, sort_order, auto_approve
        FROM leave_types WHERE tenant_id = @tenantId
        ORDER BY sort_order ASC, name ASC`,
       { tenantId }
@@ -1414,14 +1415,14 @@ router.get('/leave/types', requirePageAccess('profile'), async (req, res, next) 
 
 router.post('/leave/types', requirePageAccess('management'), async (req, res, next) => {
   try {
-    const { name, default_days_per_year, sector, description, sort_order } = req.body || {};
+    const { name, default_days_per_year, sector, description, sort_order, auto_approve } = req.body || {};
     const tenantId = req.user.tenant_id;
     if (!tenantId || !name) return res.status(400).json({ error: 'name required' });
     const sec = sector && ['public', 'private', 'both'].includes(String(sector)) ? String(sector) : null;
     const sort = sort_order != null && sort_order !== '' ? parseInt(sort_order, 10) : 100;
     await query(
-      `INSERT INTO leave_types (tenant_id, name, default_days_per_year, sector, description, sort_order)
-       VALUES (@tenantId, @name, @defaultDays, @sector, @description, @sortOrder)`,
+      `INSERT INTO leave_types (tenant_id, name, default_days_per_year, sector, description, sort_order, auto_approve)
+       VALUES (@tenantId, @name, @defaultDays, @sector, @description, @sortOrder, @autoApprove)`,
       {
         tenantId,
         name: String(name).trim(),
@@ -1429,9 +1430,54 @@ router.post('/leave/types', requirePageAccess('management'), async (req, res, ne
         sector: sec,
         description: description != null ? String(description).trim().slice(0, 500) : null,
         sortOrder: Number.isFinite(sort) ? sort : 100,
+        autoApprove: auto_approve ? 1 : 0,
       }
     );
     res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Update a leave type (e.g. toggle auto-approve, edit defaults). Management only. */
+router.patch('/leave/types/:id', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const existing = await query(
+      `SELECT id FROM leave_types WHERE id = @id AND tenant_id = @tenantId`,
+      { id, tenantId }
+    );
+    if (!existing.recordset?.length) return res.status(404).json({ error: 'Leave type not found' });
+    const body = req.body || {};
+    const sets = [];
+    const params = { id, tenantId };
+    if (body.auto_approve !== undefined) {
+      sets.push('auto_approve = @autoApprove');
+      params.autoApprove = body.auto_approve ? 1 : 0;
+    }
+    if (body.default_days_per_year !== undefined) {
+      sets.push('default_days_per_year = @defaultDays');
+      params.defaultDays = body.default_days_per_year != null && body.default_days_per_year !== ''
+        ? parseInt(body.default_days_per_year, 10) : null;
+    }
+    if (body.sector !== undefined) {
+      sets.push('sector = @sector');
+      params.sector = body.sector && ['public', 'private', 'both'].includes(String(body.sector)) ? String(body.sector) : null;
+    }
+    if (body.description !== undefined) {
+      sets.push('description = @description');
+      params.description = body.description != null ? String(body.description).trim().slice(0, 500) : null;
+    }
+    if (body.sort_order !== undefined) {
+      const sort = body.sort_order != null && body.sort_order !== '' ? parseInt(body.sort_order, 10) : 100;
+      sets.push('sort_order = @sortOrder');
+      params.sortOrder = Number.isFinite(sort) ? sort : 100;
+    }
+    if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
+    await query(`UPDATE leave_types SET ${sets.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -1475,14 +1521,26 @@ router.get('/leave/balance', requirePageAccess('profile'), async (req, res, next
     const userId = req.user.id;
     const tenantId = req.user.tenant_id;
     const year = req.query.year != null ? parseInt(req.query.year, 10) : wallMonthYearInAppZone().year;
+    // Show every configured leave type (with its allocation + used), plus any
+    // ad-hoc balance rows for types no longer configured. Defaults fill in when
+    // no explicit balance row has been allocated yet.
     const result = await query(
-      `SELECT lb.leave_type, lb.total_days, lb.used_days,
+      `SELECT lt.name AS leave_type,
+              COALESCE(lb.total_days, lt.default_days_per_year, 0) AS total_days,
+              COALESCE(lb.used_days, 0) AS used_days,
               lt.default_days_per_year AS type_default_days_per_year,
               lt.sector AS type_sector, lt.description AS type_description
+       FROM leave_types lt
+       LEFT JOIN leave_balance lb
+         ON lb.tenant_id = lt.tenant_id AND lb.leave_type = lt.name
+        AND lb.user_id = @userId AND lb.[year] = @year
+       WHERE lt.tenant_id = @tenantId
+       UNION ALL
+       SELECT lb.leave_type, lb.total_days, lb.used_days, NULL, NULL, NULL
        FROM leave_balance lb
-       LEFT JOIN leave_types lt ON lt.tenant_id = lb.tenant_id AND lt.name = lb.leave_type
        WHERE lb.user_id = @userId AND lb.tenant_id = @tenantId AND lb.[year] = @year
-       ORDER BY lb.leave_type`,
+         AND NOT EXISTS (SELECT 1 FROM leave_types lt WHERE lt.tenant_id = lb.tenant_id AND lt.name = lb.leave_type)
+       ORDER BY leave_type`,
       { userId, tenantId, year }
     );
     res.json({ balance: result.recordset || [] });
@@ -1497,19 +1555,109 @@ router.get('/leave/balances/team', requirePageAccess('management'), async (req, 
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     const year = req.query.year != null ? parseInt(req.query.year, 10) : wallMonthYearInAppZone().year;
+    // Full matrix: every active tenant employee × every configured leave type,
+    // with allocation/used filled from explicit balance rows or type defaults.
     const result = await query(
       `SELECT u.id AS user_id, u.full_name, u.email,
-              lb.leave_type, lb.[year], lb.total_days, lb.used_days,
+              lt.name AS leave_type, @year AS [year],
+              COALESCE(lb.total_days, lt.default_days_per_year, 0) AS total_days,
+              COALESCE(lb.used_days, 0) AS used_days,
               lt.default_days_per_year AS type_default_days_per_year,
               lt.sector AS type_sector
-       FROM leave_balance lb
-       INNER JOIN users u ON u.id = lb.user_id
-       LEFT JOIN leave_types lt ON lt.tenant_id = lb.tenant_id AND lt.name = lb.leave_type
-       WHERE lb.tenant_id = @tenantId AND lb.[year] = @year
-       ORDER BY u.full_name, lb.leave_type`,
+       FROM users u
+       CROSS JOIN leave_types lt
+       LEFT JOIN leave_balance lb
+         ON lb.user_id = u.id AND lb.tenant_id = lt.tenant_id
+        AND lb.leave_type = lt.name AND lb.[year] = @year
+       WHERE lt.tenant_id = @tenantId
+         AND u.status = N'active'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+         AND (EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = N'profile') OR u.role = N'super_admin')
+       ORDER BY u.full_name, lt.sort_order, lt.name`,
       { tenantId, year }
     );
     res.json({ balances: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Allocate (initialise) leave balances for a year from leave-type defaults. Management only.
+ *  Sets total_days for every active employee × configured leave type that has a default,
+ *  without touching used_days. Idempotent. Body: { year } (optional, defaults to current). */
+router.post('/leave/balances/allocate', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const year = req.body?.year != null ? parseInt(req.body.year, 10) : wallMonthYearInAppZone().year;
+    if (!Number.isFinite(year)) return res.status(400).json({ error: 'Invalid year' });
+    // Update existing balance rows to the type default.
+    await query(
+      `UPDATE lb SET lb.total_days = lt.default_days_per_year
+       FROM leave_balance lb
+       INNER JOIN leave_types lt ON lt.tenant_id = lb.tenant_id AND lt.name = lb.leave_type
+       WHERE lb.tenant_id = @tenantId AND lb.[year] = @year AND lt.default_days_per_year IS NOT NULL`,
+      { tenantId, year }
+    );
+    // Insert missing balance rows (employee × type) with default allocation, 0 used.
+    const ins = await query(
+      `INSERT INTO leave_balance (user_id, tenant_id, [year], leave_type, total_days, used_days)
+       SELECT u.id, @tenantId, @year, lt.name, lt.default_days_per_year, 0
+       FROM users u
+       CROSS JOIN leave_types lt
+       WHERE lt.tenant_id = @tenantId
+         AND lt.default_days_per_year IS NOT NULL
+         AND u.status = N'active'
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+         AND (EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = N'profile') OR u.role = N'super_admin')
+         AND NOT EXISTS (
+           SELECT 1 FROM leave_balance lb
+           WHERE lb.user_id = u.id AND lb.tenant_id = @tenantId AND lb.[year] = @year AND lb.leave_type = lt.name
+         )`,
+      { tenantId, year }
+    );
+    const cnt = await query(`SELECT @@ROWCOUNT AS n`, {});
+    res.json({ ok: true, year, created: getRow(cnt.recordset?.[0], 'n') ?? 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Set a single user's allocated days for a leave type/year. Management only.
+ *  Body: { user_id, year, leave_type, total_days, used_days? }. */
+router.patch('/leave/balances/entry', requirePageAccess('management'), async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const { user_id, year, leave_type } = req.body || {};
+    if (!user_id || !leave_type || year == null) return res.status(400).json({ error: 'user_id, year, leave_type required' });
+    const yr = parseInt(year, 10);
+    if (!Number.isFinite(yr)) return res.status(400).json({ error: 'Invalid year' });
+    const total = req.body.total_days != null && req.body.total_days !== '' ? Math.max(0, parseInt(req.body.total_days, 10) || 0) : null;
+    const used = req.body.used_days != null && req.body.used_days !== '' ? Math.max(0, parseInt(req.body.used_days, 10) || 0) : null;
+    const member = await query(
+      `SELECT 1 AS ok FROM users u
+       WHERE u.id = @userId
+         AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))`,
+      { userId: user_id, tenantId }
+    );
+    if (!member.recordset?.length) return res.status(404).json({ error: 'User not in tenant' });
+    const upd = await query(
+      `UPDATE leave_balance
+       SET total_days = COALESCE(@total, total_days),
+           used_days = COALESCE(@used, used_days)
+       WHERE user_id = @userId AND tenant_id = @tenantId AND [year] = @year AND leave_type = @leaveType`,
+      { userId: user_id, tenantId, year: yr, leaveType: String(leave_type).trim(), total, used }
+    );
+    const cnt = await query(`SELECT @@ROWCOUNT AS n`, {});
+    if ((getRow(cnt.recordset?.[0], 'n') ?? 0) === 0) {
+      await query(
+        `INSERT INTO leave_balance (user_id, tenant_id, [year], leave_type, total_days, used_days)
+         VALUES (@userId, @tenantId, @year, @leaveType, @total, @used)`,
+        { userId: user_id, tenantId, year: yr, leaveType: String(leave_type).trim(), total: total ?? 0, used: used ?? 0 }
+      );
+    }
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -1553,33 +1701,109 @@ router.post('/leave/applications', requirePageAccess('profile'), async (req, res
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     if (!leave_type || !start_date || !end_date) return res.status(400).json({ error: 'leave_type, start_date, end_date required' });
+    const leaveType = String(leave_type).trim();
     const days = Math.max(1, parseInt(days_requested, 10) || 1);
+
+    // Does this tenant have this leave type configured to auto-approve?
+    let autoApprove = false;
+    try {
+      const typeRow = await query(
+        `SELECT TOP 1 auto_approve FROM leave_types WHERE tenant_id = @tenantId AND name = @name`,
+        { tenantId, name: leaveType }
+      );
+      autoApprove = !!(typeRow.recordset?.[0] && getRow(typeRow.recordset[0], 'auto_approve'));
+    } catch (e) {
+      autoApprove = false;
+    }
+
+    const autoNote = 'Auto-approved by system (this leave type is set to auto-approve).';
     const ins = await query(
-      `INSERT INTO leave_applications (tenant_id, user_id, leave_type, start_date, end_date, days_requested, reason)
+      `INSERT INTO leave_applications (tenant_id, user_id, leave_type, start_date, end_date, days_requested, reason, status, reviewed_at, review_notes)
        OUTPUT INSERTED.id, INSERTED.status, INSERTED.created_at
-       VALUES (@tenantId, @userId, @leaveType, @startDate, @endDate, @days, @reason)`,
-      { tenantId, userId: req.user.id, leaveType: String(leave_type).trim(), startDate: start_date, endDate: end_date, days, reason: reason || null }
+       VALUES (@tenantId, @userId, @leaveType, @startDate, @endDate, @days, @reason, @status, ${autoApprove ? 'SYSUTCDATETIME()' : 'NULL'}, @reviewNotes)`,
+      {
+        tenantId,
+        userId: req.user.id,
+        leaveType,
+        startDate: start_date,
+        endDate: end_date,
+        days,
+        reason: reason || null,
+        status: autoApprove ? 'approved' : 'pending',
+        reviewNotes: autoApprove ? autoNote : null,
+      }
     );
     const row = ins.recordset[0];
+
+    if (autoApprove) {
+      // Mirror the manual-approval side effect: record used days against the balance.
+      const startYmd = toYmdFromDbOrString(start_date);
+      const year = startYmd.length >= 4 ? parseInt(startYmd.slice(0, 4), 10) : wallMonthYearInAppZone().year;
+      await query(
+        `UPDATE leave_balance SET used_days = used_days + @days
+         WHERE user_id = @userId AND tenant_id = @tenantId AND [year] = @year AND leave_type = @leaveType`,
+        { userId: req.user.id, tenantId, year, leaveType, days }
+      );
+      const upd = await query(`SELECT @@ROWCOUNT AS n`, {});
+      if (getRow(upd.recordset[0], 'n') === 0) {
+        await query(
+          `INSERT INTO leave_balance (user_id, tenant_id, [year], leave_type, total_days, used_days)
+           VALUES (@userId, @tenantId, @year, @leaveType, 0, @days)`,
+          { userId: req.user.id, tenantId, year, leaveType, days }
+        );
+      }
+    }
+
     if (isEmailConfigured()) {
       const managementEmails = await getManagementEmailsForTenantAndTab(query, tenantId, 'leave');
       const applicantName = req.user.full_name || req.user.email || 'An employee';
       const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
-      const html = leaveAppliedHtml({
-        applicantName,
-        leaveType: String(leave_type).trim(),
-        startDate: start_date,
-        endDate: end_date,
-        daysRequested: days,
-        reason: reason || null,
-        appUrl,
-      });
-      const subject = `Leave application: ${applicantName} – ${String(leave_type).trim()}`;
-      for (const to of managementEmails) {
-        sendEmail({ to, subject, body: html, html: true }).catch((e) => console.error('[profile-management] Leave applied email error:', e?.message));
+      if (autoApprove) {
+        const html = leaveAutoApprovedHtml({
+          applicantName,
+          leaveType,
+          startDate: start_date,
+          endDate: end_date,
+          daysRequested: days,
+          reason: reason || null,
+          appUrl,
+        });
+        const subject = `Leave auto-approved: ${applicantName} – ${leaveType}`;
+        for (const to of managementEmails) {
+          sendEmail({ to, subject, body: html, html: true }).catch((e) => console.error('[profile-management] Leave auto-approved email error:', e?.message));
+        }
+        // Confirm to the applicant as well.
+        const applicantEmail = req.user.email;
+        if (applicantEmail && String(applicantEmail).trim()) {
+          const applicantHtml = leaveReviewedHtml({
+            status: 'approved',
+            leaveType,
+            startDate: start_date,
+            endDate: end_date,
+            reviewedByName: 'System (auto-approve)',
+            reviewNotes: autoNote,
+            appUrl,
+          });
+          sendEmail({ to: applicantEmail, subject: 'Leave application approved', body: applicantHtml, html: true })
+            .catch((e) => console.error('[profile-management] Leave auto-approved applicant email error:', e?.message));
+        }
+      } else {
+        const html = leaveAppliedHtml({
+          applicantName,
+          leaveType,
+          startDate: start_date,
+          endDate: end_date,
+          daysRequested: days,
+          reason: reason || null,
+          appUrl,
+        });
+        const subject = `Leave application: ${applicantName} – ${leaveType}`;
+        for (const to of managementEmails) {
+          sendEmail({ to, subject, body: html, html: true }).catch((e) => console.error('[profile-management] Leave applied email error:', e?.message));
+        }
       }
     }
-    res.status(201).json({ application: { id: getRow(row, 'id'), status: getRow(row, 'status'), created_at: getRow(row, 'created_at') } });
+    res.status(201).json({ application: { id: getRow(row, 'id'), status: getRow(row, 'status'), created_at: getRow(row, 'created_at'), auto_approved: autoApprove } });
   } catch (err) {
     next(err);
   }
@@ -1612,12 +1836,59 @@ router.post('/leave/applications/:id/attachments', leaveUpload, requirePageAcces
   }
 });
 
+/** List attachments for a leave application. Applicant or management (same tenant). */
+router.get('/leave/applications/:id/attachments', requirePageAccess('profile'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const app = await query(`SELECT id, tenant_id, user_id FROM leave_applications WHERE id = @id`, { id });
+    const row = app.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Application not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const isOwner = getRow(row, 'user_id') === req.user.id;
+    const isManagement = !!req.user.page_roles?.includes('management');
+    if (!isOwner && !isManagement) return res.status(403).json({ error: 'Forbidden' });
+    const result = await query(
+      `SELECT id, file_name, created_at FROM leave_attachments WHERE leave_application_id = @id ORDER BY created_at`,
+      { id }
+    );
+    res.json({ attachments: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Download a single leave attachment. Applicant or management (same tenant). */
+router.get('/leave/attachments/:attachmentId/download', async (req, res, next) => {
+  try {
+    const { attachmentId } = req.params;
+    const result = await query(
+      `SELECT a.file_path, a.file_name, l.tenant_id, l.user_id
+       FROM leave_attachments a
+       INNER JOIN leave_applications l ON l.id = a.leave_application_id
+       WHERE a.id = @attachmentId`,
+      { attachmentId }
+    );
+    const row = result.recordset[0];
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const isOwner = getRow(row, 'user_id') === req.user.id;
+    const isManagement = !!req.user.page_roles?.includes('management');
+    if (!isOwner && !isManagement) return res.status(403).json({ error: 'Forbidden' });
+    const fullPath = path.join(process.cwd(), 'uploads', getRow(row, 'file_path'));
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    res.download(fullPath, getRow(row, 'file_name') || 'attachment');
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/leave/pending', requirePageAccess('management'), async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     const result = await query(
-      `SELECT l.id, l.user_id, l.leave_type, l.start_date, l.end_date, l.days_requested, l.reason, l.created_at, u.full_name AS user_name
+      `SELECT l.id, l.user_id, l.leave_type, l.start_date, l.end_date, l.days_requested, l.reason, l.created_at, u.full_name AS user_name,
+              (SELECT COUNT(*) FROM leave_attachments a WHERE a.leave_application_id = l.id) AS attachment_count
        FROM leave_applications l
        LEFT JOIN users u ON u.id = l.user_id
        WHERE l.tenant_id = @tenantId AND l.status = N'pending' ORDER BY l.created_at`,
@@ -1644,7 +1915,8 @@ router.get('/leave/applications/all', requirePageAccess('management'), async (re
     const result = await query(
       `SELECT TOP 500 l.id, l.user_id, l.leave_type, l.start_date, l.end_date, l.days_requested, l.reason,
               l.status, l.created_at, l.reviewed_at, l.review_notes,
-              u.full_name AS user_name, u.email AS user_email
+              u.full_name AS user_name, u.email AS user_email,
+              (SELECT COUNT(*) FROM leave_attachments a WHERE a.leave_application_id = l.id) AS attachment_count
        FROM leave_applications l
        LEFT JOIN users u ON u.id = l.user_id
        ${where}
@@ -1662,15 +1934,17 @@ router.patch('/leave/applications/:id/review', requirePageAccess('management'), 
     const { id } = req.params;
     const { status, review_notes } = req.body || {};
     if (!status || !['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'status must be approved or rejected' });
-    const app = await query(`SELECT id, tenant_id, user_id, leave_type, start_date, end_date, days_requested FROM leave_applications WHERE id = @id`, { id });
+    const app = await query(`SELECT id, tenant_id, user_id, leave_type, start_date, end_date, days_requested, status AS current_status FROM leave_applications WHERE id = @id`, { id });
     const row = app.recordset[0];
     if (!row) return res.status(404).json({ error: 'Application not found' });
     if (!canAccessTenant(req, getRow(row, 'tenant_id'))) return res.status(403).json({ error: 'Forbidden' });
+    const wasApproved = String(getRow(row, 'current_status') || '').toLowerCase() === 'approved';
     await query(
       `UPDATE leave_applications SET status = @status, reviewed_by = @reviewedBy, reviewed_at = SYSUTCDATETIME(), review_notes = @reviewNotes WHERE id = @id`,
       { id, status, reviewedBy: req.user.id, reviewNotes: review_notes || null }
     );
-    if (status === 'approved') {
+    // Only adjust the balance when moving INTO approved (avoids double-counting re-reviews).
+    if (status === 'approved' && !wasApproved) {
       const startYmd = toYmdFromDbOrString(getRow(row, 'start_date'));
       const year = startYmd.length >= 4 ? parseInt(startYmd.slice(0, 4), 10) : wallMonthYearInAppZone().year;
       const leaveType = getRow(row, 'leave_type');
@@ -2676,6 +2950,7 @@ router.get('/users/tenant', async (req, res, next) => {
       `SELECT DISTINCT u.id, u.full_name, u.email FROM users u
        WHERE u.status = 'active'
          AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
+         AND (EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = N'profile') OR u.role = N'super_admin')
        ORDER BY u.full_name`,
       { tenantId }
     );

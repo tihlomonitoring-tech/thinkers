@@ -213,6 +213,9 @@ export default function FleetDriverEnrollmentTab({ routesList, pageRestrictions,
   const [enrollmentSelectedDriverIds, setEnrollmentSelectedDriverIds] = useState([]);
   const [enrollmentEnrollingTrucks, setEnrollmentEnrollingTrucks] = useState(false);
   const [enrollmentEnrollingDrivers, setEnrollmentEnrollingDrivers] = useState(false);
+  const [enrollmentRejected, setEnrollmentRejected] = useState([]);
+  const [requestingAcceptanceId, setRequestingAcceptanceId] = useState(null);
+  const [acceptanceNotice, setAcceptanceNotice] = useState('');
   const [enrollmentSelectedRouteTruckIds, setEnrollmentSelectedRouteTruckIds] = useState([]);
   const [enrollmentSelectedRouteDriverIds, setEnrollmentSelectedRouteDriverIds] = useState([]);
   const [enrollmentUnenrollingTrucks, setEnrollmentUnenrollingTrucks] = useState(false);
@@ -602,6 +605,25 @@ export default function FleetDriverEnrollmentTab({ routesList, pageRestrictions,
     setEnrollmentRoutePickerQuery('');
   };
 
+  const truckRegById = (id) => {
+    const t = enrollmentApprovedTrucks.find((x) => sameEntityId(x.id, id));
+    return t ? (formatTruckRegistration(t.registration) || t.registration || String(id)) : String(id);
+  };
+
+  const handleRequestAcceptance = async (truckId) => {
+    setRequestingAcceptanceId(truckId);
+    setAcceptanceNotice('');
+    try {
+      await contractorApi.routes.requestAcceptance(enrollmentRouteId, truckId);
+      setAcceptanceNotice(`Acceptance requested for ${truckRegById(truckId)}. The rector has been notified.`);
+      setEnrollmentRejected((prev) => prev.map((r) => (sameEntityId(r.truckId, truckId) ? { ...r, requested: true } : r)));
+    } catch (e) {
+      onError?.(e?.message || 'Failed to request acceptance');
+    } finally {
+      setRequestingAcceptanceId(null);
+    }
+  };
+
   const truckToolbar = (
     <>
       {filteredEnrollmentRouteTrucks.length > 0 && (
@@ -632,7 +654,7 @@ export default function FleetDriverEnrollmentTab({ routesList, pageRestrictions,
       )}
       <button
         type="button"
-        onClick={() => setEnrollmentAddTruckOpen(true)}
+        onClick={() => { setEnrollmentRejected([]); setAcceptanceNotice(''); setEnrollmentAddTruckOpen(true); }}
         disabled={!pageRestrictions.allow_enrollment}
         className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
       >
@@ -949,14 +971,14 @@ export default function FleetDriverEnrollmentTab({ routesList, pageRestrictions,
       )}
 
       {enrollmentAddTruckOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); setEnrollmentApprovedTruckSearch(''); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); setEnrollmentApprovedTruckSearch(''); setEnrollmentRejected([]); setAcceptanceNotice(''); }}>
           <div className="bg-white rounded-xl shadow-xl max-w-5xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="p-4 border-b border-surface-200 flex justify-between items-center bg-surface-50">
               <div>
                 <h3 className="font-semibold text-surface-900">Enrol trucks on route</h3>
                 <p className="text-xs text-surface-500 mt-0.5">{selectedRouteName}</p>
               </div>
-              <button type="button" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); setEnrollmentApprovedTruckSearch(''); }} className="text-surface-500 hover:text-surface-700 text-xl leading-none">×</button>
+              <button type="button" onClick={() => { setEnrollmentAddTruckOpen(false); setEnrollmentSelectedTruckIds([]); setEnrollmentApprovedTruckSearch(''); setEnrollmentRejected([]); setAcceptanceNotice(''); }} className="text-surface-500 hover:text-surface-700 text-xl leading-none">×</button>
             </div>
             <div className="p-4 overflow-auto flex-1">
               {enrollmentApprovedTrucks.length === 0 ? (
@@ -1006,6 +1028,41 @@ export default function FleetDriverEnrollmentTab({ routesList, pageRestrictions,
                       </tbody>
                     </table>
                   </div>
+                  {acceptanceNotice && (
+                    <div className="mt-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">{acceptanceNotice}</div>
+                  )}
+                  {enrollmentRejected.length > 0 && (
+                    <div className="mt-4 rounded-lg border border-red-200 bg-red-50 overflow-hidden">
+                      <div className="px-3 py-2 bg-red-100/60 border-b border-red-200">
+                        <p className="text-sm font-semibold text-red-800">{enrollmentRejected.length} truck(s) could not be enrolled</p>
+                        <p className="text-xs text-red-700 mt-0.5">These trucks are not on the rector's accepted list for this route. Request acceptance and the rector will be notified.</p>
+                      </div>
+                      <ul className="divide-y divide-red-100">
+                        {enrollmentRejected.map((r) => (
+                          <li key={String(r.truckId)} className="px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-surface-900">{formatTruckRegistration(r.registration) || truckRegById(r.truckId)}</p>
+                              <p className="text-xs text-red-700">{r.reason}</p>
+                            </div>
+                            {r.canRequestAcceptance && (
+                              r.requested ? (
+                                <span className="text-xs font-medium text-green-700">Requested ✓</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={requestingAcceptanceId != null}
+                                  onClick={() => handleRequestAcceptance(r.truckId)}
+                                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-red-300 text-red-700 hover:bg-red-100 disabled:opacity-50"
+                                >
+                                  {sameEntityId(requestingAcceptanceId, r.truckId) ? 'Requesting…' : 'Request acceptance'}
+                                </button>
+                              )
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   <div className="mt-4 pt-4 border-t border-surface-200">
                     <button
                       type="button"
@@ -1013,11 +1070,19 @@ export default function FleetDriverEnrollmentTab({ routesList, pageRestrictions,
                       onClick={async () => {
                         if (!enrollmentRouteId || enrollmentSelectedTruckIds.length === 0) return;
                         setEnrollmentEnrollingTrucks(true);
+                        setAcceptanceNotice('');
                         try {
-                          await contractorApi.routes.enrollTrucks(enrollmentRouteId, enrollmentSelectedTruckIds);
+                          const res = await contractorApi.routes.enrollTrucks(enrollmentRouteId, enrollmentSelectedTruckIds);
                           await refreshEnrollmentRouteDetail();
-                          setEnrollmentSelectedTruckIds([]);
-                          setEnrollmentAddTruckOpen(false);
+                          const rejected = res?.rejected || [];
+                          setEnrollmentRejected(rejected);
+                          if (rejected.length === 0) {
+                            setEnrollmentSelectedTruckIds([]);
+                            setEnrollmentAddTruckOpen(false);
+                          } else {
+                            const rejIds = new Set(rejected.map((r) => String(r.truckId)));
+                            setEnrollmentSelectedTruckIds((prev) => prev.filter((id) => rejIds.has(String(id))));
+                          }
                         } catch (e) {
                           onError?.(e?.message || 'Failed to enrol trucks');
                         } finally {

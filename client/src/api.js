@@ -392,8 +392,27 @@ export const contractor = {
       request(`/contractor/routes/${routeId}/trucks/unenroll-bulk?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ truckIds }) }),
     unenrollDriversBulk: (routeId, driverIds) =>
       request(`/contractor/routes/${routeId}/drivers/unenroll-bulk?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ driverIds }) }),
+    requestAcceptance: (routeId, truckId, note) =>
+      request(`/contractor/routes/${routeId}/request-acceptance?enrollmentPortal=1`, { method: 'POST', body: JSON.stringify({ truckId, note }) }),
   },
   rectorMyRoutes: () => request('/contractor/rector-my-routes'),
+  rectorAcceptance: {
+    list: (routeId) => request(`/contractor/rector/accepted-trucks?routeId=${encodeURIComponent(routeId)}`),
+    add: (body) => request('/contractor/rector/accepted-trucks', { method: 'POST', body: JSON.stringify(body) }),
+    bulkAdd: (routeId, rows) => request('/contractor/rector/accepted-trucks/bulk', { method: 'POST', body: JSON.stringify({ routeId, rows }) }),
+    remove: (id) => request(`/contractor/rector/accepted-trucks/${id}`, { method: 'DELETE' }),
+    getSettings: (routeId) => request(`/contractor/rector/route-settings?routeId=${encodeURIComponent(routeId)}`),
+    saveSettings: (routeId, body) => request(`/contractor/rector/route-settings/${encodeURIComponent(routeId)}`, { method: 'PUT', body: JSON.stringify(body) }),
+    requests: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status) q.set('status', params.status);
+      if (params.routeId) q.set('routeId', params.routeId);
+      const qs = q.toString();
+      return request(`/contractor/rector/acceptance-requests${qs ? `?${qs}` : ''}`);
+    },
+    accept: (id, reviewNote) => request(`/contractor/rector/acceptance-requests/${id}/accept`, { method: 'POST', body: JSON.stringify({ review_note: reviewNote }) }),
+    reject: (id, reviewNote) => request(`/contractor/rector/acceptance-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ review_note: reviewNote }) }),
+  },
   routeFactors: {
     list: (routeId) => request(`/contractor/route-factors${routeId ? `?routeId=${encodeURIComponent(routeId)}` : ''}`),
     create: (body) => request('/contractor/route-factors', { method: 'POST', body: JSON.stringify(body) }),
@@ -2050,10 +2069,15 @@ export const profileManagement = {
       return pm(`/leave/applications/all${qs ? `?${qs}` : ''}`);
     },
     review: (id, body) => pm(`/leave/applications/${id}/review`, { method: 'PATCH', body: JSON.stringify(body) }),
+    attachments: (id) => pm(`/leave/applications/${id}/attachments`),
+    attachmentDownloadUrl: (attachmentId) => `${API}/profile-management/leave/attachments/${attachmentId}/download`,
     types: () => pm('/leave/types'),
     createType: (body) => pm('/leave/types', { method: 'POST', body: JSON.stringify(body) }),
+    updateType: (id, body) => pm(`/leave/types/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     seedSaTypes: () => pm('/leave/seed-sa-types', { method: 'POST' }),
     balancesTeam: (year) => pm(`/leave/balances/team${year != null ? `?year=${year}` : ''}`),
+    allocateBalances: (year) => pm('/leave/balances/allocate', { method: 'POST', body: JSON.stringify({ year }) }),
+    updateBalanceEntry: (body) => pm('/leave/balances/entry', { method: 'PATCH', body: JSON.stringify(body) }),
     history: () => pm('/leave/applications/history'),
   },
   documents: {

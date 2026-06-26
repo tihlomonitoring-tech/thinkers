@@ -8,7 +8,13 @@ import PDFDocument from 'pdfkit';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { getCommandCentreAndRectorEmails, getCommandCentreAndRectorEmailsForRoute, getCommandCentreAndAccessManagementEmails, getAllRectorEmails, getRectorEmailsForAlertType, getRectorEmailsForAlertTypeAndRoutes, getTenantUserEmails, getContractorUserEmails, getAccessManagementEmails, isSubcontractorPortalEmail } from '../lib/emailRecipients.js';
-import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml } from '../lib/emailTemplates.js';
+import { newFleetDriverNotificationHtml, newFleetDriverConfirmationHtml, breakdownReportHtml, breakdownConfirmationToDriverHtml, breakdownResolvedHtml, trucksEnrolledOnRouteHtml, truckReinstatedToContractorHtml, truckReinstatedToRectorHtml, reinstatedToContractorHtml, reinstatedToRectorHtml, reinstatedToAccessManagementHtml, rectorAcceptanceRequestHtml, rectorAcceptanceReviewedHtml } from '../lib/emailTemplates.js';
+import {
+  ensureRectorAcceptanceTables,
+  getRouteSettings,
+  ensureRouteSettingsRow,
+  verifyTruckAgainstAccepted,
+} from '../lib/rectorAcceptance.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
 import { restoreTrackerComplianceEnrollment } from '../lib/vehicleTrackerCompliance.js';
@@ -3179,9 +3185,24 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
     if (!routeRow.recordset?.length) return res.status(404).json({ error: 'Route not found' });
     const routeName = routeRow.recordset[0].name;
     const allowed = await getAllowedForEnrollmentMutation(req);
+    // Rector acceptance verification: a truck may only be enrolled if it matches the
+    // rector's Accepted trucks list for this route (when enforcement is on for the route).
+    await ensureRectorAcceptanceTables(query);
+    const rectorSettings = await getRouteSettings(query, tenantId, routeId);
+    let acceptedList = [];
+    if (rectorSettings.enforce_acceptance) {
+      const acc = await query(
+        `SELECT id, registration, trailer_1_reg_no, trailer_2_reg_no, fleet_no
+         FROM rector_accepted_trucks WHERE tenant_id = @tenantId AND route_id = @routeId`,
+        { tenantId, routeId }
+      );
+      acceptedList = acc.recordset || [];
+    }
     const addedTruckIds = [];
+    const rejected = [];
     for (const truckId of ids) {
-      let truckSql = `SELECT 1 FROM contractor_trucks t
+      let truckSql = `SELECT t.id, t.registration, t.trailer_1_reg_no, t.trailer_2_reg_no, t.fleet_no
+         FROM contractor_trucks t
          WHERE t.id = @truckId AND t.tenant_id = @tenantId AND ${TRUCK_APPROVED_SQL}`;
       const truckParams = { truckId, tenantId };
       if (allowed && allowed.length > 0) {
@@ -3190,7 +3211,24 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
         allowed.forEach((id, i) => { truckParams[`c${i}`] = id; });
       }
       const truckOk = await query(truckSql, truckParams);
-      if (!truckOk.recordset?.length) continue;
+      const truckRow = truckOk.recordset?.[0];
+      if (!truckRow) {
+        rejected.push({ truckId, reason: 'This truck is not facility-approved (or is suspended) and cannot be enrolled.' });
+        continue;
+      }
+      if (rectorSettings.enforce_acceptance) {
+        const verdict = verifyTruckAgainstAccepted({ settings: rectorSettings, truck: truckRow, acceptedList });
+        if (!verdict.ok) {
+          rejected.push({
+            truckId,
+            registration: truckRow.registration,
+            reason: verdict.reason,
+            missing: verdict.missing,
+            canRequestAcceptance: true,
+          });
+          continue;
+        }
+      }
       try {
         await query(
           `INSERT INTO contractor_route_trucks (route_id, truck_id) VALUES (@routeId, @truckId)`,
@@ -3230,7 +3268,7 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
         console.warn('[contractor] trucks-enrolled email failed:', e?.message || e);
       }
     }
-    res.json({ ok: true, added: addedTruckIds.length });
+    res.json({ ok: true, added: addedTruckIds.length, rejected });
   } catch (err) {
     next(err);
   }
@@ -3651,6 +3689,385 @@ async function assertCanEditRouteTargets(req, tenantId, routeId) {
     throw err;
   }
 }
+
+// ----------------------------------------------------------------------------
+// Rector "Accepted trucks" verification feature
+// ----------------------------------------------------------------------------
+
+function isRectorManager(req) {
+  const roles = req.user?.page_roles || [];
+  return req.user?.role === 'super_admin' || roles.includes('access_management') || roles.includes('command_centre');
+}
+
+/** Rector/manager access to a route. Managers: any route in tenant. Rector: only assigned routes. */
+async function assertRectorRouteAccess(req, tenantId, routeId) {
+  const route = await query(`SELECT id, name FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
+  if (!route.recordset?.length) {
+    const err = new Error('Route not found'); err.status = 404; throw err;
+  }
+  if (isRectorManager(req)) return route.recordset[0];
+  const roles = req.user?.page_roles || [];
+  if (roles.includes('rector')) {
+    const assigned = await query(
+      `SELECT TOP 1 1 AS ok FROM access_route_factors WHERE tenant_id = @tenantId AND user_id = @userId AND route_id = @routeId`,
+      { tenantId, routeId, userId: req.user?.id }
+    );
+    if (assigned.recordset?.[0]) return route.recordset[0];
+  }
+  const err = new Error('You can only manage routes assigned to you as rector.'); err.status = 403; throw err;
+}
+
+/** Route IDs the current user is rector for (managers => null meaning "all"). */
+async function rectorScopedRouteIds(req, tenantId) {
+  if (isRectorManager(req)) return null;
+  const r = await query(
+    `SELECT route_id FROM access_route_factors WHERE tenant_id = @tenantId AND user_id = @userId AND route_id IS NOT NULL`,
+    { tenantId, userId: req.user?.id }
+  );
+  return (r.recordset || []).map((x) => x.route_id).filter(Boolean);
+}
+
+/** Rector email addresses assigned to a specific route. */
+async function getRectorEmailsForRoute(tenantId, routeId) {
+  try {
+    const r = await query(
+      `SELECT DISTINCT u.email FROM access_route_factors f
+       INNER JOIN users u ON u.id = f.user_id
+       WHERE f.tenant_id = @tenantId AND f.route_id = @routeId
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`,
+      { tenantId, routeId }
+    );
+    return (r.recordset || []).map((x) => x.email).filter(Boolean);
+  } catch (_) { return []; }
+}
+
+async function findTruckIdByRegistration(tenantId, registration) {
+  const compact = compactTruckRegistration(registration);
+  if (!compact) return null;
+  try {
+    const r = await query(
+      `SELECT TOP 1 id FROM contractor_trucks WHERE tenant_id = @tenantId AND ${sqlRegNormExpr('registration')} = @reg`,
+      { tenantId, reg: normTruckRegistration(registration) }
+    );
+    return r.recordset?.[0]?.id || null;
+  } catch (_) { return null; }
+}
+
+/** GET accepted trucks + verification settings for a route. */
+router.get('/rector/accepted-trucks', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = req.query.routeId;
+    if (!routeId) return res.status(400).json({ error: 'routeId is required' });
+    await ensureRectorAcceptanceTables(query);
+    const route = await assertRectorRouteAccess(req, tenantId, routeId);
+    const settings = await getRouteSettings(query, tenantId, routeId);
+    const list = await query(
+      `SELECT a.id, a.route_id, a.truck_id, a.fleet_no, a.registration, a.trailer_1_reg_no, a.trailer_2_reg_no,
+              a.source, a.accepted_at, u.full_name AS accepted_by_name
+       FROM rector_accepted_trucks a
+       LEFT JOIN users u ON u.id = a.accepted_by_user_id
+       WHERE a.tenant_id = @tenantId AND a.route_id = @routeId
+       ORDER BY a.registration ASC`,
+      { tenantId, routeId }
+    );
+    res.json({
+      routeName: route.name,
+      settings,
+      trucks: (list.recordset || []).map((t) => mapTruckRegistrationFieldsDeep(t)),
+    });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** Add a single accepted truck to a route. */
+router.post('/rector/accepted-trucks', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { routeId } = req.body || {};
+    if (!routeId) return res.status(400).json({ error: 'routeId is required' });
+    await ensureRectorAcceptanceTables(query);
+    await assertRectorRouteAccess(req, tenantId, routeId);
+    const registration = compactTruckRegistration(req.body?.registration);
+    if (!registration) return res.status(400).json({ error: 'Registration is required' });
+    const fleet_no = (req.body?.fleet_no || '').trim() || null;
+    const trailer_1_reg_no = compactTruckRegistrationNullable(req.body?.trailer_1_reg_no);
+    const trailer_2_reg_no = compactTruckRegistrationNullable(req.body?.trailer_2_reg_no);
+    await ensureRouteSettingsRow(query, tenantId, routeId, req.user?.id);
+    const truckId = await findTruckIdByRegistration(tenantId, registration);
+    try {
+      const ins = await query(
+        `INSERT INTO rector_accepted_trucks (tenant_id, route_id, truck_id, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, source, accepted_by_user_id)
+         OUTPUT inserted.id
+         VALUES (@tenantId, @routeId, @truckId, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, N'manual', @userId)`,
+        { tenantId, routeId, truckId, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, userId: req.user?.id }
+      );
+      res.status(201).json({ ok: true, id: ins.recordset?.[0]?.id });
+    } catch (e) {
+      if (e.number === 2627 || e.number === 2601) return res.status(409).json({ error: 'This registration is already on the accepted list for this route.' });
+      throw e;
+    }
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** Bulk import accepted trucks (rows parsed client-side from the template). */
+router.post('/rector/accepted-trucks/bulk', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { routeId } = req.body || {};
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!routeId) return res.status(400).json({ error: 'routeId is required' });
+    if (rows.length === 0) return res.status(400).json({ error: 'rows array is required' });
+    await ensureRectorAcceptanceTables(query);
+    await assertRectorRouteAccess(req, tenantId, routeId);
+    await ensureRouteSettingsRow(query, tenantId, routeId, req.user?.id);
+    let added = 0, skipped = 0;
+    const errors = [];
+    for (const row of rows) {
+      const registration = compactTruckRegistration(row?.registration);
+      if (!registration) { skipped += 1; continue; }
+      const fleet_no = (row?.fleet_no || '').toString().trim() || null;
+      const trailer_1_reg_no = compactTruckRegistrationNullable(row?.trailer_1_reg_no);
+      const trailer_2_reg_no = compactTruckRegistrationNullable(row?.trailer_2_reg_no);
+      const truckId = await findTruckIdByRegistration(tenantId, registration);
+      try {
+        await query(
+          `INSERT INTO rector_accepted_trucks (tenant_id, route_id, truck_id, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, source, accepted_by_user_id)
+           VALUES (@tenantId, @routeId, @truckId, @fleet_no, @registration, @trailer_1_reg_no, @trailer_2_reg_no, N'import', @userId)`,
+          { tenantId, routeId, truckId, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, userId: req.user?.id }
+        );
+        added += 1;
+      } catch (e) {
+        if (e.number === 2627 || e.number === 2601) { skipped += 1; }
+        else { errors.push(`${registration}: ${e.message}`); }
+      }
+    }
+    res.json({ ok: true, added, skipped, errors });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** Remove an accepted truck. */
+router.delete('/rector/accepted-trucks/:id', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    await ensureRectorAcceptanceTables(query);
+    const row = await query(`SELECT route_id FROM rector_accepted_trucks WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    if (!row.recordset?.length) return res.status(404).json({ error: 'Not found' });
+    await assertRectorRouteAccess(req, tenantId, row.recordset[0].route_id);
+    await query(`DELETE FROM rector_accepted_trucks WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    res.json({ ok: true });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** GET verification settings for a route. */
+router.get('/rector/route-settings', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = req.query.routeId;
+    if (!routeId) return res.status(400).json({ error: 'routeId is required' });
+    await assertRectorRouteAccess(req, tenantId, routeId);
+    const settings = await getRouteSettings(query, tenantId, routeId);
+    res.json({ settings });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** Update verification settings + contractor email toggle for a route. */
+router.put('/rector/route-settings/:routeId', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    const routeId = req.params.routeId;
+    await ensureRectorAcceptanceTables(query);
+    await assertRectorRouteAccess(req, tenantId, routeId);
+    const b = req.body || {};
+    const bit = (v, def) => (v === undefined ? def : (v ? 1 : 0));
+    await query(
+      `MERGE rector_route_settings AS t
+       USING (SELECT @routeId AS route_id) AS src ON t.route_id = src.route_id
+       WHEN MATCHED THEN UPDATE SET
+         verify_registration = @vr, verify_trailer_1 = @v1, verify_trailer_2 = @v2, verify_fleet_no = @vf,
+         enforce_acceptance = @enf, notify_email_enabled = @notify,
+         updated_by_user_id = @userId, updated_at = SYSUTCDATETIME()
+       WHEN NOT MATCHED THEN INSERT (route_id, tenant_id, verify_registration, verify_trailer_1, verify_trailer_2, verify_fleet_no, enforce_acceptance, notify_email_enabled, updated_by_user_id)
+         VALUES (@routeId, @tenantId, @vr, @v1, @v2, @vf, @enf, @notify, @userId);`,
+      {
+        routeId, tenantId, userId: req.user?.id,
+        vr: bit(b.verify_registration, 1), v1: bit(b.verify_trailer_1, 0), v2: bit(b.verify_trailer_2, 0), vf: bit(b.verify_fleet_no, 0),
+        enf: bit(b.enforce_acceptance, 1), notify: bit(b.notify_email_enabled, 1),
+      }
+    );
+    const settings = await getRouteSettings(query, tenantId, routeId);
+    res.json({ ok: true, settings });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** List acceptance requests (rector view). Optional ?status= and ?routeId=. */
+router.get('/rector/acceptance-requests', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    await ensureRectorAcceptanceTables(query);
+    const status = req.query.status;
+    const routeId = req.query.routeId;
+    const scoped = await rectorScopedRouteIds(req, tenantId);
+    if (scoped && scoped.length === 0) return res.json({ requests: [] });
+    let sql = `SELECT r.id, r.route_id, r.truck_id, r.registration, r.fleet_no, r.trailer_1_reg_no, r.trailer_2_reg_no,
+                      r.[status], r.note, r.review_note, r.requested_at, r.reviewed_at,
+                      ro.name AS route_name,
+                      req.full_name AS requested_by_name,
+                      t.make_model, t.year_model, t.main_contractor, t.sub_contractor, t.commodity_type, t.capacity_tonnes,
+                      t.tracking_provider, t.facility_access, t.contractor_approval_status
+               FROM rector_acceptance_requests r
+               LEFT JOIN contractor_routes ro ON ro.id = r.route_id
+               LEFT JOIN users req ON req.id = r.requested_by_user_id
+               LEFT JOIN contractor_trucks t ON t.id = r.truck_id
+               WHERE r.tenant_id = @tenantId`;
+    const params = { tenantId };
+    if (status) { sql += ` AND r.[status] = @status`; params.status = status; }
+    if (routeId) { sql += ` AND r.route_id = @routeId`; params.routeId = routeId; }
+    if (scoped) {
+      const ph = scoped.map((_, i) => `@s${i}`).join(',');
+      sql += ` AND r.route_id IN (${ph})`;
+      scoped.forEach((id, i) => { params[`s${i}`] = id; });
+    }
+    sql += ` ORDER BY CASE WHEN r.[status] = N'pending' THEN 0 ELSE 1 END, r.requested_at DESC`;
+    const result = await query(sql, params);
+    res.json({ requests: (result.recordset || []).map((r) => mapTruckRegistrationFieldsDeep(r)) });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** Accept a request → add to accepted list + notify contractor. */
+router.post('/rector/acceptance-requests/:id/accept', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    await ensureRectorAcceptanceTables(query);
+    const row = await query(`SELECT * FROM rector_acceptance_requests WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const reqRow = row.recordset?.[0];
+    if (!reqRow) return res.status(404).json({ error: 'Request not found' });
+    await assertRectorRouteAccess(req, tenantId, reqRow.route_id);
+    if (reqRow.status !== 'pending') return res.status(400).json({ error: 'Request is not pending' });
+    await ensureRouteSettingsRow(query, tenantId, reqRow.route_id, req.user?.id);
+    const registration = compactTruckRegistration(reqRow.registration);
+    try {
+      await query(
+        `INSERT INTO rector_accepted_trucks (tenant_id, route_id, truck_id, fleet_no, registration, trailer_1_reg_no, trailer_2_reg_no, source, accepted_by_user_id)
+         VALUES (@tenantId, @routeId, @truckId, @fleet_no, @registration, @t1, @t2, N'request', @userId)`,
+        { tenantId, routeId: reqRow.route_id, truckId: reqRow.truck_id, fleet_no: reqRow.fleet_no || null, registration, t1: compactTruckRegistrationNullable(reqRow.trailer_1_reg_no), t2: compactTruckRegistrationNullable(reqRow.trailer_2_reg_no), userId: req.user?.id }
+      );
+    } catch (e) {
+      if (e.number !== 2627 && e.number !== 2601) throw e; // already accepted = fine
+    }
+    await query(
+      `UPDATE rector_acceptance_requests SET [status] = N'accepted', review_note = @note, reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id: req.params.id, note: (req.body?.review_note || '').trim() || null, userId: req.user?.id }
+    );
+    notifyAcceptanceReviewed(tenantId, reqRow, 'accepted', req.user, (req.body?.review_note || '').trim());
+    res.json({ ok: true });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+/** Reject a request → notify contractor. */
+router.post('/rector/acceptance-requests/:id/reject', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    await ensureRectorAcceptanceTables(query);
+    const row = await query(`SELECT * FROM rector_acceptance_requests WHERE id = @id AND tenant_id = @tenantId`, { id: req.params.id, tenantId });
+    const reqRow = row.recordset?.[0];
+    if (!reqRow) return res.status(404).json({ error: 'Request not found' });
+    await assertRectorRouteAccess(req, tenantId, reqRow.route_id);
+    if (reqRow.status !== 'pending') return res.status(400).json({ error: 'Request is not pending' });
+    await query(
+      `UPDATE rector_acceptance_requests SET [status] = N'rejected', review_note = @note, reviewed_by_user_id = @userId, reviewed_at = SYSUTCDATETIME() WHERE id = @id`,
+      { id: req.params.id, note: (req.body?.review_note || '').trim() || null, userId: req.user?.id }
+    );
+    notifyAcceptanceReviewed(tenantId, reqRow, 'rejected', req.user, (req.body?.review_note || '').trim());
+    res.json({ ok: true });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
+function notifyAcceptanceReviewed(tenantId, reqRow, status, reviewer, reviewNote) {
+  if (!isEmailConfigured()) return;
+  (async () => {
+    try {
+      const recips = [];
+      if (reqRow.requested_by_user_id) {
+        const r = await query(`SELECT email FROM users WHERE id = @id AND email IS NOT NULL`, { id: reqRow.requested_by_user_id });
+        if (r.recordset?.[0]?.email) recips.push(r.recordset[0].email);
+      }
+      if (recips.length === 0) recips.push(...await getContractorUserEmails(query, tenantId));
+      if (recips.length === 0) return;
+      const routeRow = await query(`SELECT name FROM contractor_routes WHERE id = @id`, { id: reqRow.route_id });
+      const html = rectorAcceptanceReviewedHtml({
+        status,
+        routeName: routeRow.recordset?.[0]?.name || 'Route',
+        registration: (reqRow.registration || '').toUpperCase(),
+        reviewedByName: reviewer?.full_name || reviewer?.email || null,
+        reviewNote: reviewNote || null,
+        appUrl: process.env.FRONTEND_ORIGIN || process.env.APP_URL || '',
+      });
+      const subject = `Truck acceptance ${status}: ${(reqRow.registration || '').toUpperCase()}`;
+      for (const to of [...new Set(recips)]) {
+        sendEmail({ to, subject, body: html, html: true }).catch((e) => console.warn('[rector] acceptance reviewed email failed:', e?.message));
+      }
+    } catch (e) { console.warn('[rector] acceptance reviewed notify failed:', e?.message); }
+  })();
+}
+
+/** Contractor requests rector acceptance for a truck on a route. */
+router.post('/routes/:id/request-acceptance', async (req, res, next) => {
+  try {
+    if (await rejectSubcontractorPortalUser(req, res)) return;
+    const tenantId = getTenantId(req);
+    const routeId = req.params.id;
+    const truckId = req.body?.truckId;
+    if (!truckId) return res.status(400).json({ error: 'truckId is required' });
+    await ensureRectorAcceptanceTables(query);
+    const routeRow = await query(`SELECT id, name FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
+    if (!routeRow.recordset?.length) return res.status(404).json({ error: 'Route not found' });
+    const truckRow = await query(
+      `SELECT id, registration, fleet_no, trailer_1_reg_no, trailer_2_reg_no FROM contractor_trucks WHERE id = @truckId AND tenant_id = @tenantId`,
+      { truckId, tenantId }
+    );
+    const truck = truckRow.recordset?.[0];
+    if (!truck) return res.status(404).json({ error: 'Truck not found' });
+    // Avoid duplicate pending requests for the same truck+route.
+    const existing = await query(
+      `SELECT TOP 1 id FROM rector_acceptance_requests WHERE tenant_id = @tenantId AND route_id = @routeId AND truck_id = @truckId AND [status] = N'pending'`,
+      { tenantId, routeId, truckId }
+    );
+    if (existing.recordset?.[0]) return res.status(409).json({ error: 'A pending acceptance request already exists for this truck on this route.' });
+    await query(
+      `INSERT INTO rector_acceptance_requests (tenant_id, route_id, truck_id, registration, fleet_no, trailer_1_reg_no, trailer_2_reg_no, note, requested_by_user_id)
+       VALUES (@tenantId, @routeId, @truckId, @registration, @fleet_no, @t1, @t2, @note, @userId)`,
+      {
+        tenantId, routeId, truckId,
+        registration: compactTruckRegistration(truck.registration),
+        fleet_no: truck.fleet_no || null,
+        t1: compactTruckRegistrationNullable(truck.trailer_1_reg_no),
+        t2: compactTruckRegistrationNullable(truck.trailer_2_reg_no),
+        note: (req.body?.note || '').trim() || null,
+        userId: req.user?.id,
+      }
+    );
+    // Notify rector(s) for this route if enabled.
+    const settings = await getRouteSettings(query, tenantId, routeId);
+    if (settings.notify_email_enabled && isEmailConfigured()) {
+      const to = await getRectorEmailsForRoute(tenantId, routeId);
+      if (to.length) {
+        const html = rectorAcceptanceRequestHtml({
+          routeName: routeRow.recordset[0].name,
+          registration: (truck.registration || '').toUpperCase(),
+          fleetNo: truck.fleet_no || '',
+          trailer1: (truck.trailer_1_reg_no || '').toUpperCase(),
+          trailer2: (truck.trailer_2_reg_no || '').toUpperCase(),
+          requestedByName: req.user?.full_name || req.user?.email || 'A contractor',
+          note: (req.body?.note || '').trim() || '',
+          appUrl: process.env.FRONTEND_ORIGIN || process.env.APP_URL || '',
+        });
+        const subject = `Truck acceptance requested: ${(truck.registration || '').toUpperCase()} on ${routeRow.recordset[0].name}`;
+        for (const addr of to) sendEmail({ to: addr, subject, body: html, html: true }).catch((e) => console.warn('[rector] acceptance request email failed:', e?.message));
+      }
+    }
+    res.status(201).json({ ok: true });
+  } catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
 
 function mapRegulationRow(row, routeRow) {
   const enrolled = Number(row.enrolled_trucks ?? row.Enrolled_Trucks) || 1;

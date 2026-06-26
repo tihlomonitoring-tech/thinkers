@@ -14,9 +14,16 @@ import InfoHint from './components/InfoHint.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 import VehicleCompliancePanel from './components/vehicleCompliance/VehicleCompliancePanel.jsx';
 import RouteTargetRegulationsPanel from './components/RouteTargetRegulationsPanel.jsx';
+import RectorAcceptedTrucksPanel from './components/RectorAcceptedTrucksPanel.jsx';
+import RectorAcceptanceRequestsPanel from './components/RectorAcceptanceRequestsPanel.jsx';
+import ListFiltersBar, { FilterField, FILTER_INPUT_CLASS } from './components/ListFiltersBar.jsx';
+import { hasFacilityAccess } from './lib/fleetEligibility.js';
+import { exportFleetPdf, exportFleetExcel } from './lib/rectorFleetExports.js';
 
 const TABS = [
   { id: 'fleet', label: 'Approved fleet & drivers', icon: 'truck', section: 'Data' },
+  { id: 'accepted-trucks', label: 'Accepted trucks', icon: 'truck', section: 'Data' },
+  { id: 'acceptance-requests', label: 'Acceptance requests', icon: 'alert', section: 'Data' },
   { id: 'fleet-access-summary', label: 'Fleet facility summary', icon: 'chart', section: 'Data' },
   { id: 'targets-regulations', label: 'Targets regulations per route', icon: 'chart', section: 'Data' },
   { id: 'contractors-details', label: 'Contractors details and features', icon: 'building', section: 'Data' },
@@ -112,12 +119,17 @@ export default function Rector() {
   // Fleet: full trucks/drivers approved + not suspended
   const [trucks, setTrucks] = useState([]);
   const [drivers, setDrivers] = useState([]);
-  const [approvedTruckIds, setApprovedTruckIds] = useState(new Set());
-  const [approvedDriverIds, setApprovedDriverIds] = useState(new Set());
   const [suspensions, setSuspensions] = useState([]);
   const [fleetFilterRoute, setFleetFilterRoute] = useState('');
   const [fleetSearch, setFleetSearch] = useState('');
   const [fleetSubTab, setFleetSubTab] = useState('trucks');
+  const [fleetShowAdvanced, setFleetShowAdvanced] = useState(false);
+  const [fleetFilterMain, setFleetFilterMain] = useState('');
+  const [fleetFilterSub, setFleetFilterSub] = useState('');
+  const [fleetFilterCommodity, setFleetFilterCommodity] = useState('');
+  const [fleetFilterTracking, setFleetFilterTracking] = useState('');
+  const [fleetFilterStatus, setFleetFilterStatus] = useState('');
+  const [fleetExportScope, setFleetExportScope] = useState('both');
   const [routes, setRoutes] = useState([]);
   const [routeEnrollments, setRouteEnrollments] = useState({}); // routeId -> { trucks: [], drivers: [] }
   const routeNameById = useMemo(
@@ -218,18 +230,14 @@ export default function Rector() {
       return Promise.all([
         contractorApi.trucks.list().then((r) => r.trucks || []),
         contractorApi.drivers.list().then((r) => r.drivers || []),
-        contractorApi.enrollment.approvedTrucks().then((r) => r.trucks || []),
-        contractorApi.enrollment.approvedDrivers().then((r) => r.drivers || []),
         contractorApi.suspensions.list().then((r) => r.suspensions || []),
         contractorApi.routes.list().then((r) => r.routes || []),
       ]);
     }).then((result) => {
       if (cancelled || !result) return;
-      const [trucksList, driversList, approvedTrucks, approvedDrivers, suspList, routesList] = result;
+      const [trucksList, driversList, suspList, routesList] = result;
       setTrucks(trucksList);
       setDrivers(driversList);
-      setApprovedTruckIds(new Set((approvedTrucks || []).map((t) => t.id)));
-      setApprovedDriverIds(new Set((approvedDrivers || []).map((d) => d.id)));
       setSuspensions(suspList || []);
       setRoutes(routesList || []);
     }).catch((e) => { if (!cancelled) setError(e?.message || 'Failed to load'); })
@@ -441,8 +449,10 @@ export default function Rector() {
 
   const suspendedTruckIds = new Set((suspensions || []).filter((s) => String(s.entity_type).toLowerCase() === 'truck').map((s) => String(s.entity_id)));
   const suspendedDriverIds = new Set((suspensions || []).filter((s) => String(s.entity_type).toLowerCase() === 'driver').map((s) => String(s.entity_id)));
-  let approvedTrucksFull = trucks.filter((t) => approvedTruckIds.has(t.id) && !suspendedTruckIds.has(String(t.id)));
-  let approvedDriversFull = drivers.filter((d) => approvedDriverIds.has(d.id) && !suspendedDriverIds.has(String(d.id)));
+  // Show ALL fleet approved by Command Centre (facility_access), regardless of contractor-side
+  // enrollment state. Suspended units stay visible with a status badge and can be filtered.
+  let approvedTrucksFull = trucks.filter((t) => hasFacilityAccess(t));
+  let approvedDriversFull = drivers.filter((d) => hasFacilityAccess(d));
 
   // When user is assigned as rector to specific routes, only show those routes and fleet enrolled on them
   const isRectorScoped = rectorRouteIds.length > 0;
@@ -473,6 +483,17 @@ export default function Rector() {
     ? complianceRecords.filter((c) => rectorRouteTruckIds.has(c.truck_id) || rectorRouteDriverIds.has(c.driver_id))
     : complianceRecords;
 
+  // Labels + status helpers for fleet filters
+  const fleetMainLabel = (x) => x.main_contractor || x.contractor_company_name || '';
+  const fleetSubLabel = (x) => x.sub_contractor || x.subcontractor_company_name || '';
+  const fleetTruckStatus = (t) => (suspendedTruckIds.has(String(t.id)) ? 'suspended' : 'active');
+  const fleetDriverStatus = (d) => (suspendedDriverIds.has(String(d.id)) ? 'suspended' : 'active');
+  const fleetUniq = (arr) => [...new Set(arr.filter((v) => v && String(v).trim()))].sort((a, b) => String(a).localeCompare(String(b)));
+  const fleetMainOptions = fleetUniq([...approvedTrucksFull.map(fleetMainLabel), ...approvedDriversFull.map(fleetMainLabel)]);
+  const fleetSubOptions = fleetUniq([...approvedTrucksFull.map(fleetSubLabel), ...approvedDriversFull.map(fleetSubLabel)]);
+  const fleetCommodityOptions = fleetUniq(approvedTrucksFull.map((t) => t.commodity_type));
+  const fleetTrackingOptions = fleetUniq(approvedTrucksFull.map((t) => t.tracking_provider));
+
   let fleetTrucks = approvedTrucksFull;
   let fleetDrivers = approvedDriversFull;
   if (fleetFilterRoute) {
@@ -485,52 +506,98 @@ export default function Rector() {
     }
   }
   const fleetFilterRouteOptions = routesToShow;
+  if (fleetFilterMain) {
+    fleetTrucks = fleetTrucks.filter((t) => fleetMainLabel(t) === fleetFilterMain);
+    fleetDrivers = fleetDrivers.filter((d) => fleetMainLabel(d) === fleetFilterMain);
+  }
+  if (fleetFilterSub) {
+    fleetTrucks = fleetTrucks.filter((t) => fleetSubLabel(t) === fleetFilterSub);
+    fleetDrivers = fleetDrivers.filter((d) => fleetSubLabel(d) === fleetFilterSub);
+  }
+  if (fleetFilterStatus) {
+    fleetTrucks = fleetTrucks.filter((t) => fleetTruckStatus(t) === fleetFilterStatus);
+    fleetDrivers = fleetDrivers.filter((d) => fleetDriverStatus(d) === fleetFilterStatus);
+  }
+  if (fleetFilterCommodity) {
+    fleetTrucks = fleetTrucks.filter((t) => (t.commodity_type || '') === fleetFilterCommodity);
+  }
+  if (fleetFilterTracking) {
+    fleetTrucks = fleetTrucks.filter((t) => (t.tracking_provider || '') === fleetFilterTracking);
+  }
   if (fleetSearch.trim()) {
     const q = fleetSearch.trim().toLowerCase();
     fleetTrucks = fleetTrucks.filter((t) =>
-      [t.registration, t.make_model, t.fleet_no, t.main_contractor, t.sub_contractor].some((v) => v && String(v).toLowerCase().includes(q))
+      [t.registration, t.make_model, t.fleet_no, t.trailer_1_reg_no, t.trailer_2_reg_no, t.main_contractor, t.sub_contractor].some((v) => v && String(v).toLowerCase().includes(q))
     );
     fleetDrivers = fleetDrivers.filter((d) =>
       [d.full_name, d.license_number, d.phone, d.id_number].some((v) => v && String(v).toLowerCase().includes(q))
     );
   }
+  const fleetActiveCount = [fleetFilterRoute, fleetFilterMain, fleetFilterSub, fleetFilterCommodity, fleetFilterTracking, fleetFilterStatus].filter(Boolean).length;
+  const clearFleetFilters = () => {
+    setFleetFilterRoute('');
+    setFleetFilterMain('');
+    setFleetFilterSub('');
+    setFleetFilterCommodity('');
+    setFleetFilterTracking('');
+    setFleetFilterStatus('');
+    setFleetSearch('');
+  };
+  const fleetFilterPills = [];
+  if (fleetFilterRoute) fleetFilterPills.push({ key: 'route', label: `Route: ${routeNameById[String(fleetFilterRoute)] || fleetFilterRoute}`, onClear: () => setFleetFilterRoute('') });
+  if (fleetFilterMain) fleetFilterPills.push({ key: 'main', label: `Main: ${fleetFilterMain}`, onClear: () => setFleetFilterMain('') });
+  if (fleetFilterSub) fleetFilterPills.push({ key: 'sub', label: `Sub: ${fleetFilterSub}`, onClear: () => setFleetFilterSub('') });
+  if (fleetFilterStatus) fleetFilterPills.push({ key: 'status', label: `Status: ${fleetFilterStatus}`, onClear: () => setFleetFilterStatus('') });
+  if (fleetFilterCommodity) fleetFilterPills.push({ key: 'commodity', label: `Commodity: ${fleetFilterCommodity}`, onClear: () => setFleetFilterCommodity('') });
+  if (fleetFilterTracking) fleetFilterPills.push({ key: 'tracking', label: `Tracking: ${fleetFilterTracking}`, onClear: () => setFleetFilterTracking('') });
+
+  const buildFleetExportRows = () => {
+    const truckRows = fleetTrucks.map((t) => ({
+      registration: t.registration,
+      make_model: t.make_model,
+      fleet_no: t.fleet_no,
+      trailer_1_reg_no: t.trailer_1_reg_no,
+      trailer_2_reg_no: t.trailer_2_reg_no,
+      main_contractor: fleetMainLabel(t),
+      sub_contractor: fleetSubLabel(t),
+      commodity_type: t.commodity_type,
+      capacity_tonnes: t.capacity_tonnes,
+      tracking_provider: t.tracking_provider,
+      status: fleetTruckStatus(t),
+    }));
+    const driverRows = fleetDrivers.map((d) => ({
+      full_name: d.full_name,
+      license_number: d.license_number,
+      phone: d.phone,
+      id_number: d.id_number,
+      main_contractor: fleetMainLabel(d),
+      sub_contractor: fleetSubLabel(d),
+      status: fleetDriverStatus(d),
+    }));
+    const subtitle = [...fleetFilterPills.map((p) => p.label), fleetSearch.trim() ? `Search: ${fleetSearch.trim()}` : '']
+      .filter(Boolean)
+      .join('  ·  ');
+    return { trucks: truckRows, drivers: driverRows, tenantName: user?.tenant_name || '', subtitle, scope: fleetExportScope };
+  };
 
   const downloadFleetPdf = () => {
     setPdfDownloading('fleet');
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    let y = 20;
-    doc.setFontSize(16);
-    doc.text('Approved Fleet & Drivers', 20, y);
-    y += 10;
-    doc.setFontSize(10);
-    doc.text(`Generated: ${new Date().toLocaleString()} | Company: ${user?.tenant_name || '—'}`, 20, y);
-    y += 10;
-    doc.setFont('helvetica', 'bold');
-    doc.text('Trucks', 20, y);
-    y += 6;
-    doc.setFont('helvetica', 'normal');
-    const truckCols = ['Registration', 'Make/Model', 'Fleet No', 'Trailer 1', 'Trailer 2'];
-    doc.text(truckCols.join(' | '), 20, y);
-    y += 5;
-    fleetTrucks.slice(0, 50).forEach((t) => {
-      if (y > 270) { doc.addPage(); y = 20; }
-      doc.text([t.registration || '—', t.make_model || '—', t.fleet_no || '—', t.trailer_1_reg_no || '—', t.trailer_2_reg_no || '—'].join(' | '), 20, y);
-      y += 5;
-    });
-    y += 8;
-    doc.setFont('helvetica', 'bold');
-    doc.text('Drivers', 20, y);
-    y += 6;
-    doc.setFont('helvetica', 'normal');
-    doc.text('Name | License | Phone | ID Number', 20, y);
-    y += 5;
-    fleetDrivers.slice(0, 50).forEach((d) => {
-      if (y > 270) { doc.addPage(); y = 20; }
-      doc.text([d.full_name || '—', d.license_number || '—', d.phone || '—', d.id_number || '—'].join(' | '), 20, y);
-      y += 5;
-    });
-    doc.save('rector-approved-fleet-drivers.pdf');
-    setPdfDownloading(null);
+    try {
+      exportFleetPdf(buildFleetExportRows());
+    } finally {
+      setPdfDownloading(null);
+    }
+  };
+
+  const downloadFleetExcel = async () => {
+    setPdfDownloading('fleet-xlsx');
+    try {
+      await exportFleetExcel(buildFleetExportRows());
+    } catch (e) {
+      setError(e?.message || 'Failed to export Excel');
+    } finally {
+      setPdfDownloading(null);
+    }
   };
 
   const downloadIncidentsPdf = () => {
@@ -749,28 +816,40 @@ export default function Rector() {
             </div>
           )}
 
+          {activeTab === 'accepted-trucks' && (
+            <RectorAcceptedTrucksPanel routes={routesToShow} />
+          )}
+
+          {activeTab === 'acceptance-requests' && (
+            <RectorAcceptanceRequestsPanel routes={routesToShow} />
+          )}
+
           {activeTab === 'fleet' && (
             <div>
-              <div className="flex flex-wrap items-center gap-4 mb-4">
-                <h3 className="text-lg font-semibold text-surface-900">Approved fleet & drivers</h3>
-                <div className="flex flex-wrap gap-2">
-                  <input
-                    type="text"
-                    placeholder="Search fleet or drivers…"
-                    value={fleetSearch}
-                    onChange={(e) => setFleetSearch(e.target.value)}
-                    className="rounded-lg border border-surface-200 px-3 py-1.5 text-sm"
-                  />
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-surface-900">Approved fleet & drivers</h3>
+                  <p className="text-xs text-surface-500 mt-0.5">All trucks and drivers approved by Command Centre (facility access){isRectorScoped ? ', on your assigned routes' : ''}.</p>
+                </div>
+                <div className="flex items-center gap-2">
                   <select
-                    value={fleetFilterRoute}
-                    onChange={(e) => setFleetFilterRoute(e.target.value)}
+                    value={fleetExportScope}
+                    onChange={(e) => setFleetExportScope(e.target.value)}
+                    title="Choose what to include in the download"
                     className="rounded-lg border border-surface-200 px-3 py-1.5 text-sm"
                   >
-                    <option value="">All routes</option>
-                    {fleetFilterRouteOptions.map((r) => (
-                      <option key={r.id} value={r.id}>{r.name}</option>
-                    ))}
+                    <option value="both">Trucks & drivers</option>
+                    <option value="trucks">Trucks only</option>
+                    <option value="drivers">Drivers only</option>
                   </select>
+                  <button
+                    type="button"
+                    onClick={downloadFleetExcel}
+                    disabled={pdfDownloading === 'fleet-xlsx'}
+                    className="rounded-lg border border-green-600 text-green-700 px-3 py-1.5 text-sm hover:bg-green-50 disabled:opacity-50"
+                  >
+                    {pdfDownloading === 'fleet-xlsx' ? 'Generating…' : 'Download Excel'}
+                  </button>
                   <button
                     type="button"
                     onClick={downloadFleetPdf}
@@ -780,6 +859,62 @@ export default function Rector() {
                     {pdfDownloading === 'fleet' ? 'Generating…' : 'Download PDF'}
                   </button>
                 </div>
+              </div>
+              <div className="mb-4">
+                <ListFiltersBar
+                  search={fleetSearch}
+                  onSearch={setFleetSearch}
+                  searchPlaceholder={fleetSubTab === 'trucks' ? 'Registration, trailer, fleet no, contractor…' : 'Name, licence, phone, ID…'}
+                  showAdvanced={fleetShowAdvanced}
+                  onToggleAdvanced={() => setFleetShowAdvanced((v) => !v)}
+                  activeCount={fleetActiveCount}
+                  activePills={fleetFilterPills}
+                  onClearAll={clearFleetFilters}
+                  onClearSearch={() => setFleetSearch('')}
+                  resultSummary={fleetSubTab === 'trucks' ? `${fleetTrucks.length} trucks` : `${fleetDrivers.length} drivers`}
+                >
+                  <FilterField label="Route">
+                    <select value={fleetFilterRoute} onChange={(e) => setFleetFilterRoute(e.target.value)} className={FILTER_INPUT_CLASS}>
+                      <option value="">All routes</option>
+                      {fleetFilterRouteOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                    </select>
+                  </FilterField>
+                  <FilterField label="Main contractor">
+                    <select value={fleetFilterMain} onChange={(e) => setFleetFilterMain(e.target.value)} className={FILTER_INPUT_CLASS}>
+                      <option value="">All contractors</option>
+                      {fleetMainOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </FilterField>
+                  <FilterField label="Sub-contractor">
+                    <select value={fleetFilterSub} onChange={(e) => setFleetFilterSub(e.target.value)} className={FILTER_INPUT_CLASS}>
+                      <option value="">All sub-contractors</option>
+                      {fleetSubOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </FilterField>
+                  <FilterField label="Status">
+                    <select value={fleetFilterStatus} onChange={(e) => setFleetFilterStatus(e.target.value)} className={FILTER_INPUT_CLASS}>
+                      <option value="">All statuses</option>
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                    </select>
+                  </FilterField>
+                  {fleetSubTab === 'trucks' && (
+                    <FilterField label="Commodity">
+                      <select value={fleetFilterCommodity} onChange={(e) => setFleetFilterCommodity(e.target.value)} className={FILTER_INPUT_CLASS}>
+                        <option value="">All commodities</option>
+                        {fleetCommodityOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </FilterField>
+                  )}
+                  {fleetSubTab === 'trucks' && (
+                    <FilterField label="Tracking provider">
+                      <select value={fleetFilterTracking} onChange={(e) => setFleetFilterTracking(e.target.value)} className={FILTER_INPUT_CLASS}>
+                        <option value="">All providers</option>
+                        {fleetTrackingOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </FilterField>
+                  )}
+                </ListFiltersBar>
               </div>
               <div className="mb-3 inline-flex rounded-lg border border-surface-200 bg-white p-1">
                 <button
@@ -813,17 +948,27 @@ export default function Rector() {
                             <th className="text-left p-2">Make/Model</th>
                             <th className="text-left p-2">Fleet No</th>
                             <th className="text-left p-2">Trailers</th>
+                            <th className="text-left p-2">Main contractor</th>
                             <th className="text-left p-2">Capacity</th>
+                            <th className="text-left p-2">Status</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {fleetTrucks.map((t) => (
+                          {fleetTrucks.length === 0 ? (
+                            <tr><td colSpan={7} className="p-6 text-center text-surface-500">No approved trucks match your filters.</td></tr>
+                          ) : fleetTrucks.map((t) => (
                             <tr key={t.id} className="border-t border-surface-100 hover:bg-surface-50">
                               <td className="p-2 font-medium">{t.registration || '—'}</td>
                               <td className="p-2">{t.make_model || '—'}</td>
                               <td className="p-2">{t.fleet_no || '—'}</td>
                               <td className="p-2">{(t.trailer_1_reg_no || '') + (t.trailer_2_reg_no ? ` / ${t.trailer_2_reg_no}` : '') || '—'}</td>
-                              <td className="p-2">{t.capacity_tonnes ?? t.capacity_tonnes ?? '—'}</td>
+                              <td className="p-2">{fleetMainLabel(t) || '—'}</td>
+                              <td className="p-2">{t.capacity_tonnes ?? '—'}</td>
+                              <td className="p-2">
+                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${fleetTruckStatus(t) === 'suspended' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                                  {fleetTruckStatus(t) === 'suspended' ? 'Suspended' : 'Active'}
+                                </span>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -841,15 +986,25 @@ export default function Rector() {
                             <th className="text-left p-2">License</th>
                             <th className="text-left p-2">Phone</th>
                             <th className="text-left p-2">ID Number</th>
+                            <th className="text-left p-2">Main contractor</th>
+                            <th className="text-left p-2">Status</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {fleetDrivers.map((d) => (
+                          {fleetDrivers.length === 0 ? (
+                            <tr><td colSpan={6} className="p-6 text-center text-surface-500">No approved drivers match your filters.</td></tr>
+                          ) : fleetDrivers.map((d) => (
                             <tr key={d.id} className="border-t border-surface-100 hover:bg-surface-50">
                               <td className="p-2 font-medium">{d.full_name || '—'}</td>
                               <td className="p-2">{d.license_number || '—'}</td>
                               <td className="p-2">{d.phone || '—'}</td>
                               <td className="p-2">{d.id_number || '—'}</td>
+                              <td className="p-2">{fleetMainLabel(d) || '—'}</td>
+                              <td className="p-2">
+                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${fleetDriverStatus(d) === 'suspended' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                                  {fleetDriverStatus(d) === 'suspended' ? 'Suspended' : 'Active'}
+                                </span>
+                              </td>
                             </tr>
                           ))}
                         </tbody>

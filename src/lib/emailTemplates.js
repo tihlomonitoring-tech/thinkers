@@ -752,6 +752,68 @@ export function leaveReviewedHtml({ status, leaveType, startDate, endDate, revie
   return taskEmailLayout(isApproved ? 'Leave approved' : 'Leave declined', content);
 }
 
+/** Leave auto-approved by the system: notify management for visibility. */
+export function leaveAutoApprovedHtml({ applicantName, leaveType, startDate, endDate, daysRequested, reason, appUrl }) {
+  const startStr = startDate ? new Date(startDate + 'T12:00:00').toLocaleDateString() : '—';
+  const endStr = endDate ? new Date(endDate + 'T12:00:00').toLocaleDateString() : '—';
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;"><strong>${escapeHtml(applicantName || 'An employee')}</strong>'s leave application was <strong style="color: #15803d;">automatically approved</strong> by the system because <strong>${escapeHtml(leaveType || 'this leave type')}</strong> is configured to auto-approve. No action is required — this notification is for your records.</p>`;
+  const rows = [
+    ['Applicant', applicantName],
+    ['Leave type', leaveType],
+    ['Start date', startStr],
+    ['End date', endStr],
+    ['Days', String(daysRequested ?? '—')],
+    ['Approved by', 'System (auto-approve)'],
+    ...(reason ? [['Reason', reason]] : []),
+  ];
+  const content = `
+    ${firstParagraph}
+    ${taskSectionBar('Leave details')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/management')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">View in Management →</a></p>
+  `;
+  return taskEmailLayout('Leave auto-approved by system', content);
+}
+
+/** Contractor requests the rector to accept a truck onto a route. Notify rector(s). */
+export function rectorAcceptanceRequestHtml({ routeName, registration, fleetNo, trailer1, trailer2, requestedByName, note, appUrl }) {
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;"><strong>${escapeHtml(requestedByName || 'A contractor')}</strong> has requested your acceptance of a truck on route <strong>${escapeHtml(routeName || '—')}</strong>. Review the details and accept it so the contractor can enroll it on this route.</p>`;
+  const rows = [
+    ['Route', routeName],
+    ['Registration', registration],
+    ...(fleetNo ? [['Fleet number', fleetNo]] : []),
+    ...(trailer1 ? [['Trailer 1', trailer1]] : []),
+    ...(trailer2 ? [['Trailer 2', trailer2]] : []),
+    ...(note ? [['Message', note]] : []),
+  ];
+  const content = `
+    ${firstParagraph}
+    ${taskSectionBar('Truck details')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/rector')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Review in Rector → Acceptance requests →</a></p>
+  `;
+  return taskEmailLayout('Truck acceptance requested', content);
+}
+
+/** Rector reviewed a truck acceptance request (accepted/rejected). Notify the contractor. */
+export function rectorAcceptanceReviewedHtml({ status, routeName, registration, reviewedByName, reviewNote, appUrl }) {
+  const isAccepted = status === 'accepted';
+  const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">Your request to accept <strong>${escapeHtml(registration || 'a truck')}</strong> on route <strong>${escapeHtml(routeName || '—')}</strong> has been <strong style="color: ${isAccepted ? '#15803d' : '#b91c1c'};">${isAccepted ? 'accepted' : 'rejected'}</strong>${reviewedByName ? ` by <strong>${escapeHtml(reviewedByName)}</strong>` : ''}.${isAccepted ? ' You can now enroll this truck on the route.' : ''}</p>`;
+  const rows = [
+    ['Route', routeName],
+    ['Registration', registration],
+    ['Status', isAccepted ? 'Accepted' : 'Rejected'],
+    ...(reviewNote ? [['Notes', reviewNote]] : []),
+  ];
+  const content = `
+    ${firstParagraph}
+    ${taskSectionBar('Acceptance details')}
+    ${taskKeyValueTable(rows)}
+    <p style="margin: 16px 0 0;"><a href="${escapeHtml((appUrl || '') + '/contractor')}" style="color: #dc2626; font-weight: 600; text-decoration: none;">Open contractor portal →</a></p>
+  `;
+  return taskEmailLayout(isAccepted ? 'Truck acceptance approved' : 'Truck acceptance rejected', content);
+}
+
 /** Warning issued: notify the employee (same red template as tasks). */
 export function warningIssuedHtml({ warningType, description, issuedByName, appUrl }) {
   const firstParagraph = `<p style="margin: 0 0 16px 0; font-size: 15px; color: #334155; line-height: 1.5;">A disciplinary warning has been issued to you${issuedByName ? ` by <strong>${escapeHtml(issuedByName)}</strong>` : ''}.</p>`;
