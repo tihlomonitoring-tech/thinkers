@@ -87,6 +87,8 @@ function mapRequest(row, recipients = []) {
     sent_at: getRow(row, 'sent_at'),
     created_at: getRow(row, 'created_at'),
     sender_name: getRow(row, 'sender_name'),
+    source: getRow(row, 'source') || null,
+    source_letter_id: parseGuid(getRow(row, 'source_letter_id')) || getRow(row, 'source_letter_id') || null,
   };
 }
 

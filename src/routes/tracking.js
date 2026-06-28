@@ -1866,11 +1866,26 @@ async function buildFleetDistribution(tenantId) {
          WHERE s.tenant_id = @tenantId AND s.entity_type = N'truck' AND s.entity_id = CAST(ct.id AS NVARCHAR(50))
            AND s.[status] IN (N'suspended', N'under_appeal')
        )
-       AND EXISTS (
-         SELECT 1 FROM contractor_route_trucks rt
-         WHERE rt.truck_id = ct.id
-           AND rt.route_id = COALESCE(t.contractor_route_id, t.route_id)
-       )
+      AND (
+        -- Truck is enrolled on this trip's route. Match on normalised registration
+        -- (not the raw truck id) so the link still resolves when the trip references
+        -- a different/older truck record than the enrolled one — duplicate truck rows
+        -- share a registration but not an id.
+        EXISTS (
+          SELECT 1 FROM contractor_route_trucks rt
+          JOIN contractor_trucks rct ON rct.id = rt.truck_id AND rct.tenant_id = @tenantId
+          WHERE rt.route_id = COALESCE(t.contractor_route_id, t.route_id)
+            AND rct.registration_norm = ct.registration_norm
+        )
+        -- ...or the truck has no route-enrolment records at all. Some tenants bind a
+        -- truck to a route via the trip itself rather than contractor_route_trucks; in
+        -- that case fall back to the trip's own route binding instead of hiding it.
+        OR NOT EXISTS (
+          SELECT 1 FROM contractor_route_trucks rt2
+          JOIN contractor_trucks rct2 ON rct2.id = rt2.truck_id AND rct2.tenant_id = @tenantId
+          WHERE rct2.registration_norm = ct.registration_norm
+        )
+      )
        AND EXISTS (
          SELECT 1
          FROM tracking_vehicle_link v

@@ -841,7 +841,33 @@ export const commandCentre = {
   investigationReports: {
     list: (approvedOnly) => request(`/command-centre/investigation-reports${approvedOnly ? '?approved=1' : ''}`),
     create: (body) => request('/command-centre/investigation-reports', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => request(`/command-centre/investigation-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     approve: (id) => request(`/command-centre/investigation-reports/${id}/approve`, { method: 'PATCH' }),
+  },
+  /** Image attachments for investigation reports (embedded into the investigation PDF). */
+  investigationReportAttachments: {
+    list: (reportId) => request(`/command-centre/investigation-reports/${encodeURIComponent(reportId)}/attachments`),
+    upload: (reportId, file, { caption } = {}) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (caption) formData.append('caption', caption);
+      return fetch(`${API}/command-centre/investigation-reports/${encodeURIComponent(reportId)}/attachments`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          return data;
+        })
+        .catch((err) => {
+          throw wrapNetworkError(err);
+        });
+    },
+    remove: (attachmentId) =>
+      request(`/command-centre/investigation-report-attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' }),
+    fileUrl: (attachmentId) => `${API}/command-centre/investigation-report-attachments/${encodeURIComponent(attachmentId)}/file`,
   },
   complianceInspections: {
     list: () => request('/command-centre/compliance-inspections'),
@@ -2368,6 +2394,24 @@ export const companyPolicies = {
         body: JSON.stringify(body || {}),
       }),
   },
+};
+
+const lt = (path, options = {}) => request(`/letters${path}`, options);
+
+/** Letter composition — draft corporate letters with custom sections, signatures, PDF, email and Quick Sign export. */
+export const letters = {
+  list: (type) => lt(type ? `?type=${encodeURIComponent(type)}` : ''),
+  get: (id) => lt(`/${encodeURIComponent(id)}`),
+  create: (body) => lt('', { method: 'POST', body: JSON.stringify(body || {}) }),
+  update: (id, body) => lt(`/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body || {}) }),
+  saveSections: (id, sections) =>
+    lt(`/${encodeURIComponent(id)}/sections`, { method: 'PUT', body: JSON.stringify({ sections }) }),
+  remove: (id) => lt(`/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  pdfUrl: (id) => `${getApiBase()}/letters/${encodeURIComponent(id)}/pdf`,
+  templates: (type) => lt(`/templates${type ? `?type=${encodeURIComponent(type)}` : ''}`),
+  policies: () => lt('/meta/policies'),
+  email: (id, body) => lt(`/${encodeURIComponent(id)}/email`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  exportToQuickSign: (id) => lt(`/${encodeURIComponent(id)}/export-quick-sign`, { method: 'POST' }),
 };
 
 const sc = (path, options = {}) => request(`/shift-clock${path}`, options);

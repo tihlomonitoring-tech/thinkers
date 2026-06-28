@@ -65,4 +65,40 @@ export async function loadShiftReportPdfAssets({ tenantId } = {}) {
   return { logoDataUrl };
 }
 
+/**
+ * Load image attachments for an investigation report as base64 data URLs for PDF
+ * embedding. Returns [{ caption, dataUrl }]. Broken / unreachable attachments are skipped.
+ */
+export async function loadInvestigationReportAttachmentImages(reportId) {
+  if (!reportId) return [];
+  let attachments = [];
+  try {
+    const res = await ccApi.investigationReportAttachments.list(reportId);
+    attachments = Array.isArray(res?.attachments) ? res.attachments : [];
+  } catch (_) {
+    return [];
+  }
+  const images = [];
+  for (const att of attachments) {
+    try {
+      const blob = await fetchBlobOrNull(ccApi.investigationReportAttachments.fileUrl(att.id));
+      if (!blob) continue;
+      const dataUrl = await blobToDataUrl(blob);
+      if (dataUrl && /^data:image\//i.test(dataUrl)) {
+        images.push({ caption: att.caption || att.file_name || '', dataUrl });
+      }
+    } catch (_) { /* skip broken attachment */ }
+  }
+  return images;
+}
+
+/** Logo + attachment image assets for investigation report PDFs. */
+export async function loadInvestigationReportPdfAssets({ tenantId, reportId } = {}) {
+  const [logoDataUrl, attachmentImages] = await Promise.all([
+    loadShiftReportLogoDataUrl({ tenantId }),
+    loadInvestigationReportAttachmentImages(reportId),
+  ]);
+  return { logoDataUrl, attachmentImages };
+}
+
 export default loadShiftReportLogoDataUrl;

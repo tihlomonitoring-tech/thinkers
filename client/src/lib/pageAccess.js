@@ -14,6 +14,7 @@ export const PATH_PAGE_IDS = {
   '/management': 'management',
   '/recruitment': 'recruitment',
   '/letters': 'letters',
+  '/letter-composition': 'letters',
   '/accounting-management': 'accounting_management',
   '/logistics-finance-management': 'logistics_finance_management',
   '/tracking-management': 'tracking_integration',
@@ -39,7 +40,7 @@ const PAGE_ROLE_ALIASES = {
   profile: ['profile', 'command_centre', 'management', 'team_leader_admin', 'performance_evaluations'],
 };
 
-export const ALL_PATHS_ORDER = ['/profile', '/operator-profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/operator-management', '/company-library', '/policy-development', '/quick-sign', '/users', '/tenants', '/contractor', '/command-centre', '/onboarding-admin', '/report-generation', '/office-admin', '/fuel-supply-management', '/fuel-customer-orders', '/fuel-data', '/access-management', '/rector', '/tasks', '/case-management', '/recruitment', '/letters', '/accounting-management', '/logistics-finance-management', '/tracking-management'];
+export const ALL_PATHS_ORDER = ['/profile', '/operator-profile', '/team-leader-admin', '/performance-evaluations', '/auditor', '/management', '/operator-management', '/company-library', '/policy-development', '/quick-sign', '/users', '/tenants', '/contractor', '/command-centre', '/onboarding-admin', '/report-generation', '/office-admin', '/fuel-supply-management', '/fuel-customer-orders', '/fuel-data', '/access-management', '/rector', '/tasks', '/case-management', '/recruitment', '/letter-composition', '/accounting-management', '/logistics-finance-management', '/tracking-management'];
 
 /**
  * Whether the user can access the given page.

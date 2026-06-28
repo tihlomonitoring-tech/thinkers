@@ -207,6 +207,89 @@ function cols(...widths) {
   return widths.map((w, i) => (i === widths.length - 1 ? w + diff : w));
 }
 
+/**
+ * Bordered full-width label/value rows (one pair per row), so narrative content
+ * (description, findings, notes) is laid out as a clean table with padded cells.
+ */
+function kvStack(doc, yRef, rawEntries) {
+  const entries = rawEntries.filter((e) => e && e.label);
+  if (!entries.length) return;
+  const labelW = 46;
+  const valueW = CONTENT_WIDTH - labelW;
+  const cellPadX = 1.8;
+  const cellPadY = 1.8;
+  const lineH = 4.2;
+
+  doc.setDrawColor(...TABLE_BORDER);
+  doc.setLineWidth(0.3);
+
+  entries.forEach((e) => {
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(FONT_SIZE_TABLE);
+    const labelLines = wrap(doc, `${e.label}:`, labelW - cellPadX * 2);
+    doc.setFont(FONT, 'normal');
+    const valueLines = wrap(doc, e.value != null && e.value !== '' ? String(e.value) : '—', valueW - cellPadX * 2);
+    const maxLines = Math.max(labelLines.length, valueLines.length, 1);
+    const rowH = cellPadY * 2 + maxLines * lineH;
+    checkNewPage(doc, yRef, rowH + 4);
+    const y = yRef.current;
+
+    doc.rect(MARGIN, y, CONTENT_WIDTH, rowH, 'S');
+    doc.line(MARGIN + labelW, y, MARGIN + labelW, y + rowH);
+
+    doc.setFont(FONT, 'bold');
+    doc.setTextColor(...TEXT_DARK);
+    labelLines.forEach((line, i) => doc.text(line, MARGIN + cellPadX, y + cellPadY + (i + 1) * lineH - 0.6));
+
+    doc.setFont(FONT, 'normal');
+    doc.setTextColor(...TEXT_MUTED);
+    valueLines.forEach((line, i) => doc.text(line, MARGIN + labelW + cellPadX, y + cellPadY + (i + 1) * lineH - 0.6));
+
+    yRef.current = y + rowH;
+  });
+  yRef.current += SECTION_GAP;
+}
+
+/**
+ * Render attached images, each captioned, scaled to content width with a max
+ * height, paginating as needed. `images` is [{ caption, dataUrl }].
+ */
+function drawImagesSection(doc, yRef, images) {
+  const list = (images || []).filter((img) => img && typeof img.dataUrl === 'string' && /^data:image\//i.test(img.dataUrl));
+  if (!list.length) return;
+  sectionBar(doc, yRef, 'Images / photos');
+  const imgMaxW = CONTENT_WIDTH;
+  const imgMaxH = 80;
+  const pxToMm = 25.4 / 96;
+  list.forEach((img, idx) => {
+    const caption = (img.caption || '').trim() || `Image ${idx + 1}`;
+    let wMm = imgMaxW;
+    let hMm = imgMaxH;
+    try {
+      const dims = doc.getImageProperties(img.dataUrl);
+      wMm = dims.width * pxToMm;
+      hMm = dims.height * pxToMm;
+      const scale = Math.min(imgMaxW / wMm, imgMaxH / hMm, 1);
+      wMm *= scale;
+      hMm *= scale;
+    } catch (_) {
+      wMm = imgMaxW / 2;
+      hMm = imgMaxH;
+    }
+    checkNewPage(doc, yRef, hMm + 12);
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(FONT_SIZE_TABLE);
+    doc.setTextColor(...TEXT_DARK);
+    doc.text(caption, MARGIN, yRef.current + 3);
+    yRef.current += 5;
+    try {
+      const format = /data:image\/jpe?g/i.test(img.dataUrl) ? 'JPEG' : 'PNG';
+      doc.addImage(img.dataUrl, format, MARGIN, yRef.current, wMm, hMm, undefined, 'FAST');
+      yRef.current += hMm + SECTION_GAP;
+    } catch (_) { /* skip broken image */ }
+  });
+}
+
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 
 /**
@@ -240,12 +323,14 @@ export function generateInvestigationReportPdf(report, options = {}) {
   const titleText = 'INVESTIGATION REPORT';
   doc.text(titleText, MARGIN + CONTENT_WIDTH / 2 - doc.getTextWidth(titleText) / 2, headerY);
 
-  if (report.case_number) {
+  const rightLines = [];
+  if (report.ref_number) rightLines.push(`REF ${report.ref_number}`);
+  if (report.case_number) rightLines.push(`CASE #${report.case_number}`);
+  if (rightLines.length) {
     doc.setFont(FONT, 'bold');
     doc.setFontSize(9);
     doc.setTextColor(...TEXT_MUTED);
-    const refLabel = `CASE #${report.case_number}`;
-    doc.text(refLabel, MARGIN + CONTENT_WIDTH - doc.getTextWidth(refLabel), headerY);
+    rightLines.forEach((t, i) => doc.text(t, MARGIN + CONTENT_WIDTH - doc.getTextWidth(t), headerY + i * 4.5));
   }
 
   doc.setFont(FONT, 'normal');
@@ -270,6 +355,7 @@ export function generateInvestigationReportPdf(report, options = {}) {
   // —— Sections ——
   sectionBar(doc, yRef, 'Case information');
   kvPanel(doc, yRef, [
+    { label: 'Reference', value: report.ref_number || '—' },
     { label: 'Case number', value: report.case_number || '—' },
     { label: 'Type', value: report.type || '—' },
     { label: 'Status', value: statusMeta(report.status).label },
@@ -292,7 +378,7 @@ export function generateInvestigationReportPdf(report, options = {}) {
   ]);
 
   sectionBar(doc, yRef, 'Description');
-  textBlock(doc, yRef, report.description || '—');
+  kvStack(doc, yRef, [{ label: 'Summary', value: report.description || '—' }]);
 
   const transactions = Array.isArray(report.transactions) ? report.transactions : [];
   if (transactions.length) {
@@ -309,47 +395,46 @@ export function generateInvestigationReportPdf(report, options = {}) {
   const parties = Array.isArray(report.parties) ? report.parties : [];
   if (parties.length) {
     sectionBar(doc, yRef, 'Involved parties');
-    parties.forEach((p) => {
-      doc.setFont(FONT, 'bold');
-      doc.setFontSize(9);
-      doc.setTextColor(...TEXT_DARK);
-      checkNewPage(doc, yRef, 10);
-      doc.text(`${p.name || '—'}${p.role ? ` · ${p.role}` : ''}`, MARGIN, yRef.current);
-      yRef.current += 4.5;
-      if (p.statement) textBlock(doc, yRef, p.statement);
-      else yRef.current += 1;
-    });
-    yRef.current += 1;
+    dataTable(
+      doc,
+      yRef,
+      ['Name', 'Role', 'Contact', 'Statement'],
+      parties.map((p) => [p.name, p.role, p.contact, p.statement]),
+      cols(38, 30, 30, 72)
+    );
   }
 
   sectionBar(doc, yRef, 'Evidence notes');
-  textBlock(doc, yRef, report.evidence_notes || '—');
+  kvStack(doc, yRef, [{ label: 'Evidence', value: report.evidence_notes || '—' }]);
 
-  sectionBar(doc, yRef, 'Finding summary');
-  textBlock(doc, yRef, report.finding_summary || '—');
+  sectionBar(doc, yRef, 'Findings');
+  kvStack(doc, yRef, [
+    { label: 'Summary', value: report.finding_summary },
+    { label: 'Operational trigger', value: report.finding_operational_trigger },
+    { label: 'The incident', value: report.finding_incident },
+    { label: 'The workaround', value: report.finding_workaround },
+    { label: 'System integrity', value: report.finding_system_integrity },
+    { label: 'Resolution', value: report.finding_resolution },
+  ]);
 
   sectionBar(doc, yRef, 'Recommendations');
   const recs = Array.isArray(report.recommendations) ? report.recommendations.filter(Boolean) : [];
   if (recs.length) {
-    doc.setFont(FONT, 'normal');
-    doc.setFontSize(FONT_SIZE_BODY);
-    doc.setTextColor(...TEXT_MUTED);
-    recs.forEach((rec) => {
-      const lines = wrap(doc, rec, CONTENT_WIDTH - 5);
-      lines.forEach((line, idx) => {
-        checkNewPage(doc, yRef, 8);
-        if (idx === 0) doc.text('•', MARGIN, yRef.current);
-        doc.text(line, MARGIN + 4, yRef.current);
-        yRef.current += 4.6;
-      });
-    });
-    yRef.current += SECTION_GAP - 2;
+    dataTable(
+      doc,
+      yRef,
+      ['#', 'Recommendation'],
+      recs.map((rec, i) => [String(i + 1), rec]),
+      cols(12, CONTENT_WIDTH - 12)
+    );
   } else {
-    textBlock(doc, yRef, '—');
+    kvStack(doc, yRef, [{ label: 'Recommendation', value: '—' }]);
   }
 
   sectionBar(doc, yRef, 'Additional notes');
-  textBlock(doc, yRef, report.additional_notes || '—');
+  kvStack(doc, yRef, [{ label: 'Notes', value: report.additional_notes || '—' }]);
+
+  drawImagesSection(doc, yRef, options.attachmentImages);
 
   // —— Footer on every page ——
   const totalPages = doc.getNumberOfPages();

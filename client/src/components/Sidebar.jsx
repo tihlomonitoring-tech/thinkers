@@ -275,7 +275,7 @@ const navSections = [
     label: 'HR',
     items: [
       { to: '/recruitment', label: 'Recruitment', icon: IconRecruitment, shortcut: '⌘9', pageId: 'recruitment' },
-      { to: '/letters', label: 'Letters', icon: IconLetters, shortcut: '⌘0', pageId: 'letters' },
+      { to: '/letter-composition', label: 'Letter composition', icon: IconLetters, shortcut: '⌘0', pageId: 'letters' },
       { to: '/quick-sign', label: 'Quick Sign', icon: IconQuickSign, shortcut: '', pageId: 'quick_sign' },
     ],
   },
@@ -299,6 +299,23 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
   const navigate = useNavigate();
   const location = useLocation();
   const [tooltipItem, setTooltipItem] = useState(null);
+  /**
+   * Collapsing / hiding the sidebar is a desktop-only concept (the toggles are
+   * `hidden lg:flex` and the mobile drawer is always full width). On mobile we
+   * must always render labels + section headings, otherwise a persisted desktop
+   * "collapsed" state leaves the mobile menu showing icons only.
+   */
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia('(max-width: 1023px)');
+    const handler = (e) => setIsMobileViewport(e.matches);
+    setIsMobileViewport(mq.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
 
   /** Only show pages the user can access. If user has page_roles set, hide pages they don't have. */
   const visibleSections = navSections
@@ -315,7 +332,7 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
   useEffect(() => {
     function onKeyDown(e) {
       if (e.metaKey || e.ctrlKey) {
-        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '8': '/fuel-supply-management', '5': '/access-management', '6': '/rector', '7': '/tasks', '9': '/recruitment', '0': '/letters', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
+        const map = { '1': '/users', '2': '/tenants', '3': '/contractor', '4': '/command-centre', '8': '/fuel-supply-management', '5': '/access-management', '6': '/rector', '7': '/tasks', '9': '/recruitment', '0': '/letter-composition', 'a': '/accounting-management', 'A': '/accounting-management', 'p': '/profile', 'P': '/profile', 'm': '/management', 'M': '/management' };
         const path = map[e.key];
         const pageId = path && PATH_PAGE_IDS[path];
         if (path && pageId && canAccessPage(user, pageId)) {
@@ -328,8 +345,8 @@ export default function Sidebar({ onLogout, collapsed, setCollapsed, hidden, set
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [navigate, user]);
 
-  const isCollapsed = collapsed;
-  const isHidden = hidden;
+  const isCollapsed = collapsed && !isMobileViewport;
+  const isHidden = hidden && !isMobileViewport;
 
   const NavItem = ({ to, label, icon: Icon, shortcut }) => (
     <li className="relative">

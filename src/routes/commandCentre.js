@@ -97,6 +97,26 @@ const fleetFacilityChecklistUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 }).single('file');
 
+const investigationReportAttachmentsDir = path.join(process.cwd(), 'uploads', 'investigation-reports');
+const investigationReportAttachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(investigationReportAttachmentsDir, String(req.params.id || 'unknown'));
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '').replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\/(jpeg|png|gif|webp|heic|heif)$/i.test(file.mimetype);
+    cb(null, !!ok);
+  },
+}).single('file');
+
 const commandCentreLogoDir = path.join(process.cwd(), 'uploads', 'command-centre', 'logos');
 const commandCentreLogoUpload = multer({
   storage: multer.diskStorage({
@@ -6645,13 +6665,42 @@ function rowToInvReport(r) {
   return out;
 }
 
+let invRefColumnEnsured = false;
+/** Idempotently add the ref_number column so the feature works even pre-migration. */
+async function ensureInvestigationRefColumn() {
+  if (invRefColumnEnsured) return;
+  await query(`IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = N'ref_number' AND Object_ID = Object_ID(N'command_centre_investigation_reports'))
+    ALTER TABLE command_centre_investigation_reports ADD ref_number NVARCHAR(50) NULL`);
+  invRefColumnEnsured = true;
+}
+
+/** Generate a unique investigation reference like INV-0427 (4 random digits). */
+async function generateInvestigationRefNumber() {
+  for (let i = 0; i < 15; i += 1) {
+    const candidate = `INV-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
+    try {
+      const existing = (await query(
+        `SELECT TOP 1 id FROM command_centre_investigation_reports WHERE ref_number = @ref`,
+        { ref: candidate }
+      )).recordset?.[0];
+      if (!existing) return candidate;
+    } catch (_) {
+      return candidate;
+    }
+  }
+  return `INV-${String(Date.now()).slice(-4)}`;
+}
+
 /** POST create investigation report (draft) */
 router.post('/investigation-reports', async (req, res, next) => {
   try {
     const b = req.body || {};
+    await ensureInvestigationRefColumn();
     const id = b.id || randomUUID();
+    const ref_number = (typeof b.ref_number === 'string' && b.ref_number.trim()) ? b.ref_number.trim() : await generateInvestigationRefNumber();
     const payload = {
       id,
+      ref_number,
       created_by_user_id: req.user.id,
       case_number: b.case_number ?? null,
       type: b.type ?? 'DEVIATION',
@@ -6680,12 +6729,12 @@ router.post('/investigation-reports', async (req, res, next) => {
     };
     await query(
       `INSERT INTO command_centre_investigation_reports (
-        id, created_by_user_id, case_number, [type], [status], priority, date_occurred, date_reported, [location],
+        id, ref_number, created_by_user_id, case_number, [type], [status], priority, date_occurred, date_reported, [location],
         investigator_name, badge_number, [rank], reported_by_name, reported_by_position, [description],
         transactions, parties, evidence_notes, finding_summary, finding_operational_trigger, finding_incident,
         finding_workaround, finding_system_integrity, finding_resolution, recommendations, additional_notes
       ) VALUES (
-        @id, @created_by_user_id, @case_number, @type, @status, @priority, @date_occurred, @date_reported, @location,
+        @id, @ref_number, @created_by_user_id, @case_number, @type, @status, @priority, @date_occurred, @date_reported, @location,
         @investigator_name, @badge_number, @rank, @reported_by_name, @reported_by_position, @description,
         @transactions, @parties, @evidence_notes, @finding_summary, @finding_operational_trigger, @finding_incident,
         @finding_workaround, @finding_system_integrity, @finding_resolution, @recommendations, @additional_notes
@@ -6744,6 +6793,229 @@ router.get('/investigation-reports', async (req, res, next) => {
     const result = await query(sql, { userId: req.user.id });
     const list = (result.recordset || []).map(rowToInvReport);
     res.json({ reports: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH update an investigation report (creator only; not after approval). Partial body supported for auto-save. */
+router.patch('/investigation-reports/:id', async (req, res, next) => {
+  try {
+    const existing = (await query(
+      `SELECT id, status, created_by_user_id FROM command_centre_investigation_reports WHERE id = @id`,
+      { id: req.params.id }
+    )).recordset?.[0];
+    if (!existing) return res.status(404).json({ error: 'Report not found' });
+    if (String(existing.created_by_user_id) !== String(req.user.id) && req.user?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Not allowed to edit this report' });
+    }
+    if (String(existing.status || '').toLowerCase().trim() === 'approved') {
+      return res.status(400).json({ error: 'Approved investigation reports cannot be edited.' });
+    }
+
+    const b = req.body || {};
+    const jsonify = (v) => (typeof v === 'string' ? v : JSON.stringify(v || []));
+    const fieldMap = {
+      case_number: b.case_number,
+      type: b.type,
+      priority: b.priority,
+      date_occurred: b.date_occurred === '' ? null : b.date_occurred,
+      date_reported: b.date_reported === '' ? null : b.date_reported,
+      location: b.location,
+      investigator_name: b.investigator_name,
+      reported_by_name: b.reported_by_name,
+      reported_by_position: b.reported_by_position,
+      description: b.description,
+      transactions: b.transactions !== undefined ? jsonify(b.transactions) : undefined,
+      parties: b.parties !== undefined ? jsonify(b.parties) : undefined,
+      evidence_notes: b.evidence_notes,
+      finding_summary: b.finding_summary,
+      finding_operational_trigger: b.finding_operational_trigger,
+      finding_incident: b.finding_incident,
+      finding_workaround: b.finding_workaround,
+      finding_system_integrity: b.finding_system_integrity,
+      finding_resolution: b.finding_resolution,
+      recommendations: b.recommendations !== undefined ? jsonify(b.recommendations) : undefined,
+      additional_notes: b.additional_notes,
+    };
+    const COLS = {
+      case_number: 'case_number', type: '[type]', priority: 'priority', date_occurred: 'date_occurred',
+      date_reported: 'date_reported', location: '[location]', investigator_name: 'investigator_name',
+      reported_by_name: 'reported_by_name', reported_by_position: 'reported_by_position', description: '[description]',
+      transactions: 'transactions', parties: 'parties', evidence_notes: 'evidence_notes',
+      finding_summary: 'finding_summary', finding_operational_trigger: 'finding_operational_trigger',
+      finding_incident: 'finding_incident', finding_workaround: 'finding_workaround',
+      finding_system_integrity: 'finding_system_integrity', finding_resolution: 'finding_resolution',
+      recommendations: 'recommendations', additional_notes: 'additional_notes',
+    };
+    const setClause = [];
+    const params = { id: req.params.id };
+    for (const key of Object.keys(fieldMap)) {
+      if (fieldMap[key] !== undefined) {
+        setClause.push(`${COLS[key]} = @${key}`);
+        params[key] = fieldMap[key];
+      }
+    }
+    if (setClause.length) {
+      await query(
+        `UPDATE command_centre_investigation_reports SET ${setClause.join(', ')}, updated_at = SYSUTCDATETIME() WHERE id = @id`,
+        params
+      );
+    }
+    const updated = (await query(
+      `SELECT inv.*, creator.full_name AS created_by_name FROM command_centre_investigation_reports inv
+       LEFT JOIN users creator ON creator.id = inv.created_by_user_id WHERE inv.id = @id`,
+      { id: req.params.id }
+    )).recordset?.[0];
+    res.json({ report: rowToInvReport(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Investigation report image attachments ---
+
+let invReportAttachmentsTableEnsured = false;
+async function ensureInvestigationReportAttachmentsTable() {
+  if (invReportAttachmentsTableEnsured) return;
+  await query(`
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'command_centre_investigation_report_attachments')
+    CREATE TABLE command_centre_investigation_report_attachments (
+      id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+      report_id UNIQUEIDENTIFIER NOT NULL,
+      file_name NVARCHAR(500) NOT NULL,
+      stored_path NVARCHAR(1000) NOT NULL,
+      mime_type NVARCHAR(200) NULL,
+      file_size BIGINT NULL,
+      caption NVARCHAR(500) NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      uploaded_by_user_id UNIQUEIDENTIFIER NULL,
+      created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+    )`);
+  invReportAttachmentsTableEnsured = true;
+}
+
+const INV_REPORT_IMAGE_MIME_BY_EXT = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.heic': 'image/heic', '.heif': 'image/heif',
+};
+
+async function loadInvestigationReportForAccess(reportId) {
+  return (await query(
+    `SELECT id, status, created_by_user_id FROM command_centre_investigation_reports WHERE id = @id`,
+    { id: reportId }
+  )).recordset?.[0] || null;
+}
+
+/** GET list of image attachments for an investigation report. */
+router.get('/investigation-reports/:id/attachments', async (req, res, next) => {
+  try {
+    await ensureInvestigationReportAttachmentsTable();
+    const report = await loadInvestigationReportForAccess(req.params.id);
+    if (!report) return res.status(404).json({ error: 'Report not found' });
+    const result = await query(
+      `SELECT id, report_id, file_name, mime_type, file_size, caption, sort_order, created_at
+       FROM command_centre_investigation_report_attachments WHERE report_id = @id ORDER BY sort_order ASC, created_at ASC`,
+      { id: req.params.id }
+    );
+    res.json({ attachments: result.recordset || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST upload an image attachment to an investigation report (creator, not after approval). */
+router.post('/investigation-reports/:id/attachments', investigationReportAttachmentUpload, async (req, res, next) => {
+  try {
+    await ensureInvestigationReportAttachmentsTable();
+    if (!req.file) return res.status(400).json({ error: 'No image uploaded (allowed: JPEG, PNG, GIF, WEBP, HEIC).' });
+    const report = await loadInvestigationReportForAccess(req.params.id);
+    if (!report) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    const isCreator = String(report.created_by_user_id) === String(req.user.id);
+    if (!isCreator && req.user?.role !== 'super_admin') {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(403).json({ error: 'Not allowed to edit this report' });
+    }
+    if (String(report.status || '').toLowerCase().trim() === 'approved') {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(400).json({ error: 'Images can only be added before the report is approved.' });
+    }
+    const relPath = path.join('investigation-reports', String(req.params.id), req.file.filename).replace(/\\/g, '/');
+    const orderResult = await query(
+      `SELECT ISNULL(MAX(sort_order), -1) + 1 AS next_order FROM command_centre_investigation_report_attachments WHERE report_id = @id`,
+      { id: req.params.id }
+    );
+    const nextOrder = orderResult.recordset?.[0]?.next_order ?? 0;
+    const caption = typeof req.body?.caption === 'string' ? req.body.caption.slice(0, 500) : null;
+    const inserted = await query(
+      `INSERT INTO command_centre_investigation_report_attachments
+         (report_id, file_name, stored_path, mime_type, file_size, caption, sort_order, uploaded_by_user_id)
+       OUTPUT INSERTED.id, INSERTED.report_id, INSERTED.file_name, INSERTED.mime_type, INSERTED.file_size, INSERTED.caption, INSERTED.sort_order, INSERTED.created_at
+       VALUES (@reportId, @fileName, @storedPath, @mimeType, @fileSize, @caption, @sortOrder, @userId)`,
+      {
+        reportId: req.params.id,
+        fileName: req.file.originalname || req.file.filename,
+        storedPath: relPath,
+        mimeType: req.file.mimetype || null,
+        fileSize: req.file.size || null,
+        caption: caption || null,
+        sortOrder: nextOrder,
+        userId: req.user?.id || null,
+      }
+    );
+    res.status(201).json({ attachment: inserted.recordset?.[0] || null });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET serve an investigation attachment image inline (for previews and PDF embedding). */
+router.get('/investigation-report-attachments/:attachmentId/file', async (req, res, next) => {
+  try {
+    await ensureInvestigationReportAttachmentsTable();
+    const row = (await query(
+      `SELECT file_name, stored_path, mime_type FROM command_centre_investigation_report_attachments WHERE id = @id`,
+      { id: req.params.attachmentId }
+    )).recordset?.[0];
+    const storedPath = row?.stored_path;
+    if (!storedPath) return res.status(404).json({ error: 'Attachment not found' });
+    const abs = path.join(process.cwd(), 'uploads', String(storedPath).replace(/\//g, path.sep));
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'File not found on disk' });
+    const ext = (path.extname(abs) || '').toLowerCase();
+    const mime = row.mime_type || INV_REPORT_IMAGE_MIME_BY_EXT[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', 'inline');
+    fs.createReadStream(abs).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE an investigation report attachment (uploader, report creator, or super admin). */
+router.delete('/investigation-report-attachments/:attachmentId', async (req, res, next) => {
+  try {
+    await ensureInvestigationReportAttachmentsTable();
+    const row = (await query(
+      `SELECT id, report_id, stored_path, uploaded_by_user_id FROM command_centre_investigation_report_attachments WHERE id = @id`,
+      { id: req.params.attachmentId }
+    )).recordset?.[0];
+    if (!row) return res.status(404).json({ error: 'Attachment not found' });
+    const report = await loadInvestigationReportForAccess(row.report_id);
+    const norm = (v) => (v != null ? String(v).toLowerCase().trim() : '');
+    const isUploader = norm(row.uploaded_by_user_id) && norm(row.uploaded_by_user_id) === norm(req.user?.id);
+    const isCreator = report && norm(report.created_by_user_id) === norm(req.user?.id);
+    if (req.user?.role !== 'super_admin' && !isUploader && !isCreator) {
+      return res.status(403).json({ error: 'Not allowed to delete this attachment' });
+    }
+    await query(`DELETE FROM command_centre_investigation_report_attachments WHERE id = @id`, { id: req.params.attachmentId });
+    if (row.stored_path) {
+      const abs = path.join(process.cwd(), 'uploads', String(row.stored_path).replace(/\//g, path.sep));
+      try { if (fs.existsSync(abs)) fs.unlinkSync(abs); } catch (_) {}
+    }
+    res.sendStatus(204);
   } catch (err) {
     next(err);
   }

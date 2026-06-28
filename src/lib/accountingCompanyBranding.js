@@ -107,8 +107,11 @@ function pickLogo(...candidates) {
 /**
  * @param {import('../db.js').query} queryFn
  * @param {string} tenantId
+ * @param {{ accountingLogoOnly?: boolean }} [options]
+ *   accountingLogoOnly: only use the Accounting-page logo (logo_path or
+ *   uploads/accounting/{tenant}); skip the Command Centre / tenant logo fallback.
  */
-export async function loadAccountingCompanyBranding(queryFn, tenantId) {
+export async function loadAccountingCompanyBranding(queryFn, tenantId, options = {}) {
   if (!tenantId) {
     return { company: { company_name: 'Company' }, logoBuffer: null, logoPath: null };
   }
@@ -136,11 +139,16 @@ export async function loadAccountingCompanyBranding(queryFn, tenantId) {
       }
     : { company_name: get(tenantRow, 'name') || 'Company' };
 
-  const logo = pickLogo(
-    readLogoFile(get(row, 'logo_path')),
-    findTenantAccountingLogoBuffer(tid),
-    findCommandCentreLogoBuffer(tid, ccLogoUrl)
-  );
+  const logo = options.accountingLogoOnly
+    ? pickLogo(
+        readLogoFile(get(row, 'logo_path')),
+        findTenantAccountingLogoBuffer(tid)
+      )
+    : pickLogo(
+        readLogoFile(get(row, 'logo_path')),
+        findTenantAccountingLogoBuffer(tid),
+        findCommandCentreLogoBuffer(tid, ccLogoUrl)
+      );
 
   return { company, logoBuffer: logo.buffer, logoPath: logo.filePath };
 }

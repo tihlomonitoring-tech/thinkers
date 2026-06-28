@@ -44,6 +44,7 @@ import expenseManagementRoutes from './src/routes/expenseManagement.js';
 import logisticsFinanceRoutes from './src/routes/logisticsFinance.js';
 import trackingRoutes from './src/routes/tracking.js';
 import companyPoliciesRoutes from './src/routes/companyPolicies.js';
+import lettersRoutes from './src/routes/letters.js';
 import tabAccessRoutes from './src/routes/tabAccess.js';
 import vehicleComplianceRoutes from './src/routes/vehicleCompliance.js';
 import vehicleTrackerComplianceRoutes from './src/routes/vehicleTrackerCompliance.js';
@@ -195,6 +196,7 @@ app.use('/api/case-management', caseManagementRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/company-library', companyLibraryRoutes);
 app.use('/api/company-policies', companyPoliciesRoutes);
+app.use('/api/letters', lettersRoutes);
 app.use('/api/quick-sign', quickSignRoutes);
 app.use('/api/operator-management', operatorManagementRoutes);
 

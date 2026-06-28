@@ -4,7 +4,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import { contractor as contractorApi, commandCentre as ccApi, tenants as tenantsApi, progressReports as progressReportsApi, actionPlans as actionPlansApi, monthlyPerformanceReports as monthlyPerformanceReportsApi } from './api';
 import { generateShiftReportPdf, buildShiftReportDownloadFilename } from './lib/shiftReportPdf.js';
-import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets } from './lib/shiftReportLogo.js';
+import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets, loadInvestigationReportPdfAssets } from './lib/shiftReportLogo.js';
 import { generateInvestigationReportPdf } from './lib/investigationReportPdf.js';
 import { generateProgressReportPdf } from './lib/progressReportPdf.js';
 import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
@@ -683,13 +683,14 @@ export default function Rector() {
     }
   };
 
-  const downloadInvestigationReportPdf = (report) => {
+  const downloadInvestigationReportPdf = async (report) => {
     setPdfDownloading(report.id);
     try {
-      const doc = generateInvestigationReportPdf(report);
+      const pdfAssets = await loadInvestigationReportPdfAssets({ tenantId: user?.tenant_id, reportId: report?.id });
+      const doc = generateInvestigationReportPdf(report, pdfAssets);
       doc.save(`investigation-report-${report.case_number || report.id || 'download'}.pdf`);
     } catch (e) { setError(e?.message || 'PDF failed'); }
-    setPdfDownloading(null);
+    finally { setPdfDownloading(null); }
   };
 
   const downloadProgressReportPdf = async (report) => {

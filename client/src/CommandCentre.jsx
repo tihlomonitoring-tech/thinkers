@@ -10,7 +10,7 @@ import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange
 import { commandCentre as ccApi, contractor as contractorApi, users as usersApi, tenants as tenantsApi, openAttachmentWithAuth, downloadAttachmentWithAuth, shiftClock, shiftScore } from './api';
 import { buildShiftReportDownloadFilename, formatShiftReportRef } from './lib/shiftReportPdf.js';
 import { getShiftReportAccess } from './lib/shiftReportAccess.js';
-import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets } from './lib/shiftReportLogo.js';
+import { loadShiftReportLogoDataUrl, loadShiftReportPdfAssets, loadInvestigationReportPdfAssets } from './lib/shiftReportLogo.js';
 import { buildMockSingleOpsShiftReport } from './lib/mockSingleOpsShiftReport.js';
 import { buildShiftReportTemplateWordHtml, downloadShiftReportTemplateWord } from './lib/shiftReportTemplateWord.js';
 import { getApiBase } from './lib/apiBase.js';
@@ -311,7 +311,7 @@ export default function CommandCentre() {
         try {
           const [{ generateInvestigationReportPdf, buildInvestigationReportFilename }, pdfAssets] = await Promise.all([
             import('./lib/investigationReportPdf.js'),
-            loadShiftReportPdfAssets({ tenantId }),
+            loadInvestigationReportPdfAssets({ tenantId, reportId: report?.id }),
           ]);
           const doc = generateInvestigationReportPdf(report, pdfAssets);
           doc.save(buildInvestigationReportFilename(report));
@@ -3391,6 +3391,16 @@ function ShiftReportTemplateTab({ user }) {
 
 /** Read-only, print-friendly view of a single investigation report. */
 function InvestigationReportDetail({ report }) {
+  const [roAttachments, setRoAttachments] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    if (!report?.id) { setRoAttachments([]); return undefined; }
+    ccApi.investigationReportAttachments
+      .list(report.id)
+      .then((res) => { if (alive) setRoAttachments(Array.isArray(res?.attachments) ? res.attachments : []); })
+      .catch(() => { if (alive) setRoAttachments([]); });
+    return () => { alive = false; };
+  }, [report?.id]);
   if (!report) return null;
   const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
   const statusNorm = String(report.status || '').toLowerCase().trim();
@@ -3419,9 +3429,9 @@ function InvestigationReportDetail({ report }) {
         <div className="px-6 py-5 bg-gradient-to-r from-amber-50 to-white border-b border-surface-100 flex items-start justify-between flex-wrap gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-amber-700">Investigation report</p>
-            <h3 className="text-xl font-bold text-surface-900 mt-0.5">{report.case_number || 'Investigation'}</h3>
+            <h3 className="text-xl font-bold text-surface-900 mt-0.5">{report.case_number || report.ref_number || 'Investigation'}</h3>
             <p className="text-sm text-surface-500 mt-1">
-              {[report.type, report.created_by_name, report.date_occurred ? `Occurred ${fmtDate(report.date_occurred)}` : null].filter(Boolean).join('  ·  ')}
+              {[report.ref_number ? `Ref ${report.ref_number}` : null, report.type, report.created_by_name, report.date_occurred ? `Occurred ${fmtDate(report.date_occurred)}` : null].filter(Boolean).join('  ·  ')}
             </p>
           </div>
           <span className={`text-xs font-medium px-3 py-1 rounded-full ${statusNorm === 'approved' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
@@ -3432,6 +3442,7 @@ function InvestigationReportDetail({ report }) {
 
       <Section title="Case information">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="Reference" value={report.ref_number} />
           <Field label="Case number" value={report.case_number} />
           <Field label="Type" value={report.type} />
           <Field label="Priority" value={report.priority} />
@@ -3520,6 +3531,25 @@ function InvestigationReportDetail({ report }) {
       <Section title="Additional notes">
         <p className="text-sm text-surface-700 whitespace-pre-wrap">{report.additional_notes || '—'}</p>
       </Section>
+
+      {roAttachments.length > 0 && (
+        <Section title="Images / photos">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            {roAttachments.map((att) => (
+              <a
+                key={att.id}
+                href={ccApi.investigationReportAttachments.fileUrl(att.id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block rounded-lg border border-surface-200 bg-white/60 overflow-hidden shadow-sm dark:border-white/10 dark:bg-white/[0.06]"
+              >
+                <img src={ccApi.investigationReportAttachments.fileUrl(att.id)} alt={att.file_name || 'Investigation report photo'} loading="lazy" className="w-full h-32 object-cover" />
+                <span className="block px-2 py-1.5 text-[11px] text-surface-600 truncate" title={att.file_name}>{att.file_name}</span>
+              </a>
+            ))}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }
@@ -3551,6 +3581,12 @@ function TabSavedReports() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [savedReportsHelpOpen, setSavedReportsHelpOpen] = useState(false);
+  const [editingInvestigation, setEditingInvestigation] = useState(false);
+  const [invEditOpenSection, setInvEditOpenSection] = useState('inv_case');
+  const [invEditSaving, setInvEditSaving] = useState(false);
+  const [invEditMessage, setInvEditMessage] = useState('');
+
+  useEffect(() => { setEditingInvestigation(false); }, [selectedId, listKind]);
 
   const isInvestigation = listKind === 'investigation';
   const listApiForKind = (kind) =>
@@ -3686,12 +3722,47 @@ function TabSavedReports() {
   if (isInvestigation && selectedId && report && String(report.id) === String(selectedId)) {
     const invStatusNorm = String(report.status || '').toLowerCase().trim();
     const canApproveInv = invStatusNorm !== 'approved';
+    const isInvCreator = user && report.created_by_user_id != null && normId(report.created_by_user_id) === normId(user.id);
+    const canEditInv = invStatusNorm !== 'approved' && (isInvCreator || user?.role === 'super_admin');
+
+    if (editingInvestigation && canEditInv) {
+      return (
+        <div className="space-y-4">
+          <InvestigationReportForm
+            user={user}
+            initialData={report}
+            reportId={report.id}
+            onBack={() => { setEditingInvestigation(false); setInvEditMessage(''); }}
+            onSaved={(updated) => {
+              if (updated) setReport(updated);
+              loadList();
+            }}
+            saving={invEditSaving}
+            setSaving={setInvEditSaving}
+            message={invEditMessage}
+            setMessage={setInvEditMessage}
+            openSection={invEditOpenSection}
+            setOpenSection={setInvEditOpenSection}
+          />
+        </div>
+      );
+    }
+
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <button type="button" onClick={() => { setSelectedId(null); setReport(null); }} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to list</button>
+          <button type="button" onClick={() => { setSelectedId(null); setReport(null); setEditingInvestigation(false); }} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to list</button>
           <span className="text-xs font-semibold text-surface-500 uppercase">Status: {report.status || '—'}</span>
           <div className="flex gap-2">
+            {canEditInv && (
+              <button
+                type="button"
+                onClick={() => { setInvEditMessage(''); setInvEditOpenSection('inv_case'); setEditingInvestigation(true); }}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+              >
+                Edit
+              </button>
+            )}
             <a
               href="#"
               onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('investigation-report-download', { detail: { report, tenantId: user?.tenant_id } })); }}
@@ -3908,7 +3979,7 @@ function TabSavedReports() {
                   <tr key={`investigation-${r.id}`} className="app-glass-data-row last:border-b-0">
                     <td className="px-4 py-3">
                       <button type="button" onClick={() => { setReport(r); setSelectedId(r.id); }} className="font-medium text-brand-600 hover:text-brand-700 text-left">
-                        {r.case_number || 'Investigation'}
+                        {r.case_number || r.ref_number || 'Investigation'}
                       </button>
                     </td>
                     <td className="px-4 py-3 text-surface-700">{dateStr}</td>
@@ -8127,14 +8198,92 @@ function ShiftReportForm({
   );
 }
 
-function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, message, setMessage, openSection, setOpenSection }) {
-  const [transactions, setTransactions] = useState([{ ref: '', date: '', location: '', type: 'Receiving', transporter: '', truck_reg: '', tonnage: '' }]);
-  const [parties, setParties] = useState([{ name: '', role: '', contact: '', statement: '' }]);
-  const [recommendations, setRecommendations] = useState(['']);
+function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, message, setMessage, openSection, setOpenSection, initialData, reportId, readOnly }) {
+  const emptyTransaction = { ref: '', date: '', location: '', type: 'Receiving', transporter: '', truck_reg: '', tonnage: '' };
+  const emptyParty = { name: '', role: '', contact: '', statement: '' };
 
+  const getField = (d, key) => {
+    if (!d || typeof d !== 'object') return undefined;
+    const k = Object.keys(d).find((kk) => kk.toLowerCase() === key.toLowerCase());
+    return k ? d[k] : undefined;
+  };
+  const toDateVal = (v) => {
+    if (v == null || v === '') return '';
+    const s = String(v);
+    return s.indexOf('T') >= 0 ? s.slice(0, 10) : s.slice(0, 10);
+  };
+  const initFields = (d) => {
+    const str = (v) => (v == null ? '' : String(v));
+    return {
+      case_number: str(getField(d, 'case_number')),
+      type: str(getField(d, 'type')) || 'DEVIATION',
+      priority: str(getField(d, 'priority')) || 'MEDIUM',
+      date_occurred: toDateVal(getField(d, 'date_occurred')),
+      date_reported: toDateVal(getField(d, 'date_reported')),
+      location: str(getField(d, 'location')),
+      investigator_name: str(getField(d, 'investigator_name') || user?.full_name),
+      reported_by_name: str(getField(d, 'reported_by_name')),
+      reported_by_position: str(getField(d, 'reported_by_position')),
+      description: str(getField(d, 'description')),
+      evidence_notes: str(getField(d, 'evidence_notes')),
+      finding_summary: str(getField(d, 'finding_summary')),
+      finding_operational_trigger: str(getField(d, 'finding_operational_trigger')),
+      finding_incident: str(getField(d, 'finding_incident')),
+      finding_workaround: str(getField(d, 'finding_workaround')),
+      finding_system_integrity: str(getField(d, 'finding_system_integrity')),
+      finding_resolution: str(getField(d, 'finding_resolution')),
+      additional_notes: str(getField(d, 'additional_notes')),
+    };
+  };
+
+  const [formFields, setFormFields] = useState(() => initFields(initialData));
+  const [transactions, setTransactions] = useState(() =>
+    Array.isArray(initialData?.transactions) && initialData.transactions.length
+      ? initialData.transactions.map((t) => ({ ...emptyTransaction, ...t }))
+      : [{ ...emptyTransaction }]
+  );
+  const [parties, setParties] = useState(() =>
+    Array.isArray(initialData?.parties) && initialData.parties.length
+      ? initialData.parties.map((p) => ({ ...emptyParty, ...p }))
+      : [{ ...emptyParty }]
+  );
+  const [recommendations, setRecommendations] = useState(() =>
+    Array.isArray(initialData?.recommendations) && initialData.recommendations.length
+      ? initialData.recommendations.map((r) => String(r))
+      : ['']
+  );
+  const [activeReportId, setActiveReportId] = useState(reportId || initialData?.id || null);
+  const [refNumber, setRefNumber] = useState(initialData?.ref_number || '');
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState('idle');
+  const [lastAutosaveAt, setLastAutosaveAt] = useState(null);
+  const autosaveTimerRef = useRef(null);
+  const lastSigRef = useRef('');
+
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [attachmentError, setAttachmentError] = useState('');
+  const imageInputRef = useRef(null);
+
+  const set = (key) => (e) => setFormFields((f) => ({ ...f, [key]: e.target.value }));
   const addRow = (setter, empty) => setter((prev) => [...prev, typeof empty === 'object' ? { ...empty } : empty]);
   const updateRow = (setter, index, field, value) => setter((prev) => prev.map((r, i) => (i === index ? (typeof r === 'object' ? { ...r, [field]: value } : value) : r)));
   const removeRow = (setter, index) => setter((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
+
+  useEffect(() => {
+    if (reportId && initialData && String(initialData.id) === String(reportId)) {
+      setFormFields(initFields(initialData));
+      setTransactions(Array.isArray(initialData.transactions) && initialData.transactions.length ? initialData.transactions.map((t) => ({ ...emptyTransaction, ...t })) : [{ ...emptyTransaction }]);
+      setParties(Array.isArray(initialData.parties) && initialData.parties.length ? initialData.parties.map((p) => ({ ...emptyParty, ...p })) : [{ ...emptyParty }]);
+      setRecommendations(Array.isArray(initialData.recommendations) && initialData.recommendations.length ? initialData.recommendations.map((r) => String(r)) : ['']);
+      setRefNumber(initialData.ref_number || '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportId, initialData]);
+
+  useEffect(() => {
+    setActiveReportId(reportId || initialData?.id || null);
+  }, [reportId, initialData?.id]);
 
   const invSections = [
     { id: 'inv_case', label: 'Case information' },
@@ -8143,56 +8292,166 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
     { id: 'inv_incident', label: 'Incident description & transactions' },
     { id: 'inv_parties', label: 'Involved parties' },
     { id: 'inv_evidence', label: 'Evidence' },
+    { id: 'inv_images', label: 'Images / photos' },
     { id: 'inv_findings', label: 'Findings' },
     { id: 'inv_recommendations', label: 'Recommendations' },
     { id: 'inv_notes', label: 'Additional notes' },
   ];
 
+  const buildPayload = () => ({
+    ...formFields,
+    transactions: transactions.filter((t) => t.ref || t.truck_reg || t.tonnage || t.location || t.transporter || t.date),
+    parties: parties.filter((p) => p.name || p.statement || p.role || p.contact),
+    recommendations: recommendations.filter(Boolean),
+  });
+
+  const hasContent = (p) => {
+    const fieldKeys = Object.keys(formFields).filter((k) => !['type', 'priority', 'investigator_name'].includes(k));
+    if (fieldKeys.some((k) => String(p?.[k] || '').trim())) return true;
+    if ((p.transactions || []).length || (p.parties || []).length || (p.recommendations || []).length) return true;
+    return false;
+  };
+
+  const loadAttachments = useCallback(async (id) => {
+    if (!id) { setAttachments([]); return; }
+    try {
+      const res = await ccApi.investigationReportAttachments.list(id);
+      setAttachments(Array.isArray(res?.attachments) ? res.attachments : []);
+    } catch (_) { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => {
+    const id = activeReportId || reportId;
+    if (id) loadAttachments(id);
+    else setAttachments([]);
+  }, [activeReportId, reportId, loadAttachments]);
+
+  useEffect(() => {
+    const payload = buildPayload();
+    const sig = JSON.stringify(payload);
+    if (!lastSigRef.current) { lastSigRef.current = sig; return; }
+    if (sig === lastSigRef.current) return;
+    if (saving || readOnly) return;
+    setAutosaveStatus('pending');
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(async () => {
+      const latest = buildPayload();
+      if (!hasContent(latest)) return;
+      try {
+        setAutoSaving(true);
+        setAutosaveStatus('saving');
+        const targetId = activeReportId || reportId;
+        if (targetId) {
+          await ccApi.investigationReports.update(targetId, latest);
+        } else {
+          const res = await ccApi.investigationReports.create(latest);
+          if (res?.report?.id) setActiveReportId(res.report.id);
+          if (res?.report?.ref_number) setRefNumber(res.report.ref_number);
+        }
+        lastSigRef.current = JSON.stringify(latest);
+        setAutosaveStatus('saved');
+        setLastAutosaveAt(Date.now());
+        setMessage?.('Auto-saved');
+      } catch (err) {
+        setAutosaveStatus('error');
+      } finally {
+        setAutoSaving(false);
+      }
+    }, 1400);
+    return () => { if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formFields, transactions, parties, recommendations, activeReportId, reportId, saving, readOnly]);
+
+  const handleImageFilesSelected = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const targetId = activeReportId || reportId;
+    if (!targetId) {
+      setAttachmentError('Add some report details first — it auto-saves within a moment, then you can attach images.');
+      return;
+    }
+    setAttachmentError('');
+    setAttachmentUploading(true);
+    try {
+      for (const file of files) {
+        if (!/^image\//i.test(file.type)) {
+          setAttachmentError('Only image files (JPEG, PNG, GIF, WEBP, HEIC) can be attached.');
+          continue;
+        }
+        await ccApi.investigationReportAttachments.upload(targetId, file);
+      }
+      await loadAttachments(targetId);
+    } catch (err) {
+      setAttachmentError(err?.message || 'Failed to upload image.');
+    } finally {
+      setAttachmentUploading(false);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveAttachment = async (attachmentId) => {
+    setAttachmentError('');
+    try {
+      await ccApi.investigationReportAttachments.remove(attachmentId);
+      setAttachments((prev) => prev.filter((a) => String(a.id) !== String(attachmentId)));
+    } catch (err) {
+      setAttachmentError(err?.message || 'Failed to remove image.');
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     setSaving(true);
     setMessage('');
-    const form = e.target;
-    const payload = {
-      case_number: form.case_number?.value?.trim() || '',
-      type: form.case_type?.value?.trim() || 'DEVIATION',
-      status: form.status?.value?.trim() || 'OPEN',
-      priority: form.priority?.value?.trim() || 'MEDIUM',
-      date_occurred: form.date_occurred?.value || '',
-      date_reported: form.date_reported?.value || '',
-      location: form.location?.value?.trim() || '',
-      investigator_name: form.investigator_name?.value?.trim() || user?.full_name || '',
-      badge_number: form.badge_number?.value?.trim() || '',
-      rank: form.rank?.value?.trim() || '',
-      reported_by_name: form.reported_by_name?.value?.trim() || '',
-      reported_by_position: form.reported_by_position?.value?.trim() || '',
-      description: form.description?.value?.trim() || '',
-      transactions: transactions.filter((t) => t.ref || t.truck_reg || t.tonnage),
-      parties: parties.filter((p) => p.name || p.statement),
-      evidence_notes: form.evidence_notes?.value?.trim() || '',
-      finding_summary: form.finding_summary?.value?.trim() || '',
-      finding_operational_trigger: form.finding_operational_trigger?.value?.trim() || '',
-      finding_incident: form.finding_incident?.value?.trim() || '',
-      finding_workaround: form.finding_workaround?.value?.trim() || '',
-      finding_system_integrity: form.finding_system_integrity?.value?.trim() || '',
-      finding_resolution: form.finding_resolution?.value?.trim() || '',
-      recommendations: recommendations.filter(Boolean),
-      additional_notes: form.additional_notes?.value?.trim() || '',
-    };
-    ccApi.investigationReports.create(payload)
-      .then((r) => { onSaved(r.report); setMessage?.('Saved. Approve this report from Report composition or saved list to add it to the Library.'); })
+    const payload = buildPayload();
+    const targetId = activeReportId || reportId;
+    const req = targetId ? ccApi.investigationReports.update(targetId, payload) : ccApi.investigationReports.create(payload);
+    req
+      .then((r) => {
+        if (r?.report?.id) setActiveReportId(r.report.id);
+        if (r?.report?.ref_number) setRefNumber(r.report.ref_number);
+        lastSigRef.current = JSON.stringify(payload);
+        setAutosaveStatus('saved');
+        setLastAutosaveAt(Date.now());
+        onSaved(r.report);
+        setMessage?.(targetId ? 'Saved.' : 'Saved. Approve this report from View composed reports or Library to add it to the Library.');
+      })
       .catch((err) => setMessage?.(err?.message || 'Save failed'))
       .finally(() => setSaving(false));
   };
+
+  const autosaveStatusLabel = autoSaving || autosaveStatus === 'saving'
+    ? 'Auto-saving…'
+    : autosaveStatus === 'saved' && lastAutosaveAt
+      ? `Saved ${new Date(lastAutosaveAt).toLocaleTimeString()}`
+      : autosaveStatus === 'error'
+        ? 'Auto-save failed'
+        : autosaveStatus === 'pending'
+          ? 'Unsaved changes…'
+          : '';
 
   return (
     <form onSubmit={handleSubmit} className="divide-y divide-surface-200/40 dark:divide-white/[0.06]">
       <div className="app-glass-form-topbar">
         <div className="flex items-center gap-3">
-          <button type="button" onClick={onBack} className="text-sm text-surface-600 hover:text-surface-900 font-medium">← Back to report types</button>
+          <button type="button" onClick={onBack} className="text-sm text-surface-600 hover:text-surface-900 font-medium">{reportId ? '← Back to list' : '← Back to report types'}</button>
           <span className="text-xs font-semibold text-surface-500 uppercase tracking-wider">Investigation report</span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          {autosaveStatusLabel ? (
+            <span
+              className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                autosaveStatus === 'error'
+                  ? 'bg-red-100 text-red-800'
+                  : autoSaving || autosaveStatus === 'saving'
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'bg-surface-100 text-surface-600'
+              }`}
+            >
+              {autosaveStatusLabel}
+            </span>
+          ) : null}
           <button type="button" onClick={() => setOpenSection(null)} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300/80 bg-white/30 backdrop-blur-sm text-surface-700 hover:bg-white/50 dark:border-white/15 dark:bg-white/[0.08] dark:text-surface-200 dark:hover:bg-white/[0.12]">Collapse all</button>
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
             {saving ? 'Saving…' : 'Save investigation report'}
@@ -8219,12 +8478,23 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
         <SectionBlock title="Case information" open={openSection === 'inv_case'} onToggle={() => setOpenSection((p) => (p === 'inv_case' ? null : 'inv_case'))}>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
+              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Reference number</label>
+              <input
+                type="text"
+                value={refNumber || ''}
+                readOnly
+                placeholder="Auto-generated on save"
+                className="w-full rounded-lg border border-surface-300 bg-surface-50 px-3 py-2 text-sm font-mono text-surface-700"
+                title="Automatically generated reference number"
+              />
+            </div>
+            <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Case number</label>
-              <input name="case_number" type="text" placeholder="e.g. DEV-1770975099130-00H8" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm font-mono" />
+              <input name="case_number" type="text" value={formFields.case_number} onChange={set('case_number')} placeholder="e.g. DEV-1770975099130-00H8" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm font-mono" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Type</label>
-              <select name="case_type" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <select name="case_type" value={formFields.type} onChange={set('type')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
                 <option value="DEVIATION">DEVIATION</option>
                 <option value="INCIDENT">INCIDENT</option>
                 <option value="COMPLIANCE">COMPLIANCE</option>
@@ -8232,16 +8502,8 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Status</label>
-              <select name="status" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
-                <option value="OPEN">OPEN</option>
-                <option value="CLOSED">CLOSED</option>
-                <option value="PENDING">PENDING</option>
-              </select>
-            </div>
-            <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Priority</label>
-              <select name="priority" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
+              <select name="priority" value={formFields.priority} onChange={set('priority')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm">
                 <option value="LOW">LOW</option>
                 <option value="MEDIUM">MEDIUM</option>
                 <option value="HIGH">HIGH</option>
@@ -8250,33 +8512,25 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Date occurred</label>
-              <input name="date_occurred" type="date" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input name="date_occurred" type="date" value={formFields.date_occurred} onChange={set('date_occurred')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Date reported</label>
-              <input name="date_reported" type="date" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input name="date_reported" type="date" value={formFields.date_reported} onChange={set('date_reported')} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div className="sm:col-span-2 lg:col-span-3">
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Location</label>
-              <input name="location" type="text" placeholder="e.g. Mavungwani colliery" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input name="location" type="text" value={formFields.location} onChange={set('location')} placeholder="e.g. Mavungwani colliery" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
           </div>
         </SectionBlock>
 
         {/* Investigator */}
         <SectionBlock title="Investigator" open={openSection === 'inv_investigator'} onToggle={() => setOpenSection((p) => (p === 'inv_investigator' ? null : 'inv_investigator'))}>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Investigator name</label>
-              <input name="investigator_name" type="text" defaultValue={user?.full_name} placeholder="Full name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Badge number</label>
-              <input name="badge_number" type="text" placeholder="e.g. TA005" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Rank</label>
-              <input name="rank" type="text" placeholder="e.g. Operations Management" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input name="investigator_name" type="text" value={formFields.investigator_name} onChange={set('investigator_name')} placeholder="Full name" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
           </div>
         </SectionBlock>
@@ -8286,11 +8540,11 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Name</label>
-              <input name="reported_by_name" type="text" placeholder="e.g. Humphrey Mohlahlo" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input name="reported_by_name" type="text" value={formFields.reported_by_name} onChange={set('reported_by_name')} placeholder="e.g. Humphrey Mohlahlo" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Position</label>
-              <input name="reported_by_position" type="text" placeholder="e.g. Engineering Manager" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <input name="reported_by_position" type="text" value={formFields.reported_by_position} onChange={set('reported_by_position')} placeholder="e.g. Engineering Manager" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
           </div>
         </SectionBlock>
@@ -8299,7 +8553,7 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
         <SectionBlock title="Incident description & transaction details" open={openSection === 'inv_incident'} onToggle={() => setOpenSection((p) => (p === 'inv_incident' ? null : 'inv_incident'))}>
           <div className="mb-4">
             <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Description (summary)</label>
-            <textarea name="description" rows={4} placeholder="An investigation was launched following an inquiry regarding... State the objective (e.g. verify delivery validity, ensure no fraudulent manual slips)." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+            <textarea name="description" rows={4} value={formFields.description} onChange={set('description')} placeholder="An investigation was launched following an inquiry regarding... State the objective (e.g. verify delivery validity, ensure no fraudulent manual slips)." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
           </div>
           <p className="text-xs font-semibold text-surface-600 mb-2">Transaction details under review</p>
           {transactions.map((row, i) => (
@@ -8336,8 +8590,67 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
 
         {/* Evidence */}
         <SectionBlock title="Evidence" open={openSection === 'inv_evidence'} onToggle={() => setOpenSection((p) => (p === 'inv_evidence' ? null : 'inv_evidence'))}>
-          <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Evidence notes / attachments</label>
-          <textarea name="evidence_notes" rows={3} placeholder="List or describe evidence (e.g. delivery note scans, screenshots, weighbridge reports). File upload can be added when backend is ready." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+          <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Evidence notes</label>
+          <textarea name="evidence_notes" rows={3} value={formFields.evidence_notes} onChange={set('evidence_notes')} placeholder="List or describe evidence (e.g. delivery note scans, screenshots, weighbridge reports). Attach the actual images in the Images / photos section below." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+        </SectionBlock>
+
+        {/* Images / photos — uploaded files are embedded into the generated PDF, like breakdown reports. */}
+        <SectionBlock title="Images / photos" open={openSection === 'inv_images'} onToggle={() => setOpenSection((p) => (p === 'inv_images' ? null : 'inv_images'))}>
+          <div className="space-y-4">
+            <p className="text-xs text-surface-500">
+              Attach photos or images (JPEG, PNG, GIF, WEBP, HEIC — up to 15&nbsp;MB each). They appear in their own section on the downloaded investigation PDF.
+            </p>
+            {!(activeReportId || reportId) && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
+                Start filling in the report — it auto-saves within a moment, then you can attach images here.
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => handleImageFilesSelected(e.target.files)}
+              />
+              <button
+                type="button"
+                disabled={attachmentUploading || !(activeReportId || reportId)}
+                onClick={() => imageInputRef.current?.click()}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {attachmentUploading ? 'Uploading…' : 'Add photos'}
+              </button>
+            </div>
+            {attachmentError && <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800">{attachmentError}</div>}
+            {attachments.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {attachments.map((att) => (
+                  <div key={att.id} className="group relative rounded-lg border border-surface-200 bg-white/60 overflow-hidden shadow-sm dark:border-white/10 dark:bg-white/[0.06]">
+                    <img
+                      src={ccApi.investigationReportAttachments.fileUrl(att.id)}
+                      alt={att.file_name || 'Investigation report photo'}
+                      loading="lazy"
+                      className="w-full h-32 object-cover"
+                    />
+                    <div className="px-2 py-1.5 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-surface-600 truncate" title={att.file_name}>{att.file_name}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAttachment(att.id)}
+                        className="shrink-0 text-[11px] font-medium px-2 py-0.5 rounded bg-red-50 text-red-700 hover:bg-red-100 border border-red-200"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-surface-500">No images attached yet.</p>
+            )}
+          </div>
         </SectionBlock>
 
         {/* Findings */}
@@ -8345,27 +8658,27 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Summary</label>
-              <textarea name="finding_summary" rows={2} placeholder="Investigation confirmed... (e.g. two legitimate deliveries manually captured due to operational delays and driver impatience)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="finding_summary" rows={2} value={formFields.finding_summary} onChange={set('finding_summary')} placeholder="Investigation confirmed... (e.g. two legitimate deliveries manually captured due to operational delays and driver impatience)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Operational trigger</label>
-              <textarea name="finding_operational_trigger" rows={2} placeholder="e.g. 50-minute delay (11:30–12:20) due to stockpile linking issues at Pit 6, leading to truck queue" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="finding_operational_trigger" rows={2} value={formFields.finding_operational_trigger} onChange={set('finding_operational_trigger')} placeholder="e.g. 50-minute delay (11:30–12:20) due to stockpile linking issues at Pit 6, leading to truck queue" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">The incident</label>
-              <textarea name="finding_incident" rows={2} placeholder="What happened (e.g. drivers exited weighbridge prematurely, preventing automated system from locking weight)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="finding_incident" rows={2} value={formFields.finding_incident} onChange={set('finding_incident')} placeholder="What happened (e.g. drivers exited weighbridge prematurely, preventing automated system from locking weight)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">The workaround</label>
-              <textarea name="finding_workaround" rows={2} placeholder="e.g. Clerk issued manual slips and recorded tonnage in local admin report to maintain data integrity" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="finding_workaround" rows={2} value={formFields.finding_workaround} onChange={set('finding_workaround')} placeholder="e.g. Clerk issued manual slips and recorded tonnage in local admin report to maintain data integrity" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">System integrity</label>
-              <textarea name="finding_system_integrity" rows={2} placeholder="e.g. Event tracking reports for the shift showed zero deviations; trucks remained on route and delivered as reported" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="finding_system_integrity" rows={2} value={formFields.finding_system_integrity} onChange={set('finding_system_integrity')} placeholder="e.g. Event tracking reports for the shift showed zero deviations; trucks remained on route and delivered as reported" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">Resolution of conflicting statements</label>
-              <textarea name="finding_resolution" rows={3} placeholder="Address any conflicting statements (e.g. regarding transporter knowledge, system gap explanation)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+              <textarea name="finding_resolution" rows={3} value={formFields.finding_resolution} onChange={set('finding_resolution')} placeholder="Address any conflicting statements (e.g. regarding transporter knowledge, system gap explanation)" className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
             </div>
           </div>
         </SectionBlock>
@@ -8383,7 +8696,7 @@ function InvestigationReportForm({ user, onBack, onSaved, saving, setSaving, mes
 
         {/* Additional notes */}
         <SectionBlock title="Additional notes" open={openSection === 'inv_notes'} onToggle={() => setOpenSection((p) => (p === 'inv_notes' ? null : 'inv_notes'))}>
-          <textarea name="additional_notes" rows={2} placeholder="e.g. The loads are real and accounted for." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
+          <textarea name="additional_notes" rows={2} value={formFields.additional_notes} onChange={set('additional_notes')} placeholder="e.g. The loads are real and accounted for." className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
         </SectionBlock>
       </div>
 
@@ -8405,7 +8718,12 @@ function SectionBlock({ title, open, onToggle, children }) {
         <span className="font-semibold text-surface-900 dark:text-surface-50">{title}</span>
         <span className="text-surface-600 dark:text-surface-300">{isOpen ? '−' : '+'}</span>
       </button>
-      {isOpen && <div className="app-glass-section-body">{children}</div>}
+      {/*
+        Keep the body mounted and only toggle visibility. Unmounting it would
+        discard anything typed into uncontrolled inputs (and drop those fields
+        from form submission) the moment a different section is opened.
+      */}
+      <div className={`app-glass-section-body ${isOpen ? '' : 'hidden'}`}>{children}</div>
     </div>
   );
 }

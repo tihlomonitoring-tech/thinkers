@@ -23,7 +23,7 @@ const PAGE_ROLES = [
   { id: 'tasks', label: 'Tasks' },
   { id: 'transport_operations', label: 'Transport operations' },
   { id: 'recruitment', label: 'Recruitment' },
-  { id: 'letters', label: 'Letters' },
+  { id: 'letters', label: 'Letter composition' },
   { id: 'accounting_management', label: 'Accounting management' },
   { id: 'logistics_finance_management', label: 'Logistics finance management' },
   { id: 'tracking_integration', label: 'Tracking management' },

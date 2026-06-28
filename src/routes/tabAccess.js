@@ -32,7 +32,7 @@ async function assertCanManageUser(req, targetUserId) {
   }
 }
 
-const VALID_PAGES = ['accounting', 'management', 'contractor', 'tracking_management'];
+const VALID_PAGES = ['accounting', 'management', 'contractor', 'tracking_management', 'letters'];
 
 const PAGE_TABS = {
   accounting: [
@@ -55,6 +55,10 @@ const PAGE_TABS = {
     'incidents', 'expiries', 'suspensions', 'messages',
   ],
   tracking_management: ['geofence', 'integration', 'activity', 'monitor', 'alerts', 'deliveries', 'fuel_regulation'],
+  letters: [
+    'warning', 'reward', 'employment_contract', 'supply_contract', 'sla',
+    'letter_of_intent', 'promotion', 'contractor_termination', 'transfer', 'generic',
+  ],
 };
 
 /** Pages where zero grants means no tabs (must grant explicitly). */

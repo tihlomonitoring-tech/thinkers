@@ -8,6 +8,7 @@ import QuickSignDocumentEditor from './components/QuickSignDocumentEditor.jsx';
 const TABS = [
   { id: 'new', label: 'New signing request' },
   { id: 'history', label: 'Document history' },
+  { id: 'exported', label: 'Exported PDFs' },
 ];
 
 function formatDateTime(d) {
@@ -100,19 +101,24 @@ export default function QuickSign() {
       .catch((e) => console.warn('[QuickSign] tenant users:', e?.message));
   }, [loadList]);
 
+  const sourceBase = useMemo(
+    () => (tab === 'exported' ? list.filter((r) => r.source === 'letter') : list),
+    [list, tab]
+  );
+
   const filteredList = useMemo(() => {
-    if (statusFilter === 'all') return list;
-    return list.filter((r) => String(r.status).toLowerCase() === statusFilter);
-  }, [list, statusFilter]);
+    if (statusFilter === 'all') return sourceBase;
+    return sourceBase.filter((r) => String(r.status).toLowerCase() === statusFilter);
+  }, [sourceBase, statusFilter]);
 
   const counts = useMemo(() => {
-    const c = { all: list.length, draft: 0, sent: 0, accessed: 0, in_progress: 0, signed: 0, completed: 0, cancelled: 0 };
-    for (const r of list) {
+    const c = { all: sourceBase.length, draft: 0, sent: 0, accessed: 0, in_progress: 0, signed: 0, completed: 0, cancelled: 0 };
+    for (const r of sourceBase) {
       const s = String(r.status || '').toLowerCase();
       if (c[s] != null) c[s] += 1;
     }
     return c;
-  }, [list]);
+  }, [sourceBase]);
 
   const loadDetail = (id) => {
     const rid = id && String(id) !== 'undefined' ? String(id).trim() : '';
@@ -479,13 +485,17 @@ export default function QuickSign() {
             </div>
           ) : null}
 
-          {tab === 'history' ? (
+          {tab === 'history' || tab === 'exported' ? (
             <div className="max-w-6xl mx-auto w-full space-y-6">
               <div className="flex flex-wrap items-end justify-between gap-4">
                 <div>
-                  <h2 className="text-xl font-semibold text-surface-900 dark:text-surface-100">Document history</h2>
+                  <h2 className="text-xl font-semibold text-surface-900 dark:text-surface-100">
+                    {tab === 'exported' ? 'Exported PDFs' : 'Document history'}
+                  </h2>
                   <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
-                    Track signing requests, access times, and download signed records.
+                    {tab === 'exported'
+                      ? 'Documents exported from Letter composition, ready to prepare and send for signing.'
+                      : 'Track signing requests, access times, and download signed records.'}
                   </p>
                 </div>
                 <button
