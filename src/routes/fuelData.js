@@ -37,6 +37,36 @@ function tenantId(req) {
   return req.user?.tenant_id ? String(req.user.tenant_id) : null;
 }
 
+/**
+ * Every tenant the signed-in user belongs to (active tenant always included).
+ * Fuel Data reads/edits span all of these so users who belong to more than one tenant
+ * (e.g. Thinkers Africa + Mbuyelo) keep visibility of their fuel data after switching tenant.
+ * New top-level records still save under the active tenant (see tenantId()).
+ */
+function readTenantIds(req) {
+  const active = tenantId(req);
+  const ids = Array.isArray(req.user?.tenant_ids) ? req.user.tenant_ids.map((t) => String(t)).filter(Boolean) : [];
+  const out = [...ids];
+  if (active && !out.some((x) => x.toLowerCase() === String(active).toLowerCase())) out.push(active);
+  if (!out.length && active) out.push(active);
+  return out;
+}
+
+/**
+ * SQL fragment + params for "tenant_id IN (...)" over the user's read scope.
+ * Use a unique prefix per query to avoid param-name collisions.
+ */
+function tenantScope(req, prefix = 'rtid') {
+  const ids = readTenantIds(req);
+  const params = {};
+  const ph = ids.map((id, i) => {
+    const k = `${prefix}${i}`;
+    params[k] = id;
+    return `@${k}`;
+  });
+  return { inSql: ph.length ? `(${ph.join(', ')})` : '(NULL)', params, ids };
+}
+
 function escapeHtml(s) {
   if (s == null) return '';
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -189,10 +219,16 @@ function parseTransactionIdsParam(raw) {
   return out;
 }
 
-/** Build WHERE for tenant + optional filters (querystring or body-like object). */
-function buildTxWhereClause(qs, tid, opts = {}) {
-  const params = { tid };
-  const cond = ['tenant_id = @tid'];
+/** Build WHERE for tenant scope + optional filters (querystring or body-like object).
+ *  tenantIds: array of tenant ids the user may read (or a single id string). */
+function buildTxWhereClause(qs, tenantIds, opts = {}) {
+  const ids = Array.isArray(tenantIds) ? tenantIds : [tenantIds].filter(Boolean);
+  const params = {};
+  const tph = ids.map((id, i) => {
+    params[`wtid${i}`] = id;
+    return `@wtid${i}`;
+  });
+  const cond = [`tenant_id IN (${tph.length ? tph.join(', ') : 'NULL'})`];
   const idList = parseTransactionIdsParam(qs?.ids);
 
   if (idList.length) {
@@ -444,9 +480,11 @@ router.get('/suppliers', async (req, res, next) => {
         return res.status(403).json({ error: 'No access to supplier list.' });
       }
     }
-    const tid = tenantId(req);
-    if (!tid) return res.status(400).json({ error: 'No tenant context' });
-    const r = await query(`SELECT * FROM fuel_data_suppliers WHERE tenant_id = @tid ORDER BY is_default DESC, name`, { tid });
+    const scope = tenantScope(req);
+    if (!scope.ids.length) return res.status(400).json({ error: 'No tenant context' });
+    const r = await query(`SELECT * FROM fuel_data_suppliers WHERE tenant_id IN ${scope.inSql} ORDER BY is_default DESC, name`, {
+      ...scope.params,
+    });
     res.json({ suppliers: (r.recordset || []).map(mapSupplier) });
   } catch (e) {
     next(e);
@@ -544,10 +582,14 @@ async function propagateSupplierUpdateToVerifiedTransactions(tid, supplierId, ch
 
 router.patch('/suppliers/:id', requireFuelDataTab('supplier_details'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const cur = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const cur = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     if (!cur.recordset?.[0]) return res.status(404).json({ error: 'Supplier not found' });
+    const tid = get(cur.recordset[0], 'tenant_id');
     const { name, address, vat_number, price_per_litre, vehicle_registration, fuel_attendant_name, is_default } = req.body || {};
     const sets = [];
     const params = { id, tid };
@@ -614,12 +656,16 @@ router.post('/suppliers/:id/logo', requireFuelDataTab('supplier_details'), (req,
   logoUpload(req, res, async (err) => {
     if (err) return next(err);
     try {
-      const tid = tenantId(req);
+      const scope = tenantScope(req);
       const { id } = req.params;
       if (!req.file) return res.status(400).json({ error: 'logo file required' });
       const rel = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).replace(/\\/g, '/');
-      const cur = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id = @tid`, { id, tid });
+      const cur = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+        id,
+        ...scope.params,
+      });
       if (!cur.recordset?.[0]) return res.status(404).json({ error: 'Supplier not found' });
+      const tid = get(cur.recordset[0], 'tenant_id');
       const old = get(cur.recordset[0], 'logo_file_path');
       if (old) {
         const oldAbs = safeResolveUnderRoot(path.join(process.cwd(), 'uploads'), old);
@@ -640,9 +686,12 @@ router.post('/suppliers/:id/logo', requireFuelDataTab('supplier_details'), (req,
 
 router.get('/suppliers/:id/logo', async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const r = await query(`SELECT logo_file_path FROM fuel_data_suppliers WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const r = await query(`SELECT logo_file_path FROM fuel_data_suppliers WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     const row = r.recordset?.[0];
     const rel = row ? get(row, 'logo_file_path') : null;
     if (!rel) return res.status(404).json({ error: 'No logo' });
@@ -666,9 +715,11 @@ router.get('/customers', async (req, res, next) => {
         return res.status(403).json({ error: 'No access to customer list.' });
       }
     }
-    const tid = tenantId(req);
-    if (!tid) return res.status(400).json({ error: 'No tenant context' });
-    const r = await query(`SELECT * FROM fuel_data_customers WHERE tenant_id = @tid ORDER BY name`, { tid });
+    const scope = tenantScope(req);
+    if (!scope.ids.length) return res.status(400).json({ error: 'No tenant context' });
+    const r = await query(`SELECT * FROM fuel_data_customers WHERE tenant_id IN ${scope.inSql} ORDER BY name`, {
+      ...scope.params,
+    });
     res.json({ customers: (r.recordset || []).map(mapCustomer) });
   } catch (e) {
     next(e);
@@ -744,10 +795,14 @@ async function propagateCustomerUpdateToVerifiedTransactions(tid, customerId, ch
 
 router.patch('/customers/:id', requireFuelDataTab('customer_details'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const cur = await query(`SELECT * FROM fuel_data_customers WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const cur = await query(`SELECT * FROM fuel_data_customers WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     if (!cur.recordset?.[0]) return res.status(404).json({ error: 'Customer not found' });
+    const tid = get(cur.recordset[0], 'tenant_id');
     const { name, vehicle_registration, responsible_user_name, authorizer_name } = req.body || {};
     const sets = [];
     const params = { id, tid };
@@ -794,13 +849,13 @@ router.patch('/customers/:id', requireFuelDataTab('customer_details'), async (re
 
 router.get('/customers/:customerId/receipts', requireFuelDataTab('customer_details'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { customerId } = req.params;
     const r = await query(
       `SELECT r.* FROM fuel_data_customer_receipts r
        INNER JOIN fuel_data_customers c ON c.id = r.customer_id
-       WHERE r.customer_id = @cid AND r.tenant_id = @tid AND c.tenant_id = @tid`,
-      { cid: customerId, tid }
+       WHERE r.customer_id = @cid AND r.tenant_id IN ${scope.inSql} AND c.tenant_id IN ${scope.inSql}`,
+      { cid: customerId, ...scope.params }
     );
     res.json({
       receipts: (r.recordset || []).map((row) => ({
@@ -821,11 +876,15 @@ router.post('/customers/:customerId/receipts', requireFuelDataTab('customer_deta
   receiptUpload(req, res, async (err) => {
     if (err) return next(err);
     try {
-      const tid = tenantId(req);
+      const scope = tenantScope(req);
       const { customerId } = req.params;
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const chk = await query(`SELECT id FROM fuel_data_customers WHERE id = @cid AND tenant_id = @tid`, { cid: customerId, tid });
+      const chk = await query(`SELECT id, tenant_id FROM fuel_data_customers WHERE id = @cid AND tenant_id IN ${scope.inSql}`, {
+        cid: customerId,
+        ...scope.params,
+      });
       if (!chk.recordset?.length) return res.status(404).json({ error: 'Customer not found' });
+      const tid = get(chk.recordset[0], 'tenant_id');
       const rel = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).replace(/\\/g, '/');
       await query(
         `INSERT INTO fuel_data_customer_receipts (tenant_id, customer_id, file_path, original_name, uploaded_by_user_id)
@@ -861,12 +920,12 @@ router.post('/customers/:customerId/receipts', requireFuelDataTab('customer_deta
 
 router.get('/files/:fileId/download', async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { fileId } = req.params;
     const r = await query(
       `SELECT r.file_path, r.original_name FROM fuel_data_customer_receipts r
-       WHERE r.id = @fid AND r.tenant_id = @tid`,
-      { fid: fileId, tid }
+       WHERE r.id = @fid AND r.tenant_id IN ${scope.inSql}`,
+      { fid: fileId, ...scope.params }
     );
     const row = r.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
@@ -882,8 +941,7 @@ router.get('/files/:fileId/download', async (req, res, next) => {
 /** Transactions (filters: status, supplier_id, customer_id, date_from, date_to, source, q) */
 router.get('/transactions', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
-    const w = buildTxWhereClause(req.query, tid, {});
+    const w = buildTxWhereClause(req.query, readTenantIds(req), {});
     const r = await query(
       `SELECT * FROM fuel_data_transactions ${w.whereSql} ORDER BY delivery_time DESC, created_at DESC`,
       w.params
@@ -896,14 +954,17 @@ router.get('/transactions', requireFuelDataTab('fuel_admin'), async (req, res, n
 
 router.get('/transactions/:id', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const r = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const r = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     const row = r.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
     const att = await query(
-      `SELECT id, file_path, original_name, created_at FROM fuel_data_transaction_attachments WHERE transaction_id = @id AND tenant_id = @tid ORDER BY created_at`,
-      { id, tid }
+      `SELECT id, file_path, original_name, created_at FROM fuel_data_transaction_attachments WHERE transaction_id = @id AND tenant_id IN ${scope.inSql} ORDER BY created_at`,
+      { id, ...scope.params }
     );
     res.json({
       transaction: mapTransaction(row),
@@ -921,16 +982,20 @@ router.get('/transactions/:id', requireFuelDataTab('fuel_admin'), async (req, re
 
 router.patch('/transactions/:id', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const cur = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const cur = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     if (!cur.recordset?.[0]) return res.status(404).json({ error: 'Not found' });
+    const tid = get(cur.recordset[0], 'tenant_id');
     const body = req.body || {};
     let supplierPrice = body.price_per_litre;
     if (body.supplier_id) {
-      const s = await query(`SELECT price_per_litre FROM fuel_data_suppliers WHERE id = @sid AND tenant_id = @tid`, {
+      const s = await query(`SELECT price_per_litre FROM fuel_data_suppliers WHERE id = @sid AND tenant_id IN ${scope.inSql}`, {
         sid: body.supplier_id,
-        tid,
+        ...scope.params,
       });
       const sr = s.recordset?.[0];
       if (sr) supplierPrice = get(sr, 'price_per_litre');
@@ -1008,11 +1073,15 @@ router.post('/transactions/:id/attachments', requireFuelDataTab('fuel_admin'), (
   txAttachUpload(req, res, async (err) => {
     if (err) return next(err);
     try {
-      const tid = tenantId(req);
+      const scope = tenantScope(req);
       const { id } = req.params;
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const chk = await query(`SELECT id FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+      const chk = await query(`SELECT id, tenant_id FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+        id,
+        ...scope.params,
+      });
       if (!chk.recordset?.length) return res.status(404).json({ error: 'Transaction not found' });
+      const tid = get(chk.recordset[0], 'tenant_id');
       const rel = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).replace(/\\/g, '/');
       await query(
         `INSERT INTO fuel_data_transaction_attachments (tenant_id, transaction_id, file_path, original_name, uploaded_by_user_id)
@@ -1040,12 +1109,12 @@ router.post('/transactions/:id/attachments', requireFuelDataTab('fuel_admin'), (
 
 router.get('/transaction-files/:fileId/download', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { fileId } = req.params;
     const r = await query(
       `SELECT a.file_path, a.original_name, a.transaction_id FROM fuel_data_transaction_attachments a
-       WHERE a.id = @fid AND a.tenant_id = @tid`,
-      { fid: fileId, tid }
+       WHERE a.id = @fid AND a.tenant_id IN ${scope.inSql}`,
+      { fid: fileId, ...scope.params }
     );
     const row = r.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
@@ -1060,11 +1129,11 @@ router.get('/transaction-files/:fileId/download', requireFuelDataTab('fuel_admin
 
 router.delete('/transaction-files/:fileId', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { fileId } = req.params;
     const r = await query(
-      `SELECT id, file_path FROM fuel_data_transaction_attachments WHERE id = @fid AND tenant_id = @tid`,
-      { fid: fileId, tid }
+      `SELECT id, file_path FROM fuel_data_transaction_attachments WHERE id = @fid AND tenant_id IN ${scope.inSql}`,
+      { fid: fileId, ...scope.params }
     );
     const row = r.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
@@ -1077,7 +1146,10 @@ router.delete('/transaction-files/:fileId', requireFuelDataTab('fuel_admin'), as
         /* ignore unlink errors */
       }
     }
-    await query(`DELETE FROM fuel_data_transaction_attachments WHERE id = @fid AND tenant_id = @tid`, { fid: fileId, tid });
+    await query(`DELETE FROM fuel_data_transaction_attachments WHERE id = @fid AND tenant_id IN ${scope.inSql}`, {
+      fid: fileId,
+      ...scope.params,
+    });
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -1104,13 +1176,14 @@ router.post('/transactions', async (req, res, next) => {
       const rid = await resolveDefaultSupplierIdForTenant(tid);
       if (rid) body.supplier_id = rid;
     }
+    const readScope = tenantScope(req);
     let supplierPrice = body.price_per_litre;
     if (body.supplier_id) {
       const s = await query(
-        `SELECT price_per_litre, name, vehicle_registration, fuel_attendant_name FROM fuel_data_suppliers WHERE id = @sid AND tenant_id = @tid`,
+        `SELECT price_per_litre, name, vehicle_registration, fuel_attendant_name FROM fuel_data_suppliers WHERE id = @sid AND tenant_id IN ${readScope.inSql}`,
         {
           sid: body.supplier_id,
-          tid,
+          ...readScope.params,
         }
       );
       const sr = s.recordset?.[0];
@@ -1131,8 +1204,8 @@ router.post('/transactions', async (req, res, next) => {
     }
     if (body.customer_id) {
       const c = await query(
-        `SELECT responsible_user_name, authorizer_name, vehicle_registration FROM fuel_data_customers WHERE id = @cid AND tenant_id = @tid`,
-        { cid: body.customer_id, tid }
+        `SELECT responsible_user_name, authorizer_name, vehicle_registration FROM fuel_data_customers WHERE id = @cid AND tenant_id IN ${readScope.inSql}`,
+        { cid: body.customer_id, ...readScope.params }
       );
       const cr = c.recordset?.[0];
       if (cr) {
@@ -1204,9 +1277,12 @@ router.post('/transactions', async (req, res, next) => {
 
 router.get('/transactions/:id/slip-image', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const cur = await query(`SELECT slip_image_path FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const cur = await query(`SELECT slip_image_path FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     const rel = get(cur.recordset?.[0], 'slip_image_path');
     if (!rel) return res.status(404).json({ error: 'No slip' });
     const abs = safeResolveUnderRoot(path.join(process.cwd(), 'uploads'), rel);
@@ -1219,16 +1295,22 @@ router.get('/transactions/:id/slip-image', requireFuelDataTab('fuel_admin'), asy
 
 router.post('/transactions/:id/verify', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const cur = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const cur = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     if (!cur.recordset?.[0]) return res.status(404).json({ error: 'Not found' });
     await query(
       `UPDATE fuel_data_transactions SET verification_status = N'verified', verified_by_user_id = @uid, verified_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-       WHERE id = @id AND tenant_id = @tid`,
-      { id, tid, uid: req.user.id }
+       WHERE id = @id AND tenant_id IN ${scope.inSql}`,
+      { id, ...scope.params, uid: req.user.id }
     );
-    const again = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const again = await query(`SELECT * FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     res.json({ transaction: mapTransaction(again.recordset[0]) });
   } catch (e) {
     next(e);
@@ -1237,11 +1319,14 @@ router.post('/transactions/:id/verify', requireFuelDataTab('fuel_admin'), async 
 
 router.delete('/transactions/:id', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const { id } = req.params;
-    const cur = await query(`SELECT id FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    const cur = await query(`SELECT id FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, {
+      id,
+      ...scope.params,
+    });
     if (!cur.recordset?.[0]) return res.status(404).json({ error: 'Not found' });
-    await query(`DELETE FROM fuel_data_transactions WHERE id = @id AND tenant_id = @tid`, { id, tid });
+    await query(`DELETE FROM fuel_data_transactions WHERE id = @id AND tenant_id IN ${scope.inSql}`, { id, ...scope.params });
     res.json({ deleted: true });
   } catch (e) {
     next(e);
@@ -1250,24 +1335,24 @@ router.delete('/transactions/:id', requireFuelDataTab('fuel_admin'), async (req,
 
 router.post('/transactions/bulk-delete', requireFuelDataTab('fuel_admin'), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const raw = req.body?.ids;
     const idList = Array.isArray(raw) ? parseTransactionIdsParam(raw.join(',')) : parseTransactionIdsParam(raw);
     if (!idList.length) return res.status(400).json({ error: 'Provide ids: array of transaction GUIDs' });
-    const params = { tid };
+    const params = { ...scope.params };
     idList.forEach((id, i) => {
       params[`eid${i}`] = id;
     });
     const inList = idList.map((_, i) => `@eid${i}`).join(', ');
-    await query(`DELETE FROM fuel_data_transactions WHERE tenant_id = @tid AND id IN (${inList})`, params);
+    await query(`DELETE FROM fuel_data_transactions WHERE tenant_id IN ${scope.inSql} AND id IN (${inList})`, params);
     res.json({ deleted: idList.length });
   } catch (e) {
     next(e);
   }
 });
 
-async function rowsForExport(tid, queryLike, defaultVerification = 'verified') {
-  const w = buildTxWhereClause(queryLike, tid, { defaultVerification });
+async function rowsForExport(tenantIds, queryLike, defaultVerification = 'verified') {
+  const w = buildTxWhereClause(queryLike, tenantIds, { defaultVerification });
   const r = await query(
     `SELECT * FROM fuel_data_transactions ${w.whereSql} ORDER BY delivery_time DESC, created_at DESC`,
     w.params
@@ -1423,7 +1508,14 @@ function uniqueIdsFromRows(rows, field) {
 }
 
 /** Resolve supplier/customer + logo for statements: uses query filters, or a single id inferred from row set */
-async function loadFuelStatementParties(tid, queryFilters, rows) {
+async function loadFuelStatementParties(tenantIds, queryFilters, rows) {
+  const ids = Array.isArray(tenantIds) ? tenantIds : [tenantIds].filter(Boolean);
+  const tparams = {};
+  const tph = ids.map((id, i) => {
+    tparams[`ptid${i}`] = id;
+    return `@ptid${i}`;
+  });
+  const tenantInSql = `(${tph.length ? tph.join(', ') : 'NULL'})`;
   let supplierId =
     queryFilters?.supplier_id != null && String(queryFilters.supplier_id).trim() ? String(queryFilters.supplier_id).trim() : null;
   let customerId =
@@ -1439,7 +1531,10 @@ async function loadFuelStatementParties(tid, queryFilters, rows) {
   let supplierLogoAbsPath = null;
 
   if (supplierId) {
-    const s = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id = @tid`, { id: supplierId, tid });
+    const s = await query(`SELECT * FROM fuel_data_suppliers WHERE id = @id AND tenant_id IN ${tenantInSql}`, {
+      id: supplierId,
+      ...tparams,
+    });
     supplierRow = s.recordset?.[0] ? mapSupplier(s.recordset[0]) : null;
     if (supplierRow?.logo_file_path) {
       const abs = safeResolveUnderRoot(path.join(process.cwd(), 'uploads'), supplierRow.logo_file_path);
@@ -1454,7 +1549,10 @@ async function loadFuelStatementParties(tid, queryFilters, rows) {
     }
   }
   if (customerId) {
-    const c = await query(`SELECT * FROM fuel_data_customers WHERE id = @id AND tenant_id = @tid`, { id: customerId, tid });
+    const c = await query(`SELECT * FROM fuel_data_customers WHERE id = @id AND tenant_id IN ${tenantInSql}`, {
+      id: customerId,
+      ...tparams,
+    });
     customerRow = c.recordset?.[0] ? mapCustomer(c.recordset[0]) : null;
   }
   return { supplierRow, customerRow, logoBuffer, supplierLogoAbsPath };
@@ -1510,10 +1608,10 @@ async function buildFuelDataPdfBuffer(rows, { supplierRow, customerRow, logoBuff
 /** Excel export — filters + optional columns= comma-separated keys (see FUEL_EXPORT_KEYS). */
 router.get('/export/excel', requireFuelDataAnyTab(['fuel_admin', 'file_export']), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const tids = readTenantIds(req);
     const exportCols = parseExportColumns(req.query.columns);
-    const rows = await rowsForExport(tid, req.query);
-    const parties = await loadFuelStatementParties(tid, req.query, rows);
+    const rows = await rowsForExport(tids, req.query);
+    const parties = await loadFuelStatementParties(tids, req.query, rows);
     const periodLabel = formatFuelExportPeriodLabel(req.query, rows);
     const buf = await buildFuelExportExcelBuffer(rows, parties, exportCols, periodLabel);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1527,10 +1625,10 @@ router.get('/export/excel', requireFuelDataAnyTab(['fuel_admin', 'file_export'])
 /** PDF statement — same filters as Excel; includes supplier/customer blocks + logo when filtered */
 router.get('/export/pdf', requireFuelDataAnyTab(['fuel_admin', 'file_export']), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const tids = readTenantIds(req);
     const exportCols = parseExportColumns(req.query.columns);
-    const rows = await rowsForExport(tid, req.query);
-    const { supplierRow, customerRow, logoBuffer } = await loadFuelStatementParties(tid, req.query, rows);
+    const rows = await rowsForExport(tids, req.query);
+    const { supplierRow, customerRow, logoBuffer } = await loadFuelStatementParties(tids, req.query, rows);
     const periodLabel = formatFuelExportPeriodLabel(req.query, rows);
     const buf = await buildFuelDataPdfBuffer(rows, {
       supplierRow,
@@ -1551,7 +1649,7 @@ router.get('/export/pdf', requireFuelDataAnyTab(['fuel_admin', 'file_export']), 
 /** Email summary + optional Excel attachment */
 router.post('/export/email', requireFuelDataAnyTab(['fuel_admin', 'file_export']), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const tids = readTenantIds(req);
     const body = req.body || {};
     const filterQs = mergeExportFilters(body);
     const emailTo = (body.to || req.user.email || '').trim();
@@ -1564,9 +1662,9 @@ router.post('/export/email', requireFuelDataAnyTab(['fuel_admin', 'file_export']
           ? body.filters.columns
           : undefined;
     const exportCols = parseExportColumns(rawCols);
-    const rows = await rowsForExport(tid, filterQs);
+    const rows = await rowsForExport(tids, filterQs);
     const { supplierRow: supplier, customerRow: customer, logoBuffer: logoBufPdf, supplierLogoAbsPath } = await loadFuelStatementParties(
-      tid,
+      tids,
       filterQs,
       rows
     );
@@ -1703,7 +1801,7 @@ router.post('/export/email', requireFuelDataAnyTab(['fuel_admin', 'file_export']
 /** Analytics aggregates + OpenAI insights (system data only) */
 router.get('/analytics/summary', requireFuelDataAnyTab(['analytics', 'advanced_dashboard']), async (req, res, next) => {
   try {
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const r = await query(
       `SELECT
          supplier_name,
@@ -1711,10 +1809,10 @@ router.get('/analytics/summary', requireFuelDataAnyTab(['analytics', 'advanced_d
          SUM(CASE WHEN liters_filled IS NOT NULL THEN liters_filled ELSE 0 END) AS total_liters,
          SUM(CASE WHEN amount_rand IS NOT NULL THEN amount_rand ELSE 0 END) AS total_rand
        FROM fuel_data_transactions
-       WHERE tenant_id = @tid AND verification_status = N'verified'
+       WHERE tenant_id IN ${scope.inSql} AND verification_status = N'verified'
        GROUP BY supplier_name
        ORDER BY supplier_name`,
-      { tid }
+      { ...scope.params }
     );
     const bySupplier = (r.recordset || []).map((row) => ({
       supplier_name: get(row, 'supplier_name'),
@@ -1728,10 +1826,10 @@ router.get('/analytics/summary', requireFuelDataAnyTab(['analytics', 'advanced_d
               SUM(CASE WHEN liters_filled IS NOT NULL THEN liters_filled ELSE 0 END) AS total_liters,
               SUM(CASE WHEN amount_rand IS NOT NULL THEN amount_rand ELSE 0 END) AS total_rand
        FROM fuel_data_transactions
-       WHERE tenant_id = @tid AND verification_status = N'verified' AND delivery_time IS NOT NULL
+       WHERE tenant_id IN ${scope.inSql} AND verification_status = N'verified' AND delivery_time IS NOT NULL
        GROUP BY FORMAT(delivery_time, 'yyyy-MM')
        ORDER BY ym`,
-      { tid }
+      { ...scope.params }
     );
     res.json({
       by_supplier: bySupplier,
@@ -1752,7 +1850,7 @@ router.post('/analytics/insights', requireFuelDataAnyTab(['analytics', 'advanced
     if (!isAiConfigured()) {
       return res.status(503).json({ error: 'OpenAI is not configured (set OPENAI_API_KEY on the server).' });
     }
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const summaryRes = await query(
       `SELECT
          supplier_name,
@@ -1760,19 +1858,19 @@ router.post('/analytics/insights', requireFuelDataAnyTab(['analytics', 'advanced
          SUM(CASE WHEN liters_filled IS NOT NULL THEN liters_filled ELSE 0 END) AS total_liters,
          SUM(CASE WHEN amount_rand IS NOT NULL THEN amount_rand ELSE 0 END) AS total_rand
        FROM fuel_data_transactions
-       WHERE tenant_id = @tid AND verification_status = N'verified'
+       WHERE tenant_id IN ${scope.inSql} AND verification_status = N'verified'
        GROUP BY supplier_name`,
-      { tid }
+      { ...scope.params }
     );
     const monthly = await query(
       `SELECT FORMAT(delivery_time, 'yyyy-MM') AS ym,
               COUNT(*) AS tx_count,
               SUM(CASE WHEN liters_filled IS NOT NULL THEN liters_filled ELSE 0 END) AS total_liters
        FROM fuel_data_transactions
-       WHERE tenant_id = @tid AND verification_status = N'verified' AND delivery_time IS NOT NULL
+       WHERE tenant_id IN ${scope.inSql} AND verification_status = N'verified' AND delivery_time IS NOT NULL
        GROUP BY FORMAT(delivery_time, 'yyyy-MM')
        ORDER BY ym`,
-      { tid }
+      { ...scope.params }
     );
     const payload = {
       by_supplier: summaryRes.recordset || [],
@@ -2197,15 +2295,15 @@ const requireAutoShareAccess = requireFuelDataAnyTab(['auto_share', 'fuel_admin'
 /** List active recipients (tenant users + super admins). */
 router.get('/auto-share/recipients', requireAutoShareAccess, async (req, res, next) => {
   try {
-    const tid = tenantId(req);
-    if (!tid) return res.json({ recipients: [] });
+    const scope = tenantScope(req);
+    if (!scope.ids.length) return res.json({ recipients: [] });
     const r = await query(
       `SELECT id, email, full_name, role
        FROM users
        WHERE email IS NOT NULL AND LTRIM(RTRIM(email)) <> N''
-         AND (tenant_id = @tid OR role = N'super_admin')
+         AND (tenant_id IN ${scope.inSql} OR role = N'super_admin')
        ORDER BY CASE WHEN role = N'super_admin' THEN 0 ELSE 1 END, full_name, email`,
-      { tid }
+      { ...scope.params }
     );
     const recipients = (r.recordset || []).map((row) => ({
       id: row.id,
@@ -2224,10 +2322,10 @@ router.get('/auto-share/recipients', requireAutoShareAccess, async (req, res, ne
 router.get('/auto-share/schedules', requireAutoShareAccess, async (req, res, next) => {
   try {
     await ensureAutoShareTable();
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const r = await query(
-      `SELECT * FROM fuel_data_auto_share_schedules WHERE tenant_id = @tid ORDER BY created_at DESC`,
-      { tid }
+      `SELECT * FROM fuel_data_auto_share_schedules WHERE tenant_id IN ${scope.inSql} ORDER BY created_at DESC`,
+      { ...scope.params }
     );
     res.json({ schedules: (r.recordset || []).map(mapAutoShareRow) });
   } catch (e) {
@@ -2314,7 +2412,7 @@ router.post('/auto-share/schedules', requireAutoShareAccess, async (req, res, ne
 router.patch('/auto-share/schedules/:id', requireAutoShareAccess, async (req, res, next) => {
   try {
     await ensureAutoShareTable();
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const id = req.params.id;
     const data = normalizeAutoShareBody(req.body || {});
     const upd = await query(
@@ -2324,10 +2422,10 @@ router.patch('/auto-share/schedules/:id', requireAutoShareAccess, async (req, re
            every_n_days = @everyN, time_hhmm = @time, start_date = @startDate, is_active = @active,
            subject = @subject, intro_message = @intro, updated_at = SYSUTCDATETIME()
        OUTPUT INSERTED.*
-       WHERE id = @id AND tenant_id = @tid`,
+       WHERE id = @id AND tenant_id IN ${scope.inSql}`,
       {
         id,
-        tid,
+        ...scope.params,
         name: data.name,
         rec: data.recipient_emails,
         cc: data.cc_emails,
@@ -2355,10 +2453,10 @@ router.patch('/auto-share/schedules/:id', requireAutoShareAccess, async (req, re
 router.delete('/auto-share/schedules/:id', requireAutoShareAccess, async (req, res, next) => {
   try {
     await ensureAutoShareTable();
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     await query(
-      `DELETE FROM fuel_data_auto_share_schedules WHERE id = @id AND tenant_id = @tid`,
-      { id: req.params.id, tid }
+      `DELETE FROM fuel_data_auto_share_schedules WHERE id = @id AND tenant_id IN ${scope.inSql}`,
+      { id: req.params.id, ...scope.params }
     );
     res.json({ ok: true });
   } catch (e) {
@@ -2370,10 +2468,10 @@ router.delete('/auto-share/schedules/:id', requireAutoShareAccess, async (req, r
 router.post('/auto-share/schedules/:id/run', requireAutoShareAccess, async (req, res, next) => {
   try {
     await ensureAutoShareTable();
-    const tid = tenantId(req);
+    const scope = tenantScope(req);
     const r = await query(
-      `SELECT * FROM fuel_data_auto_share_schedules WHERE id = @id AND tenant_id = @tid`,
-      { id: req.params.id, tid }
+      `SELECT * FROM fuel_data_auto_share_schedules WHERE id = @id AND tenant_id IN ${scope.inSql}`,
+      { id: req.params.id, ...scope.params }
     );
     const row = r.recordset?.[0];
     if (!row) return res.status(404).json({ error: 'Schedule not found' });
