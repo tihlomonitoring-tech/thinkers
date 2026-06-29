@@ -4,6 +4,7 @@ import fs from 'fs';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
 import { query, getPool } from '../db.js';
+import { sameGuid } from '../lib/guidUtils.js';
 import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail, isEmailConfigured } from '../lib/emailService.js';
 import { taskAssignedHtml, taskCompletedHtml, taskOverdueHtml } from '../lib/emailTemplates.js';
@@ -663,7 +664,9 @@ router.get('/:id', async (req, res, next) => {
       `SELECT a.user_id, a.assigned_by, a.assigned_at, u.full_name, u.email FROM task_assignments a JOIN users u ON u.id = a.user_id WHERE a.task_id = @id`,
       { id }
     );
-    const canViewPrivateTask = (assigneesResult.recordset || []).some((r) => getRow(r, 'user_id') === req.user.id) || getRow(task, 'created_by') === req.user.id;
+    const canViewPrivateTask =
+      (assigneesResult.recordset || []).some((r) => sameGuid(getRow(r, 'user_id'), req.user.id)) ||
+      sameGuid(getRow(task, 'created_by'), req.user.id);
     if ((getRow(task, 'visibility_scope') || 'tenant') === 'private_assignees' && !canViewPrivateTask) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -1001,7 +1004,7 @@ router.post('/:id/assign', async (req, res, next) => {
         `SELECT u.id, u.full_name, u.email FROM task_assignments a JOIN users u ON u.id = a.user_id WHERE a.task_id = @id`,
         { id }
       );
-      const newAssignee = (assigneesResult.recordset || []).find((r) => getRow(r, 'id') === transfer_to_user_id);
+      const newAssignee = (assigneesResult.recordset || []).find((r) => sameGuid(getRow(r, 'id'), transfer_to_user_id));
       if (newAssignee && getRow(newAssignee, 'email')) {
         const appUrl = process.env.FRONTEND_ORIGIN || process.env.APP_URL || 'http://localhost:5173';
         const html = taskAssignedHtml({
@@ -1300,7 +1303,7 @@ router.patch('/:id/reminders/:reminderId/dismiss', async (req, res, next) => {
     const rem = remResult.recordset[0];
     if (!rem) return res.status(404).json({ error: 'Reminder not found' });
     const assignee = await isTaskAssignee(id, req.user.id);
-    const isOwner = getRow(rem, 'user_id') === req.user.id;
+    const isOwner = sameGuid(getRow(rem, 'user_id'), req.user.id);
     if (!assignee && !isOwner) return res.status(403).json({ error: 'Forbidden' });
 
     await query(
