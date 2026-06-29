@@ -1004,7 +1004,7 @@ export async function sendComplianceHistoryEmail(
 
   await sendEmail({
     to: recipients,
-    subject: `Vehicle tracker compliance history${rangeLabel ? ` (${rangeLabel})` : ''}`,
+    subject: `Vehicle/Driver compliance${rangeLabel ? ` (${rangeLabel})` : ''}`,
     body: html,
     html: true,
     attachments: [

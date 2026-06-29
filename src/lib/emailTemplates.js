@@ -418,15 +418,31 @@ export function vehicleTrackerComplianceHistoryEmailHtml({
     ['Total records', totalRecords != null ? String(totalRecords) : '—'],
     ['Shared by', senderName || '—'],
   ];
+  // Light-text table so it stays readable on the charcoal (dark) background.
+  const darkRowBorder = '1px solid #4a5568';
+  const summaryTable = `
+    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;border:${darkRowBorder};">
+      <tbody>
+        ${summaryRows
+          .map(
+            ([label, value]) => `
+          <tr>
+            <td style="width:38%;padding:10px 12px;border:${darkRowBorder};vertical-align:top;font-weight:bold;color:#e2e8f0;font-size:13px;">${escapeHtml(String(label))}</td>
+            <td style="padding:10px 12px;border:${darkRowBorder};vertical-align:top;color:#cbd5e0;font-size:13px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(String(value == null || value === '' ? '—' : value))}</td>
+          </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>`;
   const content = `
-    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">Vehicle tracker compliance — check history</h1>
-    <p style="margin:0 0 12px;">Please find attached the Vehicle tracker compliance check history exported from the system.</p>
+    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">Vehicle / Driver compliance — check history</h1>
+    <p style="margin:0 0 12px;color:#e2e8f0;">Please find attached the Vehicle / Driver compliance check history exported from the system.</p>
     ${sectionBar('Report summary')}
-    ${keyValueTable(summaryRows)}
-    ${customMessage ? `<p style="margin:16px 0 0;"><strong>Message:</strong> ${escapeHtml(customMessage)}</p>` : ''}
+    ${summaryTable}
+    ${customMessage ? `<p style="margin:16px 0 0;color:#e2e8f0;"><strong>Message:</strong> ${escapeHtml(customMessage)}</p>` : ''}
     <p style="margin:20px 0 0;color:#a0aec0;font-size:14px;">The attached Excel workbook (.xlsx) contains the full filtered history for the selected date range.</p>
   `;
-  return wrap(content, 'Vehicle tracker compliance history', { charcoal: true });
+  return wrap(content, 'Vehicle / Driver compliance', { charcoal: true });
 }
 
 /** Truck reinstated: to contractor – grey template. */
