@@ -781,6 +781,8 @@ export const commandCentre = {
     list: (requestsOnly) => request(`/command-centre/single-ops-shift-reports${requestsOnly ? '?requests=1' : ''}`),
     listDecidedByMe: () => request('/command-centre/single-ops-shift-reports?decidedByMe=1'),
     get: (id) => request(`/command-centre/single-ops-shift-reports/${id}`),
+    autoCompletedDeliveries: (hours = 12) =>
+      request(`/command-centre/single-ops-shift-reports/auto-completed-deliveries?hours=${encodeURIComponent(hours)}`),
     create: (body) => request('/command-centre/single-ops-shift-reports', { method: 'POST', body: JSON.stringify(body) }),
     update: (id, body) => request(`/command-centre/single-ops-shift-reports/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     delete: (id) => request(`/command-centre/single-ops-shift-reports/${id}`, { method: 'DELETE' }),
@@ -1004,6 +1006,8 @@ export const commandCentre = {
     },
     approve: (id) =>
       request(`/command-centre/fleet-change-requests/${encodeURIComponent(id)}/approve`, { method: 'PATCH', body: '{}' }),
+    bulkApprove: (ids) =>
+      request('/command-centre/fleet-change-requests/bulk-approve', { method: 'PATCH', body: JSON.stringify({ ids }) }),
     decline: (id, declineReason) =>
       request(`/command-centre/fleet-change-requests/${encodeURIComponent(id)}/decline`, {
         method: 'PATCH',
@@ -3277,6 +3281,10 @@ export const vehicleTrackerCompliance = {
     if (params.active) q.set('active', params.active);
     return request(`/vehicle-tracker-compliance/grace-periods?${q}`);
   },
+  rectorsForTruck: (truckId) =>
+    request(`/vehicle-tracker-compliance/trucks/${encodeURIComponent(truckId)}/rectors`),
+  driversForTruck: (truckId) =>
+    request(`/vehicle-tracker-compliance/trucks/${encodeURIComponent(truckId)}/drivers`),
   notify: (checkId, body) =>
     request(`/vehicle-tracker-compliance/checks/${encodeURIComponent(checkId)}/notify`, {
       method: 'POST',
@@ -3284,6 +3292,12 @@ export const vehicleTrackerCompliance = {
     }),
   grantGrace: (checkId, body) =>
     request(`/vehicle-tracker-compliance/checks/${encodeURIComponent(checkId)}/grace-period`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  users: () => request('/vehicle-tracker-compliance/users'),
+  emailHistory: (body) =>
+    request('/vehicle-tracker-compliance/history/email', {
       method: 'POST',
       body: JSON.stringify(body),
     }),

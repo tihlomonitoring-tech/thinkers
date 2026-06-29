@@ -21,6 +21,9 @@ function pendingChangeBadge(t) {
 }
 
 function facilityBadge(t) {
+  if (t.compliance_blocked) {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300 font-semibold" title="Failed vehicle tracker compliance — a passing re-inspection (with motivation) is required.">Blocked</span>;
+  }
   if (t.has_pending_change || t.pending_change?.id) return pendingChangeBadge(t);
   if (t.facility_access) return <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Facility access</span>;
   if (t.last_decline_reason) return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800" title={t.last_decline_reason}>Declined</span>;

@@ -36,6 +36,7 @@ export function landGeofencePlace(g) {
     lat: pos.lat,
     lng: pos.lng,
     subtitle,
+    leg,
     kind: 'geofence',
   };
 }

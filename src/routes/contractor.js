@@ -17,7 +17,7 @@ import {
 } from '../lib/rectorAcceptance.js';
 import { sendEmail, isEmailConfigured, formatDateForEmail, formatDateForAppTz, nowForFilename, parseDateTimeInAppTz } from '../lib/emailService.js';
 import { toYmdFromDbOrString } from '../lib/appTime.js';
-import { restoreTrackerComplianceEnrollment } from '../lib/vehicleTrackerCompliance.js';
+import { restoreTrackerComplianceEnrollment, getBlockedTruckIdSet, getBlockedDriverIdSet } from '../lib/vehicleTrackerCompliance.js';
 import { computeRouteEconomics } from '../lib/routeEconomics.js';
 import { computeRiskAssessment, parseRiskAssessmentJson, defaultRiskAssessment } from '../lib/routeRiskAssessment.js';
 import {
@@ -849,7 +849,12 @@ router.get('/trucks', async (req, res, next) => {
         },
       };
     });
-    res.json({ trucks });
+    const blockedTruckIds = await getBlockedTruckIdSet(query, tenantId);
+    const annotatedTrucks = trucks.map((t) => ({
+      ...t,
+      compliance_blocked: blockedTruckIds.has(String(t.id ?? t.Id ?? '').toLowerCase()),
+    }));
+    res.json({ trucks: annotatedTrucks });
   } catch (err) {
     next(err);
   }
@@ -1359,7 +1364,12 @@ router.get('/drivers', async (req, res, next) => {
       linkedTruckMakeModel: r.linked_truck_make_model ?? null,
       linkedTruckFleetNo: r.linked_truck_fleet_no ?? null,
     })));
-    res.json({ drivers });
+    const blockedDriverIds = await getBlockedDriverIdSet(query, tenantId);
+    const annotatedDrivers = drivers.map((d) => ({
+      ...d,
+      compliance_blocked: blockedDriverIds.has(String(d.id ?? d.Id ?? '').toLowerCase()),
+    }));
+    res.json({ drivers: annotatedDrivers });
   } catch (err) {
     next(err);
   }
@@ -1797,6 +1807,25 @@ router.post('/incidents', incidentUpload, async (req, res, next) => {
     const reported_time = (payload.reported_time && String(payload.reported_time).trim()) ? String(payload.reported_time).trim() : '00:00';
     const location = (payload.location && String(payload.location).trim()) ? String(payload.location).trim() : null;
     const route_id = (payload.route_id && String(payload.route_id).trim().length > 10) ? String(payload.route_id).trim() : null;
+
+    // Route is compulsory so the breakdown/incident notifies the rector responsible for that
+    // route instead of broadcasting to the control room / all rectors. If the truck or driver
+    // has any enrolled route, a route must be selected. Trucks/drivers with no enrolled route
+    // are allowed through (there is no route-specific rector to target).
+    if (!route_id && (truck_id || driver_id)) {
+      const routeCountRes = await query(
+        `SELECT
+           (SELECT COUNT(*) FROM contractor_route_trucks WHERE truck_id = @truck_id) AS truck_routes,
+           (SELECT COUNT(*) FROM contractor_route_drivers WHERE driver_id = @driver_id) AS driver_routes`,
+        { truck_id: truck_id || null, driver_id: driver_id || null }
+      );
+      const r0 = routeCountRes.recordset?.[0] || {};
+      const enrolledRouteCount = Number(r0.truck_routes || 0) + Number(r0.driver_routes || 0);
+      if (enrolledRouteCount > 0) {
+        return res.status(400).json({ error: 'Please select the route so the responsible rector is notified.' });
+      }
+    }
+
     let reportedAt = new Date();
     if (reported_date) {
       const parsed = parseDateTimeInAppTz(reported_date, reported_time);
@@ -3158,10 +3187,20 @@ router.get('/routes/:id', async (req, res, next) => {
     driversSql += ` ORDER BY d.full_name`;
     const trucksResult = await query(trucksSql, trucksParams);
     const driversResult = await query(driversSql, driversParams);
+    const [blockedTruckIds, blockedDriverIds] = await Promise.all([
+      getBlockedTruckIdSet(query, tenantId),
+      getBlockedDriverIdSet(query, tenantId),
+    ]);
     res.json({
       route,
-      trucks: (trucksResult.recordset || []).map((t) => mapTruckRegistrationFieldsDeep(mapEnrollmentApprovalFields(t))),
-      drivers: mapEnrollmentApprovalFieldsList(driversResult.recordset),
+      trucks: (trucksResult.recordset || []).map((t) => {
+        const mapped = mapTruckRegistrationFieldsDeep(mapEnrollmentApprovalFields(t));
+        return { ...mapped, compliance_blocked: blockedTruckIds.has(String(mapped.truck_id ?? mapped.id ?? '').toLowerCase()) };
+      }),
+      drivers: mapEnrollmentApprovalFieldsList(driversResult.recordset).map((d) => ({
+        ...d,
+        compliance_blocked: blockedDriverIds.has(String(d.driver_id ?? d.id ?? '').toLowerCase()),
+      })),
     });
   } catch (err) {
     next(err);
@@ -3198,9 +3237,14 @@ router.post('/routes/:id/trucks', async (req, res, next) => {
       );
       acceptedList = acc.recordset || [];
     }
+    const blockedTruckIds = await getBlockedTruckIdSet(query, tenantId);
     const addedTruckIds = [];
     const rejected = [];
     for (const truckId of ids) {
+      if (blockedTruckIds.has(String(truckId).toLowerCase())) {
+        rejected.push({ truckId, reason: 'Blocked — this truck failed its vehicle tracker compliance check. A passing re-inspection (with motivation) is required before it can be enrolled.' });
+        continue;
+      }
       let truckSql = `SELECT t.id, t.registration, t.trailer_1_reg_no, t.trailer_2_reg_no, t.fleet_no
          FROM contractor_trucks t
          WHERE t.id = @truckId AND t.tenant_id = @tenantId AND ${TRUCK_APPROVED_SQL}`;
@@ -3367,8 +3411,14 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
     const routeCheck = await query(`SELECT 1 FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`, { routeId, tenantId });
     if (!routeCheck.recordset?.length) return res.status(404).json({ error: 'Route not found' });
     const allowed = await getAllowedForEnrollmentMutation(req);
+    const blockedDriverIds = await getBlockedDriverIdSet(query, tenantId);
     let added = 0;
+    const rejected = [];
     for (const driverId of ids) {
+      if (blockedDriverIds.has(String(driverId).toLowerCase())) {
+        rejected.push({ driverId, reason: 'Blocked — this driver failed a vehicle tracker compliance check. A passing re-inspection (with motivation) is required before they can be enrolled.' });
+        continue;
+      }
       let driverSql = `SELECT 1 FROM contractor_drivers d
          WHERE d.id = @driverId AND d.tenant_id = @tenantId AND ${DRIVER_APPROVED_SQL}`;
       const driverParams = { driverId, tenantId };
@@ -3389,7 +3439,7 @@ router.post('/routes/:id/drivers', async (req, res, next) => {
         if (e.number !== 2627) throw e;
       }
     }
-    res.json({ ok: true, added });
+    res.json({ ok: true, added, rejected });
   } catch (err) {
     next(err);
   }
@@ -6366,7 +6416,12 @@ router.get('/subcontractor-fleets', async (req, res, next) => {
       subList = (subResult.recordset || []).map((r) => ({ id: r.id ?? r.Id, company_name: r.company_name ?? r.Company_Name }));
     } catch (_) {}
 
-    res.json({ trucks: mapTruckRegistrationFieldsDeep(trResult.recordset || []), subcontractors: subList });
+    const blockedTruckIds = await getBlockedTruckIdSet(query, tenantId);
+    const appTrucks = mapTruckRegistrationFieldsDeep(trResult.recordset || []).map((t) => ({
+      ...t,
+      compliance_blocked: blockedTruckIds.has(String(t.id ?? t.Id ?? '').toLowerCase()),
+    }));
+    res.json({ trucks: appTrucks, subcontractors: subList });
   } catch (err) {
     next(err);
   }
@@ -6514,7 +6569,12 @@ router.get('/subcontractor-drivers', async (req, res, next) => {
       subList = (subResult.recordset || []).map((r) => ({ id: r.id ?? r.Id, company_name: r.company_name ?? r.Company_Name }));
     } catch (_) {}
 
-    res.json({ drivers: drResult.recordset || [], subcontractors: subList });
+    const blockedDriverIds = await getBlockedDriverIdSet(query, tenantId);
+    const appDrivers = (drResult.recordset || []).map((d) => ({
+      ...d,
+      compliance_blocked: blockedDriverIds.has(String(d.id ?? d.Id ?? '').toLowerCase()),
+    }));
+    res.json({ drivers: appDrivers, subcontractors: subList });
   } catch (err) {
     next(err);
   }

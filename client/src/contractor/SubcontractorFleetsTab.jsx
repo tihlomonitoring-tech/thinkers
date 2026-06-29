@@ -321,7 +321,7 @@ export default function SubcontractorFleetsTab({ onChanged, setError: setParentE
                       <td className="p-2 text-surface-600">{t.fleet_no || '—'}</td>
                       <td className="p-2 text-surface-600 whitespace-nowrap">{formatDateTime(t.created_at)}</td>
                       <td className="p-2 text-surface-600">{t.added_by_name || '—'}</td>
-                      <td className="p-2">{approvalBadge(st)}</td>
+                      <td className="p-2">{t.compliance_blocked ? <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300 font-semibold" title="Failed vehicle tracker compliance — a passing re-inspection (with motivation) is required.">Blocked</span> : approvalBadge(st)}</td>
                       <td className="p-2">
                         {isPending ? (
                           <div className="flex gap-1">
@@ -371,7 +371,7 @@ export default function SubcontractorFleetsTab({ onChanged, setError: setParentE
                       <td className="p-2 text-surface-600">{d.linked_truck_registration || '—'}</td>
                       <td className="p-2 text-surface-600 whitespace-nowrap">{formatDateTime(d.created_at)}</td>
                       <td className="p-2 text-surface-600">{d.added_by_name || '—'}</td>
-                      <td className="p-2">{approvalBadge(st)}</td>
+                      <td className="p-2">{d.compliance_blocked ? <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300 font-semibold" title="Failed vehicle tracker compliance — a passing re-inspection (with motivation) is required.">Blocked</span> : approvalBadge(st)}</td>
                       <td className="p-2">
                         {isPending ? (
                           <div className="flex gap-1">

@@ -7,6 +7,8 @@ import FleetMapBasemap from './FleetMapBasemap.jsx';
 import { parsePolygonJson } from '../lib/routeCorridorGeofence.js';
 import { fleetCamVehicleIcon } from '../lib/fleetMapIcons.js';
 import GeofencePlaceLabels from './tracking/GeofencePlaceLabels.jsx';
+import GeofenceLabelControl, { useGeofenceLabelMode } from './tracking/GeofenceLabelControl.jsx';
+import { landGeofencePlaces } from '../lib/geofenceLabels.js';
 
 function parseWaypoints(raw) {
   if (!raw) return [];
@@ -107,9 +109,14 @@ export default function FleetLiveMap({
   locationByTripId = {},
   selectedZoom = 13,
   travelTrail = [],
+  showLabelControl = false,
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  const [labelMode, setLabelMode] = useGeofenceLabelMode();
+  const labelPlaceCount = useMemo(() => landGeofencePlaces(geofences).length, [geofences]);
+  const effectiveLabelMode = showLabelControl ? labelMode : 'all';
 
   const { withPos, positions, routeLines, center, selectedPosition } = useMemo(() => {
     const visibleSet = visibleTripIds instanceof Set ? visibleTripIds : null;
@@ -241,7 +248,7 @@ export default function FleetLiveMap({
           return null;
         })}
 
-        <GeofencePlaceLabels geofences={geofences} />
+        <GeofencePlaceLabels geofences={geofences} mode={effectiveLabelMode} />
 
         {routeLines.map((line) => (
           <Polyline
@@ -351,6 +358,17 @@ export default function FleetLiveMap({
         />
         <MapResizeWatcher resizeKey={resizeKey || className} />
       </MapContainer>
+
+      {showLabelControl && labelPlaceCount > 0 && (
+        <div className="absolute bottom-3 left-3 z-[1000]">
+          <GeofenceLabelControl
+            mode={labelMode}
+            onChange={setLabelMode}
+            count={labelPlaceCount}
+            menuPlacement="up"
+          />
+        </div>
+      )}
 
       {positions.length === 0 && !hasOverlay && (
         <p className="absolute bottom-3 left-3 right-3 text-xs text-slate-300 px-3 py-2 bg-slate-900/85 border border-white/10 rounded-lg">

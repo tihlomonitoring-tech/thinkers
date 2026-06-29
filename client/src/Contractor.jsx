@@ -1473,6 +1473,10 @@ export default function Contractor() {
       setError('All four attachments are required: Loading slip, Seal 1, Seal 2, and Picture of the problem.');
       return;
     }
+    if (incidentRoutesForTruck.length > 0 && !(incidentRouteId || '').trim()) {
+      setError('Please select the route so the responsible rector is notified.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -2829,17 +2833,20 @@ export default function Contractor() {
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-surface-700 mb-1">Route (optional)</label>
-                      {incidentRoutesLoading ? (
+                      <label className="block text-sm font-medium text-surface-700 mb-1">Route <span className="text-red-600">*</span></label>
+                      {!selectedTruck ? (
+                        <p className="text-sm text-surface-500 py-2">Select a truck to choose its route.</p>
+                      ) : incidentRoutesLoading ? (
                         <p className="text-sm text-surface-500 py-2">Loading routes…</p>
                       ) : incidentRoutesForTruck.length === 0 ? (
-                        <p className="text-sm text-surface-500 py-2">No route enrolled for this truck</p>
+                        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">No route is enrolled for this truck. The report will be sent to the control room.</p>
                       ) : incidentRoutesForTruck.length === 1 ? (
                         <p className="text-sm text-surface-600 py-2">{incidentRoutesForTruck[0].name}</p>
                       ) : (
                         <select
                           value={incidentRouteId}
                           onChange={(e) => setIncidentRouteId(e.target.value)}
+                          required
                           className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
                         >
                           <option value="">Select route</option>
@@ -2847,6 +2854,9 @@ export default function Contractor() {
                             <option key={r.id} value={r.id}>{r.name}</option>
                           ))}
                         </select>
+                      )}
+                      {incidentRoutesForTruck.length > 0 && (
+                        <p className="text-xs text-surface-500 mt-1">Selecting the route notifies the rector responsible for it.</p>
                       )}
                     </div>
                     <div className="grid grid-cols-2 gap-3">

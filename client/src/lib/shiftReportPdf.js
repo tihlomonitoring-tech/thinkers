@@ -478,14 +478,15 @@ export function generateShiftReportPdf(report, options = {}) {
     drawTable(
       doc,
       yRef,
-      ['Truck registration', 'Driver', 'Completed deliveries', 'Remarks'],
+      ['Truck registration', 'Driver', 'Route', 'Completed deliveries', 'Remarks'],
       truckDel.map((row) => [
         row.truck_registration || '—',
         row.driver_name || '—',
+        row.route_name || '—',
         row.completed_deliveries != null && row.completed_deliveries !== '' ? String(row.completed_deliveries) : '—',
         row.remarks || '—',
       ]),
-      cols(28, 36, 28, CONTENT_WIDTH - 28 - 36 - 28)
+      cols(72, 86, 86, 62, CONTENT_WIDTH - 72 - 86 - 86 - 62)
     );
   }
 

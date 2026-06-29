@@ -159,6 +159,20 @@ router.post('/submit', incidentUpload, async (req, res, next) => {
     const location = (payload.location && String(payload.location).trim()) ? String(payload.location).trim() : null;
     const route_id = (payload.route_id && String(payload.route_id).trim().length > 10) ? String(payload.route_id).trim() : null;
 
+    // Route is compulsory so the breakdown notifies the rector responsible for that route
+    // (instead of broadcasting to the control room / all rectors). Drivers with no enrolled
+    // route at all are allowed through (there is no route-specific rector to target).
+    if (!route_id) {
+      const routeCountRes = await query(
+        `SELECT COUNT(*) AS n FROM contractor_route_drivers WHERE driver_id = @driverId`,
+        { driverId }
+      );
+      const enrolledRouteCount = Number(routeCountRes.recordset?.[0]?.n || 0);
+      if (enrolledRouteCount > 0) {
+        return res.status(400).json({ error: 'Please select the route so the responsible rector is notified.' });
+      }
+    }
+
     let reportedAt = new Date();
     if (reported_date) {
       const parsed = parseDateTimeInAppTz(reported_date, reported_time);

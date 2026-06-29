@@ -203,6 +203,25 @@ function FleetCamShell({
   const [collapsedGroups, setCollapsedGroups] = useState({});
   const [locationByKey, setLocationByKey] = useState({});
   const [locationLoadingKey, setLocationLoadingKey] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem('fleetMonitor.objectsHidden') !== '1';
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('fleetMonitor.objectsHidden', next ? '0' : '1');
+      } catch {
+        /* ignore persistence errors */
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setVisibleIds((prev) => {
@@ -312,19 +331,31 @@ function FleetCamShell({
   return (
     <div className={`flex flex-col bg-[#1a1d24] text-slate-200 overflow-hidden ${className}`}>
       <div className="flex min-h-0 flex-1">
+        {sidebarOpen && (
         <aside className="flex w-72 shrink-0 flex-col border-r border-white/10 bg-[#23262e] lg:w-80">
           <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
             <div className="flex gap-1">
               <span className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white">Objects</span>
             </div>
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={refreshing}
-              className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50"
-            >
-              {refreshing ? '…' : 'Refresh'}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={refreshing}
+                className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                {refreshing ? '…' : 'Refresh'}
+              </button>
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className="rounded-md border border-white/10 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5"
+                title="Hide objects panel"
+                aria-label="Hide objects panel"
+              >
+                ◀ Hide
+              </button>
+            </div>
           </div>
 
           <div className="border-b border-white/10 p-3">
@@ -375,8 +406,20 @@ function FleetCamShell({
             )}
           </div>
         </aside>
+        )}
 
         <div className="relative min-w-0 flex-1">
+          {!sidebarOpen && (
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="absolute top-3 left-3 z-[1000] inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-medium text-white shadow hover:bg-sky-500"
+              title="Show objects panel"
+              aria-label="Show objects panel"
+            >
+              ▶ Objects
+            </button>
+          )}
           {fullscreen && onClose && (
             <button
               type="button"
@@ -392,7 +435,7 @@ function FleetCamShell({
               routes={routes}
               geofences={geofences}
               className="h-full min-h-[inherit]"
-              resizeKey={resizeKey}
+              resizeKey={`${resizeKey}-${sidebarOpen ? 'open' : 'hidden'}`}
               basemap="satellite"
               showMapLabels
               selectedTripId={selectedId}
@@ -400,6 +443,7 @@ function FleetCamShell({
               onSelectTrip={setSelectedId}
               showAllLabels={false}
               locationByTripId={locationByTripId}
+              showLabelControl
             />
           </Suspense>
         </div>

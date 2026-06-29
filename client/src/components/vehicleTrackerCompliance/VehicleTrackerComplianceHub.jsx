@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { vehicleTrackerCompliance as vtcApi } from '../../api';
-import { downloadTrackerComplianceHistoryExcel } from '../../lib/vehicleTrackerComplianceExport.js';
+import {
+  downloadTrackerComplianceHistoryExcel,
+  buildTrackerComplianceHistoryExcelBase64,
+} from '../../lib/vehicleTrackerComplianceExport.js';
 
 function fmtDate(d) {
   if (!d) return '—';
@@ -15,12 +18,17 @@ function fmtDateInput(d) {
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
+/** Human-readable status label shown for an active grace period. */
+const GRACE_LABEL = '(GRA) Grace period applied';
+
 function StatusBadge({ label }) {
   const l = String(label || '');
   const styles = {
     Compliant: 'bg-emerald-100 text-emerald-800 border-emerald-200',
     'Not compliant': 'bg-red-100 text-red-800 border-red-200',
+    Blocked: 'bg-red-100 text-red-800 border-red-300 font-semibold',
     'Grace period': 'bg-amber-100 text-amber-900 border-amber-200',
+    [GRACE_LABEL]: 'bg-amber-100 text-amber-900 border-amber-300 font-semibold',
     Expired: 'bg-slate-200 text-slate-800 border-slate-300',
     Suspended: 'bg-red-200 text-red-950 border-red-300',
     'Not checked': 'bg-surface-100 text-surface-600 border-surface-200',
@@ -30,6 +38,16 @@ function StatusBadge({ label }) {
       {l || '—'}
     </span>
   );
+}
+
+/** Mirror of the server-side evaluation so the form can show the verdict before submitting. */
+function computeVerdict(form) {
+  const truckFails = TRUCK_CHECKS.filter((c) => !form[c.key]).map((c) => c.label);
+  const driverFails = form.driver_section_used
+    ? DRIVER_CHECKS.filter((c) => !form[c.key]).map((c) => c.label)
+    : [];
+  const failReasons = [...truckFails, ...driverFails];
+  return { isCompliant: failReasons.length === 0, failReasons };
 }
 
 const TRUCK_CHECKS = [
@@ -64,6 +82,7 @@ const emptyForm = () => ({
   driver_no_overspeeding_24h: false,
   driver_license_valid: false,
   notes: '',
+  motivation: '',
 });
 
 function LoginDetailsPanel({ title, provider, username, password }) {
@@ -187,7 +206,7 @@ function TruckDetailModal({ truckId, onClose, readOnly }) {
                             <p className="text-sm font-semibold text-surface-900">{fmtDate(c.checked_at)}</p>
                             <p className="text-xs text-surface-500">By {c.checked_by_name || '—'}{c.driver_name ? ` · Driver: ${c.driver_name}` : ''}</p>
                           </div>
-                          <StatusBadge label={c.status === 'grace' ? 'Grace period' : c.status === 'expired' ? 'Expired' : c.is_compliant ? 'Compliant' : 'Not compliant'} />
+                          <StatusBadge label={c.status === 'blocked' ? 'Blocked' : c.status === 'grace' ? GRACE_LABEL : c.status === 'expired' ? 'Expired' : c.is_compliant ? 'Compliant' : 'Not compliant'} />
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div>
@@ -203,6 +222,12 @@ function TruckDetailModal({ truckId, onClose, readOnly }) {
                         </div>
                         {c.fail_reasons?.length > 0 && (
                           <p className="text-xs text-red-700 mt-2">Failures: {c.fail_reasons.join('; ')}</p>
+                        )}
+                        {c.status === 'blocked' && c.blocked_at && (
+                          <p className="text-xs text-red-800 mt-2">Blocked on {fmtDate(c.blocked_at)} — vehicle unenrolled until a passing re-inspection.</p>
+                        )}
+                        {c.motivation && (
+                          <p className="text-xs text-emerald-800 mt-2">Cleared with motivation: “{c.motivation}”</p>
                         )}
                         {c.grace_period_expires_at && (
                           <p className="text-xs text-amber-800 mt-2">Grace until {fmtDate(c.grace_period_expires_at)} — {c.grace_period_reason}</p>
@@ -226,12 +251,105 @@ function TruckDetailModal({ truckId, onClose, readOnly }) {
   );
 }
 
+/** Type-ahead selector for the driver on duty — avoids a long dropdown by letting the user search by name/license. */
+function DriverSearchSelect({ drivers, value, onChange, loading }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const boxRef = useRef(null);
+
+  const selected = drivers.find((d) => String(d.id) === String(value)) || null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const list = q
+      ? drivers.filter((d) =>
+          `${d.full_name || ''} ${d.license_number || ''}`.toLowerCase().includes(q)
+        )
+      : drivers;
+    return list.slice(0, 30);
+  }, [drivers, search]);
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <input
+        type="text"
+        className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+        placeholder={loading ? 'Loading drivers…' : 'Search driver by name or license…'}
+        value={open ? search : selected ? `${selected.full_name}${selected.license_number ? ` · ${selected.license_number}` : ''}` : search}
+        onChange={(e) => {
+          setSearch(e.target.value);
+          setOpen(true);
+          if (value) onChange('');
+        }}
+        onFocus={() => setOpen(true)}
+        disabled={loading}
+      />
+      {selected && !open && (
+        <button
+          type="button"
+          onClick={() => { onChange(''); setSearch(''); }}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-700 text-sm"
+          aria-label="Clear driver"
+        >
+          ✕
+        </button>
+      )}
+      {open && (
+        <ul className="absolute z-30 mt-1 w-full max-h-52 overflow-auto rounded-lg border border-surface-200 bg-white shadow-lg py-1 text-sm">
+          {loading ? (
+            <li className="px-3 py-2 text-surface-500">Loading drivers…</li>
+          ) : filtered.length === 0 ? (
+            <li className="px-3 py-2 text-surface-500">{search.trim() ? 'No drivers match' : 'No drivers available'}</li>
+          ) : (
+            filtered.map((d) => (
+              <li
+                key={d.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => { onChange(String(d.id)); setSearch(''); setOpen(false); }}
+                onKeyDown={(ev) => ev.key === 'Enter' && (onChange(String(d.id)), setSearch(''), setOpen(false))}
+                className="px-3 py-2 hover:bg-brand-50 cursor-pointer flex items-center justify-between gap-2"
+              >
+                <span>
+                  <span className="font-medium">{d.full_name}</span>
+                  {d.license_number ? <span className="text-surface-500"> · {d.license_number}</span> : ''}
+                </span>
+                {d.on_truck_route && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-brand-100 text-brand-700 shrink-0">On route</span>}
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
   const [detail, setDetail] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [applyGrace, setApplyGrace] = useState(false);
+  const [graceReason, setGraceReason] = useState('');
+  const [graceUntil, setGraceUntil] = useState('');
+  const [drivers, setDrivers] = useState([]);
+  const [driverId, setDriverId] = useState('');
+  const [driversLoading, setDriversLoading] = useState(false);
+  const [rectors, setRectors] = useState([]);
+  const [rectorIds, setRectorIds] = useState([]);
+  const [rectorsLoading, setRectorsLoading] = useState(false);
+  const [notifyEmails, setNotifyEmails] = useState('');
+  const [notifyMessage, setNotifyMessage] = useState('');
 
   useEffect(() => {
     if (!truck?.truck_id) return;
@@ -243,16 +361,79 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
       .finally(() => setLoading(false));
   }, [truck?.truck_id]);
 
+  useEffect(() => {
+    if (!truck?.truck_id) return;
+    setDriversLoading(true);
+    vtcApi
+      .driversForTruck(truck.truck_id)
+      .then((r) => setDrivers(r.drivers || []))
+      .catch(() => setDrivers([]))
+      .finally(() => setDriversLoading(false));
+  }, [truck?.truck_id]);
+
+  useEffect(() => {
+    if (!truck?.truck_id) return;
+    setRectorsLoading(true);
+    vtcApi
+      .rectorsForTruck(truck.truck_id)
+      .then((r) => {
+        const list = r.rectors || [];
+        setRectors(list);
+        // Pre-select rectors assigned to this truck's route(s); the inspector can adjust.
+        setRectorIds(list.filter((u) => u.assigned_to_route).map((u) => u.id));
+      })
+      .catch(() => setRectors([]))
+      .finally(() => setRectorsLoading(false));
+  }, [truck?.truck_id]);
+
+  const toggleRector = (id) =>
+    setRectorIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+
+  const isBlocked = !!(truck?.blocked || truck?.compliance_blocked || truck?.current_status_label === 'Blocked');
+
   const toggle = (key) => setForm((f) => ({ ...f, [key]: !f[key] }));
+
+  const { isCompliant, failReasons } = computeVerdict(form);
+  // Motivation is only required when a previously-blocked vehicle is being cleared (passing re-inspection).
+  const needsClearMotivation = isBlocked && isCompliant && !form.motivation.trim();
+  const graceFutureOk = !!graceUntil && new Date(graceUntil) > new Date();
+  const graceIncomplete = !isCompliant && applyGrace && (!graceReason.trim() || !graceFutureOk);
+  // A driver must be identified when the driver section is assessed, so the right driver is blocked on failure.
+  const driverMissing = form.driver_section_used && !driverId;
+  const submitDisabled = saving || loading || needsClearMotivation || graceIncomplete || driverMissing;
+
+  const extraEmailList = notifyEmails.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
+  const hasRecipients = rectorIds.length > 0 || extraEmailList.length > 0;
 
   const submit = async () => {
     setSaving(true);
     setError('');
     try {
-      const res = await vtcApi.submitCheck({
-        truck_id: truck.truck_id,
-        ...form,
-      });
+      const payload = { truck_id: truck.truck_id, ...form };
+      if (driverId) payload.driver_id = driverId;
+      if (!isCompliant && applyGrace) {
+        payload.apply_grace = true;
+        payload.grace_reason = graceReason.trim();
+        payload.grace_expires_at = new Date(graceUntil).toISOString();
+      }
+      const res = await vtcApi.submitCheck(payload);
+      // When not compliant, notify the selected rectors / extra emails about this check straight away.
+      const newCheckId = res?.check?.id || res?.id;
+      if (!isCompliant && newCheckId && hasRecipients) {
+        try {
+          await vtcApi.notify(newCheckId, {
+            rectorUserIds: rectorIds,
+            emails: extraEmailList,
+            message: notifyMessage.trim(),
+          });
+        } catch (notifyErr) {
+          // The check was saved; surface the notification failure without losing the submission.
+          setError(`Check saved, but notification failed: ${notifyErr?.message || 'unknown error'}`);
+          onSubmitted?.(res.check);
+          setSaving(false);
+          return;
+        }
+      }
       onSubmitted?.(res.check);
       onClose?.();
     } catch (e) {
@@ -264,6 +445,14 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
 
   if (!truck) return null;
 
+  const submitLabel = saving
+    ? 'Submitting…'
+    : !isCompliant && applyGrace
+      ? 'Apply grace period & submit'
+      : isBlocked
+        ? 'Submit re-inspection'
+        : 'Submit compliance check';
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40" onClick={onClose}>
       <div className="w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-xl border border-surface-200" onClick={(e) => e.stopPropagation()}>
@@ -273,6 +462,11 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
         </div>
         <div className="p-5 space-y-5">
           {error && <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+          {isBlocked && (
+            <p className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              This vehicle is currently <strong>Blocked</strong>. To return it to compliant, complete a passing re-inspection (all checks ticked) and provide a motivation below. The block and your motivation are kept on record.
+            </p>
+          )}
           {loading ? (
             <p className="text-sm text-surface-500">Loading login details…</p>
           ) : (
@@ -290,6 +484,19 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
                   username={detail?.camera_username}
                   password={detail?.camera_password}
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wide text-surface-500 mb-1">Driver on duty during inspection</label>
+                <DriverSearchSelect
+                  drivers={drivers}
+                  value={driverId}
+                  onChange={setDriverId}
+                  loading={driversLoading}
+                />
+                <p className="text-xs text-surface-500 mt-1">
+                  Search for the driver who was operating this vehicle. If the driver section below fails, this driver is blocked and unenrolled.
+                </p>
               </div>
 
               <div>
@@ -311,6 +518,9 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
                 </label>
                 {form.driver_section_used && (
                   <div className="space-y-2 ml-1">
+                    {driverMissing && (
+                      <p className="text-xs text-red-700">Select the driver on duty above so the correct driver is assessed and blocked on failure.</p>
+                    )}
                     {DRIVER_CHECKS.map(({ key, label }) => (
                       <label key={key} className="flex items-center gap-3 rounded-lg border border-surface-200 px-3 py-2 cursor-pointer hover:bg-surface-50">
                         <input type="checkbox" checked={!!form[key]} onChange={() => toggle(key)} className="rounded border-surface-300" />
@@ -325,13 +535,118 @@ function ComplianceCheckModal({ truck, onClose, onSubmitted }) {
                 <span className="text-xs font-medium text-surface-500">Notes (optional)</span>
                 <textarea className="mt-1 w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" rows={2} value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
               </label>
+
+              {/* Verdict — shown live so the inspector sees the outcome before submitting. */}
+              <div className={`rounded-xl border p-4 ${isCompliant ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+                <p className="text-xs font-semibold uppercase tracking-wide text-surface-500">Verdict</p>
+                {isCompliant ? (
+                  <p className="mt-1 text-sm font-semibold text-emerald-800">Compliant — all required checks passed.</p>
+                ) : (
+                  <>
+                    <p className="mt-1 text-sm font-semibold text-red-800">Not compliant</p>
+                    <ul className="mt-1 list-disc list-inside text-xs text-red-700 space-y-0.5">
+                      {failReasons.map((r) => (<li key={r}>{r}</li>))}
+                    </ul>
+                  </>
+                )}
+              </div>
+
+              {isBlocked && (
+                <label className="block text-sm">
+                  <span className="text-xs font-medium text-red-700">Motivation to clear Blocked status {isCompliant ? '*' : '(only required once all checks pass)'}</span>
+                  <textarea className="mt-1 w-full rounded-lg border border-red-300 px-3 py-2 text-sm" rows={2} placeholder="Explain why this vehicle is now compliant and can be unblocked…" value={form.motivation} onChange={(e) => setForm((f) => ({ ...f, motivation: e.target.value }))} />
+                </label>
+              )}
+
+              {/* Grace period option — only when the verdict is Not compliant. */}
+              {!isCompliant && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={applyGrace} onChange={() => setApplyGrace((v) => !v)} className="mt-0.5 rounded border-surface-300" />
+                    <span>
+                      <span className="block text-sm font-semibold text-amber-900">Apply a grace period instead of blocking</span>
+                      <span className="block text-xs text-amber-800 mt-0.5">
+                        The vehicle stays enrolled with status <strong>{GRACE_LABEL}</strong>. When the grace period expires it automatically becomes Not compliant and is blocked &amp; unenrolled.
+                      </span>
+                    </span>
+                  </label>
+                  {applyGrace && (
+                    <div className="space-y-2 pl-7">
+                      <label className="block text-sm">
+                        <span className="text-xs font-medium text-amber-900">Motivation / reason for grace period *</span>
+                        <textarea className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" rows={2} placeholder="Why is a grace period justified for this vehicle?" value={graceReason} onChange={(e) => setGraceReason(e.target.value)} />
+                      </label>
+                      <label className="block text-sm">
+                        <span className="text-xs font-medium text-amber-900">Grace period expires *</span>
+                        <input type="datetime-local" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" value={graceUntil} onChange={(e) => setGraceUntil(e.target.value)} />
+                        {graceUntil && !graceFutureOk && <span className="block text-xs text-red-700 mt-1">Expiry must be in the future.</span>}
+                      </label>
+                    </div>
+                  )}
+                  {!applyGrace && (
+                    <p className="text-xs text-red-700">Submitting without a grace period will block and unenroll this vehicle immediately.</p>
+                  )}
+                </div>
+              )}
+
+              {/* Notify rector & others — only relevant when the verdict is Not compliant. */}
+              {!isCompliant && (
+                <div className="rounded-xl border border-surface-200 bg-surface-50 p-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-surface-800">Notify rector &amp; others</p>
+                    <p className="text-xs text-surface-500 mt-0.5">Select who to email about this failure. Selected recipients are notified when you submit.</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-surface-600 mb-1">Rector users</p>
+                    {rectorsLoading ? (
+                      <p className="text-xs text-surface-500">Loading rectors…</p>
+                    ) : !rectors.length ? (
+                      <p className="text-xs text-surface-500">No rector users available for this tenant.</p>
+                    ) : (
+                      <div className="max-h-36 overflow-y-auto rounded-lg border border-surface-200 bg-white divide-y divide-surface-100">
+                        {rectors.map((u) => (
+                          <label key={u.id} className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer hover:bg-surface-50">
+                            <input type="checkbox" className="rounded border-surface-300" checked={rectorIds.includes(u.id)} onChange={() => toggleRector(u.id)} />
+                            <span className="text-xs text-surface-800 flex-1">{u.full_name || u.email}</span>
+                            {u.assigned_to_route && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-brand-100 text-brand-700">On route</span>}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className="block">
+                    <span className="text-xs font-medium text-surface-600">Additional email addresses (comma separated)</span>
+                    <input
+                      className="mt-1 w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                      placeholder="e.g. ops@haulier.co.za, manager@example.com"
+                      value={notifyEmails}
+                      onChange={(e) => setNotifyEmails(e.target.value)}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-medium text-surface-600">Message (optional)</span>
+                    <textarea
+                      className="mt-1 w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                      rows={2}
+                      placeholder="Add a short note for the recipients…"
+                      value={notifyMessage}
+                      onChange={(e) => setNotifyMessage(e.target.value)}
+                    />
+                  </label>
+                  <p className="text-xs text-surface-500">
+                    {hasRecipients
+                      ? 'An alert email will be sent to the selected recipients (plus the contractor) on submit.'
+                      : 'No recipients selected — submitting will not send a notification email.'}
+                  </p>
+                </div>
+              )}
             </>
           )}
         </div>
         <div className="px-5 py-4 border-t border-surface-200 flex gap-2 justify-end">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-surface-300">Cancel</button>
-          <button type="button" disabled={saving || loading} onClick={submit} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white font-medium disabled:opacity-50">
-            {saving ? 'Submitting…' : 'Submit compliance check'}
+          <button type="button" disabled={submitDisabled} onClick={submit} className={`px-4 py-2 text-sm rounded-lg font-medium text-white disabled:opacity-50 ${!isCompliant && applyGrace ? 'bg-amber-600 hover:bg-amber-700' : 'bg-brand-600 hover:bg-brand-700'}`}>
+            {submitLabel}
           </button>
         </div>
       </div>
@@ -346,8 +661,29 @@ function HistoryActionsModal({ check, onClose, onUpdated }) {
   const [graceUntil, setGraceUntil] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [rectors, setRectors] = useState([]);
+  const [rectorIds, setRectorIds] = useState([]);
+  const [rectorsLoading, setRectorsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!check?.truck_id || check.is_compliant) return;
+    setRectorsLoading(true);
+    vtcApi
+      .rectorsForTruck(check.truck_id)
+      .then((r) => {
+        const list = r.rectors || [];
+        setRectors(list);
+        // Pre-select the rectors assigned to this truck's route(s) — the operator can adjust.
+        setRectorIds(list.filter((u) => u.assigned_to_route).map((u) => u.id));
+      })
+      .catch(() => setRectors([]))
+      .finally(() => setRectorsLoading(false));
+  }, [check?.truck_id, check?.is_compliant]);
 
   if (!check) return null;
+
+  const toggleRector = (id) =>
+    setRectorIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
 
   const notify = async () => {
     setBusy('notify');
@@ -355,6 +691,7 @@ function HistoryActionsModal({ check, onClose, onUpdated }) {
     try {
       await vtcApi.notify(check.id, {
         emails: extraEmails.split(/[,;]/).map((e) => e.trim()).filter(Boolean),
+        rectorUserIds: rectorIds,
         message,
       });
       onUpdated?.();
@@ -393,6 +730,24 @@ function HistoryActionsModal({ check, onClose, onUpdated }) {
                 {check.notified_at && <p className="text-xs text-emerald-700 mb-2">Notified contractor on {fmtDate(check.notified_at)}</p>}
                 <input className="w-full rounded-lg border border-surface-300 px-3 py-2 mb-2" placeholder="Extra emails (comma separated)" value={extraEmails} onChange={(e) => setExtraEmails(e.target.value)} />
                 <textarea className="w-full rounded-lg border border-surface-300 px-3 py-2 mb-2" rows={2} placeholder="Optional message" value={message} onChange={(e) => setMessage(e.target.value)} />
+                <div className="mb-2">
+                  <p className="text-xs font-medium text-surface-600 mb-1">Notify rector users (select who to copy)</p>
+                  {rectorsLoading ? (
+                    <p className="text-xs text-surface-500">Loading rectors…</p>
+                  ) : !rectors.length ? (
+                    <p className="text-xs text-surface-500">No rector users available for this tenant.</p>
+                  ) : (
+                    <div className="max-h-40 overflow-y-auto rounded-lg border border-surface-200 divide-y divide-surface-100">
+                      {rectors.map((u) => (
+                        <label key={u.id} className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer hover:bg-surface-50">
+                          <input type="checkbox" className="rounded border-surface-300" checked={rectorIds.includes(u.id)} onChange={() => toggleRector(u.id)} />
+                          <span className="text-xs text-surface-800">{u.full_name || u.email}</span>
+                          {u.assigned_to_route && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-brand-100 text-brand-700">On route</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button type="button" disabled={!!busy} onClick={notify} className="px-3 py-2 rounded-lg bg-brand-600 text-white text-sm disabled:opacity-50">{busy === 'notify' ? 'Sending…' : 'Send email'}</button>
               </div>
               <div className="border-t pt-4">
@@ -410,7 +765,7 @@ function HistoryActionsModal({ check, onClose, onUpdated }) {
   );
 }
 
-function FilterBar({ filters, setFilters, contractors, subcontractors, mode, showDateRange, onExport, exportBusy }) {
+function FilterBar({ filters, setFilters, contractors, subcontractors, mode, showDateRange, onExport, exportBusy, onEmail }) {
   return (
     <div className="space-y-3 mb-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -438,6 +793,8 @@ function FilterBar({ filters, setFilters, contractors, subcontractors, mode, sho
           <select className="rounded-lg border border-surface-300 px-3 py-2 text-sm" value={filters.complianceStatus} onChange={(e) => setFilters((f) => ({ ...f, complianceStatus: e.target.value }))}>
             <option value="">All statuses</option>
             <option value="compliant">Compliant</option>
+            <option value="grace">Grace period (GRA)</option>
+            <option value="blocked">Blocked</option>
             <option value="expired">Expired</option>
             <option value="non_compliant">Not compliant</option>
             <option value="not_checked">Not checked</option>
@@ -455,6 +812,7 @@ function FilterBar({ filters, setFilters, contractors, subcontractors, mode, sho
           <select className="rounded-lg border border-surface-300 px-3 py-2 text-sm" value={filters.historyResult} onChange={(e) => setFilters((f) => ({ ...f, historyResult: e.target.value }))}>
             <option value="">All results</option>
             <option value="compliant">Compliant</option>
+            <option value="blocked">Blocked</option>
             <option value="failed">Not compliant</option>
             <option value="grace">Grace period</option>
             <option value="expired">Expired</option>
@@ -477,8 +835,153 @@ function FilterBar({ filters, setFilters, contractors, subcontractors, mode, sho
               {exportBusy ? 'Exporting…' : 'Download Excel'}
             </button>
           )}
+          {onEmail && (
+            <button type="button" onClick={onEmail} className="px-4 py-2 text-sm rounded-lg border border-brand-300 text-brand-700 bg-brand-50 font-medium hover:bg-brand-100">
+              Email Excel
+            </button>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function rangeLabelFor(dateFrom, dateTo) {
+  const fmt = (d) => (d ? new Date(d).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '');
+  if (dateFrom && dateTo) return `${fmt(dateFrom)} – ${fmt(dateTo)}`;
+  if (dateFrom) return `From ${fmt(dateFrom)}`;
+  if (dateTo) return `Until ${fmt(dateTo)}`;
+  return 'All dates';
+}
+
+/** Email the (filtered) compliance history Excel to selected users + extra addresses. */
+function EmailHistoryModal({ checks, filters, tenantName, onClose }) {
+  const [users, setUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [search, setSearch] = useState('');
+  const [extraEmails, setExtraEmails] = useState('');
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState('');
+
+  useEffect(() => {
+    setUsersLoading(true);
+    vtcApi
+      .users()
+      .then((r) => setUsers(r.users || []))
+      .catch((e) => setError(e?.message || 'Could not load users'))
+      .finally(() => setUsersLoading(false));
+  }, []);
+
+  const toggle = (id) =>
+    setSelectedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+
+  const filteredUsers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) => `${u.full_name || ''} ${u.email || ''}`.toLowerCase().includes(q));
+  }, [users, search]);
+
+  const extraList = extraEmails.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
+  const hasRecipients = selectedIds.length > 0 || extraList.length > 0;
+  const rangeLabel = rangeLabelFor(filters.dateFrom, filters.dateTo);
+
+  const send = async () => {
+    setSending(true);
+    setError('');
+    try {
+      const { base64, filename } = await buildTrackerComplianceHistoryExcelBase64(checks, {
+        dateFrom: filters.dateFrom || null,
+        dateTo: filters.dateTo || null,
+        tenantName,
+      });
+      const res = await vtcApi.emailHistory({
+        recipientUserIds: selectedIds,
+        extraEmails: extraList,
+        message: message.trim(),
+        fileBase64: base64,
+        filename,
+        rangeLabel,
+        totalRecords: checks.length,
+      });
+      setDone(`Sent to ${res.recipients?.length || 0} recipient(s).`);
+      setTimeout(() => onClose?.(), 1200);
+    } catch (e) {
+      setError(e?.message || 'Send failed');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-xl border border-surface-200" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-surface-200">
+          <h3 className="text-lg font-bold text-surface-900">Email compliance history</h3>
+          <p className="text-sm text-surface-500">{rangeLabel} · {checks.length} record(s) · attached as Excel</p>
+        </div>
+        <div className="p-5 space-y-4 text-sm">
+          {error && <p className="text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+          {done && <p className="text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{done}</p>}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="font-medium text-surface-700">Select recipients</p>
+              {selectedIds.length > 0 && <span className="text-xs text-surface-500">{selectedIds.length} selected</span>}
+            </div>
+            <input
+              className="w-full rounded-lg border border-surface-300 px-3 py-2 mb-2"
+              placeholder="Search users by name or email…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {usersLoading ? (
+              <p className="text-xs text-surface-500">Loading users…</p>
+            ) : !filteredUsers.length ? (
+              <p className="text-xs text-surface-500">No users match.</p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto rounded-lg border border-surface-200 divide-y divide-surface-100">
+                {filteredUsers.map((u) => (
+                  <label key={u.id} className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer hover:bg-surface-50">
+                    <input type="checkbox" className="rounded border-surface-300" checked={selectedIds.includes(u.id)} onChange={() => toggle(u.id)} />
+                    <span className="flex-1">
+                      <span className="text-surface-800">{u.full_name || u.email}</span>
+                      {u.full_name && <span className="text-surface-400 text-xs"> · {u.email}</span>}
+                    </span>
+                    {u.is_rector && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-brand-100 text-brand-700">Rector</span>}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <label className="block">
+            <span className="text-xs font-medium text-surface-600">Additional email addresses (comma separated)</span>
+            <input
+              className="mt-1 w-full rounded-lg border border-surface-300 px-3 py-2"
+              placeholder="e.g. external@example.com"
+              value={extraEmails}
+              onChange={(e) => setExtraEmails(e.target.value)}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-surface-600">Message (optional)</span>
+            <textarea
+              className="mt-1 w-full rounded-lg border border-surface-300 px-3 py-2"
+              rows={2}
+              placeholder="Add a short note…"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="px-5 py-4 border-t border-surface-200 flex gap-2 justify-end">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-surface-300">Cancel</button>
+          <button type="button" disabled={sending || !hasRecipients} onClick={send} className="px-4 py-2 text-sm rounded-lg font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50">
+            {sending ? 'Sending…' : 'Send email'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -517,6 +1020,7 @@ export default function VehicleTrackerComplianceHub({
   const [detailTruckId, setDetailTruckId] = useState(null);
   const [historyAction, setHistoryAction] = useState(null);
   const [exportBusy, setExportBusy] = useState(false);
+  const [emailHistoryOpen, setEmailHistoryOpen] = useState(false);
 
   const effectiveMode = portalSubNav ? activeMode : mode;
 
@@ -560,7 +1064,8 @@ export default function VehicleTrackerComplianceHub({
       .then((r) => {
         let checks = r.checks || [];
         if (filters.historyResult === 'compliant') checks = checks.filter((c) => c.is_compliant && c.status === 'passed');
-        else if (filters.historyResult === 'failed') checks = checks.filter((c) => !c.is_compliant && !['grace', 'suspended', 'expired'].includes(c.status));
+        else if (filters.historyResult === 'blocked') checks = checks.filter((c) => c.status === 'blocked');
+        else if (filters.historyResult === 'failed') checks = checks.filter((c) => !c.is_compliant && !['grace', 'suspended', 'expired', 'blocked'].includes(c.status));
         else if (filters.historyResult === 'grace') checks = checks.filter((c) => c.status === 'grace');
         else if (filters.historyResult === 'expired') checks = checks.filter((c) => c.status === 'expired');
         else if (filters.historyResult === 'suspended') checks = checks.filter((c) => c.status === 'suspended');
@@ -632,7 +1137,8 @@ export default function VehicleTrackerComplianceHub({
       });
       let checks = r.checks || [];
       if (filters.historyResult === 'compliant') checks = checks.filter((c) => c.is_compliant && c.status === 'passed');
-      else if (filters.historyResult === 'failed') checks = checks.filter((c) => !c.is_compliant && !['grace', 'suspended', 'expired'].includes(c.status));
+      else if (filters.historyResult === 'blocked') checks = checks.filter((c) => c.status === 'blocked');
+      else if (filters.historyResult === 'failed') checks = checks.filter((c) => !c.is_compliant && !['grace', 'suspended', 'expired', 'blocked'].includes(c.status));
       else if (filters.historyResult === 'grace') checks = checks.filter((c) => c.status === 'grace');
       else if (filters.historyResult === 'expired') checks = checks.filter((c) => c.status === 'expired');
       else if (filters.historyResult === 'suspended') checks = checks.filter((c) => c.status === 'suspended');
@@ -690,6 +1196,7 @@ export default function VehicleTrackerComplianceHub({
           showDateRange={effectiveMode === 'history'}
           onExport={allowExport && effectiveMode === 'history' ? handleExport : null}
           exportBusy={exportBusy}
+          onEmail={allowExport && effectiveMode === 'history' ? () => setEmailHistoryOpen(true) : null}
         />
       ) : null}
 
@@ -749,16 +1256,27 @@ export default function VehicleTrackerComplianceHub({
                   <td className="px-4 py-3 font-medium">{c.registration}{c.fleet_no ? ` · ${c.fleet_no}` : ''}</td>
                   <td className="px-4 py-3">{c.contractor_name}{c.sub_contractor ? ` / ${c.sub_contractor}` : ''}</td>
                   <td className="px-4 py-3">
-                    {c.status === 'expired' ? <span className="text-slate-700 font-medium">Expired</span>
-                      : c.status === 'grace' ? <StatusBadge label="Grace period" />
+                    {c.status === 'blocked' ? <StatusBadge label="Blocked" />
+                      : c.status === 'expired' ? <span className="text-slate-700 font-medium">Expired</span>
+                      : c.status === 'grace' ? <StatusBadge label={GRACE_LABEL} />
                       : c.is_compliant ? <span className="text-emerald-700 font-medium">Compliant</span>
                       : <span className="text-red-700 font-medium">Not compliant</span>}
+                    {c.motivation && <p className="text-xs text-surface-500 mt-1" title={c.motivation}>Motivation on record</p>}
                   </td>
                   <td className="px-4 py-3">{fmtDate(c.compliance_expires_at)}</td>
                   <td className="px-4 py-3">{c.notified_at ? fmtDate(c.notified_at) : '—'}</td>
                   <td className="px-4 py-3">{c.grace_period_expires_at ? fmtDate(c.grace_period_expires_at) : '—'}</td>
                   {!readOnly && (
-                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                      {c.status === 'blocked' && c.truck_id && (
+                        <button
+                          type="button"
+                          className="text-emerald-700 text-xs font-semibold hover:underline mr-3"
+                          onClick={() => setSelectedTruck({ truck_id: c.truck_id, registration: c.registration, contractor_name: c.contractor_name, sub_contractor: c.sub_contractor, blocked: true })}
+                        >
+                          Re-inspect to clear
+                        </button>
+                      )}
                       {!c.is_compliant && c.status !== 'suspended' && c.status !== 'expired' && (
                         <button type="button" className="text-brand-700 text-xs font-medium hover:underline" onClick={() => setHistoryAction(c)}>Actions</button>
                       )}
@@ -828,7 +1346,7 @@ export default function VehicleTrackerComplianceHub({
                     <td className="px-4 py-3">{g.grace_period_reason || '—'}</td>
                     <td className="px-4 py-3">{fmtDate(g.grace_period_expires_at)}</td>
                     <td className="px-4 py-3">
-                      {g.status === 'suspended' ? <StatusBadge label="Suspended" /> : expired ? <span className="text-red-700 font-medium">Expired</span> : <StatusBadge label="Grace period" />}
+                      {g.status === 'suspended' ? <StatusBadge label="Suspended" /> : g.status === 'blocked' ? <StatusBadge label="Blocked" /> : expired ? <span className="text-red-700 font-medium">Expired</span> : <StatusBadge label={GRACE_LABEL} />}
                     </td>
                   </tr>
                 );
@@ -866,6 +1384,15 @@ export default function VehicleTrackerComplianceHub({
             loadHistory();
             loadGrace();
           }}
+        />
+      )}
+
+      {emailHistoryOpen && (
+        <EmailHistoryModal
+          checks={history}
+          filters={filters}
+          tenantName={tenantName}
+          onClose={() => setEmailHistoryOpen(false)}
         />
       )}
     </div>

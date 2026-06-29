@@ -13,13 +13,43 @@ export default function FleetPendingChangesTab({
   acting = false,
   onRefresh,
   onApprove,
+  onBulkApprove,
   onDecline,
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const [declineTarget, setDeclineTarget] = useState(null);
   const [declineReason, setDeclineReason] = useState('');
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   const selected = changeRequests.find((c) => c.id === selectedId) || null;
+  const selectedCount = changeRequests.reduce((n, c) => (selectedIds.has(c.id) ? n + 1 : n), 0);
+  const allSelected = changeRequests.length > 0 && selectedCount === changeRequests.length;
+
+  const toggleOne = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelectedIds(allSelected ? new Set() : new Set(changeRequests.map((c) => c.id)));
+  };
+
+  const handleBulkApprove = async () => {
+    const ids = changeRequests.filter((c) => selectedIds.has(c.id)).map((c) => c.id);
+    if (!ids.length) return;
+    const facilityCount = changeRequests.filter((c) => selectedIds.has(c.id) && c.hadFacilityAccess).length;
+    const msg = facilityCount
+      ? `Accept ${ids.length} selected change${ids.length === 1 ? '' : 's'}? ${facilityCount} truck${facilityCount === 1 ? '' : 's'} had facility access and will return to pending facility approval with the new details (re-enrollment required where registration changed).`
+      : `Accept and apply ${ids.length} selected change${ids.length === 1 ? '' : 's'} to the system?`;
+    if (!window.confirm(msg)) return;
+    await onBulkApprove?.(ids);
+    setSelectedIds(new Set());
+    setSelectedId(null);
+  };
 
   const handleApprove = async (cr) => {
     const msg = cr.hadFacilityAccess
@@ -48,14 +78,24 @@ export default function FleetPendingChangesTab({
             Review requested edits before they take effect. Trucks that previously had facility access return to pending approval with the updated details once you accept.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={loading}
-          className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
-        >
-          Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleBulkApprove}
+            disabled={acting || selectedCount === 0}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            {acting ? 'Applying…' : `Approve selected${selectedCount ? ` (${selectedCount})` : ''}`}
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            className="px-4 py-2 text-sm font-medium rounded-lg border border-surface-300 text-surface-700 hover:bg-surface-50 disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-0 min-h-[420px]">
@@ -77,6 +117,15 @@ export default function FleetPendingChangesTab({
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-surface-50 z-10">
                   <tr className="border-b border-surface-200">
+                    <th className="px-3 py-2 w-10">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleAll}
+                        title="Select all"
+                        className="h-4 w-4 rounded border-surface-300 text-green-600 cursor-pointer"
+                      />
+                    </th>
                     <th className="text-left px-3 py-2 font-semibold text-surface-700">Contractor</th>
                     <th className="text-left px-3 py-2 font-semibold text-surface-700">Sub-contractor</th>
                     <th className="text-left px-3 py-2 font-semibold text-surface-700">Truck</th>
@@ -92,6 +141,14 @@ export default function FleetPendingChangesTab({
                         selectedId === cr.id ? 'bg-red-50 border-l-4 border-l-red-500' : 'bg-white'
                       }`}
                     >
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(cr.id)}
+                          onChange={() => toggleOne(cr.id)}
+                          className="h-4 w-4 rounded border-surface-300 text-green-600 cursor-pointer"
+                        />
+                      </td>
                       <td className="px-3 py-2">{cr.contractorName || '—'}</td>
                       <td className="px-3 py-2 max-w-[140px] truncate" title={cr.subcontractorDisplay || ''}>
                         {cr.subcontractorDisplay || '—'}

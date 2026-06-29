@@ -22,14 +22,15 @@ function boolLabel(v) {
 }
 
 function checkResultLabel(c) {
-  if (c.status === 'grace') return 'Grace period';
+  if (c.status === 'grace') return '(GRA) Grace period applied';
+  if (c.status === 'blocked') return 'Blocked';
   if (c.status === 'expired') return 'Expired (was compliant)';
   if (c.status === 'suspended') return 'Suspended';
   if (c.status === 'resolved') return 'Resolved';
   return c.is_compliant ? 'Compliant' : 'Not compliant';
 }
 
-export async function downloadTrackerComplianceHistoryExcel(checks, { dateFrom, dateTo, tenantName } = {}) {
+async function buildHistoryWorkbook(checks, { dateFrom, dateTo, tenantName } = {}) {
   const ExcelJS = await loadExcelJS();
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Thinkers';
@@ -132,25 +133,52 @@ export async function downloadTrackerComplianceHistoryExcel(checks, { dateFrom, 
       result: {
         Compliant: { fill: 'FFd1fae5', font: { color: { argb: 'FF065f46' }, bold: true } },
         'Not compliant': { fill: 'FFfee2e2', font: { color: { argb: 'FF991b1b' }, bold: true } },
-        'Grace period': { fill: 'FFfef3c7', font: { color: { argb: 'FF92400e' }, bold: true } },
+        '(GRA) Grace period applied': { fill: 'FFfef3c7', font: { color: { argb: 'FF92400e' }, bold: true } },
+        Blocked: { fill: 'FFfecaca', font: { color: { argb: 'FF7f1d1d' }, bold: true } },
         'Expired (was compliant)': { fill: 'FFe2e8f0', font: { color: { argb: 'FF475569' }, bold: true } },
         Suspended: { fill: 'FFfecaca', font: { color: { argb: 'FF7f1d1d' }, bold: true } },
       },
     },
   });
 
+  return workbook;
+}
+
+function historyFileName({ dateFrom, dateTo } = {}) {
+  const fromPart = dateFrom ? fmtDateOnly(dateFrom).replace(/\//g, '-') : 'all';
+  const toPart = dateTo ? fmtDateOnly(dateTo).replace(/\//g, '-') : 'all';
+  return `vehicle-tracker-compliance-${fromPart}-to-${toPart}.xlsx`;
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+export async function downloadTrackerComplianceHistoryExcel(checks, opts = {}) {
+  const workbook = await buildHistoryWorkbook(checks, opts);
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const fromPart = dateFrom ? fmtDateOnly(dateFrom).replace(/\//g, '-') : 'all';
-  const toPart = dateTo ? fmtDateOnly(dateTo).replace(/\//g, '-') : 'all';
   a.href = url;
-  a.download = `vehicle-tracker-compliance-${fromPart}-to-${toPart}.xlsx`;
+  a.download = historyFileName(opts);
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/** Build the same styled workbook but return it base64-encoded for emailing as an attachment. */
+export async function buildTrackerComplianceHistoryExcelBase64(checks, opts = {}) {
+  const workbook = await buildHistoryWorkbook(checks, opts);
+  const buffer = await workbook.xlsx.writeBuffer();
+  return { base64: arrayBufferToBase64(buffer), filename: historyFileName(opts) };
 }

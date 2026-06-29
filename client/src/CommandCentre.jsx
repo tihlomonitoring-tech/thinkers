@@ -6107,6 +6107,7 @@ function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' 
   const truckDelNonEmpty = truckDeliveriesRo.filter(
     (row) => String(row?.truck_registration || '').trim()
       || String(row?.driver_name || '').trim()
+      || String(row?.route_name || '').trim()
       || String(row?.completed_deliveries ?? '').trim()
       || String(row?.remarks || '').trim(),
   );
@@ -6204,6 +6205,7 @@ function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' 
                         <tr className="bg-surface-100 border-b border-surface-200">
                           <th className="text-left px-3 py-2 font-semibold text-surface-700">Truck registration</th>
                           <th className="text-left px-3 py-2 font-semibold text-surface-700">Driver</th>
+                          <th className="text-left px-3 py-2 font-semibold text-surface-700">Route</th>
                           <th className="text-left px-3 py-2 font-semibold text-surface-700">Completed deliveries</th>
                           <th className="text-left px-3 py-2 font-semibold text-surface-700">Remarks</th>
                         </tr>
@@ -6213,6 +6215,7 @@ function ShiftReportReadOnlyView({ report, reportKind: reportKindProp = 'shift' 
                           <tr key={idx} className="border-b border-surface-100 last:border-0">
                             <td className="px-3 py-2 align-top font-medium">{row.truck_registration || '—'}</td>
                             <td className="px-3 py-2 align-top">{row.driver_name || '—'}</td>
+                            <td className="px-3 py-2 align-top">{row.route_name || '—'}</td>
                             <td className="px-3 py-2 align-top">{row.completed_deliveries ?? '—'}</td>
                             <td className="px-3 py-2 align-top whitespace-pre-wrap">{row.remarks || '—'}</td>
                           </tr>
@@ -6365,36 +6368,19 @@ function DriverSearchSelect({ value, onChange, placeholder = 'Search or type dri
   );
 }
 
-const EMPTY_ROUTE_ALLOCATION = { route_id: '', route_name: '', completed_deliveries: '', tons_loaded: '' };
-
 function mapTruckDeliveryRow(r) {
+  // Legacy reports may carry a route_allocations breakdown; fall back to its
+  // first route name so older data still shows a route after the redesign.
+  const legacyRoute = Array.isArray(r.route_allocations) && r.route_allocations.length
+    ? String(r.route_allocations[0]?.route_name || '').trim()
+    : '';
   return {
     truck_registration: r.truck_registration || '',
     driver_name: r.driver_name || '',
+    route_name: r.route_name || legacyRoute || '',
     completed_deliveries: String(r.completed_deliveries ?? ''),
     remarks: r.remarks || '',
-    route_allocations: Array.isArray(r.route_allocations) && r.route_allocations.length
-      ? r.route_allocations.map((a) => ({
-          route_id: a.route_id || '',
-          route_name: a.route_name || '',
-          completed_deliveries: String(a.completed_deliveries ?? ''),
-          tons_loaded: a.tons_loaded != null && a.tons_loaded !== '' ? String(a.tons_loaded) : '',
-        }))
-      : [{ ...EMPTY_ROUTE_ALLOCATION }],
   };
-}
-
-function sumRouteAllocDeliveries(allocations) {
-  return (allocations || []).reduce((s, a) => s + (Number(a.completed_deliveries) || 0), 0);
-}
-
-function defaultTonsForRoute(routeList, routeId, routeName) {
-  const match = (routeList || []).find(
-    (r) => (routeId && String(r.id) === String(routeId))
-      || (routeName && String(r.name || '').trim().toLowerCase() === String(routeName).trim().toLowerCase())
-  );
-  const tons = match?.min_tons ?? match?.max_tons;
-  return tons != null && tons !== '' ? String(tons) : '36';
 }
 
 function ShiftReportForm({
@@ -6428,7 +6414,7 @@ function ShiftReportForm({
   const emptyNonComp = { driver_name: '', truck_reg: '', rule_violated: '', time_of_call: '', summary: '', driver_response: '' };
   const emptyInv = { truck_reg: '', time: '', location: '', issue_identified: '', findings: '', action_taken: '' };
   const emptyComm = { time: '', recipient: '', subject: '', method: '', action_required: '' };
-  const emptyTruckDelivery = { truck_registration: '', driver_name: '', completed_deliveries: '', remarks: '', route_allocations: [{ ...EMPTY_ROUTE_ALLOCATION }] };
+  const emptyTruckDelivery = { truck_registration: '', driver_name: '', route_name: '', completed_deliveries: '', remarks: '' };
   const emptyRouteLoadTotal = { route_name: '', total_loads_delivered: '' };
 
   const [selectedRoutes, setSelectedRoutes] = useState(() =>
@@ -6495,6 +6481,7 @@ function ShiftReportForm({
       handover_key_info: str(get(d, 'handover_key_info')),
       declaration: str(get(d, 'declaration')),
       shift_conclusion_time: toTimeVal(get(d, 'shift_conclusion_time')),
+      auto_completed_delivery: !!get(d, 'auto_completed_delivery'),
     };
   };
 
@@ -7006,49 +6993,34 @@ function ShiftReportForm({
     const r = String(formFields.route || '').trim().toLowerCase();
     return new Set(r ? [r] : []);
   }, [reportKind, selectedRoutes, otherRoutesText, formFields.route]);
-  const routesForTruckAllocations = useMemo(() => {
-    const reportRouteNames = mergeSingleOpsRouteNames(selectedRoutes, otherRoutesText);
-    if (!reportRouteNames.length) return routeList;
-    const nameSet = new Set(reportRouteNames.map((n) => String(n).trim().toLowerCase()));
-    const onReport = routeList.filter((r) => nameSet.has(String(r.name || '').trim().toLowerCase()));
-    const rest = routeList.filter((r) => !nameSet.has(String(r.name || '').trim().toLowerCase()));
-    return onReport.length ? [...onReport, ...rest] : routeList;
-  }, [routeList, selectedRoutes, otherRoutesText]);
-  const updateTruckAllocation = (truckIdx, allocIdx, key, value) => {
-    setTruckDeliveries((prev) => prev.map((row, i) => {
-      if (i !== truckIdx) return row;
-      const allocs = [...(row.route_allocations || [{ ...EMPTY_ROUTE_ALLOCATION }])];
-      const next = { ...allocs[allocIdx], [key]: value };
-      if (key === 'route_id') {
-        const route = routeList.find((r) => String(r.id) === String(value));
-        if (route) {
-          next.route_name = route.name || '';
-          if (!String(next.tons_loaded || '').trim()) {
-            next.tons_loaded = defaultTonsForRoute(routeList, route.id, route.name);
-          }
-        } else {
-          next.route_name = '';
-        }
-      }
-      allocs[allocIdx] = next;
-      const sum = sumRouteAllocDeliveries(allocs);
-      return { ...row, route_allocations: allocs, completed_deliveries: sum > 0 ? String(sum) : '' };
-    }));
-  };
-  const addTruckAllocation = (truckIdx) => {
-    setTruckDeliveries((prev) => prev.map((row, i) => {
-      if (i !== truckIdx) return row;
-      return { ...row, route_allocations: [...(row.route_allocations || []), { ...EMPTY_ROUTE_ALLOCATION }] };
-    }));
-  };
-  const removeTruckAllocation = (truckIdx, allocIdx) => {
-    setTruckDeliveries((prev) => prev.map((row, i) => {
-      if (i !== truckIdx) return row;
-      const allocs = (row.route_allocations || []).filter((_, j) => j !== allocIdx);
-      const nextAllocs = allocs.length ? allocs : [{ ...EMPTY_ROUTE_ALLOCATION }];
-      const sum = sumRouteAllocDeliveries(nextAllocs);
-      return { ...row, route_allocations: nextAllocs, completed_deliveries: sum > 0 ? String(sum) : '' };
-    }));
+  const [autoLoadBusy, setAutoLoadBusy] = useState(false);
+  const [autoLoadInfo, setAutoLoadInfo] = useState('');
+  const loadAutoCompletedDeliveries = async () => {
+    setAutoLoadBusy(true);
+    setAutoLoadInfo('');
+    try {
+      const res = await ccApi.singleOpsShiftReports.autoCompletedDeliveries(12);
+      const td = Array.isArray(res?.truck_deliveries) ? res.truck_deliveries : [];
+      const rt = Array.isArray(res?.route_load_totals) ? res.route_load_totals : [];
+      pushUndo(captureUndoSnapshot());
+      setTruckDeliveries(td.length ? td.map(mapTruckDeliveryRow) : [{ ...emptyTruckDelivery }]);
+      setRouteLoadTotals(
+        rt.length
+          ? rt.map((r) => ({ route_name: r.route_name || '', total_loads_delivered: String(r.total_loads_delivered ?? '') }))
+          : [{ ...emptyRouteLoadTotal }]
+      );
+      const total = Number(res?.total_deliveries) || 0;
+      const hrs = res?.hours ?? 12;
+      setAutoLoadInfo(
+        total > 0
+          ? `Loaded ${total} completed deliver${total === 1 ? 'y' : 'ies'} from the last ${hrs}h into ${td.length} row${td.length === 1 ? '' : 's'}. Review and edit before saving.`
+          : `No completed deliveries found in Tracking Management in the last ${hrs} hours.`
+      );
+    } catch (e) {
+      setAutoLoadInfo(e?.message || 'Could not load completed deliveries from Tracking Management.');
+    } finally {
+      setAutoLoadBusy(false);
+    }
   };
   const hasBreakdownRouteFilter = routeSetForBreakdowns.size > 0;
   const filteredBreakdowns = (reportedBreakdowns || []).filter((b) => {
@@ -7095,18 +7067,14 @@ function ShiftReportForm({
     };
     if (reportKind !== 'single_ops') return base;
     const td = truckDeliveries
-      .map((r) => {
-        const allocs = (r.route_allocations || []).filter((a) => a.route_id || a.route_name || a.completed_deliveries || a.tons_loaded);
-        const sum = sumRouteAllocDeliveries(allocs);
-        return {
-          truck_registration: r.truck_registration,
-          driver_name: r.driver_name,
-          remarks: r.remarks,
-          completed_deliveries: sum > 0 ? String(sum) : String(r.completed_deliveries ?? '').trim(),
-          route_allocations: allocs,
-        };
-      })
-      .filter((r) => r.truck_registration || r.driver_name || r.completed_deliveries || r.remarks || (r.route_allocations || []).length);
+      .map((r) => ({
+        truck_registration: r.truck_registration,
+        driver_name: r.driver_name,
+        route_name: r.route_name,
+        remarks: r.remarks,
+        completed_deliveries: String(r.completed_deliveries ?? '').trim(),
+      }))
+      .filter((r) => r.truck_registration || r.driver_name || r.route_name || r.completed_deliveries || r.remarks);
     const rt = routeLoadTotals.filter((r) => r.route_name || r.total_loads_delivered);
     return {
       ...base,
@@ -7276,24 +7244,6 @@ function ShiftReportForm({
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (reportKind === 'single_ops') {
-      for (const row of truckDeliveries) {
-        const hasTruck = String(row.truck_registration || '').trim()
-          || String(row.driver_name || '').trim()
-          || String(row.completed_deliveries || '').trim()
-          || (row.route_allocations || []).some((a) => a.route_id || String(a.route_name || '').trim() || a.completed_deliveries || a.tons_loaded);
-        if (!hasTruck) continue;
-        const validAllocs = (row.route_allocations || []).filter(
-          (a) => (a.route_id || String(a.route_name || '').trim())
-            && String(a.completed_deliveries || '').trim()
-            && String(a.tons_loaded || '').trim()
-        );
-        if (validAllocs.length === 0) {
-          setMessage?.('Each truck with completed deliveries needs at least one route line with loads and tons (used in Logistics finance — not on the shift PDF).');
-          return;
-        }
-      }
-    }
     setSaving(true);
     setMessage('');
     const payload = buildShiftPayload();
@@ -7675,8 +7625,49 @@ function ShiftReportForm({
           </div>
           {reportKind === 'single_ops' && (
             <>
+              <datalist id="single-ops-route-names">
+                {routeList.map((r) => (
+                  <option key={r.id} value={r.name} />
+                ))}
+              </datalist>
+
+              <div className="mt-6 rounded-xl border border-brand-200 bg-brand-50/50 p-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!formFields.auto_completed_delivery}
+                    onChange={(e) => setFormFields((f) => ({ ...f, auto_completed_delivery: e.target.checked }))}
+                    className="mt-0.5 h-4 w-4 rounded border-surface-300 text-brand-600"
+                  />
+                  <span>
+                    <span className="text-sm font-semibold text-surface-800">Auto completed delivery</span>
+                    <span className="block text-xs text-surface-600 mt-0.5">
+                      Pull completed deliveries from Tracking Management (last 12 hours) to auto-fill truck registration, driver,
+                      route and the completed-delivery counts below — minimising manual capture. Leave this off to capture everything manually.
+                    </span>
+                  </span>
+                </label>
+                {formFields.auto_completed_delivery && (
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={loadAutoCompletedDeliveries}
+                      disabled={autoLoadBusy}
+                      className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                    >
+                      {autoLoadBusy ? 'Loading…' : 'Load completed deliveries (last 12h)'}
+                    </button>
+                    {autoLoadInfo && <span className="text-xs text-surface-600">{autoLoadInfo}</span>}
+                  </div>
+                )}
+              </div>
+
               <p className="text-xs font-semibold text-surface-600 mt-6 mb-2">Total loads delivered per route</p>
-              <p className="text-xs text-surface-500 mb-2">Enter each route covered in this report and the loads delivered on that route.</p>
+              <p className="text-xs text-surface-500 mb-2">
+                {formFields.auto_completed_delivery
+                  ? 'Auto-calculated from the completed deliveries loaded above (one row per route). You can still adjust the figures before saving.'
+                  : 'Enter each route covered in this report and the loads delivered on that route.'}
+              </p>
               {routeLoadTotals.map((row, i) => (
                 <div key={i} className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2">
                   <input
@@ -7684,6 +7675,7 @@ function ShiftReportForm({
                     value={row.route_name}
                     onChange={(e) => updateRow(setRouteLoadTotals, i, 'route_name', e.target.value)}
                     placeholder="Route name"
+                    list="single-ops-route-names"
                     className="rounded-lg border border-surface-300 px-2 py-1.5 text-sm sm:col-span-2"
                   />
                   <input
@@ -7701,14 +7693,13 @@ function ShiftReportForm({
 
               <p className="text-xs font-semibold text-surface-600 mt-6 mb-2">Deliveries per truck (performance account)</p>
               <p className="text-xs text-surface-500 mb-2">
-                One row per truck for the shift PDF (registration, driver, total completed deliveries, remarks). Link each delivery to one or more routes with loads and tons — that detail feeds Logistics finance only and is not printed on the shift report.
+                One row per truck (and route) — registration, driver, route and total completed deliveries — printed on the shift PDF.
               </p>
-              {truckDeliveries.map((row, i) => {
-                const allocSum = sumRouteAllocDeliveries(row.route_allocations);
-                return (
+              {truckDeliveries.map((row, i) => (
                 <div key={i} className="p-3 rounded-lg bg-surface-50 border border-surface-100 mb-2 space-y-3">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div className="relative sm:col-span-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                    <div className="relative col-span-2">
+                      <label className="text-[10px] uppercase tracking-wide text-surface-500">Truck registration</label>
                       <TruckSearchSelect
                         value={row.truck_registration}
                         onChange={(v) => updateRow(setTruckDeliveries, i, 'truck_registration', v)}
@@ -7717,7 +7708,8 @@ function ShiftReportForm({
                         id={`td-truck-${i}`}
                       />
                     </div>
-                    <div className="relative sm:col-span-2">
+                    <div className="relative col-span-2">
+                      <label className="text-[10px] uppercase tracking-wide text-surface-500">Driver</label>
                       <DriverSearchSelect
                         value={row.driver_name}
                         onChange={(v) => updateRow(setTruckDeliveries, i, 'driver_name', v)}
@@ -7726,72 +7718,28 @@ function ShiftReportForm({
                         id={`td-driver-${i}`}
                       />
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] uppercase tracking-wide text-surface-500">Completed deliveries (total)</label>
+                    <div className="col-span-1 sm:col-span-1">
+                      <label className="text-[10px] uppercase tracking-wide text-surface-500">Route</label>
+                      <input
+                        type="text"
+                        value={row.route_name}
+                        onChange={(e) => updateRow(setTruckDeliveries, i, 'route_name', e.target.value)}
+                        placeholder="Route"
+                        list="single-ops-route-names"
+                        className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
+                      />
+                    </div>
+                    <div className="col-span-1 sm:col-span-1">
+                      <label className="text-[10px] uppercase tracking-wide text-surface-500">Completed deliveries</label>
                       <input
                         type="number"
                         min="0"
-                        readOnly
-                        value={allocSum > 0 ? String(allocSum) : row.completed_deliveries}
-                        placeholder="Sum from routes below"
-                        className="w-full rounded-lg border border-surface-200 bg-surface-100 px-2 py-1.5 text-sm text-surface-700"
-                        title="Auto-calculated from route lines below"
+                        value={row.completed_deliveries}
+                        onChange={(e) => updateRow(setTruckDeliveries, i, 'completed_deliveries', e.target.value)}
+                        placeholder="0"
+                        className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm"
                       />
                     </div>
-                  </div>
-                  <div className="rounded-lg border border-dashed border-brand-200 bg-brand-50/40 p-3 space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-xs font-semibold text-brand-800">Route breakdown (Logistics finance ledger)</p>
-                      <span className="text-[10px] text-brand-700/80">Not on shift PDF</span>
-                    </div>
-                    {(row.route_allocations || [{ ...EMPTY_ROUTE_ALLOCATION }]).map((alloc, j) => (
-                      <div key={j} className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end">
-                        <div className="sm:col-span-2">
-                          <label className="text-[10px] text-surface-500">Route</label>
-                          <select
-                            value={alloc.route_id || ''}
-                            onChange={(e) => updateTruckAllocation(i, j, 'route_id', e.target.value)}
-                            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white"
-                          >
-                            <option value="">Select route…</option>
-                            {routesForTruckAllocations.map((r) => (
-                              <option key={r.id} value={r.id}>{r.name}{(r.min_tons ?? r.max_tons) ? ` (${r.min_tons ?? r.max_tons} t min)` : ''}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[10px] text-surface-500">Loads</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={alloc.completed_deliveries}
-                            onChange={(e) => updateTruckAllocation(i, j, 'completed_deliveries', e.target.value)}
-                            placeholder="Loads"
-                            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] text-surface-500">Tons loaded</label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={alloc.tons_loaded}
-                            onChange={(e) => updateTruckAllocation(i, j, 'tons_loaded', e.target.value)}
-                            placeholder="Tons"
-                            className="w-full rounded-lg border border-surface-300 px-2 py-1.5 text-sm bg-white"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeTruckAllocation(i, j)}
-                          className="text-xs text-surface-400 hover:text-red-600 py-1.5 text-left sm:text-right"
-                        >
-                          Remove route
-                        </button>
-                      </div>
-                    ))}
-                    <button type="button" onClick={() => addTruckAllocation(i)} className="text-xs text-brand-700 hover:text-brand-800 font-medium">+ Add route line</button>
                   </div>
                   <textarea
                     value={row.remarks}
@@ -7809,7 +7757,7 @@ function ShiftReportForm({
                   />
                   <button type="button" onClick={() => removeRowWithUndo(setTruckDeliveries, i, truckDeliveries)} className="text-sm text-surface-400 hover:text-red-600">Remove truck</button>
                 </div>
-              );})}
+              ))}
               <button type="button" onClick={() => addRowWithUndo(setTruckDeliveries, { ...emptyTruckDelivery })} className="text-sm text-brand-600 hover:text-brand-700 font-medium">+ Add truck row</button>
             </>
           )}
@@ -9971,6 +9919,22 @@ function TabApplications() {
     }
   };
 
+  const handleBulkApproveFleetChanges = async (ids) => {
+    if (!Array.isArray(ids) || !ids.length) return;
+    setActing(true);
+    try {
+      const r = await ccApi.fleetChangeRequests.bulkApprove(ids);
+      window.alert(r.message || `${ids.length} changes accepted.`);
+      await loadPendingChangeRequests();
+      loadList();
+    } catch (e) {
+      window.alert(e?.message || 'Failed');
+      throw e;
+    } finally {
+      setActing(false);
+    }
+  };
+
   const handleDeclineFleetChange = async (id, reason) => {
     setActing(true);
     try {
@@ -10575,6 +10539,7 @@ function TabApplications() {
               acting={acting}
               onRefresh={loadPendingChangeRequests}
               onApprove={handleApproveFleetChange}
+              onBulkApprove={handleBulkApproveFleetChanges}
               onDecline={handleDeclineFleetChange}
             />
           </Suspense>

@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react';
 
 function facilityBadge(d) {
+  if (d.compliance_blocked) {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300 font-semibold" title="Failed vehicle tracker compliance — a passing re-inspection (with motivation) is required.">Blocked</span>;
+  }
   if (d.facility_access) return <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Facility access</span>;
   if (d.last_decline_reason) return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800" title={d.last_decline_reason}>Declined</span>;
   const cas = d.contractor_approval_status ?? d.contractorApprovalStatus;

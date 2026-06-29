@@ -43,6 +43,7 @@ const SCALAR_KEYS = [
   'handover_key_info',
   'declaration',
   'shift_conclusion_time',
+  'auto_completed_delivery',
   'status',
   'submitted_at',
   'submitted_to_user_id',
@@ -93,10 +94,12 @@ function rowToSingleOpsReport(mainRow, deliveries = [], routeTotals = []) {
   const routes = parseRoutesJson(getR(mainRow, 'routes_json'));
   out.routes = routes;
   out.route = routes.length ? routes.join(', ') : '';
+  out.auto_completed_delivery = !!getR(mainRow, 'auto_completed_delivery');
   out.truck_deliveries = (deliveries || []).map((d) => ({
     id: getR(d, 'id'),
     truck_registration: getR(d, 'truck_registration') ?? '',
     driver_name: getR(d, 'driver_name') ?? '',
+    route_name: getR(d, 'route_name') ?? '',
     completed_deliveries: getR(d, 'completed_deliveries') ?? '',
     remarks: getR(d, 'remarks') ?? '',
     sort_order: getR(d, 'sort_order') ?? 0,
@@ -155,6 +158,7 @@ function bodyToMainPayload(b, userId, isUpdate) {
     handover_key_info: b.handover_key_info ?? null,
     declaration: b.declaration ?? null,
     shift_conclusion_time: b.shift_conclusion_time ?? null,
+    auto_completed_delivery: b.auto_completed_delivery ? 1 : 0,
     status: isUpdate ? undefined : 'draft',
   };
 }
@@ -178,15 +182,16 @@ async function replaceChildren(reportId, truckDeliveries, routeLoadTotals) {
   for (const row of td) {
     const tr = String(row.truck_registration || '').trim();
     const dr = String(row.driver_name || '').trim();
+    const rnTruck = String(row.route_name || '').trim();
     const cd = String(row.completed_deliveries ?? '').trim();
     const rm = String(row.remarks || '').trim();
     const allocs = Array.isArray(row.route_allocations) ? row.route_allocations : [];
     const hasAlloc = allocs.some((a) => String(a.route_name || '').trim() || a.route_id);
-    if (!tr && !dr && !cd && !rm && !hasAlloc) continue;
+    if (!tr && !dr && !rnTruck && !cd && !rm && !hasAlloc) continue;
     const ins = await query(
-      `INSERT INTO command_centre_single_ops_truck_deliveries (report_id, sort_order, truck_registration, driver_name, completed_deliveries, remarks)
-       OUTPUT INSERTED.id VALUES (@rid, @so, @tr, @dr, @cd, @rm)`,
-      { rid: reportId, so: si++, tr: tr || null, dr: dr || null, cd: cd || null, rm: rm || null }
+      `INSERT INTO command_centre_single_ops_truck_deliveries (report_id, sort_order, truck_registration, driver_name, route_name, completed_deliveries, remarks)
+       OUTPUT INSERTED.id VALUES (@rid, @so, @tr, @dr, @rn, @cd, @rm)`,
+      { rid: reportId, so: si++, tr: tr || null, dr: dr || null, rn: rnTruck || null, cd: cd || null, rm: rm || null }
     );
     const deliveryId = getR(ins.recordset?.[0], 'id');
     if (!deliveryId) continue;
@@ -228,7 +233,7 @@ async function replaceChildren(reportId, truckDeliveries, routeLoadTotals) {
 
 async function loadChildren(reportId) {
   const d = await query(
-    `SELECT id, sort_order, truck_registration, driver_name, completed_deliveries, remarks
+    `SELECT id, sort_order, truck_registration, driver_name, route_name, completed_deliveries, remarks
      FROM command_centre_single_ops_truck_deliveries WHERE report_id = @rid ORDER BY sort_order`,
     { rid: reportId }
   );
@@ -387,6 +392,93 @@ export function registerCommandCentreSingleOpsShiftReports(router) {
     }
   });
 
+  // Auto completed delivery — aggregate Tracking Management completed deliveries
+  // from the last N hours (default 12) into per-truck and per-route rows the
+  // single-ops shift report form can pre-fill.
+  router.get('/single-ops-shift-reports/auto-completed-deliveries', async (req, res, next) => {
+    try {
+      const tenantId = req.user?.tenant_id || null;
+      let hours = parseInt(String(req.query.hours ?? '12'), 10);
+      if (!Number.isFinite(hours) || hours <= 0) hours = 12;
+      if (hours > 168) hours = 168; // cap at 7 days
+
+      let rows = [];
+      try {
+        const result = await query(
+          `SELECT d.truck_registration, d.driver_name, d.contractor_route_id, d.destination_name,
+                  cr.name AS route_name, d.delivered_at
+           FROM tracking_delivery_record d
+           LEFT JOIN contractor_routes cr ON cr.id = d.contractor_route_id AND cr.tenant_id = @tenantId
+           WHERE d.tenant_id = @tenantId
+             AND d.deleted_at IS NULL
+             AND d.status = N'completed'
+             AND d.pending_note = 0
+             AND d.activity_phase = N'destination'
+             AND d.offloading_slip_no IS NOT NULL
+             AND LTRIM(RTRIM(d.offloading_slip_no)) <> N''
+             AND d.delivered_at >= DATEADD(hour, -@hours, SYSUTCDATETIME())
+           ORDER BY d.delivered_at DESC`,
+          { tenantId, hours }
+        );
+        rows = result.recordset || [];
+      } catch (e) {
+        // tracking tables may not exist yet for this tenant
+        return res.json({ truck_deliveries: [], route_load_totals: [], hours, total_deliveries: 0, generated_at: new Date().toISOString() });
+      }
+
+      const compactReg = (v) => String(v ?? '').replace(/\s+/g, '').toUpperCase();
+      const routeOf = (row) => {
+        const rn = String(getR(row, 'route_name') || '').trim();
+        if (rn) return rn;
+        const dest = String(getR(row, 'destination_name') || '').trim();
+        return dest || 'Unassigned';
+      };
+
+      const truckMap = new Map(); // key: reg||route
+      const routeMap = new Map(); // key: route name
+      let total = 0;
+
+      for (const row of rows) {
+        const reg = compactReg(getR(row, 'truck_registration'));
+        if (!reg) continue;
+        total += 1;
+        const route = routeOf(row);
+        const driver = String(getR(row, 'driver_name') || '').trim();
+
+        const tKey = `${reg}||${route.toLowerCase()}`;
+        if (!truckMap.has(tKey)) {
+          truckMap.set(tKey, { truck_registration: reg, driver_name: driver, route_name: route, completed_deliveries: 0 });
+        }
+        const t = truckMap.get(tKey);
+        t.completed_deliveries += 1;
+        if (!t.driver_name && driver) t.driver_name = driver;
+
+        const rKey = route.toLowerCase();
+        if (!routeMap.has(rKey)) routeMap.set(rKey, { route_name: route, total_loads_delivered: 0 });
+        routeMap.get(rKey).total_loads_delivered += 1;
+      }
+
+      const truck_deliveries = [...truckMap.values()]
+        .sort((a, b) =>
+          a.route_name.localeCompare(b.route_name) || a.truck_registration.localeCompare(b.truck_registration))
+        .map((t) => ({ ...t, completed_deliveries: String(t.completed_deliveries) }));
+
+      const route_load_totals = [...routeMap.values()]
+        .sort((a, b) => a.route_name.localeCompare(b.route_name))
+        .map((r) => ({ route_name: r.route_name, total_loads_delivered: String(r.total_loads_delivered) }));
+
+      res.json({
+        truck_deliveries,
+        route_load_totals,
+        hours,
+        total_deliveries: total,
+        generated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get('/single-ops-shift-reports/:id', async (req, res, next) => {
     try {
       const bundle = await fetchReportBundle(req.params.id, req.user?.id);
@@ -416,14 +508,14 @@ export function registerCommandCentreSingleOpsShiftReports(router) {
           controller1_name, controller1_email, controller2_name, controller2_email, controller3_name, controller3_email,
           total_trucks_scheduled, balance_brought_down, total_loads_dispatched, total_pending_deliveries, total_loads_delivered,
           overall_performance, key_highlights, truck_updates, incidents, non_compliance_calls, investigations, communication_log,
-          outstanding_issues, handover_key_info, declaration, shift_conclusion_time, status
+          outstanding_issues, handover_key_info, declaration, shift_conclusion_time, auto_completed_delivery, status
         ) OUTPUT INSERTED.*
         VALUES (
           @created_by_user_id, @tenant_id, @ref_number, @routes_json, @report_date, @shift_date, @shift_start, @shift_end,
           @controller1_name, @controller1_email, @controller2_name, @controller2_email, @controller3_name, @controller3_email,
           @total_trucks_scheduled, @balance_brought_down, @total_loads_dispatched, @total_pending_deliveries, @total_loads_delivered,
           @overall_performance, @key_highlights, @truck_updates, @incidents, @non_compliance_calls, @investigations, @communication_log,
-          @outstanding_issues, @handover_key_info, @declaration, @shift_conclusion_time, N'draft'
+          @outstanding_issues, @handover_key_info, @declaration, @shift_conclusion_time, @auto_completed_delivery, N'draft'
         )`,
         payload
       );
@@ -484,6 +576,7 @@ export function registerCommandCentreSingleOpsShiftReports(router) {
         handover_key_info: b.handover_key_info,
         declaration: b.declaration,
         shift_conclusion_time: b.shift_conclusion_time,
+        auto_completed_delivery: b.auto_completed_delivery !== undefined ? (b.auto_completed_delivery ? 1 : 0) : undefined,
       };
       const setParts = [];
       const params = { id: req.params.id };

@@ -4709,6 +4709,40 @@ router.get('/fleet-change-requests', async (req, res, next) => {
   }
 });
 
+router.patch('/fleet-change-requests/bulk-approve', async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x) => String(x)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ error: 'No change requests selected' });
+    const results = [];
+    let approved = 0;
+    let facilityResets = 0;
+    let reenrollments = 0;
+    for (const id of ids) {
+      try {
+        const applied = await applyTruckChangeRequest(id, req.user?.id);
+        if (applied.error) {
+          results.push({ id, ok: false, message: applied.error.message });
+        } else {
+          approved += 1;
+          if (applied.facilityAccessReset) facilityResets += 1;
+          if (applied.requiresReenrollment) reenrollments += 1;
+          results.push({ id, ok: true });
+        }
+      } catch (e) {
+        results.push({ id, ok: false, message: e?.message || 'Failed to apply change' });
+      }
+    }
+    const failed = results.filter((r) => !r.ok).length;
+    let message = `${approved} change${approved === 1 ? '' : 's'} accepted and applied.`;
+    if (facilityResets) message += ` ${facilityResets} returned to pending facility approval with the new details.`;
+    if (reenrollments) message += ` ${reenrollments} need re-enrollment because registration changed.`;
+    if (failed) message += ` ${failed} could not be processed.`;
+    res.json({ ok: true, approved, failed, facilityResets, reenrollments, results, message });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.patch('/fleet-change-requests/:id/approve', async (req, res, next) => {
   try {
     const { id } = req.params;

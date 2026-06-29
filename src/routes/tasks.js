@@ -66,12 +66,17 @@ function isMissingSqlObjectError(err) {
 const TASK_ACTIVITY_SCHEMA_MESSAGE =
   'Task activity tables are missing. Run npm run db:tasks-activity on the server (or include db:tasks-activity in your migration pipeline).';
 
+/** True when the user belongs to the given tenant: super admins, the user's primary
+ *  tenant, or any tenant in their multi-tenant list. Compared as case-insensitive strings
+ *  so GUID casing differences never wrongly deny access. */
 function canAccessTaskTenant(req, tenantId) {
   if (req.user?.role === 'super_admin') return true;
-  const tid = req.user?.tenant_id;
-  if (!tid) return false;
-  if (Array.isArray(req.user?.tenant_ids)) return req.user.tenant_ids.includes(tenantId);
-  return tid === tenantId;
+  const target = tenantId == null ? '' : String(tenantId).trim().toLowerCase();
+  if (!target) return false;
+  const primary = req.user?.tenant_id == null ? '' : String(req.user.tenant_id).trim().toLowerCase();
+  if (primary && primary === target) return true;
+  const all = Array.isArray(req.user?.tenant_ids) ? req.user.tenant_ids : [];
+  return all.some((id) => String(id).trim().toLowerCase() === target);
 }
 
 const TASK_CATEGORY_VALUES = ['sales', 'departmental', 'thinkers_afrika'];
@@ -1351,11 +1356,7 @@ const libraryUpload = multer({
 }).single('file');
 
 function canAccessLibraryTenant(req, tenantId) {
-  if (req.user?.role === 'super_admin') return true;
-  const tid = req.user?.tenant_id;
-  if (!tid) return false;
-  if (Array.isArray(req.user?.tenant_ids)) return req.user.tenant_ids.includes(tenantId);
-  return tid === tenantId;
+  return canAccessTaskTenant(req, tenantId);
 }
 
 /** GET /api/tasks/library/folders – list folders (flat with parent_id; root when parent_id null) */

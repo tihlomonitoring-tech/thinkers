@@ -5,11 +5,14 @@ import {
   getCommandCentreAndAccessManagementEmails,
   getRectorEmailsForAlertTypeAndRoutes,
 } from './emailRecipients.js';
-import { vehicleTrackerComplianceAlertHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml } from './emailTemplates.js';
+import { vehicleTrackerComplianceAlertHtml, vehicleTrackerComplianceHistoryEmailHtml, truckSuspendedToContractorHtml, truckSuspendedToRectorHtml } from './emailTemplates.js';
 import { compactTruckRegistration, mapTruckRegistrationFields } from './truckRegistration.js';
 
 /** Compliant checks remain valid for this many hours before requiring re-inspection. */
 export const COMPLIANCE_VALID_HOURS = 48;
+
+/** Human-readable status label for an active grace period. */
+export const GRACE_PERIOD_LABEL = '(GRA) Grace period applied';
 
 export function complianceExpiresAt(checkedAt) {
   if (!checkedAt) return null;
@@ -139,6 +142,8 @@ function mapCheckRow(row) {
     driver_routes_removed: driverRoutesRemoved,
     status: getRow(row, 'status'),
     notes: getRow(row, 'notes'),
+    motivation: getRow(row, 'motivation'),
+    blocked_at: getRow(row, 'blocked_at'),
     compliance_expires_at: getRow(row, 'compliance_expires_at'),
     tracking_provider: getRow(row, 'tracking_provider'),
     tracking_username: getRow(row, 'tracking_username'),
@@ -199,7 +204,8 @@ export async function listEnrolledTrackerTrucks(
       CASE
         WHEN s.truck_id IS NOT NULL THEN N'Suspended'
         WHEN lc.id IS NULL THEN N'Not checked'
-        WHEN lc.status = N'grace' AND lc.grace_period_expires_at > SYSUTCDATETIME() THEN N'Grace period'
+        WHEN lc.status = N'blocked' THEN N'Blocked'
+        WHEN lc.status = N'grace' AND lc.grace_period_expires_at > SYSUTCDATETIME() THEN N'${GRACE_PERIOD_LABEL}'
         WHEN lc.is_compliant = 1 AND lc.status IN (N'passed', N'expired')
           AND lc.checked_at >= DATEADD(hour, -${COMPLIANCE_VALID_HOURS}, SYSUTCDATETIME()) THEN N'Compliant'
         WHEN lc.is_compliant = 1 AND lc.checked_at < DATEADD(hour, -${COMPLIANCE_VALID_HOURS}, SYSUTCDATETIME()) THEN N'Expired'
@@ -217,6 +223,13 @@ export async function listEnrolledTrackerTrucks(
     WHERE t.tenant_id = @tenantId
   `;
   const params = { tenantId };
+
+  // Only show approved fleet (facility-approved + contractor-approved) when listing.
+  // A specific truckId lookup (detail view) bypasses this so status is always retrievable.
+  if (!truckId) {
+    sql += ` AND t.facility_access = 1
+      AND ISNULL(t.contractor_approval_status, N'approved_contractor') IN (N'approved_contractor', N'not_required')`;
+  }
 
   if (enrolledOnly) {
     sql += ` AND EXISTS (
@@ -276,17 +289,30 @@ export async function listEnrolledTrackerTrucks(
     compliance_expires_at: getRow(row, 'compliance_expires_at'),
     is_compliant:
       getRow(row, 'current_status_label') === 'Compliant' ||
-      getRow(row, 'current_status_label') === 'Grace period',
+      getRow(row, 'current_status_label') === GRACE_PERIOD_LABEL,
     current_status_label: getRow(row, 'current_status_label'),
     is_suspended: !!getRow(row, 'is_suspended'),
     latest_check_id: getRow(row, 'latest_check_id'),
     grace_period_expires_at: getRow(row, 'grace_period_expires_at'),
   }));
 
+  // De-duplicate by normalized registration (duplicate truck records share a registration).
+  const seenReg = new Set();
+  trucks = trucks.filter((t) => {
+    const key = compactTruckRegistration(t.registration || '') || String(t.truck_id || '');
+    if (seenReg.has(key)) return false;
+    seenReg.add(key);
+    return true;
+  });
+
   if (complianceStatus === 'compliant') {
-    trucks = trucks.filter((t) => t.current_status_label === 'Compliant' || t.current_status_label === 'Grace period');
+    trucks = trucks.filter((t) => t.current_status_label === 'Compliant' || t.current_status_label === GRACE_PERIOD_LABEL);
+  } else if (complianceStatus === 'grace') {
+    trucks = trucks.filter((t) => t.current_status_label === GRACE_PERIOD_LABEL);
+  } else if (complianceStatus === 'blocked') {
+    trucks = trucks.filter((t) => t.current_status_label === 'Blocked');
   } else if (complianceStatus === 'non_compliant') {
-    trucks = trucks.filter((t) => t.current_status_label === 'Not compliant');
+    trucks = trucks.filter((t) => t.current_status_label === 'Not compliant' || t.current_status_label === 'Blocked');
   } else if (complianceStatus === 'expired') {
     trucks = trucks.filter((t) => t.current_status_label === 'Expired');
   } else if (complianceStatus === 'not_checked') {
@@ -335,20 +361,208 @@ export async function getTruckTrackerDetail(q, { tenantId, truckId }) {
   });
 }
 
+/** Drivers that could have been on duty for a truck's inspection: the truck's contractor's drivers,
+ *  with the ones enrolled on the truck's current routes flagged as on-route candidates. */
+export async function listDriverCandidatesForTruck(q, { tenantId, truckId }) {
+  let contractorId = null;
+  try {
+    const tr = await q(
+      `SELECT contractor_id FROM contractor_trucks WHERE id = @truckId AND tenant_id = @tenantId`,
+      { truckId, tenantId }
+    );
+    contractorId = getRow(tr.recordset?.[0], 'contractor_id');
+  } catch (_) {}
+  if (!contractorId) return [];
+  let rows = [];
+  try {
+    const r = await q(
+      `SELECT DISTINCT d.id, d.full_name, d.surname, d.license_number,
+              CASE WHEN onroute.driver_id IS NOT NULL THEN 1 ELSE 0 END AS on_truck_route
+       FROM contractor_drivers d
+       LEFT JOIN (
+         SELECT DISTINCT rd.driver_id
+         FROM contractor_route_drivers rd
+         WHERE rd.route_id IN (SELECT rt.route_id FROM contractor_route_trucks rt WHERE rt.truck_id = @truckId)
+       ) onroute ON onroute.driver_id = d.id
+       WHERE d.tenant_id = @tenantId AND d.contractor_id = @contractorId
+       ORDER BY on_truck_route DESC, d.full_name`,
+      { tenantId, truckId, contractorId }
+    );
+    rows = r.recordset || [];
+  } catch (_) {
+    return [];
+  }
+  return rows.map((row) => {
+    const name = getRow(row, 'full_name') || '';
+    const surname = getRow(row, 'surname') || '';
+    const display = surname && !name.toLowerCase().includes(surname.toLowerCase())
+      ? `${name} ${surname}`.trim()
+      : name;
+    return {
+      id: getRow(row, 'id'),
+      full_name: display || name || '—',
+      license_number: getRow(row, 'license_number') || null,
+      on_truck_route: !!getRow(row, 'on_truck_route'),
+    };
+  });
+}
+
+/** Remove a truck from all of its routes for this tenant; returns the removed route ids. */
+async function removeTruckFromRoutes(q, { tenantId, truckId }) {
+  const r = await q(
+    `SELECT rt.route_id
+     FROM contractor_route_trucks rt
+     INNER JOIN contractor_routes ro ON ro.id = rt.route_id AND ro.tenant_id = @tenantId
+     WHERE rt.truck_id = @truckId`,
+    { tenantId, truckId }
+  );
+  const routes = (r.recordset || []).map((x) => getRow(x, 'route_id')).filter(Boolean);
+  if (routes.length) {
+    await q(
+      `DELETE FROM contractor_route_trucks WHERE truck_id = @truckId
+       AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`,
+      { truckId, tenantId }
+    );
+  }
+  return routes;
+}
+
+/** Remove a driver from all of its routes for this tenant; returns the removed route ids. */
+async function removeDriverFromRoutes(q, { tenantId, driverId }) {
+  if (!driverId) return [];
+  const r = await q(
+    `SELECT rd.route_id
+     FROM contractor_route_drivers rd
+     INNER JOIN contractor_routes ro ON ro.id = rd.route_id AND ro.tenant_id = @tenantId
+     WHERE rd.driver_id = @driverId`,
+    { tenantId, driverId }
+  );
+  const routes = (r.recordset || []).map((x) => getRow(x, 'route_id')).filter(Boolean);
+  if (routes.length) {
+    await q(
+      `DELETE FROM contractor_route_drivers WHERE driver_id = @driverId
+       AND route_id IN (SELECT id FROM contractor_routes WHERE tenant_id = @tenantId)`,
+      { driverId, tenantId }
+    );
+  }
+  return routes;
+}
+
+async function restoreTruckRoutes(q, { truckId, routeIds }) {
+  let restored = 0;
+  for (const routeId of routeIds || []) {
+    if (!routeId) continue;
+    const exists = await q(`SELECT 1 FROM contractor_route_trucks WHERE route_id = @routeId AND truck_id = @truckId`, { routeId, truckId });
+    if (!exists.recordset?.length) {
+      try {
+        await q(`INSERT INTO contractor_route_trucks (route_id, truck_id) VALUES (@routeId, @truckId)`, { routeId, truckId });
+        restored += 1;
+      } catch (_) {}
+    }
+  }
+  return restored;
+}
+
+async function restoreDriverRoutes(q, { driverId, routeIds }) {
+  if (!driverId) return 0;
+  let restored = 0;
+  for (const routeId of routeIds || []) {
+    if (!routeId) continue;
+    const exists = await q(`SELECT 1 FROM contractor_route_drivers WHERE route_id = @routeId AND driver_id = @driverId`, { routeId, driverId });
+    if (!exists.recordset?.length) {
+      try {
+        await q(`INSERT INTO contractor_route_drivers (route_id, driver_id) VALUES (@routeId, @driverId)`, { routeId, driverId });
+        restored += 1;
+      } catch (_) {}
+    }
+  }
+  return restored;
+}
+
+/**
+ * Record a compliance check.
+ * - A compliant result that clears a prior Blocked state requires a motivation, and
+ *   restores the routes that were removed when the truck was blocked.
+ * - A non-compliant result where the operator chooses to apply a grace period
+ *   (apply_grace + grace_reason + grace_expires_at) is stored with status='grace'.
+ *   The vehicle stays enrolled and is NOT blocked until the grace period expires.
+ * - Any other non-compliant result sets status='blocked' (non-expiring) and immediately
+ *   unenrolls the truck (and the driver, when the driver section failed) from all routes.
+ */
 export async function createTrackerComplianceCheck(q, { tenantId, userId, truckId, driverId, body }) {
   const evaluated = evaluateCompliancePayload(body);
+  const motivation = String(body.motivation || '').trim();
+
+  const applyGrace = !evaluated.is_compliant && !!(body.apply_grace || body.applyGrace);
+  const graceReason = String(body.grace_reason || body.graceReason || '').trim();
+  const graceExpiresRaw = body.grace_expires_at || body.graceExpiresAt || null;
+  let graceExpiresAt = null;
+  if (applyGrace) {
+    if (!graceReason) {
+      return { error: 'A grace period reason is required.', status: 400, requiresGrace: true };
+    }
+    const exp = new Date(graceExpiresRaw);
+    if (Number.isNaN(exp.getTime()) || exp <= new Date()) {
+      return { error: 'Grace period expiry must be a valid future date and time.', status: 400, requiresGrace: true };
+    }
+    graceExpiresAt = exp.toISOString();
+  }
+
+  // What is the truck's current (latest) compliance state?
+  const prevRes = await q(
+    `SELECT TOP 1 [status] AS status FROM vehicle_tracker_compliance_checks
+     WHERE tenant_id = @tenantId AND truck_id = @truckId
+     ORDER BY checked_at DESC, created_at DESC`,
+    { tenantId, truckId }
+  );
+  const wasBlocked = String(getRow(prevRes.recordset?.[0], 'status') || '') === 'blocked';
+
+  if (evaluated.is_compliant && wasBlocked && !motivation) {
+    return {
+      error: 'A motivation is required to clear the Blocked status and return this vehicle to compliant.',
+      status: 400,
+      requiresMotivation: true,
+    };
+  }
+
+  // Resolve the resulting status.
+  let status;
+  if (evaluated.is_compliant) status = 'passed';
+  else if (applyGrace) status = 'grace';
+  else status = 'blocked';
+
+  const isBlocking = status === 'blocked';
+  let routesRemoved = [];
+  let driverRoutesRemoved = [];
+
+  if (isBlocking) {
+    // Not compliant and no grace → block + immediate unenroll.
+    routesRemoved = await removeTruckFromRoutes(q, { tenantId, truckId });
+    const driverFailed =
+      evaluated.driver_section_used &&
+      !(evaluated.driver_wearing_ppe && evaluated.driver_no_overspeeding_24h && evaluated.driver_license_valid);
+    if (driverFailed && driverId) {
+      driverRoutesRemoved = await removeDriverFromRoutes(q, { tenantId, driverId });
+    }
+  }
+
   const ins = await q(
     `INSERT INTO vehicle_tracker_compliance_checks (
       tenant_id, truck_id, driver_id, checked_by_user_id, checked_at, is_compliant,
       has_camera, load_camera_working, cab_camera_working, road_camera_working, tracking_updating,
       driver_section_used, driver_wearing_ppe, driver_overspeeding_24h, driver_license_valid,
-      fail_reasons_json, [status], notes, compliance_expires_at
+      fail_reasons_json, [status], notes, motivation, blocked_at,
+      blocked_routes_removed_json, blocked_driver_routes_removed_json, compliance_expires_at,
+      grace_period_reason, grace_period_expires_at, grace_period_granted_at, grace_period_granted_by
     ) OUTPUT INSERTED.id
     VALUES (
       @tenantId, @truckId, @driverId, @userId, SYSUTCDATETIME(), @isCompliant,
       @has_camera, @load_camera_working, @cab_camera_working, @road_camera_working, @tracking_updating,
       @driver_section_used, @driver_wearing_ppe, @driver_overspeeding_24h, @driver_license_valid,
-      @failReasonsJson, @status, @notes, DATEADD(hour, ${COMPLIANCE_VALID_HOURS}, SYSUTCDATETIME())
+      @failReasonsJson, @status, @notes, @motivation, @blockedAt,
+      @blockedRoutesJson, @blockedDriverRoutesJson,
+      CASE WHEN @isCompliant = 1 THEN DATEADD(hour, ${COMPLIANCE_VALID_HOURS}, SYSUTCDATETIME()) ELSE NULL END,
+      @graceReason, @graceExpiresAt, @graceGrantedAt, @graceGrantedBy
     )`,
     {
       tenantId,
@@ -366,12 +580,91 @@ export async function createTrackerComplianceCheck(q, { tenantId, userId, truckI
       driver_overspeeding_24h: evaluated.driver_no_overspeeding_24h == null ? null : evaluated.driver_no_overspeeding_24h ? 0 : 1,
       driver_license_valid: evaluated.driver_license_valid == null ? null : evaluated.driver_license_valid ? 1 : 0,
       failReasonsJson: JSON.stringify(evaluated.fail_reasons),
-      status: evaluated.status,
+      status,
       notes: body.notes || null,
+      motivation: motivation || null,
+      blockedAt: isBlocking ? new Date().toISOString() : null,
+      blockedRoutesJson: JSON.stringify(routesRemoved),
+      blockedDriverRoutesJson: JSON.stringify(driverRoutesRemoved),
+      graceReason: applyGrace ? graceReason : null,
+      graceExpiresAt: applyGrace ? graceExpiresAt : null,
+      graceGrantedAt: applyGrace ? new Date().toISOString() : null,
+      graceGrantedBy: applyGrace ? userId : null,
     }
   );
   const checkId = getRow(ins.recordset?.[0], 'id');
-  return { id: checkId, ...evaluated };
+
+  // Clearing a block (now compliant, or now under grace) → restore the routes removed at block time
+  // so the vehicle is usable again while it is no longer blocked.
+  let restored = 0;
+  if (!isBlocking && wasBlocked) {
+    const blk = await q(
+      `SELECT TOP 1 blocked_routes_removed_json, blocked_driver_routes_removed_json
+       FROM vehicle_tracker_compliance_checks
+       WHERE tenant_id = @tenantId AND truck_id = @truckId AND [status] = N'blocked'
+       ORDER BY checked_at DESC, created_at DESC`,
+      { tenantId, truckId }
+    );
+    let tr = [];
+    let dr = [];
+    try { tr = JSON.parse(getRow(blk.recordset?.[0], 'blocked_routes_removed_json') || '[]'); } catch (_) {}
+    try { dr = JSON.parse(getRow(blk.recordset?.[0], 'blocked_driver_routes_removed_json') || '[]'); } catch (_) {}
+    restored += await restoreTruckRoutes(q, { truckId, routeIds: tr });
+    if (driverId) restored += await restoreDriverRoutes(q, { driverId, routeIds: dr });
+  }
+
+  return {
+    id: checkId,
+    ...evaluated,
+    status,
+    blocked: isBlocking,
+    grace_applied: applyGrace,
+    grace_period_reason: applyGrace ? graceReason : null,
+    grace_period_expires_at: applyGrace ? graceExpiresAt : null,
+    routes_removed: routesRemoved,
+    driver_routes_removed: driverRoutesRemoved,
+    restored,
+  };
+}
+
+/** Truck ids whose latest compliance check left them Blocked (tenant-scoped). Safe if table absent. */
+export async function getBlockedTruckIdSet(q, tenantId) {
+  try {
+    const r = await q(
+      `WITH L AS (
+        SELECT truck_id, [status],
+          ROW_NUMBER() OVER (PARTITION BY truck_id ORDER BY checked_at DESC, created_at DESC) AS rn
+        FROM vehicle_tracker_compliance_checks WHERE tenant_id = @tenantId
+      )
+      SELECT truck_id FROM L WHERE rn = 1 AND [status] = N'blocked'`,
+      { tenantId }
+    );
+    return new Set((r.recordset || []).map((x) => String(getRow(x, 'truck_id') || '').toLowerCase()).filter(Boolean));
+  } catch (_) {
+    return new Set();
+  }
+}
+
+/** Driver ids whose latest compliance check left the driver Blocked (tenant-scoped). Safe if table absent. */
+export async function getBlockedDriverIdSet(q, tenantId) {
+  try {
+    const r = await q(
+      `WITH L AS (
+        SELECT driver_id, [status], driver_section_used,
+          driver_wearing_ppe, driver_overspeeding_24h, driver_license_valid,
+          ROW_NUMBER() OVER (PARTITION BY driver_id ORDER BY checked_at DESC, created_at DESC) AS rn
+        FROM vehicle_tracker_compliance_checks
+        WHERE tenant_id = @tenantId AND driver_id IS NOT NULL
+      )
+      SELECT DISTINCT driver_id FROM L
+      WHERE rn = 1 AND [status] = N'blocked' AND driver_section_used = 1
+        AND (driver_wearing_ppe = 0 OR driver_overspeeding_24h = 1 OR driver_license_valid = 0)`,
+      { tenantId }
+    );
+    return new Set((r.recordset || []).map((x) => String(getRow(x, 'driver_id') || '').toLowerCase()).filter(Boolean));
+  } catch (_) {
+    return new Set();
+  }
 }
 
 async function loadCheck(q, { tenantId, checkId }) {
@@ -536,7 +829,82 @@ export async function listGracePeriods(q, { tenantId, activeOnly = false }) {
   return (r.recordset || []).map(mapCheckRow);
 }
 
-export async function notifyContractorForCheck(q, { tenantId, checkId, extraEmails = [], customMessage = '' }) {
+/** Rector users that can be selected to notify for a given truck (tenant rectors, flagged if assigned to the truck's routes). */
+export async function listRectorUsersForTruck(q, { tenantId, truckId }) {
+  let users = [];
+  try {
+    const r = await q(
+      `SELECT DISTINCT u.id, u.full_name, u.email
+       FROM user_page_roles r
+       INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id = N'rector' AND u.tenant_id = @tenantId
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+       ORDER BY u.full_name`,
+      { tenantId }
+    );
+    users = (r.recordset || []).map((row) => ({
+      id: getRow(row, 'id'),
+      full_name: getRow(row, 'full_name'),
+      email: getRow(row, 'email'),
+      assigned_to_route: false,
+    }));
+  } catch (_) {}
+
+  // Routes the truck is on (or was removed from when blocked) → flag the rectors assigned to them.
+  let routeIds = [];
+  try {
+    const cur = await q(`SELECT route_id FROM contractor_route_trucks WHERE truck_id = @truckId`, { truckId });
+    routeIds = (cur.recordset || []).map((x) => getRow(x, 'route_id')).filter(Boolean);
+  } catch (_) {}
+  if (!routeIds.length) {
+    try {
+      const blk = await q(
+        `SELECT TOP 1 blocked_routes_removed_json FROM vehicle_tracker_compliance_checks
+         WHERE tenant_id = @tenantId AND truck_id = @truckId AND [status] = N'blocked'
+         ORDER BY checked_at DESC, created_at DESC`,
+        { tenantId, truckId }
+      );
+      try { routeIds = JSON.parse(getRow(blk.recordset?.[0], 'blocked_routes_removed_json') || '[]'); } catch (_) {}
+    } catch (_) {}
+  }
+
+  if (routeIds.length && users.length) {
+    try {
+      const placeholders = routeIds.map((_, i) => `@r${i}`).join(',');
+      const params = {};
+      routeIds.forEach((id, i) => { params[`r${i}`] = id; });
+      const fr = await q(
+        `SELECT DISTINCT f.user_id FROM access_route_factors f
+         WHERE f.user_id IS NOT NULL AND f.route_id IN (${placeholders})`,
+        params
+      );
+      const assigned = new Set((fr.recordset || []).map((x) => String(getRow(x, 'user_id') || '').toLowerCase()));
+      users = users.map((u) => ({ ...u, assigned_to_route: assigned.has(String(u.id).toLowerCase()) }));
+    } catch (_) {}
+  }
+  return users;
+}
+
+async function resolveRectorEmails(q, { tenantId, rectorUserIds }) {
+  const ids = (Array.isArray(rectorUserIds) ? rectorUserIds : []).map((x) => String(x)).filter(Boolean);
+  if (!ids.length) return [];
+  try {
+    const placeholders = ids.map((_, i) => `@u${i}`).join(',');
+    const params = { tenantId };
+    ids.forEach((id, i) => { params[`u${i}`] = id; });
+    const r = await q(
+      `SELECT DISTINCT u.email FROM users u
+       WHERE u.tenant_id = @tenantId AND u.id IN (${placeholders})
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''`,
+      params
+    );
+    return (r.recordset || []).map((x) => String(getRow(x, 'email') || '').trim()).filter((e) => e && e.includes('@'));
+  } catch (_) {
+    return [];
+  }
+}
+
+export async function notifyContractorForCheck(q, { tenantId, checkId, extraEmails = [], rectorUserIds = [], customMessage = '' }) {
   const check = await loadCheck(q, { tenantId, checkId });
   if (!check) return { error: 'Check not found', status: 404 };
   if (check.is_compliant) return { error: 'Check is compliant — notification not required', status: 400 };
@@ -547,8 +915,10 @@ export async function notifyContractorForCheck(q, { tenantId, checkId, extraEmai
   const manual = (Array.isArray(extraEmails) ? extraEmails : String(extraEmails || '').split(/[,;]/))
     .map((e) => e.trim())
     .filter(Boolean);
-  const recipients = [...new Set([...contractorEmails, ...manual])];
-  if (!recipients.length) return { error: 'No contractor email addresses available', status: 400 };
+  // Only the rector users explicitly selected by the operator are notified (never all rectors).
+  const rectorEmails = await resolveRectorEmails(q, { tenantId, rectorUserIds });
+  const recipients = [...new Set([...contractorEmails, ...manual, ...rectorEmails])];
+  if (!recipients.length) return { error: 'No recipient email addresses available', status: 400 };
 
   const tenantRow = await q(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
   const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
@@ -579,6 +949,74 @@ export async function notifyContractorForCheck(q, { tenantId, checkId, extraEmai
   );
 
   return { ok: true, notified_emails: recipients };
+}
+
+/** Users in the tenant who can be selected to receive compliance emails (rectors flagged first). */
+export async function listNotifiableUsers(q, { tenantId }) {
+  try {
+    const r = await q(
+      `SELECT u.id, u.full_name, u.email,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM user_page_roles r WHERE r.user_id = u.id AND r.page_id = N'rector'
+              ) THEN 1 ELSE 0 END AS is_rector
+       FROM users u
+       WHERE u.tenant_id = @tenantId
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+       ORDER BY is_rector DESC, u.full_name`,
+      { tenantId }
+    );
+    return (r.recordset || []).map((row) => ({
+      id: getRow(row, 'id'),
+      full_name: getRow(row, 'full_name'),
+      email: getRow(row, 'email'),
+      is_rector: !!getRow(row, 'is_rector'),
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+/** Email the compliance history Excel (built by the client) to selected users and extra addresses. */
+export async function sendComplianceHistoryEmail(
+  q,
+  { tenantId, recipientUserIds = [], extraEmails = [], message = '', fileBase64, filename, rangeLabel, totalRecords, senderName }
+) {
+  if (!fileBase64) return { error: 'No file to send', status: 400 };
+
+  const userEmails = await resolveRectorEmails(q, { tenantId, rectorUserIds: recipientUserIds });
+  const manual = (Array.isArray(extraEmails) ? extraEmails : String(extraEmails || '').split(/[,;]/))
+    .map((e) => e.trim())
+    .filter((e) => e && e.includes('@'));
+  const recipients = [...new Set([...userEmails, ...manual])];
+  if (!recipients.length) return { error: 'Select at least one recipient or enter an email address', status: 400 };
+
+  if (!isEmailConfigured()) return { error: 'Email is not configured on the server', status: 400 };
+
+  const tenantRow = await q(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
+  const tenantName = tenantRow.recordset?.[0]?.name || '';
+  const html = vehicleTrackerComplianceHistoryEmailHtml({
+    tenantName,
+    rangeLabel,
+    totalRecords,
+    customMessage: message,
+    senderName,
+  });
+
+  await sendEmail({
+    to: recipients,
+    subject: `Vehicle tracker compliance history${rangeLabel ? ` (${rangeLabel})` : ''}`,
+    body: html,
+    html: true,
+    attachments: [
+      {
+        filename: filename || 'vehicle-tracker-compliance-history.xlsx',
+        content: fileBase64,
+        encoding: 'base64',
+      },
+    ],
+  });
+
+  return { ok: true, recipients };
 }
 
 export async function grantGracePeriod(q, { tenantId, userId, checkId, reason, expiresAt }) {
@@ -795,11 +1233,80 @@ export async function restoreTrackerComplianceEnrollment(q, { tenantId, suspensi
   return { restored };
 }
 
+/**
+ * Grace period expired → the vehicle becomes Not compliant and is Blocked:
+ * the same grace check row is flipped to status='blocked' (non-expiring) and the
+ * truck (and driver, when the driver section failed) is immediately unenrolled.
+ * Clearing requires a passing re-inspection with a motivation, exactly like any other block.
+ */
+export async function blockFromGraceExpiry(q, checkRow) {
+  const tenantId = checkRow.tenant_id;
+  const checkId = checkRow.id;
+  const truckId = checkRow.truck_id;
+  const driverId = checkRow.driver_id;
+
+  const routesRemoved = await removeTruckFromRoutes(q, { tenantId, truckId });
+  const driverFailed =
+    checkRow.driver_section_used &&
+    !(checkRow.driver_wearing_ppe && checkRow.driver_no_overspeeding_24h && checkRow.driver_license_valid);
+  let driverRoutesRemoved = [];
+  if (driverFailed && driverId) {
+    driverRoutesRemoved = await removeDriverFromRoutes(q, { tenantId, driverId });
+  }
+
+  await q(
+    `UPDATE vehicle_tracker_compliance_checks
+     SET status = N'blocked', blocked_at = SYSUTCDATETIME(),
+         blocked_routes_removed_json = @routesJson, blocked_driver_routes_removed_json = @driverRoutesJson,
+         updated_at = SYSUTCDATETIME()
+     WHERE id = @checkId`,
+    {
+      checkId,
+      routesJson: JSON.stringify(routesRemoved),
+      driverRoutesJson: JSON.stringify(driverRoutesRemoved),
+    }
+  );
+
+  if (isEmailConfigured()) {
+    try {
+      const tenantRow = await q(`SELECT name FROM tenants WHERE id = @tenantId`, { tenantId });
+      const tenantName = tenantRow.recordset?.[0]?.name || 'Unknown';
+      const contractorEmails = checkRow.contractor_id ? await getContractorUserEmails(q, tenantId, checkRow.contractor_id) : [];
+      const ccAm = await getCommandCentreAndAccessManagementEmails(q);
+      const rectorEmails = routesRemoved.length
+        ? await getRectorEmailsForAlertTypeAndRoutes(q, 'suspension_alerts', routesRemoved)
+        : [];
+      const recipients = [...new Set([...contractorEmails, ...ccAm, ...rectorEmails])];
+      if (recipients.length) {
+        await sendEmail({
+          to: recipients,
+          subject: `Vehicle tracker compliance — grace expired, vehicle blocked: ${checkRow.registration || truckId}`,
+          body: vehicleTrackerComplianceAlertHtml({
+            registration: checkRow.registration,
+            fleetNo: checkRow.fleet_no,
+            contractorName: checkRow.contractor_name,
+            tenantName,
+            failReasons: checkRow.fail_reasons,
+            customMessage: 'The grace period for this vehicle has expired. It is now Not compliant and has been blocked and unenrolled from all routes until a passing re-inspection (with motivation) is recorded.',
+            checkedAt: checkRow.checked_at,
+          }),
+          html: true,
+        });
+      }
+    } catch (e) {
+      console.warn('[vehicleTrackerCompliance] grace→block email failed:', e?.message || e);
+    }
+  }
+
+  return { ok: true, routes_removed: routesRemoved, driver_routes_removed: driverRoutesRemoved };
+}
+
 export async function runTrackerComplianceGraceExpiry(q) {
   const r = await q(
-    `SELECT c.*, t.registration
+    `SELECT c.*, t.registration, t.fleet_no, t.contractor_id, co.name AS contractor_name
      FROM vehicle_tracker_compliance_checks c
      INNER JOIN contractor_trucks t ON t.id = c.truck_id
+     INNER JOIN contractors co ON co.id = t.contractor_id
      WHERE c.status = N'grace' AND c.grace_period_expires_at IS NOT NULL
        AND c.grace_period_expires_at < SYSUTCDATETIME()`
   );
@@ -807,7 +1314,7 @@ export async function runTrackerComplianceGraceExpiry(q) {
   let processed = 0;
   for (const row of rows) {
     try {
-      await suspendFromGraceExpiry(q, mapCheckRow(row));
+      await blockFromGraceExpiry(q, mapCheckRow(row));
       processed += 1;
     } catch (e) {
       console.warn('[vehicleTrackerCompliance] grace expiry row failed:', e?.message || e);

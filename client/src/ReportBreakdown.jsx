@@ -180,6 +180,10 @@ export default function ReportBreakdown() {
       setError('All four attachments are required: Loading slip, Seal 1, Seal 2, and Picture of the problem.');
       return;
     }
+    if (routes.length > 0 && !(form.route_id?.value || '').trim()) {
+      setError('Please select the route so the responsible rector is notified.');
+      return;
+    }
     setError('');
     setLoading(true);
     try {
@@ -473,16 +477,23 @@ export default function ReportBreakdown() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-surface-700 mb-1.5">Route (optional)</label>
+                    <label className="block text-sm font-medium text-surface-700 mb-1.5">Route <span className="text-red-600">*</span></label>
                     {routesLoading ? (
                       <p className="text-sm text-surface-500 py-2">Loading routes…</p>
+                    ) : routes.length === 0 ? (
+                      <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                        You are not enrolled on any route. Your report will be sent to the control room.
+                      </p>
                     ) : (
-                      <select name="route_id" className="w-full rounded-xl border border-surface-300 px-4 py-3 text-base">
-                        <option value="">Select route</option>
-                        {routes.map((r) => (
-                          <option key={r.id} value={r.id}>{r.name}</option>
-                        ))}
-                      </select>
+                      <>
+                        <select name="route_id" required className="w-full rounded-xl border border-surface-300 px-4 py-3 text-base">
+                          <option value="">Select your route</option>
+                          {routes.map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-surface-500 mt-1">Selecting the route notifies the rector responsible for it.</p>
+                      </>
                     )}
                   </div>
 

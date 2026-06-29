@@ -8,6 +8,7 @@ import { geofenceDisplayColor } from '../../lib/geofenceStyle.js';
 import { MapPanLock, MapWheelGuard, FitBoundsOnce, FlyToPoint } from './geofenceMapControls.jsx';
 import MapPlaceSearch from './MapPlaceSearch.jsx';
 import GeofencePlaceLabels from './GeofencePlaceLabels.jsx';
+import GeofenceLabelControl, { useGeofenceLabelMode } from './GeofenceLabelControl.jsx';
 import RouteAlternativesMapLayers from './RouteAlternativesMapLayers.jsx';
 import { RouteWaypointDrawHandler, ManualRoutePlotLayers } from './manualRoutePlot.jsx';
 import { landGeofencePlaces } from '../../lib/geofenceLabels.js';
@@ -177,6 +178,7 @@ export default function GeofenceMapEditor({
 }) {
   const [mounted, setMounted] = useState(false);
   const [basemapVariant, setBasemapVariant] = useState('satellite');
+  const [labelMode, setLabelMode] = useGeofenceLabelMode();
   useEffect(() => setMounted(true), []);
 
   const resolveEditColor = editColor || geofenceDisplayColor({ leg: editLeg, fence_type: editFenceType });
@@ -243,6 +245,15 @@ export default function GeofenceMapEditor({
         >
           Street
         </ToolBtn>
+      </div>
+
+      <div className="absolute top-24 right-3 z-[1000] flex justify-end">
+        <GeofenceLabelControl
+          mode={labelMode}
+          onChange={setLabelMode}
+          count={placeLabels.length}
+          menuPlacement="down"
+        />
       </div>
 
       <div className="absolute bottom-3 left-3 z-[1000] flex flex-col gap-2 pointer-events-none max-w-[calc(100%-1.5rem)]">
@@ -352,7 +363,7 @@ export default function GeofenceMapEditor({
           />
         ))}
 
-        <GeofencePlaceLabels geofences={labelGeofences ?? geofences} />
+        <GeofencePlaceLabels geofences={labelGeofences ?? geofences} mode={labelMode} />
 
         <RouteAlternativesMapLayers preview={preview} corridorM={routeCorridorM} />
 

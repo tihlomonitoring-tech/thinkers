@@ -404,6 +404,31 @@ export function vehicleTrackerComplianceAlertHtml({
   return wrap(content, 'Vehicle tracker compliance', { charcoal: true });
 }
 
+/** Vehicle tracker compliance history Excel distribution – grey template with summary + attachment note. */
+export function vehicleTrackerComplianceHistoryEmailHtml({
+  tenantName,
+  rangeLabel,
+  totalRecords,
+  customMessage,
+  senderName,
+}) {
+  const summaryRows = [
+    ['Tenant', tenantName || '—'],
+    ['Date range', rangeLabel || 'All dates'],
+    ['Total records', totalRecords != null ? String(totalRecords) : '—'],
+    ['Shared by', senderName || '—'],
+  ];
+  const content = `
+    <h1 style="margin:0 0 16px;font-size:20px;color:#e2e8f0;">Vehicle tracker compliance — check history</h1>
+    <p style="margin:0 0 12px;">Please find attached the Vehicle tracker compliance check history exported from the system.</p>
+    ${sectionBar('Report summary')}
+    ${keyValueTable(summaryRows)}
+    ${customMessage ? `<p style="margin:16px 0 0;"><strong>Message:</strong> ${escapeHtml(customMessage)}</p>` : ''}
+    <p style="margin:20px 0 0;color:#a0aec0;font-size:14px;">The attached Excel workbook (.xlsx) contains the full filtered history for the selected date range.</p>
+  `;
+  return wrap(content, 'Vehicle tracker compliance history', { charcoal: true });
+}
+
 /** Truck reinstated: to contractor – grey template. */
 export function truckReinstatedToContractorHtml({ truckRegistration, tenantName, appUrl }) {
   const content = `
