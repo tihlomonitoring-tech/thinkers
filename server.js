@@ -149,7 +149,7 @@ app.use(
   })
 );
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', (req, res) => res.json({ ok: true, build: 'taskfix-fueltenant-2026-06-30' }));
 app.get('/api/command-centre/logistics-flow/shift-report-link/ping', (_req, res) => {
   res.json({ ok: true, feature: 'logistics-shift-report-link', version: 1 });
 });
