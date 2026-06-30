@@ -150,41 +150,6 @@ app.use(
 );
 
 app.get('/api/health', (req, res) => res.json({ ok: true, build: 'taskfix-fueltenant-2026-06-30' }));
-
-// TEMP DIAGNOSTIC (remove after use): reproduce a user's fuel transactions query server-side.
-app.get('/api/_diag/fuel', async (req, res) => {
-  if (req.query.key !== 'tihlo-diag-7f3a') return res.status(404).end();
-  const out = {};
-  try {
-    const { query } = await import('./src/db.js');
-    const { resolveUserTenantContext } = await import('./src/lib/tenantPrimaryPreference.js');
-    const { parseGuid } = await import('./src/lib/guidUtils.js');
-    const email = String(req.query.email || '');
-    const u = (await query(`SELECT id, tenant_id FROM users WHERE email = @e`, { e: email })).recordset?.[0];
-    if (!u) return res.json({ error: 'no user', email });
-    const id = u.id ?? u.Id;
-    const ctx = await resolveUserTenantContext(query, { userId: id, sessionTenantId: null, usersRowTenantId: u.tenant_id ?? u.Tenant_id });
-    const tenant_ids = (ctx.tenant_ids || []).map((t) => parseGuid(t) ?? t).filter(Boolean);
-    out.tenant_ids = tenant_ids;
-    out.active = parseGuid(ctx.currentTenantId) ?? ctx.currentTenantId;
-    const params = {};
-    const tph = tenant_ids.map((tid, i) => { params[`wtid${i}`] = tid; return `@wtid${i}`; });
-    try {
-      const r = await query(
-        `SELECT COUNT(*) AS n FROM fuel_data_transactions WHERE tenant_id IN (${tph.join(', ') || 'NULL'}) AND verification_status = N'verified'`,
-        params
-      );
-      out.verified_count = r.recordset?.[0]?.n ?? r.recordset?.[0]?.N;
-    } catch (e2) {
-      out.query_error = String(e2?.message || e2);
-    }
-    const grants = await query(`SELECT tab_id FROM fuel_data_tab_grants WHERE user_id = @id`, { id });
-    out.tabs = (grants.recordset || []).map((g) => g.tab_id ?? g.Tab_id);
-    res.json(out);
-  } catch (e) {
-    res.json({ fatal: String(e?.message || e), ...out });
-  }
-});
 app.get('/api/command-centre/logistics-flow/shift-report-link/ping', (_req, res) => {
   res.json({ ok: true, feature: 'logistics-shift-report-link', version: 1 });
 });
