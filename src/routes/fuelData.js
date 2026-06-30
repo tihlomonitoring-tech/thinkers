@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import multer from 'multer';
 import ExcelJS from 'exceljs';
 import { query } from '../db.js';
+import { parseGuid } from '../lib/guidUtils.js';
 import { requireAuth, loadUser, requireSuperAdmin, requirePageAccess } from '../middleware/auth.js';
 import { sendEmail } from '../lib/emailService.js';
 import { getOpenAiClient, getAiModel, isAiConfigured } from '../lib/ai.js';
@@ -44,11 +45,22 @@ function tenantId(req) {
  * New top-level records still save under the active tenant (see tenantId()).
  */
 function readTenantIds(req) {
-  const active = tenantId(req);
-  const ids = Array.isArray(req.user?.tenant_ids) ? req.user.tenant_ids.map((t) => String(t)).filter(Boolean) : [];
-  const out = [...ids];
-  if (active && !out.some((x) => x.toLowerCase() === String(active).toLowerCase())) out.push(active);
-  if (!out.length && active) out.push(active);
+  // Normalize EVERY id through parseGuid and drop anything that is not a valid
+  // UNIQUEIDENTIFIER. loadUser keeps raw non-GUID values (parseGuid(t) ?? t), and
+  // binding such a string in `tenant_id IN (...)` throws "Conversion failed when
+  // converting from a character string to uniqueidentifier" (HTTP 500 → empty table).
+  const out = [];
+  const seen = new Set();
+  const add = (val) => {
+    const g = parseGuid(val);
+    if (!g) return;
+    const key = g.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(g);
+  };
+  if (Array.isArray(req.user?.tenant_ids)) req.user.tenant_ids.forEach(add);
+  add(tenantId(req));
   return out;
 }
 
