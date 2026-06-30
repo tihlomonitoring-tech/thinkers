@@ -161,8 +161,8 @@ function requireFuelDataTab(tabId) {
       if (!FD_TAB_IDS.includes(tabId)) return res.status(400).json({ error: 'Invalid tab' });
       if (req.user?.role === 'super_admin') return next();
       const r = await query(
-        `SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tid`,
-        { uid: req.user.id, tid: tabId }
+        `SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tabId`,
+        { uid: req.user.id, tabId }
       );
       if (!r.recordset?.length) return res.status(403).json({ error: 'No access to this Fuel Data tab.' });
       next();
@@ -179,9 +179,9 @@ function requireFuelDataAnyTab(tabIds) {
       if (req.user?.role === 'super_admin') return next();
       for (const tabId of ids) {
         if (!FD_TAB_IDS.includes(tabId)) continue;
-        const r = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tid`, {
+        const r = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tabId`, {
           uid: req.user.id,
-          tid: tabId,
+          tabId,
         });
         if (r.recordset?.length) return next();
       }
@@ -1173,9 +1173,9 @@ router.post('/transactions', async (req, res, next) => {
     const body = req.body || {};
     const tabNeeded = body.source === 'attendant_portal' ? 'attendant_portal' : 'fuel_admin';
     if (req.user.role !== 'super_admin') {
-      const gr = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tid`, {
+      const gr = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tabId`, {
         uid: req.user.id,
-        tid: tabNeeded,
+        tabId: tabNeeded,
       });
       if (!gr.recordset?.length) {
         return res.status(403).json({ error: 'No access to create this transaction (tab permission).' });

@@ -39,9 +39,9 @@ function requireVehicleFuelTab(tabId) {
       const tabs = tabId === 'any' ? VEHICLE_TABS : [tabId];
       for (const tid of tabs) {
         if (!VEHICLE_TABS.includes(tid)) continue;
-        const r = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tid`, {
+        const r = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tabId`, {
           uid: req.user.id,
-          tid,
+          tabId: tid,
         });
         if (r.recordset?.length) return next();
       }
@@ -58,9 +58,9 @@ function requireVehicleFuelAnyTab(tabIds) {
     try {
       if (req.user?.role === 'super_admin') return next();
       for (const tid of ids) {
-        const r = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tid`, {
+        const r = await query(`SELECT 1 AS ok FROM fuel_data_tab_grants WHERE user_id = @uid AND tab_id = @tabId`, {
           uid: req.user.id,
-          tid,
+          tabId: tid,
         });
         if (r.recordset?.length) return next();
       }
