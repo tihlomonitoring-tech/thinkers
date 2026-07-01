@@ -11,6 +11,7 @@ function stageLabel(stage) {
     scheduled: 'Scheduled',
     at_loading: 'At loading',
     enroute: 'En route',
+    at_destination: 'At destination',
   };
   return map[stage] || stage || '—';
 }
@@ -259,7 +260,7 @@ export default function OperatorLoadingSlipsTab({ user, onError }) {
         <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">My loading assignments</h1>
         <InfoHint
           title="Loading slips"
-          text="Trucks scheduled for you (by driver name or linked truck). Open a truck, scan the loading slip, confirm the details, and submit — it appears on Logistics Activity for controllers."
+          text="Trucks scheduled for you appear here through delivery — including while en route if you still need to capture a loading slip. Open a truck, scan the slip, confirm details, and submit."
         />
         <button type="button" onClick={load} className="ml-auto text-xs px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 hover:bg-surface-50 dark:hover:bg-surface-800">
           Refresh
@@ -283,8 +284,8 @@ export default function OperatorLoadingSlipsTab({ user, onError }) {
         </div>
       ) : assignments.length === 0 ? (
         <div className="app-glass-card p-8 text-center text-surface-500">
-          <p className="font-medium text-surface-700 dark:text-surface-300">No trucks scheduled for you right now</p>
-          <p className="text-sm mt-2">When a truck is scheduled and linked to your name, it will show here.</p>
+          <p className="font-medium text-surface-700 dark:text-surface-300">No active loads for you right now</p>
+          <p className="text-sm mt-2">When a truck is scheduled or en route on your linked route, it will show here.</p>
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -303,6 +304,9 @@ export default function OperatorLoadingSlipsTab({ user, onError }) {
               </div>
               <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">{item.route_name || '—'}</p>
               <p className="text-xs text-surface-500 mt-2 line-clamp-2">{item.loading_address || 'Loading point TBC'}</p>
+              {item.destination_address && (
+                <p className="text-xs text-surface-500 mt-1 line-clamp-1">→ {item.destination_address}</p>
+              )}
               {item.loading_slip_deferred && !item.loading_slip_no && (
                 <span className="inline-block mt-2 text-[10px] font-medium px-2 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
                   Slip still needed

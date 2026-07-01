@@ -106,6 +106,28 @@ export function resolveRouteOriginShort(routeLabel) {
   return shortOriginLabel(originFromRouteName(routeLabel)) || 'origin';
 }
 
+/** Full destination label from a contractor_routes row (address fields, then parsed route name). */
+export function resolveRouteDestination(route) {
+  if (!route) return null;
+  const destAddr = route.destination_address ?? route.destinationAddress;
+  const dest = route.destination;
+  const name = route.name ?? route.route_name;
+  if (destAddr != null && String(destAddr).trim()) return String(destAddr).trim();
+  if (dest != null && String(dest).trim()) return String(dest).trim();
+  return destinationFromRouteName(name) || null;
+}
+
+/** Full origin / loading label from a contractor_routes row. */
+export function resolveRouteOrigin(route) {
+  if (!route) return null;
+  const loading = route.loading_address ?? route.loadingAddress;
+  const start = route.starting_point ?? route.startingPoint;
+  const name = route.name ?? route.route_name;
+  if (loading != null && String(loading).trim()) return String(loading).trim();
+  if (start != null && String(start).trim()) return String(start).trim();
+  return originFromRouteName(name) || null;
+}
+
 export function normalizeSiteToken(s) {
   return String(s || '')
     .toLowerCase()

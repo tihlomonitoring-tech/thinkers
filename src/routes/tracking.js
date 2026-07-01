@@ -10,6 +10,7 @@ import { getTripTrailLastKm } from '../lib/tripPositionTrail.js';
 import { sendDeviationAlertEmail } from '../lib/trackingEmailAlerts.js';
 import { getTrackingPollStatus, runTrackingProviderPoll } from '../lib/trackingProviderPoll.js';
 import { compactTruckRegistration } from '../lib/truckRegistration.js';
+import { resolveRouteDestination, resolveRouteOrigin } from '../lib/logisticsFlowWhatsApp.js';
 import { testFleetcamConnection, listFleetcamDevices } from '../lib/fleetcamConnector.js';
 import {
   buildLogisticsActivityBoard,
@@ -1185,8 +1186,12 @@ function mapDeliveryRow(row) {
     delivered_at: get(row, 'delivered_at'),
     net_weight_kg: get(row, 'net_weight_kg') != null ? Number(get(row, 'net_weight_kg')) : null,
     tons_loaded: get(row, 'tons_loaded') != null ? Number(get(row, 'tons_loaded')) : null,
-    destination_name: get(row, 'destination_name'),
-    origin_name: get(row, 'origin_name'),
+    destination_name: get(row, 'destination_name')
+      || resolveRouteDestination({ name: get(row, 'route_name'), destination: get(row, 'destination') })
+      || null,
+    origin_name: get(row, 'origin_name')
+      || resolveRouteOrigin({ name: get(row, 'route_name'), starting_point: get(row, 'starting_point') })
+      || null,
     contractor_route_id: gid(get(row, 'contractor_route_id')),
     driver_name: get(row, 'driver_name'),
     delivery_note_no: get(row, 'delivery_note_no'),
@@ -1245,7 +1250,14 @@ router.get('/deliveries', async (req, res) => {
     const reg = req.query.registration;
     const deleted = String(req.query.deleted || 'false').toLowerCase();
     const completedOnly = String(req.query.completed_only || 'false').toLowerCase() === 'true';
-    let sql = `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.tenant_id = @tenantId`;
+    let sql = `SELECT d.*, t.trip_ref, r.name AS route_name,
+              r.destination, r.starting_point,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
+       FROM tracking_delivery_record d
+       LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractor_routes r ON r.id = d.contractor_route_id AND r.tenant_id = d.tenant_id
+       WHERE d.tenant_id = @tenantId`;
     const params = { tenantId: tid };
     if (deleted === 'true') sql += ` AND d.deleted_at IS NOT NULL`;
     else sql += ` AND d.deleted_at IS NULL`;
@@ -1639,8 +1651,16 @@ router.post('/geofences/draw-route', async (req, res) => {
     const route = rr.recordset?.[0];
     if (!route) return res.status(404).json({ error: 'Route not found' });
 
-    const originQuery = b.origin_query || get(route, 'loading_address') || get(route, 'starting_point') || '';
-    const destQuery = b.destination_query || get(route, 'destination_address') || get(route, 'destination') || '';
+    const originQuery = b.origin_query || resolveRouteOrigin({
+      loading_address: get(route, 'loading_address'),
+      starting_point: get(route, 'starting_point'),
+      name: get(route, 'name'),
+    }) || '';
+    const destQuery = b.destination_query || resolveRouteDestination({
+      destination_address: get(route, 'destination_address'),
+      destination: get(route, 'destination'),
+      name: get(route, 'name'),
+    }) || '';
 
     const originFromCoords = Number.isFinite(Number(b.origin_lat)) && Number.isFinite(Number(b.origin_lng));
     const destFromCoords = Number.isFinite(Number(b.dest_lat)) && Number.isFinite(Number(b.dest_lng));

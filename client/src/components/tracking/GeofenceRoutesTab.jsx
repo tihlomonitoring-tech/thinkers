@@ -15,7 +15,9 @@ import {
   parseCorridorMeta,
   scalePolygonRing,
   polylineDistanceKm,
+  formatRouteDistanceKm,
 } from '../../lib/routeCorridorGeofence.js';
+import { destinationFromRouteName, originFromRouteName } from '../../lib/rawExportToFleetUpdate.js';
 import { hasValidCoords, parseLatLngPair } from '../../lib/geoCoords.js';
 import { useUndoStack, cloneRing } from '../../lib/useUndoStack.js';
 import PickedPointRow from './PickedPointRow.jsx';
@@ -26,6 +28,95 @@ const WORKFLOW_STEPS = [
   { id: 'road', label: '2. Haul road A → B', desc: 'Link to a system route, set loading & destination, draw the road corridor' },
   { id: 'manage', label: '3. Saved geofences', desc: 'Review, edit, and remove configured geofences' },
 ];
+
+function routeOriginLabel(route) {
+  if (!route) return '';
+  return route.loading_address || route.starting_point || originFromRouteName(route.name) || '';
+}
+
+function routeDestinationLabel(route) {
+  if (!route) return '';
+  return route.destination_address || route.destination || destinationFromRouteName(route.name) || '';
+}
+
+function haulRoadSetupDistanceKm(setup, routes) {
+  const corridorG = setup.geofences.find((g) => g.leg === 'corridor');
+  const poly = parseCorridorPolyline(corridorG?.polygon_json);
+  const fromPoly = poly?.length ? polylineDistanceKm(poly) : null;
+  if (fromPoly != null && fromPoly > 0) return fromPoly;
+  const route = routes.find((r) => r.id === setup.routeId);
+  return route?.distance_km ?? null;
+}
+
+function buildPreviewFromSavedHaulRoad(savedGeofences, routes, routeId) {
+  const saved = savedGeofences.filter((g) => g.contractor_route_id === routeId);
+  const originG = saved.find((g) => g.leg === 'origin');
+  const destG = saved.find((g) => g.leg === 'destination');
+  const corridorG = saved.find((g) => g.leg === 'corridor');
+  const altGs = saved.filter((g) => g.leg === 'corridor_alt');
+  if (!corridorG && !originG && !destG) return null;
+
+  const route = routes.find((r) => r.id === routeId);
+  const corridorMeta = parseCorridorMeta(corridorG?.polygon_json);
+  const primaryPoly = parseCorridorPolyline(corridorG?.polygon_json) || [];
+  const corridorM = corridorMeta.corridor_m || 400;
+  const endpointRadiusM = originG?.radius_m || destG?.radius_m || 500;
+  const corridorRing = parsePolygonJson(corridorG?.polygon_json);
+
+  const manuals = altGs.map((g, i) => buildManualAlternativeFromGeofence(g, i + 1)).filter(Boolean);
+  const primaryAlt = {
+    uid: corridorMeta.route_uid || 'saved-0',
+    polyline: primaryPoly,
+    distance_km: polylineDistanceKm(primaryPoly) || route?.distance_km,
+  };
+  const alternatives = primaryPoly.length || manuals.length
+    ? [primaryAlt, ...manuals.filter((m) => m.uid !== primaryAlt.uid)]
+    : [];
+
+  const alt_corridors = {};
+  alternatives.forEach((alt, i) => {
+    const isPrimary = i === 0;
+    if (isPrimary) {
+      alt_corridors[i] = {
+        enabled: true,
+        corridor_polygon: corridorRing?.length ? corridorRing : bufferPolylineToPolygon(primaryPoly, corridorM),
+        corridor_manual: !!corridorRing?.length,
+      };
+      return;
+    }
+    const savedMatch = findSavedAltForAlternative(alt, altGs);
+    alt_corridors[i] = {
+      enabled: !!savedMatch,
+      corridor_polygon: savedMatch
+        ? (parsePolygonJson(savedMatch.polygon_json) || bufferPolylineToPolygon(alt.polyline || [], corridorM))
+        : bufferPolylineToPolygon(alt.polyline || [], corridorM),
+      corridor_manual: !!savedMatch,
+    };
+  });
+
+  const origin = originG?.center_lat != null
+    ? { lat: Number(originG.center_lat), lng: Number(originG.center_lng), display_name: routeOriginLabel(route) }
+    : null;
+  const destination = destG?.center_lat != null
+    ? { lat: Number(destG.center_lat), lng: Number(destG.center_lng), display_name: routeDestinationLabel(route) }
+    : null;
+
+  return {
+    origin,
+    destination,
+    route_polyline: primaryPoly,
+    corridor_polygon: alt_corridors[0]?.corridor_polygon,
+    endpoint_radius_m: endpointRadiusM,
+    selected_route_index: 0,
+    alternatives,
+    alt_corridors,
+    driving: {
+      distance_km: primaryAlt.distance_km,
+      polyline: primaryPoly,
+    },
+    corridor_m: corridorM,
+  };
+}
 
 function positionsFromGeofence(g) {
   const pts = [];
@@ -625,8 +716,8 @@ export default function GeofenceRoutesTab({ setError }) {
     if (!selectedRoute) return;
     setDrawForm((f) => ({
       ...f,
-      origin_query: f.origin_query || selectedRoute.loading_address || selectedRoute.starting_point || '',
-      destination_query: f.destination_query || selectedRoute.destination_address || selectedRoute.destination || '',
+      origin_query: f.origin_query || routeOriginLabel(selectedRoute),
+      destination_query: f.destination_query || routeDestinationLabel(selectedRoute),
     }));
   }, [selectedRoute]);
 
@@ -1073,8 +1164,8 @@ export default function GeofenceRoutesTab({ setError }) {
       contractor_route_id: routeId,
       corridor_m: String(corridorMeta.corridor_m || 400),
       endpoint_radius_m: String(originG?.radius_m || destG?.radius_m || 500),
-      origin_query: route?.loading_address || route?.starting_point || '',
-      destination_query: route?.destination_address || route?.destination || '',
+      origin_query: routeOriginLabel(route) || f.origin_query,
+      destination_query: routeDestinationLabel(route) || f.destination_query,
       origin_lat: originG?.center_lat != null ? Number(originG.center_lat).toFixed(6) : '',
       origin_lng: originG?.center_lng != null ? Number(originG.center_lng).toFixed(6) : '',
       dest_lat: destG?.center_lat != null ? Number(destG.center_lat).toFixed(6) : '',
@@ -1244,8 +1335,32 @@ export default function GeofenceRoutesTab({ setError }) {
     setCorridorManual(false);
   };
 
+  const loadHaulRoadPreviewForManage = useCallback((routeId) => {
+    const route = routes.find((r) => r.id === routeId);
+    const saved = geofences.filter((g) => g.contractor_route_id === routeId);
+    const built = buildPreviewFromSavedHaulRoad(saved, routes, routeId);
+    if (!built) return;
+    const originG = saved.find((g) => g.leg === 'origin');
+    const destG = saved.find((g) => g.leg === 'destination');
+    setDrawForm((f) => ({
+      ...f,
+      contractor_route_id: routeId,
+      corridor_m: String(built.corridor_m || f.corridor_m || 400),
+      endpoint_radius_m: String(built.endpoint_radius_m || f.endpoint_radius_m || 500),
+      origin_query: routeOriginLabel(route) || f.origin_query,
+      destination_query: routeDestinationLabel(route) || f.destination_query,
+      origin_lat: originG?.center_lat != null ? Number(originG.center_lat).toFixed(6) : f.origin_lat,
+      origin_lng: originG?.center_lng != null ? Number(originG.center_lng).toFixed(6) : f.origin_lng,
+      dest_lat: destG?.center_lat != null ? Number(destG.center_lat).toFixed(6) : f.dest_lat,
+      dest_lng: destG?.center_lng != null ? Number(destG.center_lng).toFixed(6) : f.dest_lng,
+      use_origin_coords: originG?.center_lat != null || f.use_origin_coords,
+      use_dest_coords: destG?.center_lat != null || f.use_dest_coords,
+    }));
+    setPreview(built);
+    setCorridorManual(!!built.alt_corridors?.[0]?.corridor_manual);
+  }, [geofences, routes]);
+
   const startEdit = (g) => {
-    setPreview(null);
     setManualDrawMode(null);
     setManualCircleDraft(null);
     setManualPolygonDraft(null);
@@ -1253,6 +1368,12 @@ export default function GeofenceRoutesTab({ setError }) {
     setWorkflowStep('manage');
     setEditColor(geofenceDisplayColor(g));
     setEditUndoStack([]);
+    const isHaulRoadLeg = g.contractor_route_id && ['origin', 'destination', 'corridor', 'corridor_alt'].includes(g.leg);
+    if (isHaulRoadLeg) {
+      loadHaulRoadPreviewForManage(g.contractor_route_id);
+    } else {
+      setPreview(null);
+    }
     const ring = parsePolygonJson(g.polygon_json);
     if (ring?.length >= 3) {
       setEditing(g);
@@ -1508,7 +1629,7 @@ export default function GeofenceRoutesTab({ setError }) {
       <GeofenceMapEditor
         geofences={otherGeofences}
         labelGeofences={geofences}
-        preview={editing ? null : preview}
+        preview={preview}
         editRing={editRing}
         editCenter={editCenter}
         editRadius={editRadius}
@@ -1522,7 +1643,7 @@ export default function GeofenceRoutesTab({ setError }) {
         mapTool={mapTool}
         onMapToolChange={handleMapToolChange}
         onPlaceSelect={handlePlaceSelect}
-        routeMarkers={workflowStep === 'road' ? routeMarkers : null}
+        routeMarkers={workflowStep === 'road' || (workflowStep === 'manage' && preview) ? routeMarkers : null}
         alertPreview={!manualDrawMode && (mapClickTarget === 'alert' || alertPreview) ? alertPreview : null}
         mapClickMode={!!mapClickTarget && !manualDrawMode}
         onMapClick={handleMapClick}
@@ -1844,21 +1965,40 @@ export default function GeofenceRoutesTab({ setError }) {
               <p className="text-xs font-semibold text-surface-600">Saved haul roads (A → B)</p>
               {haulRoadSetups.map((setup) => {
                 const altCount = setup.geofences.filter((g) => g.leg === 'corridor_alt').length;
+                const routeKm = haulRoadSetupDistanceKm(setup, routes);
+                const originG = setup.geofences.find((g) => g.leg === 'origin');
+                const destG = setup.geofences.find((g) => g.leg === 'destination');
+                const route = routes.find((r) => r.id === setup.routeId);
+                const pointA = routeOriginLabel(route) || originG?.name?.replace(/^.*—\s*/, '') || 'A';
+                const pointB = routeDestinationLabel(route) || destG?.name?.replace(/^.*—\s*/, '') || 'B';
                 return (
                   <div key={setup.routeId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
                     <span>
                       {setup.name}
+                      <span className="ml-2 text-xs text-surface-500">
+                        {pointA} → {pointB}
+                        {routeKm != null && ` · ${formatRouteDistanceKm(routeKm)}`}
+                      </span>
                       {altCount > 0 && (
                         <span className="ml-2 text-xs text-cyan-700 dark:text-cyan-300">+ {altCount} alt road{altCount === 1 ? '' : 's'}</span>
                       )}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => loadHaulRoadFromSaved(setup.routeId)}
-                      className="text-xs text-brand-600 hover:underline"
-                    >
-                      Edit A→B setup
-                    </button>
+                    <div className="flex gap-3 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => loadHaulRoadPreviewForManage(setup.routeId)}
+                        className="text-xs text-brand-600 hover:underline"
+                      >
+                        Show on map
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => loadHaulRoadFromSaved(setup.routeId)}
+                        className="text-xs text-brand-600 hover:underline"
+                      >
+                        Edit A→B setup
+                      </button>
+                    </div>
                   </div>
                 );
               })}

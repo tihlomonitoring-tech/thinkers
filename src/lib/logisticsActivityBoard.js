@@ -1,5 +1,6 @@
 import { todayYmd } from './appTime.js';
 import { haversineMeters } from './geo.js';
+import { resolveRouteDestination, resolveRouteOrigin } from './logisticsFlowWhatsApp.js';
 import {
   distanceProgressAlongPolyline,
   parseCorridorPolyline,
@@ -237,8 +238,8 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     contractor_route_id: rid,
     route_name: route?.name || get(row, 'collection_point_name') || '—',
     loading_address: route?.loading_address || get(row, 'collection_point_name'),
-    destination_address: route?.destination_address || get(row, 'destination_name'),
-    destination_name: get(row, 'destination_name') || route?.destination_address || route?.name,
+    destination_address: resolveRouteDestination(route) || get(row, 'destination_name'),
+    destination_name: get(row, 'destination_name') || resolveRouteDestination(route),
     destination_lat: destLat,
     destination_lng: destLng,
     route_distance_km: distances.route_distance_km ?? routeDistanceKm,
@@ -389,7 +390,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       { tenantId }
     ),
     query(
-      `SELECT r.id, r.name, r.loading_address, r.destination_address,
+      `SELECT r.id, r.name, r.starting_point, r.destination, r.loading_address, r.destination_address,
               COALESCE(reg.distance_km, r.distance_km) AS distance_km
        FROM contractor_routes r
        LEFT JOIN access_route_target_regulations reg ON reg.route_id = r.id AND reg.tenant_id = @tenantId
@@ -464,6 +465,8 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
 
   const routeMeta = new Map((routesR.recordset || []).map((r) => [gid(get(r, 'id')), {
     name: get(r, 'name'),
+    starting_point: get(r, 'starting_point'),
+    destination: get(r, 'destination'),
     loading_address: get(r, 'loading_address'),
     destination_address: get(r, 'destination_address'),
     distance_km: get(r, 'distance_km') != null ? Number(get(r, 'distance_km')) : null,
@@ -606,6 +609,7 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
 
   const existing = await findActiveTripForTruck(query, tenantId, reg);
   if (existing) {
+    const tripId = gid(get(existing, 'id'));
     await query(
       `UPDATE fleet_trip SET
         contractor_route_id = @rid, route_id = @rid,
@@ -615,11 +619,12 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
         contractor_truck_id = COALESCE(@ctid, contractor_truck_id),
         driver_name = COALESCE(@driverName, driver_name),
         offloading_slip_no = NULL, at_destination_at = NULL,
+        loading_slip_no = NULL, loading_slip_deferred = 0,
         started_at = NULL, eta_due_at = NULL, is_overdue = 0
        WHERE id = @id AND tenant_id = @tenantId`,
       {
         tenantId,
-        id: gid(get(existing, 'id')),
+        id: tripId,
         rid,
         cp: get(route, 'loading_address') || get(route, 'name'),
         dn: get(route, 'destination_address'),
@@ -627,7 +632,8 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
         driverName,
       }
     );
-    return { trip_id: gid(get(existing, 'id')), updated: true };
+    await resetLoadingDeliveryForNewCycle(query, tenantId, tripId, existing, rid, route);
+    return { trip_id: tripId, updated: true };
   }
 
   const ref = `SCH-${todayYmd().replace(/-/g, '')}-${reg.replace(/\s+/g, '').slice(-6).toUpperCase()}`;
@@ -661,6 +667,12 @@ export async function openLoadingDeliveryRecord(query, tenantId, tripId, trip, c
   );
   if (existing.recordset?.[0]) return gid(get(existing.recordset[0], 'id'));
 
+  const routeR = contractorRouteId ? await query(
+    `SELECT loading_address, destination_address FROM contractor_routes WHERE id = @rid AND tenant_id = @tenantId`,
+    { rid: contractorRouteId, tenantId }
+  ) : { recordset: [] };
+  const route = routeR.recordset?.[0];
+
   const ins = await query(
     `INSERT INTO tracking_delivery_record (
       tenant_id, trip_id, truck_registration, delivered_at, destination_name,
@@ -673,7 +685,7 @@ export async function openLoadingDeliveryRecord(query, tenantId, tripId, trip, c
       tenantId,
       tripId,
       reg: get(trip, 'truck_registration'),
-      dn: get(trip, 'destination_name'),
+      dn: get(route, 'destination_address') || get(trip, 'destination_name'),
       rid: contractorRouteId,
       driver: get(trip, 'driver_name'),
     }
@@ -681,13 +693,57 @@ export async function openLoadingDeliveryRecord(query, tenantId, tripId, trip, c
   return gid(get(ins.recordset?.[0], 'id'));
 }
 
+/** Clear prior loading slip data when a truck starts a new load on the same trip. */
+export async function resetLoadingDeliveryForNewCycle(query, tenantId, tripId, trip, contractorRouteId, route) {
+  const rid = gid(contractorRouteId);
+  const dn = route ? get(route, 'destination_address') : get(trip, 'destination_name');
+  const existing = await query(
+    `SELECT TOP 1 id FROM tracking_delivery_record
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading' AND deleted_at IS NULL`,
+    { tenantId, tripId }
+  );
+  if (existing.recordset?.[0]) {
+    await query(
+      `UPDATE tracking_delivery_record SET
+        loading_slip_no = NULL,
+        loading_slip_deferred = 0,
+        tons_loaded = NULL,
+        net_weight_kg = NULL,
+        notes = N'Awaiting loading slip',
+        status = N'pending_loading',
+        pending_note = 1,
+        destination_name = COALESCE(@dn, destination_name),
+        contractor_route_id = COALESCE(@rid, contractor_route_id),
+        driver_name = COALESCE(@driver, driver_name),
+        delivered_at = SYSUTCDATETIME()
+       WHERE id = @id AND tenant_id = @tenantId`,
+      {
+        tenantId,
+        id: gid(get(existing.recordset[0], 'id')),
+        dn: dn || null,
+        rid: rid || null,
+        driver: get(trip, 'driver_name') || null,
+      }
+    );
+    return;
+  }
+  await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
+}
+
 export async function openDestinationDeliveryRecord(query, tenantId, tripId, trip, contractorRouteId) {
   const existing = await query(
     `SELECT TOP 1 id FROM tracking_delivery_record
-     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination' AND pending_note = 1`,
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'
+       AND deleted_at IS NULL`,
     { tenantId, tripId }
   );
   if (existing.recordset?.[0]) return gid(get(existing.recordset[0], 'id'));
+
+  const routeR = contractorRouteId ? await query(
+    `SELECT loading_address, destination_address FROM contractor_routes WHERE id = @rid AND tenant_id = @tenantId`,
+    { rid: contractorRouteId, tenantId }
+  ) : { recordset: [] };
+  const route = routeR.recordset?.[0];
 
   const ins = await query(
     `INSERT INTO tracking_delivery_record (
@@ -701,7 +757,7 @@ export async function openDestinationDeliveryRecord(query, tenantId, tripId, tri
       tenantId,
       tripId,
       reg: get(trip, 'truck_registration'),
-      dn: get(trip, 'destination_name'),
+      dn: get(route, 'destination_address') || get(trip, 'destination_name'),
       rid: contractorRouteId,
       driver: get(trip, 'driver_name'),
     }
@@ -722,6 +778,8 @@ export async function allocateTripAtLoading(query, tenantId, tripId, trip, contr
       activity_stage = N'at_loading',
       at_loading_at = COALESCE(at_loading_at, SYSUTCDATETIME()),
       status = N'pending',
+      loading_slip_no = NULL,
+      loading_slip_deferred = 0,
       offloading_slip_no = NULL,
       at_destination_at = NULL,
       started_at = NULL,
@@ -737,7 +795,7 @@ export async function allocateTripAtLoading(query, tenantId, tripId, trip, contr
       dn: route ? get(route, 'destination_address') : get(trip, 'destination_name'),
     }
   );
-  await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
+  await resetLoadingDeliveryForNewCycle(query, tenantId, tripId, trip, rid, route);
   return { activity_stage: 'at_loading' };
 }
 
@@ -950,14 +1008,21 @@ export async function listLoadingAssignmentsForDriver(query, tenantId, userFullN
      FROM fleet_trip t
      LEFT JOIN contractor_routes r ON r.id = t.contractor_route_id AND r.tenant_id = t.tenant_id
      LEFT JOIN contractor_trucks ct ON ct.id = t.contractor_truck_id AND ct.tenant_id = t.tenant_id
-     LEFT JOIN tracking_delivery_record ld ON ld.trip_id = t.id AND ld.tenant_id = t.tenant_id
-       AND ld.activity_phase = N'loading' AND ld.deleted_at IS NULL
+     OUTER APPLY (
+       SELECT TOP 1 ld2.tons_loaded, ld2.notes
+       FROM tracking_delivery_record ld2
+       WHERE ld2.tenant_id = t.tenant_id AND ld2.trip_id = t.id
+         AND ld2.activity_phase = N'loading' AND ld2.deleted_at IS NULL
+       ORDER BY
+         CASE WHEN ld2.loading_slip_no IS NOT NULL AND LTRIM(RTRIM(ld2.loading_slip_no)) <> N'' THEN 0 ELSE 1 END,
+         ld2.delivered_at DESC
+     ) ld
      WHERE t.tenant_id = @tenantId
        AND t.status NOT IN (N'completed', N'cancelled')
        AND (
-         COALESCE(t.activity_stage, N'scheduled') IN (N'scheduled', N'at_loading')
+         COALESCE(t.activity_stage, N'scheduled') IN (N'scheduled', N'at_loading', N'enroute')
          OR (
-           t.activity_stage = N'enroute' AND t.loading_slip_deferred = 1
+           t.activity_stage = N'at_destination'
            AND (t.loading_slip_no IS NULL OR LTRIM(RTRIM(t.loading_slip_no)) = N'')
          )
        )
@@ -1204,35 +1269,72 @@ export async function completeDestinationDelivery(query, tenantId, tripId, body 
     { tenantId, id: tripId, slip: resolvedSlip, notes: combinedNotes }
   );
 
+  const rid = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
+  let routeMeta = null;
+  if (rid) {
+    const routeR = await query(
+      `SELECT name, starting_point, destination, loading_address, destination_address FROM contractor_routes WHERE id = @rid AND tenant_id = @tenantId`,
+      { rid, tenantId }
+    );
+    routeMeta = routeR.recordset?.[0] || null;
+  }
+
+  let tons = b.tons_loaded != null ? Number(b.tons_loaded) : null;
+  if (tons == null || !Number.isFinite(tons) || tons <= 0) {
+    const loadR = await query(
+      `SELECT TOP 1 tons_loaded FROM tracking_delivery_record
+       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading' AND deleted_at IS NULL
+       ORDER BY delivered_at DESC`,
+      { tenantId, tripId }
+    );
+    const fromLoad = get(loadR.recordset?.[0], 'tons_loaded');
+    if (fromLoad != null && Number(fromLoad) > 0) tons = Number(fromLoad);
+  }
+
+  const destinationName = resolveRouteDestination({
+    destination_address: get(routeMeta, 'destination_address'),
+    destination: get(routeMeta, 'destination'),
+    name: get(routeMeta, 'name'),
+  }) || get(trip, 'destination_name');
+  const originName = resolveRouteOrigin({
+    loading_address: get(routeMeta, 'loading_address'),
+    starting_point: get(routeMeta, 'starting_point'),
+    name: get(routeMeta, 'name'),
+  }) || get(trip, 'collection_point_name');
+
   const destExisting = await query(
     `SELECT TOP 1 id FROM tracking_delivery_record
-     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination' AND deleted_at IS NULL`,
     { tenantId, tripId }
   );
   if (!destExisting.recordset?.[0]) {
-    const trip = tr.recordset[0];
-    const rid = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
     await openDestinationDeliveryRecord(query, tenantId, tripId, trip, rid);
   }
 
   await query(
     `UPDATE tracking_delivery_record SET
       offloading_slip_no = @slip,
-      delivery_note_no = COALESCE(@note, delivery_note_no),
+      delivery_note_no = COALESCE(@note, @slip, delivery_note_no),
+      destination_name = COALESCE(@destName, destination_name),
+      origin_name = COALESCE(@originName, origin_name),
+      contractor_route_id = COALESCE(@rid, contractor_route_id),
       tons_loaded = COALESCE(@tons, tons_loaded),
-      net_weight_kg = COALESCE(@nw, net_weight_kg),
+      net_weight_kg = COALESCE(@nw, net_weight_kg, CASE WHEN @tons IS NOT NULL THEN @tons * 1000 ELSE NULL END),
       notes = COALESCE(@notes, notes),
       pending_note = 0,
       status = N'completed',
       delivered_at = COALESCE(delivered_at, SYSUTCDATETIME())
-     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination' AND deleted_at IS NULL`,
     {
       tenantId,
       tripId,
       slip: resolvedSlip,
       note: noteNo || null,
-      tons: b.tons_loaded != null ? Number(b.tons_loaded) : null,
-      nw: b.tons_loaded != null ? Number(b.tons_loaded) * 1000 : null,
+      destName: destinationName || null,
+      originName: originName || null,
+      rid: rid || null,
+      tons: tons != null && Number.isFinite(tons) ? tons : null,
+      nw: tons != null && Number.isFinite(tons) ? tons * 1000 : null,
       notes: combinedNotes,
     }
   );

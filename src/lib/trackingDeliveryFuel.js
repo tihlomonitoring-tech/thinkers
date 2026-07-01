@@ -165,7 +165,28 @@ export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow,
   const tripId = gid(get(deliveryRow, 'trip_id') || get(tripRow, 'id'));
   const contractorTruckId = gid(get(tripRow, 'contractor_truck_id'));
   const contractorRouteId = gid(get(deliveryRow, 'contractor_route_id') || get(tripRow, 'contractor_route_id') || get(tripRow, 'route_id'));
-  const tons = get(deliveryRow, 'tons_loaded') != null ? Number(get(deliveryRow, 'tons_loaded')) : null;
+  let tons = get(deliveryRow, 'tons_loaded') != null ? Number(get(deliveryRow, 'tons_loaded')) : null;
+
+  if ((!tons || tons <= 0) && tripId) {
+    const loadR = await query(
+      `SELECT TOP 1 tons_loaded FROM tracking_delivery_record
+       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading' AND deleted_at IS NULL
+       ORDER BY delivered_at DESC`,
+      { tenantId, tripId }
+    );
+    const fromLoad = get(loadR.recordset?.[0], 'tons_loaded');
+    if (fromLoad != null && Number(fromLoad) > 0) tons = Number(fromLoad);
+  }
+
+  if ((!tons || tons <= 0) && contractorRouteId) {
+    const avgR = await query(
+      `SELECT TOP 1 avg_payload_tons FROM access_route_target_regulations
+       WHERE tenant_id = @tenantId AND route_id = @routeId AND avg_payload_tons > 0`,
+      { tenantId, routeId: contractorRouteId }
+    );
+    const avg = Number(get(avgR.recordset?.[0], 'avg_payload_tons'));
+    if (Number.isFinite(avg) && avg > 0) tons = avg;
+  }
 
   const truck = await resolveTruckProfile(query, tenantId, {
     contractorTruckId,
@@ -251,10 +272,18 @@ export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow,
 
   let revenueAmount = null;
   let revenuePerTon = null;
-  if (contractorRouteId && tons > 0) {
-    const rev = await estimateAllocationRevenue(query, tenantId, contractorRouteId, 1, tons);
-    revenueAmount = rev.revenue_amount;
-    revenuePerTon = rev.revenue_amount != null && tons > 0 ? round2(rev.revenue_amount / tons) : null;
+  if (contractorRouteId) {
+    const effectiveTons = tons > 0 ? tons : null;
+    if (effectiveTons) {
+      const rev = await estimateAllocationRevenue(query, tenantId, contractorRouteId, 1, effectiveTons);
+      revenueAmount = rev.revenue_amount;
+      revenuePerTon = rev.revenue_amount != null && effectiveTons > 0 ? round2(rev.revenue_amount / effectiveTons) : null;
+    }
+    if (revenueAmount == null) {
+      const revPerLoad = await estimateAllocationRevenue(query, tenantId, contractorRouteId, 1, null);
+      revenueAmount = revPerLoad.revenue_amount;
+      revenuePerTon = revPerLoad.revenue_per_load;
+    }
     if (revenuePerTon == null) {
       const rateR = await query(
         `SELECT TOP 1 rate_per_ton FROM access_route_target_regulations
@@ -263,6 +292,9 @@ export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow,
       );
       const rate = Number(get(rateR.recordset?.[0], 'rate_per_ton'));
       if (Number.isFinite(rate) && rate > 0) revenuePerTon = rate;
+      if (revenueAmount == null && revenuePerTon != null && effectiveTons) {
+        revenueAmount = round2(revenuePerTon * effectiveTons);
+      }
     }
   }
 
@@ -281,6 +313,7 @@ export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow,
     fuel_cost: fuelCostEst,
     revenue_amount: revenueAmount,
     revenue_per_ton: revenuePerTon,
+    tons_loaded: tons > 0 ? tons : null,
     fuel_calc_source: calcSource,
     speed_factor: speedFactor,
   };
@@ -301,7 +334,8 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
 
   const alreadySnapshotted = !!get(delivery, 'fuel_snapshot_at');
   const needsReturnOnly = alreadySnapshotted && get(delivery, 'return_fuel_cost') == null;
-  if (alreadySnapshotted && !needsReturnOnly) return delivery;
+  const needsRevenueOnly = alreadySnapshotted && get(delivery, 'revenue_amount') == null;
+  if (alreadySnapshotted && !needsReturnOnly && !needsRevenueOnly) return delivery;
 
   const tripRow = {
     id: get(delivery, 'trip_id'),
@@ -370,7 +404,8 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
     `UPDATE tracking_delivery_record SET
       distance_km = @dkm,
       avg_speed_kmh = @spd,
-      origin_name = @origin,
+      origin_name = COALESCE(@origin, origin_name),
+      destination_name = COALESCE(@dest, destination_name),
       truck_make_model = @mm,
       truck_year_model = @yr,
       fuel_litres_per_100km = @l100,
@@ -379,8 +414,9 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       fuel_cost_estimated = @cest,
       fuel_litres = COALESCE(fuel_litres, @lest),
       fuel_cost = COALESCE(fuel_cost, @cest),
-      revenue_amount = COALESCE(revenue_amount, @rev),
-      revenue_per_ton = @rpt,
+      revenue_amount = CASE WHEN @rev IS NOT NULL THEN @rev ELSE revenue_amount END,
+      revenue_per_ton = COALESCE(@rpt, revenue_per_ton),
+      tons_loaded = COALESCE(tons_loaded, @tons),
       fuel_calc_source = @src,
       return_distance_km = @rdkm,
       return_avg_speed_kmh = @rspd,
@@ -398,6 +434,7 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       dkm: econ.distance_km,
       spd: econ.avg_speed_kmh,
       origin: econ.origin_name,
+      dest: econ.destination_name,
       mm: econ.truck_make_model,
       yr: econ.truck_year_model,
       l100: econ.fuel_litres_per_100km,
@@ -406,6 +443,7 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       cest: econ.fuel_cost_estimated,
       rev: econ.revenue_amount,
       rpt: econ.revenue_per_ton,
+      tons: econ.tons_loaded != null ? econ.tons_loaded : null,
       src: econ.fuel_calc_source,
       rdkm: returnEcon.return_distance_km,
       rspd: returnEcon.return_avg_speed_kmh,
