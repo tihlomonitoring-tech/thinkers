@@ -4,7 +4,10 @@
  */
 
 import { getTripTotalDistanceKm } from './tripPositionTrail.js';
-import { estimateAllocationRevenue } from './deliveryActivityLedger.js';
+import { estimateAllocationRevenue, resolveTruckRoute } from './deliveryActivityLedger.js';
+import { parseCorridorPolyline, parseMonitorWaypoints, polylineDistanceKm } from './routeCorridorGeofence.js';
+import { resolveRouteDestination, resolveRouteOrigin } from './logisticsFlowWhatsApp.js';
+import { parseGuid, rowId } from './guidUtils.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -14,9 +17,35 @@ function get(row, key) {
 }
 
 function gid(v) {
-  if (v == null) return null;
-  if (typeof v === 'string') return v.replace(/[{}]/g, '').toLowerCase();
-  return String(v);
+  return parseGuid(v);
+}
+
+/** Ensure every SQL parameter is bound (undefined → null). */
+function sqlBind(params) {
+  const out = {};
+  for (const [key, value] of Object.entries(params)) {
+    out[key] = value === undefined ? null : value;
+  }
+  return out;
+}
+
+const DELIVERY_TRIP_JOIN = `
+  FROM tracking_delivery_record d
+  LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id`;
+
+function buildTripRowFromDelivery(delivery) {
+  return {
+    id: get(delivery, 'trip_id') || get(delivery, 'trip_row_id'),
+    contractor_truck_id: get(delivery, 'trip_contractor_truck_id') || get(delivery, 'contractor_truck_id'),
+    contractor_route_id: get(delivery, 'effective_contractor_route_id')
+      || get(delivery, 'contractor_route_id')
+      || get(delivery, 'trip_contractor_route_id')
+      || get(delivery, 'trip_route_id'),
+    route_id: get(delivery, 'trip_route_id') || get(delivery, 'route_id'),
+    collection_point_name: get(delivery, 'trip_collection_point_name') || get(delivery, 'collection_point_name'),
+    destination_name: get(delivery, 'trip_destination_name') || get(delivery, 'destination_name'),
+    last_speed_kmh: get(delivery, 'trip_last_speed_kmh') ?? get(delivery, 'last_speed_kmh'),
+  };
 }
 
 function round2(n) {
@@ -126,7 +155,9 @@ export function computeEmptyReturnFuelEconomics({
   const baseLitres = (distanceKm * emptyL100) / 100;
   const fuelLitresEst = round3(baseLitres * speedFactor);
   const price = fuelPricePerLitre != null ? Number(fuelPricePerLitre) : null;
-  const fuelCostEst = fuelLitresEst != null && price > 0 ? round2(fuelLitresEst * price) : null;
+  const fuelCostEst = fuelLitresEst != null && price > 0
+    ? round2(round3(fuelLitresEst) * round2(price))
+    : null;
 
   return {
     return_distance_km: round2(distanceKm),
@@ -137,6 +168,130 @@ export function computeEmptyReturnFuelEconomics({
     return_fuel_litres: fuelLitresEst,
     return_fuel_cost: fuelCostEst,
     return_fuel_calc_source: calcSource,
+  };
+}
+
+function deliveryEconomicsIncomplete(delivery) {
+  if (!delivery) return true;
+  return get(delivery, 'fuel_litres') == null
+    || get(delivery, 'fuel_cost') == null
+    || get(delivery, 'revenue_amount') == null
+    || get(delivery, 'return_fuel_cost') == null;
+}
+
+async function resolveContractorRouteId(query, tenantId, deliveryRow, tripRow) {
+  let rid = gid(get(deliveryRow, 'contractor_route_id'))
+    || gid(get(tripRow, 'contractor_route_id'))
+    || gid(get(tripRow, 'route_id'));
+  if (rid) return rid;
+
+  const truckId = gid(get(tripRow, 'contractor_truck_id'));
+  if (truckId) {
+    const { routeId } = await resolveTruckRoute(query, tenantId, truckId);
+    if (routeId) return gid(routeId);
+  }
+
+  const truck = await resolveTruckProfile(query, tenantId, {
+    contractorTruckId: truckId,
+    truckRegistration: get(deliveryRow, 'truck_registration') || get(tripRow, 'truck_registration'),
+  });
+  if (truck) {
+    const { routeId } = await resolveTruckRoute(query, tenantId, gid(get(truck, 'id')));
+    if (routeId) return gid(routeId);
+  }
+  return null;
+}
+
+/** Pick the most reliable haul-road distance: corridor → monitor → route record → GPS (when aligned). */
+async function resolveRouteDistanceKm(query, tenantId, contractorRouteId, tripId) {
+  let gpsDist = null;
+  if (tripId) {
+    const dist = await getTripTotalDistanceKm(query, tenantId, tripId);
+    if (dist?.distance_km > 0) gpsDist = dist;
+  }
+
+  if (!contractorRouteId) {
+    if (gpsDist) return gpsDist;
+    return { distance_km: null, avg_speed_kmh: null, source: 'none', origin_name: null, destination_name: null };
+  }
+
+  const [rr, corridorR, monitorR] = await Promise.all([
+    query(
+      `SELECT COALESCE(reg.distance_km, r.distance_km) AS distance_km,
+              r.name, r.starting_point, r.destination, r.loading_address, r.destination_address
+       FROM contractor_routes r
+       LEFT JOIN access_route_target_regulations reg ON reg.route_id = r.id AND reg.tenant_id = @tenantId
+       WHERE r.id = @routeId AND r.tenant_id = @tenantId`,
+      { tenantId, routeId: contractorRouteId }
+    ),
+    query(
+      `SELECT TOP 1 polygon_json FROM tracking_geofence
+       WHERE tenant_id = @tenantId AND contractor_route_id = @routeId AND leg = N'corridor'`,
+      { tenantId, routeId: contractorRouteId }
+    ),
+    query(
+      `SELECT TOP 1 waypoints_json FROM tracking_monitor_route
+       WHERE tenant_id = @tenantId AND contractor_route_id = @routeId AND is_active = 1`,
+      { tenantId, routeId: contractorRouteId }
+    ),
+  ]);
+
+  const row = rr.recordset?.[0];
+  const routeMeta = row ? {
+    name: get(row, 'name'),
+    starting_point: get(row, 'starting_point'),
+    destination: get(row, 'destination'),
+    loading_address: get(row, 'loading_address'),
+    destination_address: get(row, 'destination_address'),
+  } : null;
+  const originName = resolveRouteOrigin(routeMeta);
+  const destinationName = resolveRouteDestination(routeMeta);
+
+  const corridorPoly = parseCorridorPolyline(get(corridorR.recordset?.[0], 'polygon_json'));
+  const corridorKm = corridorPoly?.length >= 2 ? polylineDistanceKm(corridorPoly) : null;
+  const monitorPoly = parseMonitorWaypoints(get(monitorR.recordset?.[0], 'waypoints_json'));
+  const monitorKm = monitorPoly?.length >= 2 ? polylineDistanceKm(monitorPoly) : null;
+  const recordKm = row && Number(get(row, 'distance_km')) > 0 ? Number(get(row, 'distance_km')) : null;
+
+  const plannedCandidates = [
+    corridorKm > 0 ? { km: round2(corridorKm), source: 'corridor_polyline' } : null,
+    monitorKm > 0 ? { km: round2(monitorKm), source: 'monitor_route' } : null,
+    recordKm ? { km: round2(recordKm), source: 'route_distance' } : null,
+  ].filter(Boolean);
+
+  const planned = plannedCandidates[0] || null;
+
+  if (gpsDist?.distance_km && planned?.km) {
+    const ratio = gpsDist.distance_km / planned.km;
+    if (ratio >= 0.85 && ratio <= 1.25) {
+      return {
+        distance_km: round2(gpsDist.distance_km),
+        avg_speed_kmh: gpsDist.avg_speed_kmh,
+        source: 'gps_trail',
+        origin_name: gpsDist.origin_name || originName,
+        destination_name: gpsDist.destination_name || destinationName,
+      };
+    }
+  }
+
+  if (planned) {
+    return {
+      distance_km: planned.km,
+      avg_speed_kmh: gpsDist?.avg_speed_kmh ?? null,
+      source: planned.source,
+      origin_name: originName,
+      destination_name: destinationName,
+    };
+  }
+
+  if (gpsDist) return gpsDist;
+
+  return {
+    distance_km: null,
+    avg_speed_kmh: gpsDist?.avg_speed_kmh ?? null,
+    source: 'none',
+    origin_name: originName,
+    destination_name: destinationName,
   };
 }
 
@@ -153,10 +308,13 @@ async function resolveTruckProfile(query, tenantId, { contractorTruckId, truckRe
     truckId = gid(get(tr.recordset?.[0], 'id'));
   }
   if (!truckId) return null;
+  const truckGuid = parseGuid(truckId);
+  const tenantGuid = parseGuid(tenantId);
+  if (!truckGuid || !tenantGuid) return null;
   const r = await query(
     `SELECT id, registration, make_model, year_model, fuel_consumption_litres_per_100km
      FROM contractor_trucks WHERE id = @id AND tenant_id = @tenantId`,
-    { id: truckId, tenantId }
+    { id: truckGuid, tenantId: tenantGuid }
   );
   return r.recordset?.[0] || null;
 }
@@ -164,7 +322,7 @@ async function resolveTruckProfile(query, tenantId, { contractorTruckId, truckRe
 export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow, tripRow) {
   const tripId = gid(get(deliveryRow, 'trip_id') || get(tripRow, 'id'));
   const contractorTruckId = gid(get(tripRow, 'contractor_truck_id'));
-  const contractorRouteId = gid(get(deliveryRow, 'contractor_route_id') || get(tripRow, 'contractor_route_id') || get(tripRow, 'route_id'));
+  const contractorRouteId = await resolveContractorRouteId(query, tenantId, deliveryRow, tripRow);
   let tons = get(deliveryRow, 'tons_loaded') != null ? Number(get(deliveryRow, 'tons_loaded')) : null;
 
   if ((!tons || tons <= 0) && tripId) {
@@ -233,42 +391,43 @@ export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow,
   let distanceKm = null;
   let avgSpeed = null;
   let calcSource = 'regulation';
-  let originName = get(deliveryRow, 'collection_point_name') || get(tripRow, 'collection_point_name');
+  let originName = get(deliveryRow, 'origin_name') || get(tripRow, 'collection_point_name');
   let destinationName = get(deliveryRow, 'destination_name') || get(tripRow, 'destination_name');
 
-  if (tripId) {
-    const dist = await getTripTotalDistanceKm(query, tenantId, tripId);
-    if (dist.distance_km > 0) {
-      distanceKm = dist.distance_km;
-      avgSpeed = dist.avg_speed_kmh;
-      calcSource = dist.source === 'gps_trail' ? 'gps_trail' : 'route_distance';
-      originName = dist.origin_name || originName;
-      destinationName = dist.destination_name || destinationName;
-    }
+  const dist = await resolveRouteDistanceKm(query, tenantId, contractorRouteId, tripId);
+  if (dist.distance_km > 0) {
+    distanceKm = dist.distance_km;
+    avgSpeed = dist.avg_speed_kmh ?? (get(tripRow, 'last_speed_kmh') != null ? Number(get(tripRow, 'last_speed_kmh')) : null);
+    calcSource = dist.source === 'gps_trail' ? 'gps_trail' : dist.source;
+    originName = dist.origin_name || originName;
+    destinationName = dist.destination_name || destinationName;
   }
 
-  if (!distanceKm && contractorRouteId) {
-    const rr = await query(
-      `SELECT COALESCE(reg.distance_km, r.distance_km) AS distance_km,
-              r.loading_address, r.destination_address
-       FROM contractor_routes r
-       LEFT JOIN access_route_target_regulations reg ON reg.route_id = r.id AND reg.tenant_id = @tenantId
-       WHERE r.id = @routeId AND r.tenant_id = @tenantId`,
+  if (!originName || !destinationName) {
+    const rr = contractorRouteId ? await query(
+      `SELECT name, starting_point, destination, loading_address, destination_address
+       FROM contractor_routes WHERE id = @routeId AND tenant_id = @tenantId`,
       { tenantId, routeId: contractorRouteId }
-    );
-    const row = rr.recordset?.[0];
-    if (row && Number(get(row, 'distance_km')) > 0) {
-      distanceKm = Number(get(row, 'distance_km'));
-      calcSource = 'route_distance';
-      originName = originName || get(row, 'loading_address');
-      destinationName = destinationName || get(row, 'destination_address');
-    }
+    ) : { recordset: [] };
+    const routeMeta = rr.recordset?.[0];
+    originName = originName || resolveRouteOrigin({
+      name: get(routeMeta, 'name'),
+      starting_point: get(routeMeta, 'starting_point'),
+      loading_address: get(routeMeta, 'loading_address'),
+    });
+    destinationName = destinationName || resolveRouteDestination({
+      name: get(routeMeta, 'name'),
+      destination: get(routeMeta, 'destination'),
+      destination_address: get(routeMeta, 'destination_address'),
+    });
   }
 
   const speedFactor = speedConsumptionFactor(avgSpeed);
   const baseLitres = distanceKm > 0 ? (distanceKm * litresPer100) / 100 : null;
   const fuelLitresEst = baseLitres != null ? round3(baseLitres * speedFactor) : null;
-  const fuelCostEst = fuelLitresEst != null && fuelPrice > 0 ? round2(fuelLitresEst * fuelPrice) : null;
+  const fuelCostEst = fuelLitresEst != null && fuelPrice > 0
+    ? round2(round3(fuelLitresEst) * round2(fuelPrice))
+    : null;
 
   let revenueAmount = null;
   let revenuePerTon = null;
@@ -319,35 +478,45 @@ export async function computeDeliveryFuelEconomics(query, tenantId, deliveryRow,
   };
 }
 
-/** Freeze fuel & revenue figures on a delivery (once). */
-export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId) {
+/** Freeze fuel & revenue figures on a delivery (once, or when incomplete / forced). */
+export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId, options = {}) {
+  const force = options.force === true;
+  const deliveryGuid = parseGuid(deliveryId);
+  const tenantGuid = parseGuid(tenantId);
+  if (!deliveryGuid) throw new Error('Delivery id is required');
+  if (!tenantGuid) throw new Error('Tenant id is required');
+
   const dr = await query(
-    `SELECT d.*, t.id AS trip_row_id, t.contractor_truck_id, t.contractor_route_id, t.route_id,
-            t.collection_point_name, t.destination_name, t.last_speed_kmh
-     FROM tracking_delivery_record d
-     LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
+    `SELECT d.*,
+            t.id AS trip_row_id,
+            t.contractor_truck_id AS trip_contractor_truck_id,
+            t.contractor_route_id AS trip_contractor_route_id,
+            t.route_id AS trip_route_id,
+            COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AS effective_contractor_route_id,
+            t.collection_point_name AS trip_collection_point_name,
+            t.destination_name AS trip_destination_name,
+            t.last_speed_kmh AS trip_last_speed_kmh
+     ${DELIVERY_TRIP_JOIN}
      WHERE d.id = @id AND d.tenant_id = @tenantId AND d.deleted_at IS NULL`,
-    { tenantId, id: deliveryId }
+    sqlBind({ tenantId: tenantGuid, id: deliveryGuid })
   );
   const delivery = dr.recordset?.[0];
   if (!delivery) return null;
 
   const alreadySnapshotted = !!get(delivery, 'fuel_snapshot_at');
-  const needsReturnOnly = alreadySnapshotted && get(delivery, 'return_fuel_cost') == null;
-  const needsRevenueOnly = alreadySnapshotted && get(delivery, 'revenue_amount') == null;
-  if (alreadySnapshotted && !needsReturnOnly && !needsRevenueOnly) return delivery;
+  const incomplete = deliveryEconomicsIncomplete(delivery);
+  const loadedComplete = get(delivery, 'fuel_litres') != null && get(delivery, 'fuel_cost') != null;
+  const needsReturnOnly = !force && alreadySnapshotted && loadedComplete && !incomplete
+    && get(delivery, 'return_fuel_cost') == null;
 
-  const tripRow = {
-    id: get(delivery, 'trip_id'),
-    contractor_truck_id: get(delivery, 'contractor_truck_id'),
-    contractor_route_id: get(delivery, 'contractor_route_id') || get(delivery, 'route_id'),
-    route_id: get(delivery, 'route_id'),
-    collection_point_name: get(delivery, 'collection_point_name'),
-    destination_name: get(delivery, 'destination_name'),
-    last_speed_kmh: get(delivery, 'last_speed_kmh'),
-  };
+  if (alreadySnapshotted && !incomplete && !needsReturnOnly && !force) {
+    return delivery;
+  }
 
-  const econ = await computeDeliveryFuelEconomics(query, tenantId, delivery, tripRow);
+  const tripRow = buildTripRowFromDelivery(delivery);
+
+  const econ = await computeDeliveryFuelEconomics(query, tenantGuid, delivery, tripRow);
+  const resolvedRouteId = await resolveContractorRouteId(query, tenantGuid, delivery, tripRow);
 
   const truckId = gid(get(tripRow, 'contractor_truck_id'));
   const regulation = await getFuelRegulation(query, tenantId, truckId);
@@ -386,16 +555,16 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
         return_fuel_cost = COALESCE(return_fuel_cost, @rcest),
         return_fuel_calc_source = @rsrc
        WHERE id = @id AND tenant_id = @tenantId`,
-      {
-        tenantId,
-        id: deliveryId,
+      sqlBind({
+        tenantId: tenantGuid,
+        id: deliveryGuid,
         rdkm: returnEcon.return_distance_km,
         rspd: returnEcon.return_avg_speed_kmh,
         rl100: returnEcon.return_fuel_litres_per_100km,
         rlest: returnEcon.return_fuel_litres_estimated,
         rcest: returnEcon.return_fuel_cost_estimated,
         rsrc: returnEcon.return_fuel_calc_source,
-      }
+      })
     );
     return { ...econ, ...returnEcon };
   }
@@ -406,16 +575,17 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       avg_speed_kmh = @spd,
       origin_name = COALESCE(@origin, origin_name),
       destination_name = COALESCE(@dest, destination_name),
+      contractor_route_id = COALESCE(@rid, contractor_route_id),
       truck_make_model = @mm,
       truck_year_model = @yr,
       fuel_litres_per_100km = @l100,
       fuel_price_per_litre = @price,
       fuel_litres_estimated = @lest,
       fuel_cost_estimated = @cest,
-      fuel_litres = COALESCE(fuel_litres, @lest),
-      fuel_cost = COALESCE(fuel_cost, @cest),
-      revenue_amount = CASE WHEN @rev IS NOT NULL THEN @rev ELSE revenue_amount END,
-      revenue_per_ton = COALESCE(@rpt, revenue_per_ton),
+      fuel_litres = @lest,
+      fuel_cost = @cest,
+      revenue_amount = @rev,
+      revenue_per_ton = @rpt,
       tons_loaded = COALESCE(tons_loaded, @tons),
       fuel_calc_source = @src,
       return_distance_km = @rdkm,
@@ -423,18 +593,19 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       return_fuel_litres_per_100km = @rl100,
       return_fuel_litres_estimated = @rlest,
       return_fuel_cost_estimated = @rcest,
-      return_fuel_litres = COALESCE(return_fuel_litres, @rlest),
-      return_fuel_cost = COALESCE(return_fuel_cost, @rcest),
+      return_fuel_litres = @rlest,
+      return_fuel_cost = @rcest,
       return_fuel_calc_source = @rsrc,
       fuel_snapshot_at = SYSUTCDATETIME()
      WHERE id = @id AND tenant_id = @tenantId`,
-    {
-      tenantId,
-      id: deliveryId,
+    sqlBind({
+      tenantId: tenantGuid,
+      id: deliveryGuid,
       dkm: econ.distance_km,
       spd: econ.avg_speed_kmh,
       origin: econ.origin_name,
       dest: econ.destination_name,
+      rid: resolvedRouteId,
       mm: econ.truck_make_model,
       yr: econ.truck_year_model,
       l100: econ.fuel_litres_per_100km,
@@ -443,7 +614,7 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       cest: econ.fuel_cost_estimated,
       rev: econ.revenue_amount,
       rpt: econ.revenue_per_ton,
-      tons: econ.tons_loaded != null ? econ.tons_loaded : null,
+      tons: econ.tons_loaded,
       src: econ.fuel_calc_source,
       rdkm: returnEcon.return_distance_km,
       rspd: returnEcon.return_avg_speed_kmh,
@@ -451,10 +622,24 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId)
       rlest: returnEcon.return_fuel_litres_estimated,
       rcest: returnEcon.return_fuel_cost_estimated,
       rsrc: returnEcon.return_fuel_calc_source,
-    }
+    })
   );
 
   return { ...econ, ...returnEcon };
+}
+
+/** Backfill economics for completed deliveries missing fuel or revenue figures. */
+export async function backfillDeliveryEconomics(query, tenantId, deliveryIds, { force = true } = {}) {
+  const updated = [];
+  for (const id of deliveryIds) {
+    try {
+      await snapshotDeliveryFuelEconomics(query, tenantId, id, { force });
+      updated.push(id);
+    } catch (err) {
+      console.warn('[delivery-economics] backfill failed for', id, err?.message || err);
+    }
+  }
+  return updated;
 }
 
 export async function listFuelRegulations(query, tenantId) {
@@ -534,6 +719,8 @@ export async function upsertFuelRegulation(query, tenantId, {
   );
 
   if (existing.recordset?.[0]) {
+    const regId = rowId(existing.recordset[0]);
+    if (!regId) throw new Error('Fuel regulation id is required');
     await query(
       `UPDATE tracking_fuel_regulation SET
         fuel_price_per_litre = @price,
@@ -546,13 +733,13 @@ export async function upsertFuelRegulation(query, tenantId, {
        WHERE id = @id AND tenant_id = @tenantId`,
       {
         tenantId,
-        id: gid(get(existing.recordset[0], 'id')),
+        id: regId,
         price,
         l100,
         l100e: l100Empty,
         ef: emptyFactor,
         notes: notes || null,
-        by: updatedBy,
+        by: updatedBy || null,
       }
     );
     return { updated: true };

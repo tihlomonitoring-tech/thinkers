@@ -3050,7 +3050,10 @@ export const tracking = {
     remove: (id) => trk(`/deliveries/${id}`, { method: 'DELETE' }),
     restore: (id) => trk(`/deliveries/${id}/restore`, { method: 'POST' }),
     updateEconomics: (id, body) => trk(`/deliveries/${id}/economics`, { method: 'PATCH', body: JSON.stringify(body) }),
-    snapshotFuel: (id) => trk(`/deliveries/${id}/snapshot-fuel`, { method: 'POST' }),
+    snapshotFuel: (id, { force = false } = {}) => trk(`/deliveries/${id}/snapshot-fuel`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
   },
   fuelRegulation: {
     list: () => trk('/fuel-regulation'),

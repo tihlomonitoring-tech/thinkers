@@ -11,6 +11,7 @@ import { sendDeviationAlertEmail } from '../lib/trackingEmailAlerts.js';
 import { getTrackingPollStatus, runTrackingProviderPoll } from '../lib/trackingProviderPoll.js';
 import { compactTruckRegistration } from '../lib/truckRegistration.js';
 import { resolveRouteDestination, resolveRouteOrigin } from '../lib/logisticsFlowWhatsApp.js';
+import { rowId, parseGuid } from '../lib/guidUtils.js';
 import { testFleetcamConnection, listFleetcamDevices } from '../lib/fleetcamConnector.js';
 import {
   buildLogisticsActivityBoard,
@@ -22,6 +23,7 @@ import {
 } from '../lib/logisticsActivityBoard.js';
 import {
   snapshotDeliveryFuelEconomics,
+  backfillDeliveryEconomics,
   listFuelRegulations,
   upsertFuelRegulation,
   suggestFuelRegulationAi,
@@ -1171,7 +1173,7 @@ function mapDeliveryRow(row) {
   const revenue = get(row, 'revenue_amount') != null ? Number(get(row, 'revenue_amount')) : null;
   const fuelCost = get(row, 'fuel_cost') != null ? Number(get(row, 'fuel_cost')) : null;
   const returnFuelCost = get(row, 'return_fuel_cost') != null ? Number(get(row, 'return_fuel_cost')) : null;
-  const includeReturn = !!get(row, 'include_return_fuel_in_cost');
+  const includeReturn = get(row, 'include_return_fuel_in_cost') !== false;
   const totalFuelCost = fuelCost != null
     ? Math.round((fuelCost + (includeReturn && returnFuelCost != null ? returnFuelCost : 0)) * 100) / 100
     : null;
@@ -1193,8 +1195,10 @@ function mapDeliveryRow(row) {
       || resolveRouteOrigin({ name: get(row, 'route_name'), starting_point: get(row, 'starting_point') })
       || null,
     contractor_route_id: gid(get(row, 'contractor_route_id')),
+    route_name: get(row, 'route_name') || null,
     driver_name: get(row, 'driver_name'),
     delivery_note_no: get(row, 'delivery_note_no'),
+    loading_slip_no: get(row, 'loading_slip_no') || null,
     pending_note: !!get(row, 'pending_note'),
     status: get(row, 'status'),
     notes: get(row, 'notes'),
@@ -1250,13 +1254,13 @@ router.get('/deliveries', async (req, res) => {
     const reg = req.query.registration;
     const deleted = String(req.query.deleted || 'false').toLowerCase();
     const completedOnly = String(req.query.completed_only || 'false').toLowerCase() === 'true';
-    let sql = `SELECT d.*, t.trip_ref, r.name AS route_name,
+    let sql = `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name,
               r.destination, r.starting_point,
               COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
               COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
        FROM tracking_delivery_record d
        LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
-       LEFT JOIN contractor_routes r ON r.id = d.contractor_route_id AND r.tenant_id = d.tenant_id
+       LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
        WHERE d.tenant_id = @tenantId`;
     const params = { tenantId: tid };
     if (deleted === 'true') sql += ` AND d.deleted_at IS NOT NULL`;
@@ -1276,7 +1280,27 @@ router.get('/deliveries', async (req, res) => {
     }
     sql += ` ORDER BY COALESCE(d.deleted_at, d.delivered_at) DESC`;
     const r = await query(sql, params);
-    const deliveries = (r.recordset || []).map(mapDeliveryRow);
+    let rows = r.recordset || [];
+    const autofill = String(req.query.autofill ?? 'true').toLowerCase() !== 'false';
+    if (completedOnly && autofill && !deleted) {
+      const incompleteIds = rows
+        .filter((row) => get(row, 'fuel_litres') == null
+          || get(row, 'fuel_cost') == null
+          || get(row, 'revenue_amount') == null)
+        .slice(0, 25)
+        .map((row) => rowId(row))
+        .filter(Boolean);
+      if (incompleteIds.length) {
+        try {
+          await backfillDeliveryEconomics(query, tid, incompleteIds, { force: true });
+          const refreshed = await query(sql, params);
+          rows = refreshed.recordset || [];
+        } catch (autofillErr) {
+          console.warn('[deliveries] economics autofill failed:', autofillErr?.message || autofillErr);
+        }
+      }
+    }
+    const deliveries = rows.map(mapDeliveryRow);
     res.json({ deliveries });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to list deliveries' });
@@ -1381,7 +1405,13 @@ router.patch('/deliveries/:id/economics', async (req, res) => {
     if (!updates.length) return res.status(400).json({ error: 'No fields' });
     await query(`UPDATE tracking_delivery_record SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
     const r = await query(
-      `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.id = @id`,
+      `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name, r.destination, r.starting_point,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
+       FROM tracking_delivery_record d
+       LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       WHERE d.id = @id`,
       { id: req.params.id }
     );
     res.json({ ok: true, delivery: mapDeliveryRow(r.recordset?.[0]) });
@@ -1394,11 +1424,21 @@ router.post('/deliveries/:id/snapshot-fuel', async (req, res) => {
   if (!ensureSchema(req, res, {})) return;
   try {
     const tid = tenantId(req);
-    const econ = await snapshotDeliveryFuelEconomics(query, tid, req.params.id);
+    const force = req.body?.force === true || String(req.query.force || '').toLowerCase() === 'true';
+    const deliveryGuid = parseGuid(req.params.id);
+    const tenantGuid = parseGuid(tid);
+    if (!deliveryGuid || !tenantGuid) return res.status(400).json({ error: 'Invalid delivery or tenant id' });
+    const econ = await snapshotDeliveryFuelEconomics(query, tenantGuid, deliveryGuid, { force });
     if (!econ) return res.status(404).json({ error: 'Delivery not found' });
     const r = await query(
-      `SELECT d.*, t.trip_ref FROM tracking_delivery_record d LEFT JOIN fleet_trip t ON t.id = d.trip_id WHERE d.id = @id`,
-      { id: req.params.id }
+      `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name, r.destination, r.starting_point,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
+       FROM tracking_delivery_record d
+       LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       WHERE d.id = @id AND d.tenant_id = @tenantId`,
+      { id: deliveryGuid, tenantId: tenantGuid }
     );
     res.json({ ok: true, delivery: mapDeliveryRow(r.recordset?.[0]), economics: econ });
   } catch (err) {

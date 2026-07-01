@@ -461,6 +461,24 @@ function formatEta(minutes) {
   return r ? `~${h}h ${r}m` : `~${h}h`;
 }
 
+function formatDurationMinutes(mins) {
+  if (mins == null || !Number.isFinite(Number(mins))) return '—';
+  const m = Math.max(0, Math.round(Number(mins)));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+function formatEtaClock(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '—';
+  }
+}
+
 function ActivityCard({
   item,
   routes,
@@ -495,7 +513,16 @@ function ActivityCard({
   const pct = progressPct(item, routes);
   const kmDone = formatKmDone(item, routes);
   const alertCount = (item.deviation_count || 0) + (item.overspeed_count || 0);
-  const destLabel = item.destination_name || item.destination_address || item.route_name || '—';
+  const destLabel = item.destination_name || item.destination_address || '—';
+  const loadingTime = item.activity_stage === 'at_loading'
+    ? formatDurationMinutes(item.loading_duration_minutes)
+    : item.at_loading_at ? 'Done' : '—';
+  const onRoadTime = ['enroute', 'at_destination', 'awaiting_reschedule'].includes(item.activity_stage)
+    ? formatDurationMinutes(item.on_road_duration_minutes)
+    : '—';
+  const etaLabel = item.activity_stage === 'enroute'
+    ? (formatEtaClock(item.eta_at) !== '—' ? formatEtaClock(item.eta_at) : formatEta(item.eta_minutes) || '—')
+    : item.activity_stage === 'at_destination' ? 'Arrived' : '—';
 
   return (
     <div
@@ -506,46 +533,40 @@ function ActivityCard({
         onDragStart?.(e);
       }}
       onDragEnd={onDragEnd}
-      className={`rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 border-l-4 ${styles.card} shadow-sm transition-all hover:shadow-md ${
-        needsAction ? 'ring-1 ring-brand-200/60 dark:ring-brand-800/40' : ''
-      } ${mapActive ? 'ring-2 ring-sky-400/80 dark:ring-sky-500/50' : ''} ${
+      className={`group rounded-2xl border border-surface-200/90 dark:border-surface-700/80 bg-white dark:bg-surface-900 border-l-[3px] ${styles.card} shadow-sm transition-all hover:shadow-lg hover:border-surface-300 dark:hover:border-surface-600 ${
+        needsAction ? 'ring-1 ring-brand-300/50 dark:ring-brand-700/40' : ''
+      } ${mapActive ? 'ring-2 ring-sky-400/70 dark:ring-sky-500/40 shadow-md' : ''} ${
         isDragging ? 'opacity-40 scale-[0.98] ring-2 ring-dashed ring-brand-400' : ''
       } ${draggable && !isDragging ? 'cursor-grab active:cursor-grabbing' : ''}`}
       title={draggable ? 'Drag to any column to move this truck' : undefined}
     >
-      <div className="p-3 space-y-2.5">
+      <div className="p-3.5 space-y-3">
+        {/* Header */}
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <button
               type="button"
               onClick={() => onShowOnMap?.(item)}
-              title="Show this truck on the map"
-              className="font-mono font-bold text-base text-left tracking-tight text-brand-700 dark:text-brand-300 hover:underline underline-offset-2 decoration-brand-400/60"
+              title="Show on map"
+              className="font-mono font-bold text-[15px] tracking-tight text-surface-900 dark:text-surface-50 hover:text-brand-600 dark:hover:text-brand-400 transition-colors text-left"
             >
               {item.truck_registration}
             </button>
-            <p className="text-[10px] text-surface-500 truncate">{item.route_name}</p>
+            <p className="text-[11px] font-medium text-surface-500 truncate mt-0.5">{item.route_name}</p>
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
-            {deliveryComplete && (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200/80 dark:bg-emerald-950/60 dark:text-emerald-200 dark:ring-emerald-800/60"
-                title={item.auto_completed_delivery ? 'Delivery auto-completed on geofence exit' : 'Delivery completed'}
-              >
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Complete
-              </span>
-            )}
             {hasSpeed && (
-              <span className={`text-xs font-bold tabular-nums px-2 py-0.5 rounded-full ${
+              <span className={`inline-flex items-center gap-1 text-[10px] font-bold tabular-nums px-2 py-0.5 rounded-full ${
                 moving
-                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200'
-                  : 'bg-slate-100 text-slate-600 dark:bg-surface-800 dark:text-surface-300'
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-500/20'
+                  : 'bg-surface-100 text-surface-500 dark:bg-surface-800 dark:text-surface-400'
               }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${moving ? 'bg-emerald-500 animate-pulse' : 'bg-surface-400'}`} />
                 {Math.round(speed)} km/h
               </span>
+            )}
+            {deliveryComplete && (
+              <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">✓ Delivered</span>
             )}
             {(item.is_overdue || alertCount > 0) && (
               <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
@@ -555,54 +576,64 @@ function ActivityCard({
           </div>
         </div>
 
-        <div className="rounded-lg bg-surface-50 dark:bg-surface-950/60 border border-surface-100 dark:border-surface-800 px-2.5 py-2 space-y-1.5">
-          <div className="flex items-start gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400 w-14 shrink-0 pt-0.5">Dest</span>
-            <p className="text-xs font-medium text-surface-800 dark:text-surface-200 leading-snug line-clamp-2">{destLabel}</p>
+        {/* Timing metrics */}
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-surface-50 dark:bg-surface-950/70 border border-surface-100 dark:border-surface-800 p-2">
+          <div className="text-center px-1">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-surface-400">Loading</p>
+            <p className="text-xs font-semibold tabular-nums text-surface-800 dark:text-surface-100 mt-0.5">{loadingTime}</p>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0 flex-wrap">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400 shrink-0">Dist</span>
-              <span className="text-sm font-bold tabular-nums text-brand-700 dark:text-brand-300">
-                {formatDistanceProgress(item, routes)}
-              </span>
-              {item.eta_minutes != null && item.activity_stage === 'enroute' && (
-                <span className="text-[10px] text-surface-500 tabular-nums">{formatEta(item.eta_minutes)}</span>
-              )}
-            </div>
-            {kmDone != null && (
-              <span className="text-[10px] text-surface-500 tabular-nums shrink-0">
-                {formatKmNum(kmDone)} km done
-              </span>
+          <div className="text-center px-1 border-x border-surface-200/80 dark:border-surface-800">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-surface-400">On road</p>
+            <p className="text-xs font-semibold tabular-nums text-surface-800 dark:text-surface-100 mt-0.5">{onRoadTime}</p>
+          </div>
+          <div className="text-center px-1">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-surface-400">ETA</p>
+            <p className="text-xs font-semibold tabular-nums text-brand-700 dark:text-brand-300 mt-0.5">{etaLabel}</p>
+          </div>
+        </div>
+
+        {/* Route progress */}
+        <div className="rounded-xl border border-surface-100 dark:border-surface-800 bg-white dark:bg-surface-900/50 px-3 py-2.5 space-y-2">
+          <p className="text-[11px] font-medium text-surface-700 dark:text-surface-300 line-clamp-1" title={destLabel}>
+            → {destLabel}
+          </p>
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-lg font-bold tabular-nums text-surface-900 dark:text-surface-100 leading-none">
+              {formatDistanceProgress(item, routes)}
+            </span>
+            {item.activity_stage === 'enroute' && item.eta_minutes != null && (
+              <span className="text-[10px] text-surface-500 tabular-nums">{formatEta(item.eta_minutes)} left</span>
             )}
           </div>
           {pct != null && item.activity_stage === 'enroute' && (
-            <div className="pt-0.5">
+            <div>
               <div className="h-1.5 rounded-full bg-surface-200 dark:bg-surface-800 overflow-hidden">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-brand-500 to-emerald-500 transition-all"
+                  className="h-full rounded-full bg-gradient-to-r from-brand-500 via-brand-400 to-emerald-500 transition-all duration-500"
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <p className="text-[10px] text-surface-500 mt-0.5 tabular-nums">
-                {pct}% {progressLabel(item)}
-                {item.off_route_m != null && item.off_route_m > 500 && (
-                  <span className="text-amber-600 dark:text-amber-400"> · off corridor</span>
-                )}
+              <p className="text-[10px] text-surface-500 mt-1 tabular-nums flex justify-between">
+                <span>{pct}% {progressLabel(item)}</span>
+                {kmDone != null && <span>{formatKmNum(kmDone)} km done</span>}
               </p>
             </div>
           )}
+          {item.off_route_m != null && item.off_route_m > 500 && (
+            <p className="text-[10px] font-medium text-amber-600 dark:text-amber-400">Off corridor · {Math.round(item.off_route_m)} m</p>
+          )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 text-xs">
+        {/* Driver */}
+        <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-surface-100 dark:border-surface-800">
           <div className="min-w-0">
-            <p className="font-medium text-surface-800 dark:text-surface-200 truncate">{item.driver_name || 'Driver TBC'}</p>
+            <p className="text-xs font-medium text-surface-800 dark:text-surface-200 truncate">{item.driver_name || 'Driver TBC'}</p>
             {item.driver_phone && (
               <p className="text-[10px] text-surface-500 truncate">{item.driver_phone}</p>
             )}
           </div>
           {item.contractor_name && (
-            <span className="text-[10px] text-surface-500 truncate max-w-[40%]">{item.contractor_name}</span>
+            <span className="text-[10px] text-surface-400 truncate max-w-[42%] text-right">{item.contractor_name}</span>
           )}
         </div>
 
@@ -1050,7 +1081,8 @@ export default function LogisticsActivityTab({ setError }) {
               title="Logistics Activity"
               text={
                 <>
-                  Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. Click a{' '}
+                  Schedule loads by route, track geofence arrivals, and capture loading and offloading slips. An{' '}
+                  <strong>activity watcher</strong> runs on every refresh to auto-move trucks into the correct column when GPS or geofences disagree with the board. Click a{' '}
                   <strong>truck registration</strong> to open its live position on the map.{' '}
                   <strong>Drag a truck card</strong> to any column — the highlighted column shows where it will land when you release.
                 </>
@@ -1077,6 +1109,11 @@ export default function LogisticsActivityTab({ setError }) {
               </span>
             )}
             {filterRouteId !== 'all' && ` · ${focusedRoute?.route_name || 'Route'} (${filteredTotal})`}
+            {board.watcher?.fixed > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-950/50 dark:text-violet-200" title="Activity watcher auto-corrected misplaced trucks">
+                Watcher fixed {board.watcher.fixed}
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">

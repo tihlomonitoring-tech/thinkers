@@ -246,7 +246,7 @@ export async function getTripTrailLastKm(query, tenantId, tripId, km = 2) {
   const tripR = await query(
     `SELECT last_lat, last_lng, last_heading_deg, last_seen_at, contractor_route_id
      FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`,
-    { tenantId, tripId }
+    { tenantId, id: tripId }
   );
   const trip = tripR.recordset?.[0];
   const curLat = get(trip, 'last_lat') != null ? Number(get(trip, 'last_lat')) : null;
@@ -326,7 +326,7 @@ export async function getTripTotalDistanceKm(query, tenantId, tripId) {
   const tripR = await query(
     `SELECT last_speed_kmh, contractor_route_id, collection_point_name, destination_name
      FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`,
-    { tenantId, tripId }
+    { tenantId, id: tripId }
   );
   const trip = tripR.recordset?.[0];
   if (!trip) return { distance_km: null, avg_speed_kmh: null, source: 'none', origin_name: null, destination_name: null };

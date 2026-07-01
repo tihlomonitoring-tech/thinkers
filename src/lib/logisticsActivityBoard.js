@@ -190,8 +190,12 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
   const origin = originCoords?.get(rid);
   const dest = destCoords?.get(rid);
   const started = get(row, 'started_at');
+  const atLoadingAt = get(row, 'at_loading_at');
   const hours = started ? (Date.now() - new Date(started).getTime()) / 3600000 : null;
-  const stage = inferActivityStage(row, openDelivery);
+  const storedStage = String(get(row, 'activity_stage') || '').toLowerCase();
+  const stage = ACTIVITY_STAGES.some((s) => s.id === storedStage)
+    ? storedStage
+    : inferActivityStage(row, openDelivery);
   const tripId = gid(get(row, 'id'));
   const alarms = alarmCounts?.get(tripId) || {};
   const requireOffloadingSlip = workflow.require_offloading_slip_at_destination !== false
@@ -224,9 +228,23 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
 
   const lastSpeed = get(row, 'last_speed_kmh') != null ? Number(get(row, 'last_speed_kmh')) : null;
   let etaMinutes = null;
-  if (stage === 'enroute' && kmRemaining != null && kmRemaining > 0 && lastSpeed != null && lastSpeed >= 5) {
-    etaMinutes = Math.round((kmRemaining / lastSpeed) * 60);
+  if (stage === 'enroute' && kmRemaining != null && kmRemaining > 0) {
+    const speedForEta = lastSpeed != null && lastSpeed >= 5 ? lastSpeed : 55;
+    etaMinutes = Math.round((kmRemaining / speedForEta) * 60);
   }
+
+  let loadingDurationMinutes = null;
+  if (atLoadingAt && stage === 'at_loading') {
+    loadingDurationMinutes = Math.max(0, Math.round((Date.now() - new Date(atLoadingAt).getTime()) / 60000));
+  }
+
+  let onRoadDurationMinutes = null;
+  if (started && ['enroute', 'at_destination'].includes(stage)) {
+    onRoadDurationMinutes = Math.max(0, Math.round((Date.now() - new Date(started).getTime()) / 60000));
+  }
+
+  const etaAt = etaMinutes != null ? new Date(Date.now() + etaMinutes * 60000).toISOString() : null;
+  const etaDueAt = get(row, 'eta_due_at');
 
   return {
     trip_id: tripId,
@@ -249,6 +267,10 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     distance_basis: distances.distance_basis,
     off_route_m: distances.off_route_m,
     eta_minutes: etaMinutes,
+    eta_at: etaAt,
+    eta_due_at: etaDueAt,
+    loading_duration_minutes: loadingDurationMinutes,
+    on_road_duration_minutes: onRoadDurationMinutes,
     activity_stage: stage,
     status: get(row, 'status'),
     scheduled_at: get(row, 'scheduled_at'),
@@ -368,7 +390,19 @@ export function filterBoardStages(stages, routeId) {
 export { UNASSIGNED_ROUTE_ID };
 
 /** Active logistics activity board grouped by stage (aviation-style lanes). */
-export async function buildLogisticsActivityBoard(query, tenantId) {
+export async function buildLogisticsActivityBoard(query, tenantId, options = {}) {
+  const runWatcher = options.runWatcher !== false;
+  let watcher = null;
+  if (runWatcher) {
+    try {
+      const { reconcileLogisticsActivityStages } = await import('./logisticsActivityWatcher.js');
+      watcher = await reconcileLogisticsActivityStages(query, tenantId);
+    } catch (err) {
+      console.warn('[logistics-watcher] reconcile failed:', err?.message || err);
+      watcher = { checked: 0, fixed: 0, fixes: [], error: err?.message || 'Watcher failed' };
+    }
+  }
+
   const [tripsR, routesR, deliveriesR, geofencesR, alarmsR, corridorR, monitorR, settingsR] = await Promise.all([
     query(
       `SELECT t.*, c.name AS contractor_name,
@@ -554,6 +588,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
     route_summaries,
     total_active: items.length,
     workflow,
+    watcher,
     updated_at: new Date().toISOString(),
   };
 }
@@ -1349,7 +1384,10 @@ export async function completeDestinationDelivery(query, tenantId, tripId, body 
     const destId = gid(get(destR.recordset?.[0], 'id'));
     if (destId) {
       const { snapshotDeliveryFuelEconomics } = await import('./trackingDeliveryFuel.js');
-      emptyReturn = await snapshotDeliveryFuelEconomics(query, tenantId, destId).catch(() => null);
+      emptyReturn = await snapshotDeliveryFuelEconomics(query, tenantId, destId).catch((err) => {
+        console.warn('[logistics] delivery economics snapshot failed:', err?.message || err);
+        return null;
+      });
     }
   }
 

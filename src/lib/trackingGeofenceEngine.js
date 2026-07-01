@@ -229,7 +229,10 @@ export async function processGeofencePositions(query, tenantId) {
 
         if (leg === 'destination' && contractorRouteId) {
           const matchRoute = !currentRouteId || currentRouteId === contractorRouteId;
-          const canArrive = matchRoute && (['enroute', 'deviated', 'overdue'].includes(tripStatus) || activityStage === 'enroute');
+          const canArrive = matchRoute && (
+            ['enroute', 'deviated', 'overdue'].includes(tripStatus)
+            || ['enroute', 'at_loading', 'scheduled'].includes(activityStage)
+          );
           if (canArrive) {
             await query(
               `UPDATE fleet_trip SET
@@ -327,6 +330,13 @@ export async function processGeofencePositions(query, tenantId) {
         }
       }
     }
+  }
+
+  try {
+    const { reconcileLogisticsActivityStages } = await import('./logisticsActivityWatcher.js');
+    stats.watcher = await reconcileLogisticsActivityStages(query, tenantId);
+  } catch (err) {
+    console.warn('[geofence] watcher reconcile failed:', err?.message || err);
   }
 
   return stats;
