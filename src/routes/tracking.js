@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { query } from '../db.js';
-import { requireAuth, loadUser, requirePageAccess } from '../middleware/auth.js';
+import { requireAuth, loadUser, requirePageAccess, requireSuperAdmin } from '../middleware/auth.js';
 import { todayYmd } from '../lib/appTime.js';
 import { processGeofencePositions, syncContractorFleetToTracking } from '../lib/trackingGeofenceEngine.js';
 import { geocodeAddress, drivingRouteAlternatives, drivingRouteAlternativesDeep, drivingRouteThroughWaypoints, locationContextAt, reverseGeocode, parseCoordinateQuery } from '../lib/mapRouting.js';
@@ -1420,7 +1420,7 @@ router.patch('/deliveries/:id/economics', async (req, res) => {
   }
 });
 
-router.post('/deliveries/:id/snapshot-fuel', async (req, res) => {
+router.post('/deliveries/:id/snapshot-fuel', requireSuperAdmin, async (req, res) => {
   if (!ensureSchema(req, res, {})) return;
   try {
     const tid = tenantId(req);

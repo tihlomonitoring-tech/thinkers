@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { todayYmd } from '../../lib/appTime.js';
+import { useAuth } from '../../AuthContext.jsx';
 import { tracking as trackingApi } from '../../api';
 import AdvancedColumnSearchBar from '../AdvancedColumnSearchBar.jsx';
 import InfoHint from '../InfoHint.jsx';
@@ -180,7 +181,7 @@ function DeliveryNoteModal({ delivery, onClose, onSaved, setError }) {
   );
 }
 
-function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
+function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSuperAdmin = false }) {
   const economicsIncomplete = (d) => !economicsComplete(d);
   const [form, setForm] = useState({
     fuel_litres: delivery?.fuel_litres ?? '',
@@ -219,7 +220,7 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
   };
 
   useEffect(() => {
-    if (!delivery?.id || !economicsIncomplete(delivery)) return;
+    if (!isSuperAdmin || !delivery?.id || !economicsIncomplete(delivery)) return;
     let cancelled = false;
     (async () => {
       setRecalcing(true);
@@ -233,7 +234,7 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [delivery?.id]);
+  }, [delivery?.id, isSuperAdmin]);
 
   const save = async (e) => {
     e.preventDefault();
@@ -284,7 +285,7 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
                 {d.distance_km != null && ` · ${formatKm(d.distance_km)}`}
               </p>
             </div>
-            {d.fuel_calc_source && (
+            {isSuperAdmin && d.fuel_calc_source && (
               <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 text-surface-600">
                 {calcSourceLabel(d.fuel_calc_source)}
               </span>
@@ -293,12 +294,13 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
         </div>
 
         <div className="px-6 py-5 space-y-5">
-          {recalcing && economicsIncomplete(d) && (
+          {isSuperAdmin && recalcing && economicsIncomplete(d) && (
             <p className="text-sm text-brand-700 dark:text-brand-300 bg-brand-50 dark:bg-brand-950/30 border border-brand-100 dark:border-brand-900 rounded-lg px-3 py-2">
               Calculating fuel, distance, and revenue from route regulations and haul-road data…
             </p>
           )}
 
+          {isSuperAdmin ? (
           <section className="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-950/50 p-4 space-y-2">
             <p className="text-xs font-bold uppercase tracking-wider text-surface-500">System calculation</p>
             <CalcBreakdownRow label="Haul distance" value={formatKm(d.distance_km)} />
@@ -329,6 +331,11 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
               </div>
             </div>
           </section>
+          ) : (
+            <p className="text-sm text-surface-500 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/50 dark:bg-surface-950/40 px-3 py-2">
+              Enter or adjust fuel, return fuel, and revenue below. System calculation details are available to super administrators only.
+            </p>
+          )}
 
           <div className="grid md:grid-cols-2 gap-5">
             <section className="space-y-3">
@@ -386,10 +393,12 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError }) {
         </div>
 
         <div className="px-6 py-4 border-t border-surface-100 dark:border-surface-800 bg-surface-50/80 dark:bg-surface-950/50 flex flex-wrap gap-2 justify-end">
-          <button type="button" onClick={() => recalc(true)} disabled={recalcing} className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border disabled:opacity-50">
-            <IconCalculator className="w-4 h-4" />
-            {recalcing ? 'Calculating…' : 'Recalculate from route data'}
-          </button>
+          {isSuperAdmin && (
+            <button type="button" onClick={() => recalc(true)} disabled={recalcing} className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border disabled:opacity-50">
+              <IconCalculator className="w-4 h-4" />
+              {recalcing ? 'Calculating…' : 'Recalculate from route data'}
+            </button>
+          )}
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border">Cancel</button>
           <button type="submit" disabled={saving} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white disabled:opacity-50">{saving ? 'Saving…' : 'Save calculation'}</button>
         </div>
@@ -410,6 +419,8 @@ function MarginCell({ delivery }) {
 }
 
 export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNoteDeliveryHandled }) {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === 'super_admin';
   const [deliveries, setDeliveries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
@@ -691,6 +702,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
           onClose={() => setCalculationModal(null)}
           onSaved={load}
           setError={setError}
+          isSuperAdmin={isSuperAdmin}
         />
       )}
 
