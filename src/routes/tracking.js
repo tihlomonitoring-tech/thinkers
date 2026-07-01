@@ -823,6 +823,8 @@ function mapSettings(row) {
     notify_email_offloading: get(row, 'notify_email_offloading') !== false && get(row, 'notify_email_offloading') !== 0,
     require_offloading_slip_at_destination: get(row, 'require_offloading_slip_at_destination') !== false
       && get(row, 'require_offloading_slip_at_destination') !== 0,
+    require_loading_slip_before_enroute: get(row, 'require_loading_slip_before_enroute') !== false
+      && get(row, 'require_loading_slip_before_enroute') !== 0,
     updated_at: get(row, 'updated_at'),
   };
 }
@@ -849,6 +851,10 @@ router.patch('/settings', async (req, res) => {
     if (b.require_offloading_slip_at_destination !== undefined) {
       updates.push('require_offloading_slip_at_destination = @rosl');
       params.rosl = b.require_offloading_slip_at_destination ? 1 : 0;
+    }
+    if (b.require_loading_slip_before_enroute !== undefined) {
+      updates.push('require_loading_slip_before_enroute = @rlsb');
+      params.rlsb = b.require_loading_slip_before_enroute ? 1 : 0;
     }
     updates.push('updated_at = SYSUTCDATETIME()');
     if (updates.length === 1) return res.status(400).json({ error: 'No fields' });

@@ -112,6 +112,7 @@
     "db:tracking-notification-email": "node scripts/run-tracking-notification-email-settings.js",
     "db:tracking-notification-geofence": "node scripts/run-tracking-notification-geofence-email.js",
     "db:tracking-logistics-offloading-setting": "node scripts/run-tracking-logistics-offloading-setting.js",
+    "db:tracking-logistics-loading-enroute-setting": "node scripts/run-tracking-logistics-loading-enroute-setting.js",
     "db:tracking-mock": "node scripts/seed-tracking-mock.js",
     "db:tracking-mock:clean": "node scripts/remove-tracking-mock.js",
     "tracking:poll-once": "node scripts/run-tracking-poll-once.js",

@@ -195,6 +195,8 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
   const alarms = alarmCounts?.get(tripId) || {};
   const requireOffloadingSlip = workflow.require_offloading_slip_at_destination !== false
     && workflow.require_offloading_slip_at_destination !== 0;
+  const requireLoadingSlipBeforeEnroute = workflow.require_loading_slip_before_enroute !== false
+    && workflow.require_loading_slip_before_enroute !== 0;
   const offloadingSlipNo = get(row, 'offloading_slip_no');
   const autoCompletedDelivery = isAutoOffloadingSlip(offloadingSlipNo);
   const deliveryCompleted = stage === 'awaiting_reschedule' && !!offloadingSlipNo;
@@ -274,10 +276,13 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     last_lng: lastLng,
     last_speed_kmh: lastSpeed,
     last_heading_deg: get(row, 'last_heading_deg') != null ? Number(get(row, 'last_heading_deg')) : null,
-    needs_action: stage === 'at_loading'
+    needs_action: (stage === 'at_loading' && requireLoadingSlipBeforeEnroute)
       || (stage === 'at_destination' && requireOffloadingSlip)
+      || (stage === 'at_destination' && !tripHasLoadingSlip(row))
       || stage === 'awaiting_reschedule',
     require_offloading_slip_at_destination: requireOffloadingSlip,
+    require_loading_slip_before_enroute: requireLoadingSlipBeforeEnroute,
+    loading_slip_missing: !tripHasLoadingSlip(row),
   };
 }
 
@@ -425,7 +430,8 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       { tenantId }
     ),
     query(
-      `SELECT require_offloading_slip_at_destination FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
+      `SELECT require_offloading_slip_at_destination, require_loading_slip_before_enroute
+       FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
       { tenantId }
     ),
   ]);
@@ -434,7 +440,13 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
   const requireOffloadingSlip = settingsRow == null
     || (get(settingsRow, 'require_offloading_slip_at_destination') !== false
       && get(settingsRow, 'require_offloading_slip_at_destination') !== 0);
-  const workflow = { require_offloading_slip_at_destination: requireOffloadingSlip };
+  const requireLoadingSlipBeforeEnroute = settingsRow == null
+    || (get(settingsRow, 'require_loading_slip_before_enroute') !== false
+      && get(settingsRow, 'require_loading_slip_before_enroute') !== 0);
+  const workflow = {
+    require_offloading_slip_at_destination: requireOffloadingSlip,
+    require_loading_slip_before_enroute: requireLoadingSlipBeforeEnroute,
+  };
 
   const routePolylineMap = new Map();
   for (const row of corridorR.recordset || []) {
@@ -488,7 +500,12 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
     const tid = gid(get(d, 'trip_id'));
     if (!tid) continue;
     const phase = String(get(d, 'activity_phase') || '').toLowerCase();
-    if (phase === 'loading' && !loadingDeliveryByTrip.has(tid)) loadingDeliveryByTrip.set(tid, d);
+    if (phase === 'loading') {
+      const prev = loadingDeliveryByTrip.get(tid);
+      const slip = String(get(d, 'loading_slip_no') || '').trim();
+      const prevSlip = prev ? String(get(prev, 'loading_slip_no') || '').trim() : '';
+      if (!prev || (slip && !prevSlip)) loadingDeliveryByTrip.set(tid, d);
+    }
     if (!deliveryByTrip.has(tid)) deliveryByTrip.set(tid, d);
   }
 
@@ -510,8 +527,10 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
   const stages = ACTIVITY_STAGES.map((s) => ({
     ...s,
     hint: s.id === 'at_destination' && !requireOffloadingSlip
-      ? 'No slip required — delivery completes when truck exits destination geofence'
-      : s.hint,
+      ? 'No offloading slip required — delivery completes when truck exits destination geofence (loading slip still required)'
+      : s.id === 'at_loading' && !requireLoadingSlipBeforeEnroute
+        ? 'No loading slip required — truck moves to En route when it exits the loading geofence'
+        : s.hint,
     count: items.filter((i) => i.activity_stage === s.id).length,
     items: items.filter((i) => i.activity_stage === s.id),
   }));
@@ -636,7 +655,8 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
 export async function openLoadingDeliveryRecord(query, tenantId, tripId, trip, contractorRouteId) {
   const existing = await query(
     `SELECT TOP 1 id FROM tracking_delivery_record
-     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading' AND pending_note = 1`,
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'
+       AND (deleted_at IS NULL)`,
     { tenantId, tripId }
   );
   if (existing.recordset?.[0]) return gid(get(existing.recordset[0], 'id'));
@@ -789,7 +809,11 @@ export async function moveTripActivityStage(query, tenantId, tripId, targetStage
       `UPDATE fleet_trip SET
         activity_stage = N'enroute',
         status = N'enroute',
-        loading_slip_deferred = CASE WHEN @defer = 1 AND (loading_slip_no IS NULL OR loading_slip_no = N'') THEN 1 ELSE loading_slip_deferred END,
+        loading_slip_deferred = CASE
+          WHEN @defer = 1 AND (loading_slip_no IS NULL OR LTRIM(RTRIM(loading_slip_no)) = N'') THEN 1
+          WHEN loading_slip_no IS NOT NULL AND LTRIM(RTRIM(loading_slip_no)) <> N'' THEN 0
+          ELSE loading_slip_deferred
+        END,
         started_at = COALESCE(started_at, SYSUTCDATETIME()),
         eta_due_at = DATEADD(minute, @maxM, COALESCE(started_at, SYSUTCDATETIME())),
         is_overdue = 0,
@@ -801,7 +825,11 @@ export async function moveTripActivityStage(query, tenantId, tripId, targetStage
     await query(
       `UPDATE tracking_delivery_record SET
         pending_note = 0,
-        loading_slip_deferred = CASE WHEN @defer = 1 THEN 1 ELSE loading_slip_deferred END,
+        loading_slip_deferred = CASE
+          WHEN @defer = 1 AND (loading_slip_no IS NULL OR LTRIM(RTRIM(loading_slip_no)) = N'') THEN 1
+          WHEN loading_slip_no IS NOT NULL AND LTRIM(RTRIM(loading_slip_no)) <> N'' THEN 0
+          ELSE loading_slip_deferred
+        END,
         status = N'loading_complete'
        WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
       { tenantId, tripId, defer: defer ? 1 : 0 }
@@ -979,6 +1007,17 @@ export async function captureLoadingSlip(query, tenantId, tripId, body, { defer 
     throw err;
   }
 
+  const stage = String(get(trip, 'activity_stage') || '').toLowerCase();
+  const status = String(get(trip, 'status') || '').toLowerCase();
+  const alreadyDeparted = ['enroute', 'at_destination', 'awaiting_reschedule', 'deviated', 'overdue'].includes(stage)
+    || status === 'enroute' || status === 'deviated' || status === 'overdue';
+
+  // Truck already left loading — update slip fields only (avoids resetting ETA / duplicate delivery rows).
+  if (alreadyDeparted && !defer) {
+    if (!slipNo) throw new Error('Loading slip number required');
+    return updateLoadingSlipFields(query, tenantId, tripId, body);
+  }
+
   const st = await query(`SELECT max_enroute_minutes FROM tracking_tenant_settings WHERE tenant_id = @tenantId`, { tenantId });
   let maxM = st.recordset?.[0] ? get(st.recordset[0], 'max_enroute_minutes') : 240;
   if (maxM == null || maxM < 1) maxM = 240;
@@ -1049,14 +1088,18 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
   if (!slipNo) throw new Error('Loading slip number is required');
 
   const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId, id: tripId });
-  if (!tr.recordset?.[0]) {
+  const trip = tr.recordset?.[0];
+  if (!trip) {
     const err = new Error('Trip not found');
     err.status = 404;
     throw err;
   }
 
+  const rid = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
+  await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
+
   const tons = b.tons_loaded !== '' && b.tons_loaded != null ? Number(b.tons_loaded) : null;
-  let notes = b.notes != null ? String(b.notes) : null;
+  let notes = b.notes != null ? String(b.notes).trim() : null;
   const driver = b.driver_name != null ? String(b.driver_name).trim() || null : null;
   if (b.loaded_at) {
     const stamp = `Loaded at: ${String(b.loaded_at).trim()}`;
@@ -1078,9 +1121,10 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
       loading_slip_no = @slip,
       loading_slip_deferred = 0,
       driver_name = COALESCE(@driver, driver_name),
-      tons_loaded = @tons,
-      notes = @notes,
+      tons_loaded = COALESCE(@tons, tons_loaded),
+      notes = COALESCE(@notes, notes),
       pending_note = 0,
+      status = COALESCE(NULLIF(status, N''), N'loading_complete'),
       delivered_at = COALESCE(@loadedAt, delivered_at)
      WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
     {
@@ -1094,7 +1138,7 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
     }
   );
 
-  return { ok: true };
+  return { ok: true, loading_slip_no: slipNo };
 }
 
 /** Sentinel slip number when delivery auto-completes on destination geofence exit. */
@@ -1103,6 +1147,10 @@ export const AUTO_OFFLOAD_SLIP = 'GEOFENCE-EXIT';
 export function isAutoOffloadingSlip(slipNo) {
   const s = String(slipNo || '').trim().toUpperCase();
   return s === AUTO_OFFLOAD_SLIP || s.startsWith('GEOFENCE-');
+}
+
+export function tripHasLoadingSlip(trip) {
+  return String(get(trip, 'loading_slip_no') || '').trim().length > 0;
 }
 
 /**
@@ -1126,7 +1174,14 @@ export async function completeDestinationDelivery(query, tenantId, tripId, body 
     throw err;
   }
 
-  const stage = String(get(tr.recordset[0], 'activity_stage') || '').toLowerCase();
+  const trip = tr.recordset[0];
+  if (!tripHasLoadingSlip(trip)) {
+    const err = new Error('Loading slip is required before delivery can be completed');
+    err.status = 400;
+    throw err;
+  }
+
+  const stage = String(get(trip, 'activity_stage') || '').toLowerCase();
   if (stage === 'awaiting_reschedule') {
     return { ok: true, activity_stage: 'awaiting_reschedule', already_completed: true };
   }

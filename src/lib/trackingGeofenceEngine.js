@@ -10,6 +10,8 @@ import {
   openDestinationDeliveryRecord,
   allocateTripAtLoading,
   completeDestinationDelivery,
+  moveTripActivityStage,
+  tripHasLoadingSlip,
   AUTO_OFFLOAD_SLIP,
 } from './logisticsActivityBoard.js';
 
@@ -40,20 +42,25 @@ function isInsideRouteAltCorridor(fences, lat, lng, routeId) {
  * @returns {{ processed: number, allocated: number, alerts: number, pending_notes: number }}
  */
 export async function processGeofencePositions(query, tenantId) {
-  const stats = { processed: 0, allocated: 0, alerts: 0, pending_notes: 0, auto_completed: 0 };
+  const stats = { processed: 0, allocated: 0, alerts: 0, pending_notes: 0, auto_completed: 0, auto_enroute: 0 };
 
   const settingsR = await query(
-    `SELECT require_offloading_slip_at_destination FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
+    `SELECT require_offloading_slip_at_destination, require_loading_slip_before_enroute
+     FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
     { tenantId }
   );
-  const requireOffloadingSlip = settingsR.recordset?.[0] == null
-    || (get(settingsR.recordset[0], 'require_offloading_slip_at_destination') !== false
-      && get(settingsR.recordset[0], 'require_offloading_slip_at_destination') !== 0);
+  const settingsRow = settingsR.recordset?.[0];
+  const requireOffloadingSlip = settingsRow == null
+    || (get(settingsRow, 'require_offloading_slip_at_destination') !== false
+      && get(settingsRow, 'require_offloading_slip_at_destination') !== 0);
+  const requireLoadingSlipBeforeEnroute = settingsRow == null
+    || (get(settingsRow, 'require_loading_slip_before_enroute') !== false
+      && get(settingsRow, 'require_loading_slip_before_enroute') !== 0);
 
   const tripsR = await query(
     `SELECT t.id, t.truck_registration, t.contractor_truck_id, t.route_id, t.contractor_route_id,
             t.status, t.activity_stage, t.driver_name, t.last_lat, t.last_lng,
-            t.destination_name, t.collection_point_name, t.started_at
+            t.destination_name, t.collection_point_name, t.started_at, t.loading_slip_no
      FROM fleet_trip t
      WHERE t.tenant_id = @tenantId
        AND t.status NOT IN (N'completed', N'cancelled')
@@ -292,9 +299,21 @@ export async function processGeofencePositions(query, tenantId) {
           }
         }
 
-        if (leg === 'destination' && contractorRouteId && !requireOffloadingSlip && activityStage === 'at_destination') {
+        if (leg === 'origin' && contractorRouteId && !requireLoadingSlipBeforeEnroute && activityStage === 'at_loading') {
           const matchRoute = !currentRouteId || currentRouteId === contractorRouteId;
           if (matchRoute) {
+            try {
+              await moveTripActivityStage(query, tenantId, tripId, 'enroute', { defer_slip: true });
+              stats.auto_enroute++;
+            } catch {
+              // Trip may have been moved elsewhere; continue processing other geofences.
+            }
+          }
+        }
+
+        if (leg === 'destination' && contractorRouteId && !requireOffloadingSlip && activityStage === 'at_destination') {
+          const matchRoute = !currentRouteId || currentRouteId === contractorRouteId;
+          if (matchRoute && tripHasLoadingSlip(trip)) {
             try {
               await completeDestinationDelivery(query, tenantId, tripId, {
                 offloading_slip_no: AUTO_OFFLOAD_SLIP,

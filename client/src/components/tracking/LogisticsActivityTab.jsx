@@ -166,14 +166,35 @@ function ScheduleLoadPanel({
   );
 }
 
+function normalizeLoadingSlipForm(form) {
+  const slip = String(form?.loading_slip_no || '').trim();
+  return {
+    ...form,
+    loading_slip_no: slip,
+    driver_name: form?.driver_name != null ? String(form.driver_name).trim() : form?.driver_name,
+    notes: form?.notes != null ? String(form.notes).trim() : form?.notes,
+    tons_loaded: form?.tons_loaded !== '' && form?.tons_loaded != null ? Number(form.tons_loaded) : null,
+  };
+}
+
+function shouldUpdateLoadingSlip(modal) {
+  if (!modal) return false;
+  if (modal.edit_loading_slip) return true;
+  const stage = String(modal.activity_stage || '').toLowerCase();
+  return stage !== 'at_loading' && stage !== 'scheduled';
+}
+
 function SlipModal({ title, fields, initial, truckRegistration, resetKey, onClose, onSave, saving, submitLabel = 'Save' }) {
   const [form, setForm] = useState(initial);
   const [driversLoading, setDriversLoading] = useState(false);
   const [loadedDrivers, setLoadedDrivers] = useState([]);
   const [driversError, setDriversError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const submitLockRef = useRef(false);
 
   useEffect(() => {
     setForm(initial);
+    setSaveError('');
   }, [resetKey]);
 
   useEffect(() => {
@@ -219,13 +240,33 @@ function SlipModal({ title, fields, initial, truckRegistration, resetKey, onClos
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-surface-950/50 backdrop-blur-sm">
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          onSave(form);
+          if (submitLockRef.current || saving) return;
+          const normalized = normalizeLoadingSlipForm(form);
+          const slipRequired = fields.some((f) => f.key === 'loading_slip_no' && f.required);
+          if (slipRequired && !normalized.loading_slip_no) {
+            setSaveError('Loading slip number is required');
+            return;
+          }
+          submitLockRef.current = true;
+          setSaveError('');
+          try {
+            await onSave(normalized);
+          } catch (err) {
+            setSaveError(err?.message || 'Save failed');
+          } finally {
+            submitLockRef.current = false;
+          }
         }}
         className="w-full max-w-md rounded-xl bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 shadow-xl p-5 space-y-3"
       >
         <h3 className="text-lg font-semibold text-surface-900 dark:text-surface-100">{title}</h3>
+        {saveError && (
+          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200">
+            {saveError}
+          </p>
+        )}
         {fields.map((f) => (
           <label key={f.key} className="block text-sm">
             <span className="text-xs font-medium uppercase tracking-wide text-surface-500 block mb-1">
@@ -425,6 +466,7 @@ function ActivityCard({
   routes,
   styles,
   requireOffloadingSlip = true,
+  requireLoadingSlipBeforeEnroute = true,
   onLoadingSlip,
   onProceedWithoutSlip,
   onEditLoadingSlip,
@@ -439,12 +481,14 @@ function ActivityCard({
   onDragStart,
   onDragEnd,
 }) {
-  const needsLoading = item.activity_stage === 'at_loading';
+  const needsLoading = item.activity_stage === 'at_loading' && requireLoadingSlipBeforeEnroute;
   const needsOffload = item.activity_stage === 'at_destination' && requireOffloadingSlip;
   const awaitingNext = item.activity_stage === 'awaiting_reschedule';
   const deliveryComplete = item.delivery_completed || item.auto_completed_delivery;
-  const canEditLoadingSlip = ['enroute', 'at_destination', 'awaiting_reschedule'].includes(item.activity_stage);
-  const needsAction = needsLoading || needsOffload || awaitingNext;
+  const loadingSlipMissing = !String(item.loading_slip_no || '').trim();
+  const blockedAtDestination = item.activity_stage === 'at_destination' && loadingSlipMissing;
+  const canEditLoadingSlip = ['enroute', 'at_destination', 'awaiting_reschedule', 'at_loading'].includes(item.activity_stage);
+  const needsAction = needsLoading || needsOffload || blockedAtDestination || awaitingNext;
   const speed = Number(item.last_speed_kmh);
   const hasSpeed = Number.isFinite(speed);
   const moving = hasSpeed && speed >= 5;
@@ -588,7 +632,31 @@ function ActivityCard({
             {item.tons_loaded != null ? ` · ${item.tons_loaded} t` : ''}
           </p>
         )}
-        {item.activity_stage === 'at_destination' && !requireOffloadingSlip && (
+        {item.activity_stage === 'at_loading' && !requireLoadingSlipBeforeEnroute && (
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-200/70 bg-emerald-50/80 px-2.5 py-2 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+            </span>
+            <p className="text-[10px] font-medium leading-snug text-emerald-800 dark:text-emerald-200">
+              Awaiting geofence exit — truck moves to En route automatically when it leaves the loading site.
+            </p>
+          </div>
+        )}
+        {blockedAtDestination && (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-300/80 bg-amber-50 px-2.5 py-2 dark:border-amber-900/50 dark:bg-amber-950/30">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+            </span>
+            <p className="text-[10px] font-medium leading-snug text-amber-900 dark:text-amber-200">
+              Loading slip required before this delivery can leave destination.
+            </p>
+          </div>
+        )}
+        {item.activity_stage === 'at_destination' && !requireOffloadingSlip && !blockedAtDestination && (
           <div className="flex items-center gap-2 rounded-lg border border-emerald-200/70 bg-emerald-50/80 px-2.5 py-2 dark:border-emerald-900/50 dark:bg-emerald-950/30">
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -622,9 +690,18 @@ function ActivityCard({
               </button>
             </>
           )}
-          {needsOffload && (
+          {needsOffload && !blockedAtDestination && (
             <button type="button" onClick={() => onOffloadingSlip(item)} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 font-medium">
               Offloading slip
+            </button>
+          )}
+          {item.activity_stage === 'at_loading' && !requireLoadingSlipBeforeEnroute && (
+            <button
+              type="button"
+              onClick={() => onEditLoadingSlip(item)}
+              className="text-[10px] px-2.5 py-1 rounded-md border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800"
+            >
+              {item.loading_slip_no ? 'Edit loading slip' : 'Capture loading slip (optional)'}
             </button>
           )}
           {canEditLoadingSlip && (
@@ -816,45 +893,57 @@ export default function LogisticsActivityTab({ setError }) {
   }, [board.stages]);
 
   const requireOffloadingSlip = board.workflow?.require_offloading_slip_at_destination !== false;
+  const requireLoadingSlipBeforeEnroute = board.workflow?.require_loading_slip_before_enroute !== false;
 
-  const submitLoadingSlip = async (tripId, form, defer = false) => {
+  const persistLoadingSlip = async (tripId, form, { defer = false, update = false } = {}) => {
+    const payload = {
+      loading_slip_no: form.loading_slip_no,
+      tons_loaded: form.tons_loaded,
+      driver_name: form.driver_name,
+      notes: form.notes,
+    };
+    if (update || defer) {
+      if (update) {
+        return trackingApi.logisticsActivity.updateLoadingSlip(tripId, payload);
+      }
+      return trackingApi.logisticsActivity.saveLoadingSlip(tripId, { ...payload, defer_slip: true });
+    }
+    return trackingApi.logisticsActivity.saveLoadingSlip(tripId, payload);
+  };
+
+  const submitLoadingSlip = async (tripId, form, defer = false, { forceUpdate = false } = {}) => {
     setSaving(true);
+    setError('');
     try {
-      await trackingApi.logisticsActivity.saveLoadingSlip(tripId, {
-        loading_slip_no: form.loading_slip_no,
-        tons_loaded: form.tons_loaded !== '' && form.tons_loaded != null ? Number(form.tons_loaded) : null,
-        driver_name: form.driver_name,
-        notes: form.notes,
-        defer_slip: defer,
-      });
+      const useUpdate = forceUpdate || (!defer && shouldUpdateLoadingSlip(modal));
+      await persistLoadingSlip(tripId, form, { defer, update: useUpdate });
       setModal(null);
       await load({ silent: true });
     } catch (e) {
       setError(e?.message || 'Save failed');
+      throw e;
     } finally {
       setSaving(false);
     }
   };
 
-  const handleLoadingSave = (form, defer = false) => {
+  const handleLoadingSave = async (form, defer = false) => {
     if (!modal) return;
-    return submitLoadingSlip(modal.trip_id, form, defer);
+    const useUpdate = !defer && shouldUpdateLoadingSlip(modal);
+    return submitLoadingSlip(modal.trip_id, form, defer, { forceUpdate: useUpdate });
   };
 
   const handleLoadingEdit = async (form) => {
     if (!modal) return;
     setSaving(true);
+    setError('');
     try {
-      await trackingApi.logisticsActivity.updateLoadingSlip(modal.trip_id, {
-        loading_slip_no: form.loading_slip_no,
-        tons_loaded: form.tons_loaded !== '' && form.tons_loaded != null ? Number(form.tons_loaded) : null,
-        driver_name: form.driver_name,
-        notes: form.notes,
-      });
+      await persistLoadingSlip(modal.trip_id, form, { update: true });
       setModal(null);
       await load({ silent: true });
     } catch (e) {
       setError(e?.message || 'Update failed');
+      throw e;
     } finally {
       setSaving(false);
     }
@@ -977,6 +1066,14 @@ export default function LogisticsActivityTab({ setError }) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 Auto-complete on exit
+              </span>
+            )}
+            {!requireLoadingSlipBeforeEnroute && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+                Auto en route on exit
               </span>
             )}
             {filterRouteId !== 'all' && ` · ${focusedRoute?.route_name || 'Route'} (${filteredTotal})`}
@@ -1164,6 +1261,7 @@ export default function LogisticsActivityTab({ setError }) {
                         routes={board.routes || []}
                         styles={styles}
                         requireOffloadingSlip={requireOffloadingSlip}
+                        requireLoadingSlipBeforeEnroute={requireLoadingSlipBeforeEnroute}
                         mapActive={mapTripId === item.trip_id}
                         isDragging={draggingTrip?.tripId === item.trip_id}
                         draggable
@@ -1222,7 +1320,9 @@ export default function LogisticsActivityTab({ setError }) {
             { key: 'notes', label: 'Remarks', type: 'textarea' },
           ]}
           onClose={() => setModal(null)}
-          onSave={(form) => (modal.edit_loading_slip ? handleLoadingEdit(form) : handleLoadingSave(form, false))}
+          onSave={(form) => (modal.edit_loading_slip || shouldUpdateLoadingSlip(modal)
+            ? handleLoadingEdit(form)
+            : handleLoadingSave(form, false))}
           submitLabel={modal.edit_loading_slip ? 'Update' : 'Save'}
           saving={saving}
         />
