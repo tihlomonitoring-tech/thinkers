@@ -1,4 +1,4 @@
-/** Compact row showing a picked map point with clear / re-pick actions. */
+/** Compact row showing a picked map point with clear / re-pick / zoom actions. */
 export default function PickedPointRow({
   label,
   color = '#2563eb',
@@ -6,6 +6,7 @@ export default function PickedPointRow({
   active,
   onPick,
   onClear,
+  onZoomTo,
 }) {
   const hasPoint = coords?.lat != null && coords?.lng != null;
 
@@ -24,20 +25,30 @@ export default function PickedPointRow({
               {Number(coords.lat).toFixed(6)}, {Number(coords.lng).toFixed(6)}
             </p>
           ) : (
-            <p className="text-[10px] text-surface-400">Not set — pick on map or search</p>
+            <p className="text-[10px] text-surface-400">Not set — pan & zoom on map, then pick or use crosshair</p>
           )}
         </div>
       </div>
-      <div className="flex gap-1.5 shrink-0">
+      <div className="flex gap-1.5 shrink-0 flex-wrap">
         <button
           type="button"
           onClick={onPick}
           className={`text-[10px] px-2 py-1 rounded-md border ${
-            active ? 'border-brand-500 text-brand-800' : 'border-surface-300 text-surface-600 hover:bg-surface-50'
+            active ? 'border-brand-500 text-brand-800 bg-white' : 'border-surface-300 text-surface-600 hover:bg-surface-50'
           }`}
         >
-          {active ? 'Click map…' : hasPoint ? 'Re-pick' : 'Pick'}
+          {active ? 'Pan map, then pick…' : hasPoint ? 'Re-pick' : 'Pick'}
         </button>
+        {hasPoint && onZoomTo && (
+          <button
+            type="button"
+            onClick={onZoomTo}
+            className="text-[10px] px-2 py-1 rounded-md border border-surface-300 text-surface-600 hover:bg-surface-50"
+            title="Zoom in on this point to refine placement"
+          >
+            Zoom in
+          </button>
+        )}
         {hasPoint && (
           <button
             type="button"

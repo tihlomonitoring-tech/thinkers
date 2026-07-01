@@ -392,7 +392,7 @@ devRouter.get('/policies/:id/pdf', async (req, res, next) => {
 
 // ——— Employee / profile ———
 const employeeRouter = Router();
-employeeRouter.use(requirePageAccess('profile'));
+employeeRouter.use(requirePageAccess(['profile', 'operator_profile']));
 
 employeeRouter.get('/published', async (req, res, next) => {
   try {

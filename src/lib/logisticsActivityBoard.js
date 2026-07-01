@@ -183,7 +183,7 @@ export function resolveRouteDistanceSource(routePolyline, route) {
   return 'direct';
 }
 
-export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts, loadingDelivery, routePolylineMap) {
+export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, destCoords, alarmCounts, loadingDelivery, routePolylineMap, workflow = {}) {
   const rid = gid(get(row, 'contractor_route_id')) || gid(get(row, 'route_id'));
   const route = routeMeta?.get(rid);
   const origin = originCoords?.get(rid);
@@ -193,6 +193,11 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
   const stage = inferActivityStage(row, openDelivery);
   const tripId = gid(get(row, 'id'));
   const alarms = alarmCounts?.get(tripId) || {};
+  const requireOffloadingSlip = workflow.require_offloading_slip_at_destination !== false
+    && workflow.require_offloading_slip_at_destination !== 0;
+  const offloadingSlipNo = get(row, 'offloading_slip_no');
+  const autoCompletedDelivery = isAutoOffloadingSlip(offloadingSlipNo);
+  const deliveryCompleted = stage === 'awaiting_reschedule' && !!offloadingSlipNo;
 
   const lastLat = get(row, 'last_lat') != null ? Number(get(row, 'last_lat')) : null;
   const lastLng = get(row, 'last_lng') != null ? Number(get(row, 'last_lng')) : null;
@@ -249,7 +254,9 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     completed_at: get(row, 'completed_at'),
     loading_slip_no: get(row, 'loading_slip_no'),
     loading_slip_deferred: !!get(row, 'loading_slip_deferred'),
-    offloading_slip_no: get(row, 'offloading_slip_no'),
+    offloading_slip_no: offloadingSlipNo,
+    auto_completed_delivery: autoCompletedDelivery,
+    delivery_completed: deliveryCompleted,
     delivery_id: openDelivery ? gid(get(openDelivery, 'id')) : null,
     delivery_note_no: get(openDelivery, 'delivery_note_no'),
     tons_loaded: get(loadingDelivery, 'tons_loaded') != null
@@ -267,7 +274,10 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     last_lng: lastLng,
     last_speed_kmh: lastSpeed,
     last_heading_deg: get(row, 'last_heading_deg') != null ? Number(get(row, 'last_heading_deg')) : null,
-    needs_action: stage === 'at_loading' || stage === 'at_destination' || stage === 'awaiting_reschedule',
+    needs_action: stage === 'at_loading'
+      || (stage === 'at_destination' && requireOffloadingSlip)
+      || stage === 'awaiting_reschedule',
+    require_offloading_slip_at_destination: requireOffloadingSlip,
   };
 }
 
@@ -353,7 +363,7 @@ export { UNASSIGNED_ROUTE_ID };
 
 /** Active logistics activity board grouped by stage (aviation-style lanes). */
 export async function buildLogisticsActivityBoard(query, tenantId) {
-  const [tripsR, routesR, deliveriesR, geofencesR, alarmsR, corridorR, monitorR] = await Promise.all([
+  const [tripsR, routesR, deliveriesR, geofencesR, alarmsR, corridorR, monitorR, settingsR] = await Promise.all([
     query(
       `SELECT t.*, c.name AS contractor_name,
               (SELECT TOP 1 d.full_name FROM contractor_drivers d
@@ -414,7 +424,17 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
        WHERE tenant_id = @tenantId AND contractor_route_id IS NOT NULL AND is_active = 1`,
       { tenantId }
     ),
+    query(
+      `SELECT require_offloading_slip_at_destination FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
+      { tenantId }
+    ),
   ]);
+
+  const settingsRow = settingsR.recordset?.[0];
+  const requireOffloadingSlip = settingsRow == null
+    || (get(settingsRow, 'require_offloading_slip_at_destination') !== false
+      && get(settingsRow, 'require_offloading_slip_at_destination') !== 0);
+  const workflow = { require_offloading_slip_at_destination: requireOffloadingSlip };
 
   const routePolylineMap = new Map();
   for (const row of corridorR.recordset || []) {
@@ -482,12 +502,16 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
       destCoords,
       alarmCounts,
       loadingDeliveryByTrip.get(tripId),
-      routePolylineMap
+      routePolylineMap,
+      workflow
     );
   });
 
   const stages = ACTIVITY_STAGES.map((s) => ({
     ...s,
+    hint: s.id === 'at_destination' && !requireOffloadingSlip
+      ? 'No slip required — delivery completes when truck exits destination geofence'
+      : s.hint,
     count: items.filter((i) => i.activity_stage === s.id).length,
     items: items.filter((i) => i.activity_stage === s.id),
   }));
@@ -507,6 +531,7 @@ export async function buildLogisticsActivityBoard(query, tenantId) {
     routes: routeList,
     route_summaries,
     total_active: items.length,
+    workflow,
     updated_at: new Date().toISOString(),
   };
 }
@@ -534,6 +559,24 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
     reg = String(get(tr.recordset?.[0], 'registration') || '').trim();
   }
   if (!reg) throw new Error('Truck registration is required');
+  if (!ctid) {
+    const tr = await query(
+      `SELECT TOP 1 id FROM contractor_trucks WHERE tenant_id = @tenantId AND registration = @reg`,
+      { tenantId, reg }
+    );
+    ctid = gid(get(tr.recordset?.[0], 'id'));
+  }
+
+  let driverName = null;
+  if (ctid) {
+    const dr = await query(
+      `SELECT TOP 1 full_name FROM contractor_drivers
+       WHERE tenant_id = @tenantId AND linked_truck_id = @ctid
+       ORDER BY CASE WHEN linked_user_id IS NOT NULL THEN 0 ELSE 1 END, id`,
+      { tenantId, ctid }
+    );
+    driverName = String(get(dr.recordset?.[0], 'full_name') || '').trim() || null;
+  }
 
   const routeR = await query(
     `SELECT name, loading_address, destination_address FROM contractor_routes WHERE id = @rid AND tenant_id = @tenantId`,
@@ -551,6 +594,7 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
         activity_stage = N'scheduled', scheduled_at = SYSUTCDATETIME(),
         status = N'pending', updated_at = SYSUTCDATETIME(),
         contractor_truck_id = COALESCE(@ctid, contractor_truck_id),
+        driver_name = COALESCE(@driverName, driver_name),
         offloading_slip_no = NULL, at_destination_at = NULL,
         started_at = NULL, eta_due_at = NULL, is_overdue = 0
        WHERE id = @id AND tenant_id = @tenantId`,
@@ -561,6 +605,7 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
         cp: get(route, 'loading_address') || get(route, 'name'),
         dn: get(route, 'destination_address'),
         ctid: ctid || null,
+        driverName,
       }
     );
     return { trip_id: gid(get(existing, 'id')), updated: true };
@@ -570,9 +615,9 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
   const ins = await query(
     `INSERT INTO fleet_trip (
       tenant_id, trip_ref, truck_registration, contractor_truck_id, contractor_route_id, route_id,
-      collection_point_name, destination_name, status, activity_stage, scheduled_at
+      collection_point_name, destination_name, status, activity_stage, scheduled_at, driver_name
     ) OUTPUT INSERTED.id VALUES (
-      @tenantId, @ref, @reg, @ctid, @rid, @rid, @cp, @dn, N'pending', N'scheduled', SYSUTCDATETIME()
+      @tenantId, @ref, @reg, @ctid, @rid, @rid, @cp, @dn, N'pending', N'scheduled', SYSUTCDATETIME(), @driverName
     )`,
     {
       tenantId,
@@ -582,6 +627,7 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
       rid,
       cp: get(route, 'loading_address') || get(route, 'name'),
       dn: get(route, 'destination_address'),
+      driverName,
     }
   );
   return { trip_id: gid(get(ins.recordset?.[0], 'id')), updated: false };
@@ -816,29 +862,47 @@ export function normalizePersonName(name) {
   return String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-/** Trucks scheduled / at loading (or deferred slip) assigned to a driver by name or linked truck. */
-export async function listLoadingAssignmentsForDriver(query, tenantId, userFullName) {
+/** Trucks scheduled / at loading (or deferred slip) assigned to a driver by linked user, name, or linked truck. */
+export async function listLoadingAssignmentsForDriver(query, tenantId, userFullName, userId = null) {
   const driverName = normalizePersonName(userFullName);
-  if (!driverName) return [];
+  const uid = userId ? gid(userId) : null;
+  if (!driverName && !uid) return [];
 
-  const driversR = await query(
-    `SELECT d.id, d.full_name, d.linked_truck_id
-     FROM contractor_drivers d
-     WHERE d.tenant_id = @tenantId
-       AND LOWER(LTRIM(RTRIM(d.full_name))) = @driverName`,
-    { tenantId, driverName }
-  );
-  const linkedTruckIds = [...new Set(
-    (driversR.recordset || []).map((row) => gid(get(row, 'linked_truck_id'))).filter(Boolean)
-  )];
+  const ors = [];
+  const params = { tenantId };
 
-  const ors = ['LOWER(LTRIM(RTRIM(COALESCE(t.driver_name, N\'\')))) = @driverName'];
-  const params = { tenantId, driverName };
-  linkedTruckIds.forEach((id, i) => {
-    ors.push(`t.contractor_truck_id = @truck${i}`);
-    params[`truck${i}`] = id;
-  });
-  if (linkedTruckIds.length) {
+  if (driverName) {
+    params.driverName = driverName;
+    ors.push(`LOWER(LTRIM(RTRIM(COALESCE(t.driver_name, N'')))) = @driverName`);
+  }
+
+  if (uid) {
+    params.uid = uid;
+    ors.push(`EXISTS (
+      SELECT 1 FROM contractor_drivers d
+      WHERE d.tenant_id = @tenantId AND d.linked_user_id = @uid
+        AND (
+          (d.linked_truck_id IS NOT NULL AND d.linked_truck_id = t.contractor_truck_id)
+          OR LOWER(LTRIM(RTRIM(COALESCE(t.driver_name, N'')))) = LOWER(LTRIM(RTRIM(d.full_name)))
+        )
+    )`);
+  }
+
+  if (driverName) {
+    const driversR = await query(
+      `SELECT d.id, d.full_name, d.linked_truck_id
+       FROM contractor_drivers d
+       WHERE d.tenant_id = @tenantId
+         AND LOWER(LTRIM(RTRIM(d.full_name))) = @driverName`,
+      { tenantId, driverName }
+    );
+    const linkedTruckIds = [...new Set(
+      (driversR.recordset || []).map((row) => gid(get(row, 'linked_truck_id'))).filter(Boolean)
+    )];
+    linkedTruckIds.forEach((id, i) => {
+      ors.push(`t.contractor_truck_id = @truck${i}`);
+      params[`truck${i}`] = id;
+    });
     ors.push(
       `EXISTS (
         SELECT 1 FROM contractor_drivers d
@@ -847,6 +911,8 @@ export async function listLoadingAssignmentsForDriver(query, tenantId, userFullN
       )`
     );
   }
+
+  if (!ors.length) return [];
 
   const r = await query(
     `SELECT t.id AS trip_id, t.trip_ref, t.truck_registration, t.driver_name, t.activity_stage,
@@ -890,8 +956,8 @@ export async function listLoadingAssignmentsForDriver(query, tenantId, userFullN
   }));
 }
 
-export async function assertTripAssignedToDriver(query, tenantId, tripId, userFullName) {
-  const assignments = await listLoadingAssignmentsForDriver(query, tenantId, userFullName);
+export async function assertTripAssignedToDriver(query, tenantId, tripId, userFullName, userId = null) {
+  const assignments = await listLoadingAssignmentsForDriver(query, tenantId, userFullName, userId);
   const ok = assignments.some((a) => a.trip_id === gid(tripId));
   if (!ok) {
     const err = new Error('This load is not assigned to you');
@@ -1029,4 +1095,112 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
   );
 
   return { ok: true };
+}
+
+/** Sentinel slip number when delivery auto-completes on destination geofence exit. */
+export const AUTO_OFFLOAD_SLIP = 'GEOFENCE-EXIT';
+
+export function isAutoOffloadingSlip(slipNo) {
+  const s = String(slipNo || '').trim().toUpperCase();
+  return s === AUTO_OFFLOAD_SLIP || s.startsWith('GEOFENCE-');
+}
+
+/**
+ * Mark a trip as delivered and move to awaiting_reschedule (manual slip or geofence auto-complete).
+ */
+export async function completeDestinationDelivery(query, tenantId, tripId, body = {}, { snapshotFuel = true } = {}) {
+  const b = body || {};
+  const slipNo = b.offloading_slip_no ? String(b.offloading_slip_no).trim() : '';
+  const noteNo = b.delivery_note_no ? String(b.delivery_note_no).trim() : '';
+  const resolvedSlip = slipNo || noteNo;
+  if (!resolvedSlip) {
+    const err = new Error('Offloading slip or delivery note number required');
+    err.status = 400;
+    throw err;
+  }
+
+  const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId, id: tripId });
+  if (!tr.recordset?.[0]) {
+    const err = new Error('Trip not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const stage = String(get(tr.recordset[0], 'activity_stage') || '').toLowerCase();
+  if (stage === 'awaiting_reschedule') {
+    return { ok: true, activity_stage: 'awaiting_reschedule', already_completed: true };
+  }
+
+  const autoNote = b.auto_complete
+    ? 'Delivery auto-completed when truck exited destination geofence'
+    : null;
+  const notes = b.notes != null ? String(b.notes).trim() : null;
+  const combinedNotes = [notes, autoNote].filter(Boolean).join('\n') || null;
+
+  await query(
+    `UPDATE fleet_trip SET
+      offloading_slip_no = @slip,
+      activity_stage = N'awaiting_reschedule',
+      status = N'pending',
+      is_overdue = 0,
+      updated_at = SYSUTCDATETIME(),
+      notes = CASE WHEN @notes IS NOT NULL THEN @notes ELSE notes END
+     WHERE id = @id AND tenant_id = @tenantId`,
+    { tenantId, id: tripId, slip: resolvedSlip, notes: combinedNotes }
+  );
+
+  const destExisting = await query(
+    `SELECT TOP 1 id FROM tracking_delivery_record
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
+    { tenantId, tripId }
+  );
+  if (!destExisting.recordset?.[0]) {
+    const trip = tr.recordset[0];
+    const rid = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
+    await openDestinationDeliveryRecord(query, tenantId, tripId, trip, rid);
+  }
+
+  await query(
+    `UPDATE tracking_delivery_record SET
+      offloading_slip_no = @slip,
+      delivery_note_no = COALESCE(@note, delivery_note_no),
+      tons_loaded = COALESCE(@tons, tons_loaded),
+      net_weight_kg = COALESCE(@nw, net_weight_kg),
+      notes = COALESCE(@notes, notes),
+      pending_note = 0,
+      status = N'completed',
+      delivered_at = COALESCE(delivered_at, SYSUTCDATETIME())
+     WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
+    {
+      tenantId,
+      tripId,
+      slip: resolvedSlip,
+      note: noteNo || null,
+      tons: b.tons_loaded != null ? Number(b.tons_loaded) : null,
+      nw: b.tons_loaded != null ? Number(b.tons_loaded) * 1000 : null,
+      notes: combinedNotes,
+    }
+  );
+
+  let emptyReturn = null;
+  if (snapshotFuel) {
+    const destR = await query(
+      `SELECT TOP 1 id FROM tracking_delivery_record
+       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
+      { tenantId, tripId }
+    );
+    const destId = gid(get(destR.recordset?.[0], 'id'));
+    if (destId) {
+      const { snapshotDeliveryFuelEconomics } = await import('./trackingDeliveryFuel.js');
+      emptyReturn = await snapshotDeliveryFuelEconomics(query, tenantId, destId).catch(() => null);
+    }
+  }
+
+  return {
+    ok: true,
+    activity_stage: 'awaiting_reschedule',
+    offloading_slip_no: resolvedSlip,
+    auto_complete: !!b.auto_complete,
+    empty_return: emptyReturn,
+  };
 }

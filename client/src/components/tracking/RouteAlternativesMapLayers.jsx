@@ -12,7 +12,7 @@ function routeLabelIcon(letter, color, isPrimary) {
   });
 }
 
-/** Renders every discovered route, auto-corridors, and labels — all visible at once. */
+/** Renders allowed route corridors and centerlines — disallowed routes are hidden from the geofence map. */
 export default function RouteAlternativesMapLayers({ preview, corridorM = 400 }) {
   if (!preview?.alternatives?.length) return null;
 
@@ -28,6 +28,8 @@ export default function RouteAlternativesMapLayers({ preview, corridorM = 400 })
         const style = routeOptionStyle(i, alt);
         const isPrimary = i === primaryIndex;
         const included = !!altCorridors[i]?.enabled;
+        if (!isPrimary && !included) return null;
+
         const storedCorridor = isPrimary
           ? preview.corridor_polygon
           : altCorridors[i]?.corridor_polygon;
@@ -46,9 +48,9 @@ export default function RouteAlternativesMapLayers({ preview, corridorM = 400 })
                   color: isPrimary ? style.corridor : style.line,
                   weight: isPrimary ? 3 : 2,
                   dashArray: alt.is_manual ? '2 6' : isPrimary ? undefined : '4 6',
-                  fillOpacity: isPrimary ? 0.28 : included ? 0.18 : 0.08,
+                  fillOpacity: isPrimary ? 0.28 : 0.18,
                   fillColor: isPrimary ? style.corridor : style.line,
-                  opacity: included || isPrimary ? 0.95 : 0.45,
+                  opacity: 0.95,
                 }}
               />
             )}
@@ -56,11 +58,11 @@ export default function RouteAlternativesMapLayers({ preview, corridorM = 400 })
               positions={polyline.map((p) => [p.lat, p.lng])}
               pathOptions={{
                 color: style.line,
-                weight: isPrimary ? 8 : alt.is_manual ? 7 : included ? 6 : 5,
-                opacity: isPrimary ? 1 : included ? 0.92 : 0.65,
+                weight: isPrimary ? 8 : alt.is_manual ? 7 : 6,
+                opacity: isPrimary ? 1 : 0.92,
                 lineCap: 'round',
                 lineJoin: 'round',
-                dashArray: alt.is_manual && !isPrimary ? '12 6' : isPrimary ? undefined : included ? undefined : '8 6',
+                dashArray: alt.is_manual && !isPrimary ? '12 6' : undefined,
               }}
             />
             {mid && (

@@ -10,6 +10,7 @@ export default function AlternativeRoutesPanel({
   onZoomRoute,
   onZoomAll,
   onRemoveManual,
+  onEditManual,
   onStartPlotManual,
   systemRouteDistanceKm = null,
 }) {
@@ -29,8 +30,7 @@ export default function AlternativeRoutesPanel({
             {altCount} route{altCount === 1 ? '' : 's'} — auto + custom
           </h3>
           <p className="text-[11px] text-surface-600 dark:text-surface-400 mt-1 max-w-2xl">
-            All paths show on the map. Set a <strong>primary</strong> corridor, allow alternatives, or{' '}
-            <strong>plot your own road</strong> on the map and add it here.
+            All paths show in the list below. <strong>Disallowed</strong> routes are hidden from the geofence map — only primary and allowed alternatives appear as corridors.
             {manualCount > 0 && (
               <span className="text-amber-700 dark:text-amber-400"> {manualCount} custom plotted.</span>
             )}
@@ -129,6 +129,15 @@ export default function AlternativeRoutesPanel({
                     className="text-[11px] px-2 py-1 rounded border border-brand-400 text-brand-800 dark:text-brand-300 hover:bg-brand-100/80"
                   >
                     Set primary
+                  </button>
+                )}
+                {alt.is_manual && (
+                  <button
+                    type="button"
+                    onClick={() => onEditManual?.(i)}
+                    className="text-[11px] px-2 py-1 rounded border border-amber-500 text-amber-800 hover:bg-amber-50"
+                  >
+                    Edit waypoints
                   </button>
                 )}
                 {alt.is_manual && (

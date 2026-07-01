@@ -106,6 +106,12 @@ export function parseCorridorMeta(raw) {
     route_index: data?.route_index ?? null,
     is_alternative: !!data?.is_alternative,
     route_polyline: data?.route_polyline ?? null,
+    is_manual: !!data?.is_manual,
+    manual_label: data?.manual_label ?? null,
+    manual_waypoints: Array.isArray(data?.manual_waypoints) ? data.manual_waypoints : null,
+    route_uid: data?.route_uid ?? null,
+    manual_seq: data?.manual_seq ?? null,
+    duration_min: data?.duration_min ?? null,
   };
 }
 

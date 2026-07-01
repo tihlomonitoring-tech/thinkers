@@ -322,6 +322,10 @@ router.get('/all', async (req, res, next) => {
                LEFT JOIN users ru ON ru.id = c.reviewed_by_user_id
                WHERE c.tenant_id = @t`;
     const params = { t };
+    if (req.query.scope === 'operator' || req.query.scope === 'profile') {
+      sql += ` AND EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = c.claimant_user_id AND pr.page_id = @scopePage)`;
+      params.scopePage = req.query.scope === 'operator' ? 'operator_profile' : 'profile';
+    }
     if (req.query.status && req.query.status !== 'all') { sql += ` AND c.[status] = @status`; params.status = req.query.status; }
     if (req.query.claim_type) { sql += ` AND c.claim_type = @claimType`; params.claimType = req.query.claim_type; }
     if (req.query.user_id) { sql += ` AND c.claimant_user_id = @userId`; params.userId = req.query.user_id; }
@@ -342,6 +346,12 @@ router.get('/stats/summary', async (req, res, next) => {
   try {
     const t = tid(req);
     if (!t) return res.status(400).json({ error: 'No tenant' });
+    const params = { t };
+    let scopeClause = '';
+    if (req.query.scope === 'operator' || req.query.scope === 'profile') {
+      scopeClause = ` AND EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = claims.claimant_user_id AND pr.page_id = @scopePage)`;
+      params.scopePage = req.query.scope === 'operator' ? 'operator_profile' : 'profile';
+    }
     const r = await query(
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN [status] = N'pending' THEN 1 ELSE 0 END) AS pending_count,
@@ -349,8 +359,8 @@ router.get('/stats/summary', async (req, res, next) => {
               SUM(CASE WHEN [status] = N'declined' THEN 1 ELSE 0 END) AS declined_count,
               SUM(CASE WHEN [status] = N'pending' THEN amount ELSE 0 END) AS pending_amount,
               SUM(CASE WHEN [status] = N'approved' THEN amount ELSE 0 END) AS approved_amount
-       FROM claims WHERE tenant_id = @t`,
-      { t }
+       FROM claims WHERE tenant_id = @t${scopeClause}`,
+      params
     );
     res.json({ summary: r.recordset?.[0] || {} });
   } catch (err) { next(err); }

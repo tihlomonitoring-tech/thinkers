@@ -359,7 +359,9 @@ function distanceBasisHint(item) {
 }
 
 function formatDistanceProgress(item, routes) {
-  if (item.activity_stage === 'awaiting_reschedule') return 'Delivered';
+  if (item.activity_stage === 'awaiting_reschedule') {
+    return item.auto_completed_delivery ? '✓ Delivered (auto)' : '✓ Delivered';
+  }
   if (item.activity_stage === 'at_destination') {
     const totalKm = resolveRouteTotalKm(item, routes);
     const total = formatKmNum(totalKm);
@@ -422,6 +424,7 @@ function ActivityCard({
   item,
   routes,
   styles,
+  requireOffloadingSlip = true,
   onLoadingSlip,
   onProceedWithoutSlip,
   onEditLoadingSlip,
@@ -437,8 +440,9 @@ function ActivityCard({
   onDragEnd,
 }) {
   const needsLoading = item.activity_stage === 'at_loading';
-  const needsOffload = item.activity_stage === 'at_destination';
+  const needsOffload = item.activity_stage === 'at_destination' && requireOffloadingSlip;
   const awaitingNext = item.activity_stage === 'awaiting_reschedule';
+  const deliveryComplete = item.delivery_completed || item.auto_completed_delivery;
   const canEditLoadingSlip = ['enroute', 'at_destination', 'awaiting_reschedule'].includes(item.activity_stage);
   const needsAction = needsLoading || needsOffload || awaitingNext;
   const speed = Number(item.last_speed_kmh);
@@ -479,6 +483,17 @@ function ActivityCard({
             <p className="text-[10px] text-surface-500 truncate">{item.route_name}</p>
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
+            {deliveryComplete && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200/80 dark:bg-emerald-950/60 dark:text-emerald-200 dark:ring-emerald-800/60"
+                title={item.auto_completed_delivery ? 'Delivery auto-completed on geofence exit' : 'Delivery completed'}
+              >
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Complete
+              </span>
+            )}
             {hasSpeed && (
               <span className={`text-xs font-bold tabular-nums px-2 py-0.5 rounded-full ${
                 moving
@@ -573,9 +588,26 @@ function ActivityCard({
             {item.tons_loaded != null ? ` · ${item.tons_loaded} t` : ''}
           </p>
         )}
-        {awaitingNext && item.offloading_slip_no && (
+        {item.activity_stage === 'at_destination' && !requireOffloadingSlip && (
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-200/70 bg-emerald-50/80 px-2.5 py-2 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+              </svg>
+            </span>
+            <p className="text-[10px] font-medium leading-snug text-emerald-800 dark:text-emerald-200">
+              Awaiting geofence exit — delivery completes automatically when the truck leaves destination.
+            </p>
+          </div>
+        )}
+        {awaitingNext && item.offloading_slip_no && !item.auto_completed_delivery && (
           <p className="text-[10px] text-violet-700 dark:text-violet-300">
             Delivered · slip {item.offloading_slip_no}
+          </p>
+        )}
+        {awaitingNext && item.auto_completed_delivery && (
+          <p className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+            Delivered · auto-completed on geofence exit
           </p>
         )}
 
@@ -780,11 +812,10 @@ export default function LogisticsActivityTab({ setError }) {
   };
 
   const actionNeeds = useMemo(() => {
-    const atLoading = board.stages?.find((s) => s.id === 'at_loading')?.count || 0;
-    const atDest = board.stages?.find((s) => s.id === 'at_destination')?.count || 0;
-    const awaiting = board.stages?.find((s) => s.id === 'awaiting_reschedule')?.count || 0;
-    return atLoading + atDest + awaiting;
+    return (board.stages || []).flatMap((s) => s.items || []).filter((i) => i.needs_action).length;
   }, [board.stages]);
+
+  const requireOffloadingSlip = board.workflow?.require_offloading_slip_at_destination !== false;
 
   const submitLoadingSlip = async (tripId, form, defer = false) => {
     setSaving(true);
@@ -939,7 +970,15 @@ export default function LogisticsActivityTab({ setError }) {
           </div>
           <p className="text-xs text-surface-500 dark:text-surface-400">
             {board.total_active || 0} active
-            {actionNeeds > 0 && ` · ${actionNeeds} awaiting slip`}
+            {actionNeeds > 0 && ` · ${actionNeeds} need action`}
+            {!requireOffloadingSlip && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Auto-complete on exit
+              </span>
+            )}
             {filterRouteId !== 'all' && ` · ${focusedRoute?.route_name || 'Route'} (${filteredTotal})`}
           </p>
         </div>
@@ -1124,6 +1163,7 @@ export default function LogisticsActivityTab({ setError }) {
                         item={item}
                         routes={board.routes || []}
                         styles={styles}
+                        requireOffloadingSlip={requireOffloadingSlip}
                         mapActive={mapTripId === item.trip_id}
                         isDragging={draggingTrip?.tripId === item.trip_id}
                         draggable

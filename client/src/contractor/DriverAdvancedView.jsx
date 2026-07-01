@@ -225,6 +225,7 @@ export default function DriverAdvancedView({
                   </button>
                 </th>
                 <th className="text-left p-2 font-medium text-surface-700">Linked truck</th>
+                <th className="text-left p-2 font-medium text-surface-700">Operator</th>
                 <th className="text-left p-2 font-medium text-surface-700">Status</th>
               </tr>
             </thead>
@@ -264,6 +265,15 @@ export default function DriverAdvancedView({
                     <td className="p-2 text-surface-600 font-mono text-xs">{d.id_number || '—'}</td>
                     <td className="p-2 text-surface-600">{d.license_number || '—'}</td>
                     <td className="p-2 text-surface-600">{d.linked_truck_registration || d.linkedTruckRegistration || '—'}</td>
+                    <td className="p-2">
+                      {d.linkedUserName || d.linked_user_name ? (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-100 text-violet-800" title={d.linkedUserEmail || d.linked_user_email || ''}>
+                          {d.linkedUserName || d.linked_user_name}
+                        </span>
+                      ) : (
+                        <span className="text-surface-400 text-xs">—</span>
+                      )}
+                    </td>
                     <td className="p-2">{facilityBadge(d)}</td>
                   </tr>
                 );

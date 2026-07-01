@@ -5,6 +5,7 @@ import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import ManagePageTabAccess from './components/ManagePageTabAccess.jsx';
 import TrackingNotificationSettings from './components/tracking/TrackingNotificationSettings.jsx';
+import TrackingLogisticsWorkflowSettings from './components/tracking/TrackingLogisticsWorkflowSettings.jsx';
 import GeofenceRoutesTab from './components/tracking/GeofenceRoutesTab.jsx';
 import FleetIntegrationTab from './components/tracking/FleetIntegrationTab.jsx';
 import FleetDistributionMonitor from './components/tracking/FleetDistributionMonitor.jsx';
@@ -208,6 +209,7 @@ export default function TrackingManagement() {
                 onError={setError}
               />
               <TrackingNotificationSettings setError={setError} />
+              <TrackingLogisticsWorkflowSettings setError={setError} />
             </>
           )}
         </div>

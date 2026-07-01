@@ -697,7 +697,7 @@ async function loadLeaveSpansMap(tenantId, userIds, startStr, endStr) {
   return map;
 }
 
-router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) => {
+router.get('/my-schedule', requirePageAccess(['profile', 'operator_profile']), async (req, res, next) => {
   try {
     const { month, year } = req.query;
     const userId = req.user.id;
@@ -728,7 +728,7 @@ router.get('/my-schedule', requirePageAccess('profile'), async (req, res, next) 
 
 /** Month view: colleagues' shifts for selected tenant users (same org). Used on Profile work schedule overlay. */
 const COLLEAGUE_OVERLAY_MAX = 40;
-router.get('/my-schedule/colleagues', requirePageAccess('profile'), async (req, res, next) => {
+router.get('/my-schedule/colleagues', requirePageAccess(['profile', 'operator_profile']), async (req, res, next) => {
   try {
     const { month, year, user_ids: userIdsRaw } = req.query;
     const tenantId = req.user.tenant_id;
@@ -1555,8 +1555,11 @@ router.get('/leave/balances/team', requirePageAccess('management'), async (req, 
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     const year = req.query.year != null ? parseInt(req.query.year, 10) : wallMonthYearInAppZone().year;
+    const scopePage = req.query.scope === 'operator' ? 'operator_profile' : 'profile';
     // Full matrix: every active tenant employee × every configured leave type,
     // with allocation/used filled from explicit balance rows or type defaults.
+    // Scoped to the requested page role (profile vs operator_profile) so the two
+    // populations never mix between Management and Operator Management.
     const result = await query(
       `SELECT u.id AS user_id, u.full_name, u.email,
               lt.name AS leave_type, @year AS [year],
@@ -1572,9 +1575,10 @@ router.get('/leave/balances/team', requirePageAccess('management'), async (req, 
        WHERE lt.tenant_id = @tenantId
          AND u.status = N'active'
          AND (u.tenant_id = @tenantId OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = @tenantId))
-         AND (EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = N'profile') OR u.role = N'super_admin')
+         AND (EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = @scopePage)
+              OR (@scopePage = N'profile' AND u.role = N'super_admin'))
        ORDER BY u.full_name, lt.sort_order, lt.name`,
-      { tenantId, year }
+      { tenantId, year, scopePage }
     );
     res.json({ balances: result.recordset || [] });
   } catch (err) {
@@ -1886,13 +1890,16 @@ router.get('/leave/pending', requirePageAccess('management'), async (req, res, n
   try {
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
+    const scopePage = req.query.scope === 'operator' ? 'operator_profile' : 'profile';
     const result = await query(
       `SELECT l.id, l.user_id, l.leave_type, l.start_date, l.end_date, l.days_requested, l.reason, l.created_at, u.full_name AS user_name,
               (SELECT COUNT(*) FROM leave_attachments a WHERE a.leave_application_id = l.id) AS attachment_count
        FROM leave_applications l
        LEFT JOIN users u ON u.id = l.user_id
-       WHERE l.tenant_id = @tenantId AND l.status = N'pending' ORDER BY l.created_at`,
-      { tenantId }
+       WHERE l.tenant_id = @tenantId AND l.status = N'pending'
+         AND EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = l.user_id AND pr.page_id = @scopePage)
+       ORDER BY l.created_at`,
+      { tenantId, scopePage }
     );
     res.json({ applications: result.recordset || [] });
   } catch (err) {
@@ -1906,8 +1913,9 @@ router.get('/leave/applications/all', requirePageAccess('management'), async (re
     const tenantId = req.user.tenant_id;
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     const status = req.query.status && String(req.query.status).trim();
-    const params = { tenantId };
-    let where = 'WHERE l.tenant_id = @tenantId';
+    const scopePage = req.query.scope === 'operator' ? 'operator_profile' : 'profile';
+    const params = { tenantId, scopePage };
+    let where = 'WHERE l.tenant_id = @tenantId AND EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = l.user_id AND pr.page_id = @scopePage)';
     if (status && ['pending', 'approved', 'rejected'].includes(status)) {
       where += ' AND l.status = @st';
       params.st = status;

@@ -1,347 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from './AuthContext';
-import { operatorManagement as opMgmt, profileManagement as pm } from './api';
+import { operatorManagement as opMgmt, profileManagement as pm, claims as claimsApi } from './api';
 import { wallMonthYearInAppZone } from './lib/appTime.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
 import InfoHint from './components/InfoHint.jsx';
 import EmployeeDetailsManagementSection from './components/EmployeeDetailsManagementSection.jsx';
+import ClaimsManagementSection from './components/management/ClaimsManagementSection.jsx';
+import LeaveSection from './components/management/LeaveSection.jsx';
+import WorkSchedulesSection from './components/WorkSchedulesSection.jsx';
 
 const SECTIONS = [
   { id: 'operator_schedules', label: 'Operator work schedules' },
   { id: 'operator_productivity', label: 'Operator productivity' },
   { id: 'operator_wages', label: 'Salary & wages' },
   { id: 'operator_leave', label: 'Operator leave' },
+  { id: 'operator_claims', label: 'Operator claims' },
   { id: 'employee_details', label: 'Employee details' },
 ];
-
-function formatDate(d) {
-  if (!d) return '—';
-  return new Date(d).toLocaleDateString(undefined, { dateStyle: 'short' });
-}
-
-function sectorLabel(s) {
-  if (s === 'public') return 'Public sector';
-  if (s === 'private') return 'Private sector';
-  if (s === 'both') return 'Public & private';
-  return '—';
-}
-
-function LeaveSection({
-  pending,
-  leaveTypes = [],
-  history = [],
-  teamBalances = [],
-  balanceYear,
-  onBalanceYearChange,
-  onRefresh,
-  onError,
-}) {
-  const [sub, setSub] = useState('pending');
-  const [historyFilter, setHistoryFilter] = useState('');
-  const [reviewNotes, setReviewNotes] = useState('');
-  const [reviewId, setReviewId] = useState(null);
-  const [status, setStatus] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [newLeaveTypeName, setNewLeaveTypeName] = useState('');
-  const [newLeaveTypeDays, setNewLeaveTypeDays] = useState('');
-  const [newLeaveTypeSector, setNewLeaveTypeSector] = useState('');
-  const [savingType, setSavingType] = useState(false);
-  const [seeding, setSeeding] = useState(false);
-
-  const handleReview = async () => {
-    if (!reviewId || !status) return;
-    setSaving(true);
-    onError('');
-    try {
-      await pm.leave.review(reviewId, { status, review_notes: reviewNotes || undefined });
-      setReviewId(null);
-      setReviewNotes('');
-      setStatus(null);
-      onRefresh();
-    } catch (err) {
-      onError(err?.message || 'Failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleCreateLeaveType = async (e) => {
-    e.preventDefault();
-    if (!newLeaveTypeName.trim()) return;
-    setSavingType(true);
-    onError('');
-    try {
-      await pm.leave.createType({
-        name: newLeaveTypeName.trim(),
-        default_days_per_year: newLeaveTypeDays ? parseInt(newLeaveTypeDays, 10) : undefined,
-        sector: newLeaveTypeSector && ['public', 'private', 'both'].includes(newLeaveTypeSector) ? newLeaveTypeSector : undefined,
-      });
-      setNewLeaveTypeName('');
-      setNewLeaveTypeDays('');
-      setNewLeaveTypeSector('');
-      onRefresh();
-    } catch (err) {
-      onError(err?.message || 'Failed to create leave type');
-    } finally {
-      setSavingType(false);
-    }
-  };
-
-  const handleSeedSa = async () => {
-    setSeeding(true);
-    onError('');
-    try {
-      const res = await pm.leave.seedSaTypes();
-      onRefresh();
-      onError('');
-      alert(`Added ${res.inserted ?? 0} South African leave type(s) (${res.total_definitions ?? ''} definitions in catalog). Existing names were skipped.`);
-    } catch (err) {
-      onError(err?.message || 'Seed failed');
-    } finally {
-      setSeeding(false);
-    }
-  };
-
-  const filteredHistory = (history || []).filter((a) => {
-    if (!historyFilter) return true;
-    const q = historyFilter.toLowerCase();
-    return (
-      String(a.user_name || '').toLowerCase().includes(q) ||
-      String(a.leave_type || '').toLowerCase().includes(q) ||
-      String(a.status || '').toLowerCase().includes(q)
-    );
-  });
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="text-xl font-semibold text-surface-900">Operator leave</h1>
-        <InfoHint
-          title="Leave management"
-          text="Configure leave types (including a South African starter set), approve requests, browse full history, and view recorded leave balances per employee for a calendar year."
-        />
-      </div>
-
-      <div className="app-glass-card p-4">
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <p className="text-sm font-medium text-surface-700">Leave types (database)</p>
-          <InfoHint
-            title="Leave types"
-            text="Types are stored per organisation. Use the SA starter set for BCEA-oriented names and typical day weights; adjust in your HR policy as needed."
-          />
-        </div>
-        <div className="flex flex-wrap gap-2 mb-3">
-          <button
-            type="button"
-            disabled={seeding}
-            onClick={handleSeedSa}
-            className="px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 text-sm font-medium hover:bg-emerald-100 disabled:opacity-50"
-          >
-            {seeding ? 'Adding…' : 'Add South African leave types (missing only)'}
-          </button>
-        </div>
-        <form onSubmit={handleCreateLeaveType} className="flex flex-wrap gap-2 items-end">
-          <input type="text" value={newLeaveTypeName} onChange={(e) => setNewLeaveTypeName(e.target.value)} placeholder="Name" className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-48" />
-          <input type="number" value={newLeaveTypeDays} onChange={(e) => setNewLeaveTypeDays(e.target.value)} placeholder="Days/year" min={0} className="rounded-lg border border-surface-300 px-3 py-2 text-sm w-24" />
-          <select value={newLeaveTypeSector} onChange={(e) => setNewLeaveTypeSector(e.target.value)} className="rounded-lg border border-surface-300 px-3 py-2 text-sm">
-            <option value="">Sector (optional)</option>
-            <option value="both">Public &amp; private</option>
-            <option value="public">Public sector</option>
-            <option value="private">Private sector</option>
-          </select>
-          <button type="submit" disabled={savingType} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-            {savingType ? 'Adding…' : 'Add type'}
-          </button>
-        </form>
-        {leaveTypes.length > 0 ? (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm min-w-[520px]">
-              <thead className="text-left text-surface-500 border-b border-surface-200">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">Name</th>
-                  <th className="py-2 pr-3 font-medium">Typical days / year</th>
-                  <th className="py-2 pr-3 font-medium">Sector</th>
-                  <th className="py-2 font-medium">Note</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-surface-100">
-                {leaveTypes.map((t) => (
-                  <tr key={t.id} className="align-top">
-                    <td className="py-2 pr-3 font-medium text-surface-900">{t.name}</td>
-                    <td className="py-2 pr-3">{t.default_days_per_year != null ? `${t.default_days_per_year}` : '—'}</td>
-                    <td className="py-2 pr-3">{sectorLabel(t.sector)}</td>
-                    <td className="py-2 text-surface-600 text-xs max-w-md">{t.description || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="mt-2 text-sm text-surface-500">No types yet — seed SA types or add manually.</p>
-        )}
-      </div>
-
-      <div className="flex gap-2 border-b border-surface-200 flex-wrap">
-        {[
-          { id: 'pending', label: `Pending (${pending.length})` },
-          { id: 'history', label: `History (${history.length})` },
-          { id: 'balances', label: 'Team balances' },
-        ].map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setSub(t.id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              sub === t.id ? 'border-brand-500 text-brand-700' : 'border-transparent text-surface-600 hover:text-surface-900'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {sub === 'pending' && (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium text-surface-700">Pending applications</span>
-            <InfoHint title="Reviewing leave" text="Approve or reject pending applications. Optional review notes are saved with the decision." />
-          </div>
-          {pending.length === 0 ? (
-            <p className="text-surface-500 text-sm app-glass-card p-6">No pending applications.</p>
-          ) : (
-            <ul className="space-y-4">
-              {pending.map((a) => (
-                <li key={a.id} className="app-glass-card p-4">
-                  <p className="font-medium">{a.user_name} — {a.leave_type}</p>
-                  <p className="text-sm text-surface-600">{formatDate(a.start_date)} to {formatDate(a.end_date)} ({a.days_requested} days)</p>
-                  {a.reason && <p className="text-sm text-surface-500 mt-1">{a.reason}</p>}
-                  {reviewId !== a.id ? (
-                    <div className="mt-3 flex gap-2">
-                      <button type="button" onClick={() => { setReviewId(a.id); setStatus('approved'); setReviewNotes(''); }} className="px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 text-sm font-medium hover:bg-emerald-200">
-                        Approve
-                      </button>
-                      <button type="button" onClick={() => { setReviewId(a.id); setStatus('rejected'); setReviewNotes(''); }} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-800 text-sm font-medium hover:bg-red-200">
-                        Reject
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="mt-3 space-y-2">
-                      <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} placeholder="Review notes (optional)" rows={2} className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm" />
-                      <div className="flex gap-2">
-                        <button type="button" onClick={handleReview} disabled={saving} className="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-                          {saving ? 'Saving…' : `Confirm ${status}`}
-                        </button>
-                        <button type="button" onClick={() => { setReviewId(null); setStatus(null); }} className="px-3 py-1.5 rounded-lg border border-surface-300 text-surface-700 text-sm">Cancel</button>
-                      </div>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-
-      {sub === 'history' && (
-        <div className="space-y-3">
-          <input
-            type="search"
-            value={historyFilter}
-            onChange={(e) => setHistoryFilter(e.target.value)}
-            placeholder="Filter by employee, type, or status"
-            className="w-full max-w-md rounded-lg border border-surface-300 px-3 py-2 text-sm"
-          />
-          {filteredHistory.length === 0 ? (
-            <p className="text-surface-500 text-sm app-glass-card p-6">No records match.</p>
-          ) : (
-            <div className="app-glass-card overflow-hidden overflow-x-auto">
-              <table className="w-full text-sm min-w-[800px]">
-                <thead className="bg-surface-50 border-b border-surface-200 text-left">
-                  <tr>
-                    <th className="px-4 py-2 font-medium text-surface-700">Employee</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Type</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Dates</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Days</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Status</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Applied</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Reviewed</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-surface-100">
-                  {filteredHistory.map((a) => (
-                    <tr key={a.id} className="align-top">
-                      <td className="px-4 py-2">{a.user_name || '—'}</td>
-                      <td className="px-4 py-2">{a.leave_type}</td>
-                      <td className="px-4 py-2 whitespace-nowrap">{formatDate(a.start_date)} – {formatDate(a.end_date)}</td>
-                      <td className="px-4 py-2">{a.days_requested}</td>
-                      <td className="px-4 py-2 capitalize">{a.status}</td>
-                      <td className="px-4 py-2 whitespace-nowrap">{formatDate(a.created_at)}</td>
-                      <td className="px-4 py-2 whitespace-nowrap">{formatDate(a.reviewed_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {sub === 'balances' && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="text-sm text-surface-700">Year</label>
-            <input
-              type="number"
-              value={balanceYear}
-              onChange={(e) => {
-                const y = parseInt(e.target.value, 10);
-                if (Number.isFinite(y)) onBalanceYearChange(y);
-              }}
-              className="w-24 rounded-lg border border-surface-300 px-3 py-2 text-sm"
-            />
-            <InfoHint
-              title="Leave balances"
-              text="Days remaining = total_days − used_days (per leave type row). Rows appear after balances are recorded (e.g. when leave is approved)."
-            />
-          </div>
-          {teamBalances.length === 0 ? (
-            <p className="text-surface-500 text-sm app-glass-card p-6">No balance rows for this year.</p>
-          ) : (
-            <div className="app-glass-card overflow-hidden overflow-x-auto">
-              <table className="w-full text-sm min-w-[720px]">
-                <thead className="bg-surface-50 border-b border-surface-200 text-left">
-                  <tr>
-                    <th className="px-4 py-2 font-medium text-surface-700">Employee</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Leave type</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Total days</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Used</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Remaining</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Typical (type)</th>
-                    <th className="px-4 py-2 font-medium text-surface-700">Sector</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-surface-100">
-                  {teamBalances.map((b, idx) => (
-                    <tr key={`${b.user_id}-${b.leave_type}-${idx}`}>
-                      <td className="px-4 py-2">{b.full_name || b.email || b.user_id}</td>
-                      <td className="px-4 py-2">{b.leave_type}</td>
-                      <td className="px-4 py-2">{b.total_days ?? 0}</td>
-                      <td className="px-4 py-2">{b.used_days ?? 0}</td>
-                      <td className="px-4 py-2">{(b.total_days ?? 0) - (b.used_days ?? 0)}</td>
-                      <td className="px-4 py-2">{b.type_default_days_per_year != null ? b.type_default_days_per_year : '—'}</td>
-                      <td className="px-4 py-2">{sectorLabel(b.type_sector)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function OperatorManagement() {
   const { user } = useAuth();
@@ -355,12 +31,6 @@ export default function OperatorManagement() {
   const [opTeamProductivity, setOpTeamProductivity] = useState([]);
   const [opWageConfigs, setOpWageConfigs] = useState([]);
   const [opPayRecords, setOpPayRecords] = useState([]);
-
-  const [opSchedForm, setOpSchedForm] = useState({ user_id: '', work_date: '', start_time: '07:00', end_time: '17:00', break_minutes: 30, schedule_type: 'regular', notes: '' });
-  const [opSchedFilterUser, setOpSchedFilterUser] = useState('');
-  const [opSchedFilterFrom, setOpSchedFilterFrom] = useState('');
-  const [opSchedFilterTo, setOpSchedFilterTo] = useState('');
-  const [opSchedBulkDates, setOpSchedBulkDates] = useState('');
 
   const [opDeliveryForm, setOpDeliveryForm] = useState({ user_id: '', delivery_date: '', delivery_time: '', origin: '', destination: '', weight_kg: '', truck_reg: '', trip_reference: '', status: 'completed', on_time: true, expected_delivery_time: '', notes: '' });
   const [opDeliveryFilterUser, setOpDeliveryFilterUser] = useState('');
@@ -378,6 +48,10 @@ export default function OperatorManagement() {
   const [leaveTeamBalances, setLeaveTeamBalances] = useState([]);
   const [leaveBalanceYear, setLeaveBalanceYear] = useState(() => wallMonthYearInAppZone().year);
 
+  const [allClaims, setAllClaims] = useState([]);
+  const [claimsLoading, setClaimsLoading] = useState(false);
+  const [claimsSummary, setClaimsSummary] = useState({});
+
   const fmtZAR = (v) => {
     const n = Number(v);
     if (isNaN(n)) return '—';
@@ -385,11 +59,7 @@ export default function OperatorManagement() {
   };
 
   const reloadOpSchedules = () => {
-    const params = {};
-    if (opSchedFilterUser) params.user_id = opSchedFilterUser;
-    if (opSchedFilterFrom) params.from = opSchedFilterFrom;
-    if (opSchedFilterTo) params.to = opSchedFilterTo;
-    opMgmt.schedules.listAll(params).then((d) => setOpSchedules(d.schedules || [])).catch(() => setOpSchedules([]));
+    pm.schedules.list().then((d) => setOpSchedules(d.schedules || [])).catch(() => setOpSchedules([]));
   };
 
   const reloadOpDeliveries = () => {
@@ -411,16 +81,20 @@ export default function OperatorManagement() {
     opMgmt.wages.configAll().then((d) => setOpWageConfigs(d.configs || [])).catch(() => setOpWageConfigs([]));
   };
 
+  const loadClaims = () => {
+    setClaimsLoading(true);
+    Promise.all([claimsApi.all({ scope: 'operator' }), claimsApi.summary({ scope: 'operator' })])
+      .then(([d, s]) => { setAllClaims(d.claims || []); setClaimsSummary(s.summary || {}); })
+      .catch(() => { setAllClaims([]); setClaimsSummary({}); })
+      .finally(() => setClaimsLoading(false));
+  };
+
   useEffect(() => {
     if (['operator_schedules', 'operator_productivity', 'operator_wages', 'operator_leave'].includes(activeSection)) {
       opMgmt.users().then((d) => setOpUsers(d.users || [])).catch(() => setOpUsers([]));
     }
     if (activeSection === 'operator_schedules') {
-      const params = {};
-      if (opSchedFilterUser) params.user_id = opSchedFilterUser;
-      if (opSchedFilterFrom) params.from = opSchedFilterFrom;
-      if (opSchedFilterTo) params.to = opSchedFilterTo;
-      opMgmt.schedules.listAll(params).then((d) => setOpSchedules(d.schedules || [])).catch(() => setOpSchedules([]));
+      pm.schedules.list().then((d) => setOpSchedules(d.schedules || [])).catch(() => setOpSchedules([]));
     }
     if (activeSection === 'operator_productivity') {
       opMgmt.productivity.team(30).then((d) => setOpTeamProductivity(d.team || [])).catch(() => setOpTeamProductivity([]));
@@ -438,15 +112,25 @@ export default function OperatorManagement() {
       opMgmt.wages.payRecordsAll(params).then((d) => setOpPayRecords(d.payRecords || [])).catch(() => setOpPayRecords([]));
     }
     if (activeSection === 'operator_leave') {
-      pm.leave.pending().then((d) => setPendingLeave(d.applications || [])).catch(() => setPendingLeave([]));
+      pm.leave.pending({ scope: 'operator' }).then((d) => setPendingLeave(d.applications || [])).catch(() => setPendingLeave([]));
       pm.leave.types().then((d) => setLeaveTypes(d.types || [])).catch(() => setLeaveTypes([]));
-      pm.leave.applicationsAll().then((d) => setLeaveHistory(d.applications || [])).catch(() => setLeaveHistory([]));
+      pm.leave.applicationsAll({ scope: 'operator' }).then((d) => setLeaveHistory(d.applications || [])).catch(() => setLeaveHistory([]));
       pm.leave
-        .balancesTeam(leaveBalanceYear)
+        .balancesTeam(leaveBalanceYear, 'operator')
         .then((d) => setLeaveTeamBalances(d.balances || []))
         .catch(() => setLeaveTeamBalances([]));
     }
-  }, [activeSection, opSchedFilterUser, opSchedFilterFrom, opSchedFilterTo, opDeliveryFilterUser, opDeliveryFilterFrom, opDeliveryFilterTo, opPayFilterUser, opPayFilterStatus, leaveBalanceYear]);
+    if (activeSection === 'operator_claims') {
+      loadClaims();
+    }
+  }, [activeSection, opDeliveryFilterUser, opDeliveryFilterFrom, opDeliveryFilterTo, opPayFilterUser, opPayFilterStatus, leaveBalanceYear]);
+
+  // Pattern-based work schedules are tenant-wide; restrict to operator-profile users only.
+  const operatorUserIds = useMemo(() => new Set((opUsers || []).map((u) => String(u.id))), [opUsers]);
+  const operatorSchedules = useMemo(
+    () => (opSchedules || []).filter((s) => operatorUserIds.has(String(s.user_id))),
+    [opSchedules, operatorUserIds]
+  );
 
   useAutoHideNavAfterTabChange(activeSection);
 
@@ -503,164 +187,12 @@ export default function OperatorManagement() {
 
           {/* ── Operator Work Schedules ── */}
           {activeSection === 'operator_schedules' && (
-            <div className="space-y-6">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-semibold text-surface-900">Operator work schedules</h1>
-                <InfoHint title="Operator schedules" text="Create and manage work schedules for truck drivers and operators. You can add individual or bulk schedules, filter by operator, and track total scheduled hours." />
-              </div>
-
-              <div className="app-glass-card p-4">
-                <div className="flex flex-wrap gap-3 items-end">
-                  <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                    Operator
-                    <select value={opSchedFilterUser} onChange={(e) => setOpSchedFilterUser(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900 min-w-[180px]">
-                      <option value="">All operators</option>
-                      {opUsers.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                    From
-                    <input type="date" value={opSchedFilterFrom} onChange={(e) => setOpSchedFilterFrom(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" />
-                  </label>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                    To
-                    <input type="date" value={opSchedFilterTo} onChange={(e) => setOpSchedFilterTo(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" />
-                  </label>
-                  <button type="button" onClick={reloadOpSchedules} className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">Filter</button>
-                </div>
-              </div>
-
-              <details className="app-glass-card">
-                <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-surface-900 select-none">Add schedule</summary>
-                <form className="p-4 border-t border-surface-100 space-y-4" onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!opSchedForm.user_id || !opSchedForm.work_date) { setError('Operator and date are required'); return; }
-                  opMgmt.schedules.create(opSchedForm)
-                    .then(() => { reloadOpSchedules(); setOpSchedForm((f) => ({ ...f, work_date: '', notes: '' })); })
-                    .catch((err) => setError(err?.message || 'Failed to create schedule'));
-                }}>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Operator *
-                      <select required value={opSchedForm.user_id} onChange={(e) => setOpSchedForm((f) => ({ ...f, user_id: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900">
-                        <option value="">Select operator</option>
-                        {opUsers.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                      </select>
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Work date *
-                      <input required type="date" value={opSchedForm.work_date} onChange={(e) => setOpSchedForm((f) => ({ ...f, work_date: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Start time
-                      <input type="time" value={opSchedForm.start_time} onChange={(e) => setOpSchedForm((f) => ({ ...f, start_time: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      End time
-                      <input type="time" value={opSchedForm.end_time} onChange={(e) => setOpSchedForm((f) => ({ ...f, end_time: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Break (min)
-                      <input type="number" min="0" value={opSchedForm.break_minutes} onChange={(e) => setOpSchedForm((f) => ({ ...f, break_minutes: Number(e.target.value) }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Type
-                      <select value={opSchedForm.schedule_type} onChange={(e) => setOpSchedForm((f) => ({ ...f, schedule_type: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900">
-                        <option value="regular">Regular</option>
-                        <option value="overtime">Overtime</option>
-                        <option value="public_holiday">Public holiday</option>
-                        <option value="weekend">Weekend</option>
-                        <option value="standby">Standby</option>
-                      </select>
-                    </label>
-                  </div>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                    Notes
-                    <input type="text" value={opSchedForm.notes} onChange={(e) => setOpSchedForm((f) => ({ ...f, notes: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" placeholder="Optional notes" />
-                  </label>
-                  <div className="flex gap-3">
-                    <button type="submit" className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">Add schedule</button>
-                  </div>
-                </form>
-              </details>
-
-              <details className="app-glass-card">
-                <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-surface-900 select-none">Bulk add schedules</summary>
-                <form className="p-4 border-t border-surface-100 space-y-4" onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!opSchedForm.user_id || !opSchedBulkDates.trim()) { setError('Operator and at least one date are required'); return; }
-                  const dates = opSchedBulkDates.split(/[,\n]+/).map((d) => d.trim()).filter(Boolean);
-                  const entries = dates.map((d) => ({ ...opSchedForm, work_date: d }));
-                  opMgmt.schedules.bulkCreate(entries)
-                    .then(() => { reloadOpSchedules(); setOpSchedBulkDates(''); })
-                    .catch((err) => setError(err?.message || 'Bulk create failed'));
-                }}>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Operator *
-                      <select required value={opSchedForm.user_id} onChange={(e) => setOpSchedForm((f) => ({ ...f, user_id: e.target.value }))} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900">
-                        <option value="">Select operator</option>
-                        {opUsers.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                      </select>
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium text-surface-600">
-                      Dates (comma or newline separated, YYYY-MM-DD) *
-                      <textarea required rows={3} value={opSchedBulkDates} onChange={(e) => setOpSchedBulkDates(e.target.value)} className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-900" placeholder="2026-06-01, 2026-06-02, 2026-06-03" />
-                    </label>
-                  </div>
-                  <button type="submit" className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700">Bulk add</button>
-                </form>
-              </details>
-
-              {opSchedules.length === 0 ? (
-                <p className="text-surface-500 text-sm">No schedules found.</p>
-              ) : (
-                <div className="app-glass-card overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm min-w-[800px]">
-                      <thead className="bg-surface-50 border-b border-surface-200">
-                        <tr>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">Date</th>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">Operator</th>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">Start</th>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">End</th>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">Hours</th>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">Type</th>
-                          <th className="px-4 py-2 text-left font-medium text-surface-700">Notes</th>
-                          <th className="px-4 py-2 text-right font-medium text-surface-700"></th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-surface-100">
-                        {opSchedules.map((s) => {
-                          const hrs = s.scheduled_hours != null ? Number(s.scheduled_hours).toFixed(1) : '—';
-                          return (
-                            <tr key={s.id}>
-                              <td className="px-4 py-2 font-mono text-xs">{String(s.work_date).slice(0, 10)}</td>
-                              <td className="px-4 py-2">{s.user_name || s.user_id}</td>
-                              <td className="px-4 py-2 text-xs">{s.start_time || '—'}</td>
-                              <td className="px-4 py-2 text-xs">{s.end_time || '—'}</td>
-                              <td className="px-4 py-2">{hrs}</td>
-                              <td className="px-4 py-2 capitalize">{(s.schedule_type || '').replace(/_/g, ' ')}</td>
-                              <td className="px-4 py-2 text-surface-500 text-xs max-w-[200px] truncate">{s.notes || ''}</td>
-                              <td className="px-4 py-2 text-right">
-                                <button type="button" onClick={() => { if (confirm('Delete this schedule?')) opMgmt.schedules.remove(s.id).then(reloadOpSchedules).catch((err) => setError(err?.message || 'Delete failed')); }} className="text-xs text-red-600 hover:text-red-800 font-medium">Delete</button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                      <tfoot className="bg-surface-50 border-t border-surface-200">
-                        <tr>
-                          <td colSpan={4} className="px-4 py-2 text-right font-semibold text-surface-700 text-sm">Total hours</td>
-                          <td className="px-4 py-2 font-semibold text-surface-900">{opSchedules.reduce((sum, s) => sum + (Number(s.scheduled_hours) || 0), 0).toFixed(1)}</td>
-                          <td colSpan={3}></td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
+            <WorkSchedulesSection
+              schedules={operatorSchedules}
+              tenantUsers={opUsers}
+              onRefresh={reloadOpSchedules}
+              onError={setError}
+            />
           )}
 
           {/* ── Operator Productivity ── */}
@@ -1095,6 +627,7 @@ export default function OperatorManagement() {
           {/* ── Operator Leave ── */}
           {activeSection === 'operator_leave' && (
             <LeaveSection
+              title="Operator leave"
               pending={pendingLeave}
               leaveTypes={leaveTypes}
               history={leaveHistory}
@@ -1102,12 +635,23 @@ export default function OperatorManagement() {
               balanceYear={leaveBalanceYear}
               onBalanceYearChange={setLeaveBalanceYear}
               onRefresh={() => {
-                pm.leave.pending().then((d) => setPendingLeave(d.applications || []));
+                pm.leave.pending({ scope: 'operator' }).then((d) => setPendingLeave(d.applications || []));
                 pm.leave.types().then((d) => setLeaveTypes(d.types || []));
-                pm.leave.applicationsAll().then((d) => setLeaveHistory(d.applications || []));
-                pm.leave.balancesTeam(leaveBalanceYear).then((d) => setLeaveTeamBalances(d.balances || []));
+                pm.leave.applicationsAll({ scope: 'operator' }).then((d) => setLeaveHistory(d.applications || []));
+                pm.leave.balancesTeam(leaveBalanceYear, 'operator').then((d) => setLeaveTeamBalances(d.balances || []));
               }}
               onError={setError}
+            />
+          )}
+
+          {activeSection === 'operator_claims' && (
+            <ClaimsManagementSection
+              claims={allClaims}
+              loading={claimsLoading}
+              summary={claimsSummary}
+              onRefresh={loadClaims}
+              user={user}
+              title="Operator claims & reimbursements"
             />
           )}
 

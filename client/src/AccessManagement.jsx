@@ -10,6 +10,7 @@ import { generateActionPlanPdf } from './lib/actionPlanPdf.js';
 import { normalizeSectionsForForm, serializeSectionsForApi, parseTsvFromClipboard, tsvToKeyMetrics, tsvToBreakdowns, tsvToFleetPerformance } from './lib/monthlyPerfReportHelpers.js';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
 import VehicleTrackerComplianceHub from './components/vehicleTrackerCompliance/VehicleTrackerComplianceHub.jsx';
+import OperatorProfileLinksTab from './components/accessManagement/OperatorProfileLinksTab.jsx';
 import RouteManagementModal, { RiskBadge } from './components/RouteManagementModal.jsx';
 
 const TABS = [
@@ -22,6 +23,7 @@ const TABS = [
   { id: 'vehicle_tracker_compliance', label: 'Vehicle Tracker Compliance', icon: 'shield', section: 'Compliance' },
   { id: 'vehicle_tracker_history', label: 'Vehicle compliance check history', icon: 'history', section: 'Compliance' },
   { id: 'vehicle_tracker_grace', label: 'Vehicle compliance grace periods', icon: 'clock', section: 'Compliance' },
+  { id: 'operator_profile_links', label: 'Operator profile links', icon: 'users', section: 'Operators' },
   { id: 'distribution', label: 'List distribution', icon: 'share', section: 'Distribution' },
   { id: 'pilot-distribution', label: 'Pilot distribution', icon: 'clock', section: 'Distribution' },
   { id: 'distribution-history', label: 'Distribution history', icon: 'history', section: 'Distribution' },
@@ -1930,6 +1932,10 @@ export default function AccessManagement() {
           title="Vehicle compliance grace periods"
           subtitle="Active and past grace periods. When grace expires, trucks (and drivers if checked) are suspended and removed from route enrollment until reinstated."
         />
+      )}
+
+      {activeTab === 'operator_profile_links' && (
+        <OperatorProfileLinksTab hasTenant={hasTenant} />
       )}
 
       {activeTab === 'reinstatement' && (

@@ -2,6 +2,7 @@ import { formatRouteDistanceKm } from '../../lib/routeCorridorGeofence.js';
 
 export default function ManualRoutePlotPanel({
   active,
+  editingRouteLabel = null,
   waypoints = [],
   snapPreview = null,
   snapping = false,
@@ -13,6 +14,8 @@ export default function ManualRoutePlotPanel({
   onClear,
   onSeedFromAB,
   onRemoveWaypoint,
+  onInsertWaypointAfter,
+  onUpdateWaypointCoords,
   onFinalize,
   finalizing = false,
   canSeedFromAB = false,
@@ -26,7 +29,8 @@ export default function ManualRoutePlotPanel({
           <div>
             <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Plot custom alternative route</h3>
             <p className="text-[11px] text-surface-600 dark:text-surface-400 mt-1 max-w-2xl">
-              Click points on the map <strong>in order</strong>. The system routes strictly through each point to the last one — no shortcuts between your plots.
+              Click points on the map <strong>in order</strong>, or click <strong>on a line segment</strong> to insert a waypoint between two points.
+              Pan and zoom freely — use the <strong>crosshair</strong> and <strong>Place at crosshair</strong> for pin-point accuracy.
             </p>
           </div>
           <button
@@ -47,12 +51,12 @@ export default function ManualRoutePlotPanel({
         <div>
           <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-2">
             <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-            Plotting custom route — click the map
+            {editingRouteLabel ? `Editing: ${editingRouteLabel}` : 'Plotting custom route — click the map'}
           </h3>
           <p className="text-[11px] text-surface-600 dark:text-surface-400 mt-1">
-            Place waypoints in order along the road you want. The route is built <strong>leg-by-leg</strong> through every point — it will not skip or shortcut between them.
-            Orange dashed = your plot; solid orange = strict road path through each point.
-            Drag waypoints to adjust. <kbd className="px-1 py-0.5 rounded bg-surface-200 text-[10px]">⌘Z</kbd> undo · <kbd className="px-1 py-0.5 rounded bg-surface-200 text-[10px]">Esc</kbd> cancel
+            Place waypoints in order. Click <strong>on a dashed segment</strong> to insert between two points.
+            Drag markers to adjust. Edit coordinates below for precision.
+            <kbd className="px-1 py-0.5 rounded bg-surface-200 text-[10px]">⌘Z</kbd> undo · <kbd className="px-1 py-0.5 rounded bg-surface-200 text-[10px]">Esc</kbd> cancel
           </p>
         </div>
         <button type="button" onClick={onCancel} className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 hover:bg-white">
@@ -95,20 +99,49 @@ export default function ManualRoutePlotPanel({
               </span>
             )}
           </p>
-          <ol className="max-h-28 overflow-y-auto space-y-1 text-[11px] font-mono">
+          <ol className="max-h-48 overflow-y-auto space-y-2 text-[11px]">
             {waypoints.map((pt, i) => (
-              <li key={`wp-${i}`} className="flex items-center justify-between gap-2 text-surface-700 dark:text-surface-300">
-                <span>
-                  <strong className="text-amber-700">{i + 1}.</strong>{' '}
-                  {Number(pt.lat).toFixed(5)}, {Number(pt.lng).toFixed(5)}
-                  {i === 0 && <span className="text-brand-600 ml-1">start</span>}
-                  {i === waypoints.length - 1 && waypoints.length > 1 && <span className="text-emerald-600 ml-1">end</span>}
-                </span>
-                {waypoints.length > 2 && (
-                  <button type="button" onClick={() => onRemoveWaypoint?.(i)} className="text-rose-600 hover:underline shrink-0">
-                    remove
-                  </button>
-                )}
+              <li key={`wp-${i}`} className="rounded-lg border border-surface-200/80 dark:border-surface-700 p-2 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-amber-700">
+                    {i + 1}.
+                    {i === 0 && <span className="text-brand-600 font-normal ml-1">start</span>}
+                    {i === waypoints.length - 1 && waypoints.length > 1 && <span className="text-emerald-600 font-normal ml-1">end</span>}
+                  </span>
+                  <div className="flex gap-1 shrink-0">
+                    {i < waypoints.length - 1 && (
+                      <button
+                        type="button"
+                        onClick={() => onInsertWaypointAfter?.(i)}
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-amber-400 text-amber-800 hover:bg-amber-50"
+                        title="Insert waypoint between this point and the next"
+                      >
+                        + between
+                      </button>
+                    )}
+                    {waypoints.length > 2 && (
+                      <button type="button" onClick={() => onRemoveWaypoint?.(i)} className="text-[10px] text-rose-600 hover:underline">
+                        remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="rounded border px-2 py-1 font-mono text-[10px] dark:bg-surface-950"
+                    value={Number(pt.lat).toFixed(6)}
+                    onChange={(e) => onUpdateWaypointCoords?.(i, e.target.value, pt.lng)}
+                  />
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="rounded border px-2 py-1 font-mono text-[10px] dark:bg-surface-950"
+                    value={Number(pt.lng).toFixed(6)}
+                    onChange={(e) => onUpdateWaypointCoords?.(i, pt.lat, e.target.value)}
+                  />
+                </div>
               </li>
             ))}
           </ol>
@@ -122,7 +155,9 @@ export default function ManualRoutePlotPanel({
           disabled={waypoints.length < 2 || finalizing || snapping}
           className="text-sm px-4 py-2 rounded-lg bg-amber-600 text-white font-medium hover:bg-amber-700 disabled:opacity-50"
         >
-          {finalizing ? 'Adding route…' : 'Add snapped route to list'}
+          {finalizing
+            ? (editingRouteLabel ? 'Saving route…' : 'Adding route…')
+            : (editingRouteLabel ? 'Save edited route' : 'Add snapped route to list')}
         </button>
         {waypoints.length < 2 && (
           <span className="text-xs text-surface-500 self-center">Place at least 2 points on the map</span>

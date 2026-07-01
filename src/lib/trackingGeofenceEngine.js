@@ -9,6 +9,8 @@ import {
   gid,
   openDestinationDeliveryRecord,
   allocateTripAtLoading,
+  completeDestinationDelivery,
+  AUTO_OFFLOAD_SLIP,
 } from './logisticsActivityBoard.js';
 
 function get(row, key) {
@@ -38,7 +40,15 @@ function isInsideRouteAltCorridor(fences, lat, lng, routeId) {
  * @returns {{ processed: number, allocated: number, alerts: number, pending_notes: number }}
  */
 export async function processGeofencePositions(query, tenantId) {
-  const stats = { processed: 0, allocated: 0, alerts: 0, pending_notes: 0 };
+  const stats = { processed: 0, allocated: 0, alerts: 0, pending_notes: 0, auto_completed: 0 };
+
+  const settingsR = await query(
+    `SELECT require_offloading_slip_at_destination FROM tracking_tenant_settings WHERE tenant_id = @tenantId`,
+    { tenantId }
+  );
+  const requireOffloadingSlip = settingsR.recordset?.[0] == null
+    || (get(settingsR.recordset[0], 'require_offloading_slip_at_destination') !== false
+      && get(settingsR.recordset[0], 'require_offloading_slip_at_destination') !== 0);
 
   const tripsR = await query(
     `SELECT t.id, t.truck_registration, t.contractor_truck_id, t.route_id, t.contractor_route_id,
@@ -279,6 +289,21 @@ export async function processGeofencePositions(query, tenantId) {
               notificationType: exitNotificationType,
             });
             stats.alerts++;
+          }
+        }
+
+        if (leg === 'destination' && contractorRouteId && !requireOffloadingSlip && activityStage === 'at_destination') {
+          const matchRoute = !currentRouteId || currentRouteId === contractorRouteId;
+          if (matchRoute) {
+            try {
+              await completeDestinationDelivery(query, tenantId, tripId, {
+                offloading_slip_no: AUTO_OFFLOAD_SLIP,
+                auto_complete: true,
+              });
+              stats.auto_completed++;
+            } catch (err) {
+              // Trip may have been completed elsewhere; continue processing other geofences.
+            }
           }
         }
       }

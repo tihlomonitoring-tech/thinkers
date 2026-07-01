@@ -1306,6 +1306,149 @@ router.post('/trucks/bulk', async (req, res, next) => {
 });
 
 // Drivers (name, surname, ID, license, cellphone, email, linked_truck_id if column exists)
+// Active users in the tenant that a driver can be linked to (operator profile).
+router.get('/linkable-users', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.json({ users: [] });
+    const q = (req.query.q || '').toString().trim();
+    const params = { tenantId };
+    let filter = '';
+    if (q) {
+      filter = ` AND (u.full_name LIKE @search OR u.email LIKE @search)`;
+      params.search = `%${q.replace(/[%_[]/g, '')}%`;
+    }
+    const r = await query(
+      `SELECT u.id, u.full_name, u.email
+       FROM users u
+       WHERE u.tenant_id = @tenantId AND u.[status] = N'active'${filter}
+       ORDER BY u.full_name, u.email`,
+      params
+    );
+    res.json({
+      users: (r.recordset || []).map((u) => ({
+        id: parseGuid(u.id) ?? u.id,
+        full_name: u.full_name ?? null,
+        email: u.email ?? null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Operator profile links (managed from Access Management) ──────────────────
+// Only approved + enrolled drivers are eligible (same definition as fleet/route
+// enrollment). Access Management users have the authority to link directly, so
+// no approval workflow is needed.
+router.get('/operator-links/eligible-drivers', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.json({ drivers: [] });
+    const result = await query(
+      `SELECT d.id, d.full_name, d.surname, d.id_number, d.license_number,
+              d.linked_user_id, lu.full_name AS linked_user_name, lu.email AS linked_user_email,
+              t.registration AS linked_truck_registration, t.fleet_no AS linked_truck_fleet_no,
+              ISNULL(NULLIF(LTRIM(RTRIM(co.name)), N''), NULLIF(LTRIM(RTRIM(d2.main_contractor)), N'')) AS contractor_name,
+              sc.company_name AS subcontractor_company_name
+       FROM contractor_drivers d
+       LEFT JOIN users lu ON lu.id = d.linked_user_id
+       LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractor_trucks d2 ON d2.id = d.linked_truck_id AND d2.tenant_id = d.tenant_id
+       LEFT JOIN contractors co ON co.id = d.contractor_id AND co.tenant_id = d.tenant_id
+       LEFT JOIN contractor_subcontractors sc ON sc.id = d.subcontractor_id AND sc.tenant_id = d.tenant_id
+       WHERE d.tenant_id = @tenantId${DRIVER_LIST_ELIGIBLE_SQL}
+       ORDER BY d.full_name`,
+      { tenantId }
+    );
+    const blockedDriverIds = await getBlockedDriverIdSet(query, tenantId);
+    const drivers = (result.recordset || []).map((r) => ({
+      id: parseGuid(r.id) ?? r.id,
+      full_name: r.full_name ?? null,
+      surname: r.surname ?? null,
+      id_number: r.id_number ?? null,
+      license_number: r.license_number ?? null,
+      linked_user_id: r.linked_user_id ? (parseGuid(r.linked_user_id) ?? r.linked_user_id) : null,
+      linked_user_name: r.linked_user_name ?? null,
+      linked_user_email: r.linked_user_email ?? null,
+      linked_truck_registration: r.linked_truck_registration ?? null,
+      linked_truck_fleet_no: r.linked_truck_fleet_no ?? null,
+      contractor_name: r.contractor_name ?? null,
+      subcontractor_company_name: r.subcontractor_company_name ?? null,
+      compliance_blocked: blockedDriverIds.has(String(r.id ?? '').toLowerCase()),
+    }));
+    res.json({ drivers });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Set or clear a driver's operator-profile link. body: { user_id } (null/'' clears).
+router.patch('/operator-links/drivers/:id', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req);
+    if (!tenantId) return res.status(403).json({ error: 'Tenant required' });
+    const { id } = req.params;
+    const rawUserId = req.body?.user_id;
+    const userId = rawUserId === null || rawUserId === undefined || rawUserId === '' ? null : String(rawUserId);
+
+    // Driver must exist in this tenant and be approved + enrolled.
+    const driverRow = await query(
+      `SELECT d.id, d.full_name FROM contractor_drivers d
+       WHERE d.id = @id AND d.tenant_id = @tenantId${DRIVER_LIST_ELIGIBLE_SQL}`,
+      { id, tenantId }
+    );
+    if (!driverRow.recordset?.length) {
+      return res.status(404).json({ error: 'Driver not found or not approved & enrolled.' });
+    }
+
+    if (userId) {
+      const userCheck = await query(
+        `SELECT full_name, email FROM users WHERE id = @uid AND tenant_id = @tenantId AND [status] = N'active'`,
+        { uid: userId, tenantId }
+      );
+      if (!userCheck.recordset?.length) {
+        return res.status(400).json({ error: 'Selected operator profile not found in your company.' });
+      }
+      // Enforce one operator ↔ one driver.
+      const taken = await query(
+        `SELECT TOP 1 full_name FROM contractor_drivers
+         WHERE tenant_id = @tenantId AND linked_user_id = @uid AND id <> @id`,
+        { tenantId, uid: userId, id }
+      );
+      if (taken.recordset?.length) {
+        const other = taken.recordset[0].full_name || 'another driver';
+        return res.status(409).json({ error: `This operator is already linked to ${other}. Unlink them first.` });
+      }
+    }
+
+    const upd = await query(
+      `UPDATE contractor_drivers SET linked_user_id = @uid
+       OUTPUT INSERTED.id, INSERTED.linked_user_id
+       WHERE id = @id AND tenant_id = @tenantId`,
+      { uid: userId, id, tenantId }
+    );
+    if (!upd.recordset?.length) return res.status(404).json({ error: 'Driver not found' });
+    let linked_user_name = null;
+    let linked_user_email = null;
+    if (userId) {
+      const lu = await query(`SELECT full_name, email FROM users WHERE id = @uid`, { uid: userId });
+      linked_user_name = lu.recordset?.[0]?.full_name ?? null;
+      linked_user_email = lu.recordset?.[0]?.email ?? null;
+    }
+    res.json({
+      driver: {
+        id: parseGuid(id) ?? id,
+        linked_user_id: userId ? (parseGuid(userId) ?? userId) : null,
+        linked_user_name,
+        linked_user_email,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/drivers', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
@@ -1332,11 +1475,13 @@ router.get('/drivers', async (req, res, next) => {
     try {
       const result = await query(
         `SELECT d.*, t.registration AS linked_truck_registration, t.make_model AS linked_truck_make_model, t.fleet_no AS linked_truck_fleet_no, t.sub_contractor AS linked_truck_sub_contractor,
-          sc.company_name AS subcontractor_company_name, u.full_name AS added_by_name
+          sc.company_name AS subcontractor_company_name, u.full_name AS added_by_name,
+          lu.full_name AS linked_user_name, lu.email AS linked_user_email
          FROM contractor_drivers d
          LEFT JOIN contractor_trucks t ON t.id = d.linked_truck_id AND t.tenant_id = d.tenant_id
          LEFT JOIN contractor_subcontractors sc ON sc.id = d.subcontractor_id
          LEFT JOIN users u ON u.id = d.added_by_user_id
+         LEFT JOIN users lu ON lu.id = d.linked_user_id
          ${whereClause}${driverSubScope.clause}${driverMainScope.clause} ORDER BY d.created_at DESC`,
         { ...params, ...driverSubScope.params, ...driverMainScope.params }
       );
@@ -1363,6 +1508,9 @@ router.get('/drivers', async (req, res, next) => {
       linkedTruckRegistration: r.linked_truck_registration ?? null,
       linkedTruckMakeModel: r.linked_truck_make_model ?? null,
       linkedTruckFleetNo: r.linked_truck_fleet_no ?? null,
+      linkedUserId: parseGuid(r.linked_user_id) ?? r.linked_user_id ?? null,
+      linkedUserName: r.linked_user_name ?? null,
+      linkedUserEmail: r.linked_user_email ?? null,
     })));
     const blockedDriverIds = await getBlockedDriverIdSet(query, tenantId);
     const annotatedDrivers = drivers.map((d) => ({
@@ -1380,7 +1528,7 @@ router.post('/drivers', async (req, res, next) => {
     if (!restrictions.allow_driver_manual) {
       return res.status(403).json({ error: 'Driver manual add is restricted by Access Management.' });
     }
-    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, contractor_id: bodyContractorId, linked_truck_id: linkedTruckId } = req.body || {};
+    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, contractor_id: bodyContractorId, linked_truck_id: linkedTruckId, linked_user_id: linkedUserId } = req.body || {};
     const subResolved = await resolveSubcontractorForCreate(req, req.body?.subcontractor_id);
     if (subResolved?.error) return res.status(subResolved.error.status).json({ error: subResolved.error.message });
 
@@ -1418,9 +1566,18 @@ router.post('/drivers', async (req, res, next) => {
     if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, null)) {
       return res.status(409).json({ error: 'A driver with this ID number or licence number already exists.' });
     }
+    if (linkedUserId) {
+      const userCheck = await query(
+        `SELECT 1 FROM users WHERE id = @uid AND tenant_id = @tenantId`,
+        { uid: linkedUserId, tenantId: req.user.tenant_id }
+      );
+      if (!userCheck.recordset?.length) {
+        return res.status(400).json({ error: 'Selected operator profile not found in your company.' });
+      }
+    }
     const result = await query(
-      `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id, subcontractor_id, contractor_approval_status, added_by_user_id)
-       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email, @linked_truck_id, @subcontractor_id, @contractor_approval_status, @added_by_user_id)`,
+      `INSERT INTO contractor_drivers (tenant_id, contractor_id, full_name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id, linked_user_id, subcontractor_id, contractor_approval_status, added_by_user_id)
+       OUTPUT INSERTED.* VALUES (@tenantId, @contractorId, @full_name, @surname, @id_number, @license_number, @license_expiry, @phone, @email, @linked_truck_id, @linked_user_id, @subcontractor_id, @contractor_approval_status, @added_by_user_id)`,
       {
         tenantId: req.user.tenant_id,
         contractorId: contractorId || null,
@@ -1432,6 +1589,7 @@ router.post('/drivers', async (req, res, next) => {
         phone: phone || null,
         email: email || null,
         linked_truck_id: linkedTruckId || null,
+        linked_user_id: linkedUserId || null,
         subcontractor_id: subcontractorId,
         contractor_approval_status: contractorApprovalStatus,
         added_by_user_id: req.user?.id || null,
@@ -1486,7 +1644,7 @@ router.patch('/drivers/bulk-update', async (req, res, next) => {
 router.patch('/drivers/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id } = req.body || {};
+    const { full_name, name, surname, id_number, license_number, license_expiry, phone, email, linked_truck_id, linked_user_id } = req.body || {};
     const existingDriver = await query(`SELECT contractor_id FROM contractor_drivers WHERE id = @id AND tenant_id = @tenantId`, { id, tenantId: req.user.tenant_id });
     const driverContractorId = existingDriver.recordset?.[0]?.contractor_id ?? existingDriver.recordset?.[0]?.contractor_Id;
     if (await driverDuplicateExists(req.user.tenant_id, id_number, license_number, id)) {
@@ -1501,6 +1659,16 @@ router.patch('/drivers/:id', async (req, res, next) => {
         return res.status(400).json({ error: 'Selected truck not found or does not belong to your company.' });
       }
     }
+    const updateLinkedUser = linked_user_id !== undefined;
+    if (updateLinkedUser && linked_user_id !== null && linked_user_id !== '') {
+      const userCheck = await query(
+        `SELECT 1 FROM users WHERE id = @uid AND tenant_id = @tenantId`,
+        { uid: linked_user_id, tenantId: req.user.tenant_id }
+      );
+      if (!userCheck.recordset?.length) {
+        return res.status(400).json({ error: 'Selected operator profile not found in your company.' });
+      }
+    }
     const existing = await query(
       `SELECT full_name FROM contractor_drivers WHERE id = @id AND tenant_id = @tenantId`,
       { id, tenantId: req.user.tenant_id }
@@ -1510,23 +1678,29 @@ router.patch('/drivers/:id', async (req, res, next) => {
     const lastName = surname ?? '';
     const fullName = [firstName, lastName].filter(Boolean).join(' ') || firstName || lastName || '';
     const finalFullName = (fullName && fullName.trim()) ? fullName.trim() : currentFullName;
+    const updateParams = {
+      id,
+      tenantId: req.user.tenant_id,
+      full_name: finalFullName,
+      surname: lastName || null,
+      id_number: id_number ?? null,
+      license_number: license_number ?? null,
+      license_expiry: license_expiry || null,
+      phone: phone ?? null,
+      email: email ?? null,
+      linked_truck_id: linked_truck_id === undefined || linked_truck_id === null || linked_truck_id === '' ? null : linked_truck_id,
+    };
+    let linkedUserSet = '';
+    if (updateLinkedUser) {
+      linkedUserSet = ', linked_user_id = @linked_user_id';
+      updateParams.linked_user_id = linked_user_id === null || linked_user_id === '' ? null : linked_user_id;
+    }
     const result = await query(
       `UPDATE contractor_drivers SET full_name = @full_name, surname = @surname, id_number = @id_number,
         license_number = @license_number, license_expiry = @license_expiry, phone = @phone, email = @email,
-        linked_truck_id = @linked_truck_id
+        linked_truck_id = @linked_truck_id${linkedUserSet}
        OUTPUT INSERTED.* WHERE id = @id AND tenant_id = @tenantId`,
-      {
-        id,
-        tenantId: req.user.tenant_id,
-        full_name: finalFullName,
-        surname: lastName || null,
-        id_number: id_number ?? null,
-        license_number: license_number ?? null,
-        license_expiry: license_expiry || null,
-        phone: phone ?? null,
-        email: email ?? null,
-        linked_truck_id: linked_truck_id === undefined || linked_truck_id === null || linked_truck_id === '' ? null : linked_truck_id,
-      }
+      updateParams
     );
     if (!result.recordset?.length) return res.status(404).json({ error: 'Driver not found' });
     const driver = result.recordset[0];
@@ -1537,6 +1711,13 @@ router.patch('/drivers/:id', async (req, res, next) => {
         )
       : { recordset: [] };
     const tr = linkedTruckResult.recordset?.[0];
+    const linkedUserResult = driver.linked_user_id
+      ? await query(
+          `SELECT full_name AS linked_user_name, email AS linked_user_email FROM users WHERE id = @uid`,
+          { uid: driver.linked_user_id }
+        )
+      : { recordset: [] };
+    const lu = linkedUserResult.recordset?.[0];
     const driverLabel = [driver.full_name, driver.surname].filter(Boolean).join(' ').trim() || 'Driver';
     const contractorName = await getContractorName(driver.contractor_id);
     notifyFleetDriverEmails(req.user.tenant_name || null, contractorName || null, 'driver', [driverLabel], req.user?.email, 'edited');
@@ -1547,6 +1728,9 @@ router.patch('/drivers/:id', async (req, res, next) => {
         linkedTruckRegistration: tr?.linked_truck_registration ?? null,
         linkedTruckMakeModel: tr?.linked_truck_make_model ?? null,
         linkedTruckFleetNo: tr?.linked_truck_fleet_no ?? null,
+        linkedUserId: driver.linked_user_id ?? null,
+        linkedUserName: lu?.linked_user_name ?? null,
+        linkedUserEmail: lu?.linked_user_email ?? null,
       },
     });
   } catch (err) {

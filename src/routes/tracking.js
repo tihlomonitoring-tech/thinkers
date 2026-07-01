@@ -17,6 +17,7 @@ import {
   moveTripActivityStage,
   captureLoadingSlip,
   updateLoadingSlipFields,
+  completeDestinationDelivery,
 } from '../lib/logisticsActivityBoard.js';
 import {
   snapshotDeliveryFuelEconomics,
@@ -820,6 +821,8 @@ function mapSettings(row) {
     notify_email_geofence: get(row, 'notify_email_geofence') !== false && get(row, 'notify_email_geofence') !== 0,
     notify_email_loading: get(row, 'notify_email_loading') !== false && get(row, 'notify_email_loading') !== 0,
     notify_email_offloading: get(row, 'notify_email_offloading') !== false && get(row, 'notify_email_offloading') !== 0,
+    require_offloading_slip_at_destination: get(row, 'require_offloading_slip_at_destination') !== false
+      && get(row, 'require_offloading_slip_at_destination') !== 0,
     updated_at: get(row, 'updated_at'),
   };
 }
@@ -843,6 +846,10 @@ router.patch('/settings', async (req, res) => {
     if (b.notify_email_geofence !== undefined) { updates.push('notify_email_geofence = @neg'); params.neg = b.notify_email_geofence ? 1 : 0; }
     if (b.notify_email_loading !== undefined) { updates.push('notify_email_loading = @nel'); params.nel = b.notify_email_loading ? 1 : 0; }
     if (b.notify_email_offloading !== undefined) { updates.push('notify_email_offloading = @nef'); params.nef = b.notify_email_offloading ? 1 : 0; }
+    if (b.require_offloading_slip_at_destination !== undefined) {
+      updates.push('require_offloading_slip_at_destination = @rosl');
+      params.rosl = b.require_offloading_slip_at_destination ? 1 : 0;
+    }
     updates.push('updated_at = SYSUTCDATETIME()');
     if (updates.length === 1) return res.status(400).json({ error: 'No fields' });
     await query(
@@ -1689,12 +1696,6 @@ router.post('/geofences/draw-route', async (req, res) => {
     const ring = Array.isArray(b.corridor_polygon) && b.corridor_polygon.length >= 3
       ? b.corridor_polygon
       : bufferPolylineToPolygon(polyline, corridorM);
-    const corridorJson = JSON.stringify({
-      type: 'corridor',
-      corridor_m: corridorM,
-      route_polyline: polyline,
-      ring,
-    });
 
     const routeName = get(route, 'name');
     const save = b.save === true;
@@ -1716,6 +1717,24 @@ router.post('/geofences/draw-route', async (req, res) => {
       });
     }
 
+    await query(
+      `DELETE FROM tracking_geofence
+       WHERE tenant_id = @tenantId AND contractor_route_id = @rid
+         AND leg IN (N'origin', N'corridor', N'corridor_alt', N'destination')`,
+      { tenantId: tid, rid: routeId }
+    );
+
+    const primaryUid = b.route_uid || `osrm-${selectedIndex}`;
+    const corridorJson = JSON.stringify({
+      type: 'corridor',
+      corridor_m: corridorM,
+      route_polyline: polyline,
+      ring,
+      route_index: selectedIndex,
+      route_uid: primaryUid,
+      is_alternative: false,
+    });
+
     const created = [];
     const insOrigin = await query(
       `INSERT INTO tracking_geofence (tenant_id, name, fence_type, center_lat, center_lng, radius_m, alert_on_exit, alert_on_entry, contractor_route_id, leg)
@@ -1735,15 +1754,17 @@ router.post('/geofences/draw-route', async (req, res) => {
     for (const alt of altInputs) {
       const altIndex = Number(alt.index);
       if (!Number.isFinite(altIndex) || altIndex === selectedIndex) continue;
-      const altRoute = alternatives[altIndex];
       const altPoly = Array.isArray(alt.route_polyline) && alt.route_polyline.length >= 2
         ? alt.route_polyline
-        : (altRoute?.polyline || []);
+        : (alternatives[altIndex]?.polyline || []);
       if (altPoly.length < 2) continue;
       const altRing = Array.isArray(alt.corridor_polygon) && alt.corridor_polygon.length >= 3
         ? alt.corridor_polygon
         : bufferPolylineToPolygon(altPoly, corridorM);
-      const altLetter = String.fromCharCode(65 + altIndex);
+      const altLetter = alt.is_manual ? '✦' : String.fromCharCode(65 + altIndex);
+      const altName = alt.is_manual && alt.manual_label
+        ? `${routeName} — ${alt.manual_label}`
+        : `${routeName} — Alt ${altLetter} corridor`;
       const altJson = JSON.stringify({
         type: 'corridor',
         corridor_m: corridorM,
@@ -1751,11 +1772,17 @@ router.post('/geofences/draw-route', async (req, res) => {
         ring: altRing,
         route_index: altIndex,
         is_alternative: true,
+        is_manual: !!alt.is_manual,
+        manual_label: alt.manual_label || null,
+        manual_waypoints: Array.isArray(alt.manual_waypoints) ? alt.manual_waypoints : null,
+        route_uid: alt.route_uid || (alt.is_manual ? `manual-${altIndex}` : `osrm-${altIndex}`),
+        manual_seq: alt.manual_seq ?? null,
+        duration_min: alt.duration_min ?? null,
       });
       const insAlt = await query(
         `INSERT INTO tracking_geofence (tenant_id, name, fence_type, polygon_json, alert_on_exit, alert_on_entry, contractor_route_id, leg)
          OUTPUT INSERTED.id VALUES (@tenantId, @n, N'deviation', @pj, 0, 0, @rid, N'corridor_alt')`,
-        { tenantId: tid, n: `${routeName} — Alt ${altLetter} corridor`, pj: altJson, rid: routeId }
+        { tenantId: tid, n: altName, pj: altJson, rid: routeId }
       );
       created.push({ id: gid(insAlt.recordset?.[0]?.id), leg: 'corridor_alt', route_index: altIndex });
     }
@@ -2116,69 +2143,26 @@ router.post('/logistics-activity/trips/:id/offloading-slip', async (req, res) =>
     const tid = tenantId(req);
     const tripId = req.params.id;
     const b = req.body || {};
-    const slipNo = b.offloading_slip_no ? String(b.offloading_slip_no).trim() : '';
-    const noteNo = b.delivery_note_no ? String(b.delivery_note_no).trim() : '';
-    if (!slipNo && !noteNo) return res.status(400).json({ error: 'Offloading slip or delivery note number required' });
-
-    const tr = await query(`SELECT * FROM fleet_trip WHERE id = @id AND tenant_id = @tenantId`, { tenantId: tid, id: tripId });
-    if (!tr.recordset?.[0]) return res.status(404).json({ error: 'Trip not found' });
-
-    await query(
-      `UPDATE fleet_trip SET
-        offloading_slip_no = @slip,
-        activity_stage = N'awaiting_reschedule',
-        status = N'pending',
-        is_overdue = 0,
-        updated_at = SYSUTCDATETIME(),
-        notes = COALESCE(@notes, notes)
-       WHERE id = @id AND tenant_id = @tenantId`,
-      { tenantId: tid, id: tripId, slip: slipNo || noteNo, notes: b.notes || null }
-    );
-
-    await query(
-      `UPDATE tracking_delivery_record SET
-        offloading_slip_no = @slip,
-        delivery_note_no = COALESCE(@note, delivery_note_no),
-        tons_loaded = COALESCE(@tons, tons_loaded),
-        net_weight_kg = COALESCE(@nw, net_weight_kg),
-        notes = COALESCE(@notes, notes),
-        pending_note = 0,
-        status = N'completed'
-       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
-      {
-        tenantId: tid,
-        tripId,
-        slip: slipNo || noteNo,
-        note: noteNo || null,
-        tons: b.tons_loaded != null ? Number(b.tons_loaded) : null,
-        nw: b.tons_loaded != null ? Number(b.tons_loaded) * 1000 : null,
-        notes: b.notes || null,
-      }
-    );
-
-    const destR = await query(
-      `SELECT TOP 1 id FROM tracking_delivery_record
-       WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'destination'`,
-      { tenantId: tid, tripId }
-    );
-    const destId = gid(get(destR.recordset?.[0], 'id'));
-    let emptyReturn = null;
-    if (destId) {
-      emptyReturn = await snapshotDeliveryFuelEconomics(query, tid, destId).catch(() => null);
-    }
+    const result = await completeDestinationDelivery(query, tid, tripId, {
+      offloading_slip_no: b.offloading_slip_no,
+      delivery_note_no: b.delivery_note_no,
+      tons_loaded: b.tons_loaded,
+      notes: b.notes,
+    });
 
     res.json({
       ok: true,
-      activity_stage: 'awaiting_reschedule',
-      empty_return: emptyReturn ? {
-        return_distance_km: emptyReturn.return_distance_km,
-        return_fuel_litres: emptyReturn.return_fuel_litres,
-        return_fuel_cost: emptyReturn.return_fuel_cost,
-        return_fuel_litres_per_100km: emptyReturn.return_fuel_litres_per_100km,
+      activity_stage: result.activity_stage,
+      empty_return: result.empty_return ? {
+        return_distance_km: result.empty_return.return_distance_km,
+        return_fuel_litres: result.empty_return.return_fuel_litres,
+        return_fuel_cost: result.empty_return.return_fuel_cost,
+        return_fuel_litres_per_100km: result.empty_return.return_fuel_litres_per_100km,
       } : null,
     });
   } catch (err) {
-    res.status(500).json({ error: err?.message || 'Offloading slip failed' });
+    const code = err.status === 404 ? 404 : err.message?.includes('required') ? 400 : 500;
+    res.status(code).json({ error: err?.message || 'Offloading slip failed' });
   }
 });
 

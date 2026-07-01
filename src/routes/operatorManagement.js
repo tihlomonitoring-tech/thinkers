@@ -515,7 +515,11 @@ router.get('/users', async (req, res, next) => {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     const r = await query(
-      `SELECT id, full_name, email FROM users WHERE tenant_id = @tenantId AND [status] = N'active' ORDER BY full_name`,
+      `SELECT u.id, u.full_name, u.email
+       FROM users u
+       WHERE u.tenant_id = @tenantId AND u.[status] = N'active'
+         AND EXISTS (SELECT 1 FROM user_page_roles pr WHERE pr.user_id = u.id AND pr.page_id = N'operator_profile')
+       ORDER BY u.full_name`,
       { tenantId }
     );
     res.json({ users: r.recordset || [] });
@@ -530,7 +534,7 @@ router.get('/loading-assignments', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
-    const assignments = await listLoadingAssignmentsForDriver(query, tenantId, req.user?.full_name);
+    const assignments = await listLoadingAssignmentsForDriver(query, tenantId, req.user?.full_name, req.user?.id);
     res.json({ assignments, driver_name: req.user?.full_name || null });
   } catch (err) { next(err); }
 });
@@ -558,10 +562,10 @@ router.post('/loading-slips/:tripId/submit', async (req, res, next) => {
     const tenantId = getTenantId(req);
     if (!tenantId) return res.status(400).json({ error: 'No tenant' });
     const tripId = gid(req.params.tripId);
-    await assertTripAssignedToDriver(query, tenantId, tripId, req.user?.full_name);
+    await assertTripAssignedToDriver(query, tenantId, tripId, req.user?.full_name, req.user?.id);
 
     const b = req.body || {};
-    const assignments = await listLoadingAssignmentsForDriver(query, tenantId, req.user?.full_name);
+    const assignments = await listLoadingAssignmentsForDriver(query, tenantId, req.user?.full_name, req.user?.id);
     const trip = assignments.find((a) => a.trip_id === tripId);
     const hasSlip = !!(trip?.loading_slip_no && String(trip.loading_slip_no).trim());
 

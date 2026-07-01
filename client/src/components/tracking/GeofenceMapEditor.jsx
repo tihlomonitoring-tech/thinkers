@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { MapContainer, Circle, Marker, Polygon, Polyline, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -6,6 +6,7 @@ import FleetMapBasemap from '../FleetMapBasemap.jsx';
 import { parsePolygonJson, parseCorridorPolyline } from '../../lib/routeCorridorGeofence.js';
 import { geofenceDisplayColor } from '../../lib/geofenceStyle.js';
 import { MapPanLock, MapWheelGuard, FitBoundsOnce, FlyToPoint } from './geofenceMapControls.jsx';
+import { MapCenterRegistry, MapInvalidateSize } from './mapCenterPick.jsx';
 import MapPlaceSearch from './MapPlaceSearch.jsx';
 import GeofencePlaceLabels from './GeofencePlaceLabels.jsx';
 import GeofenceLabelControl, { useGeofenceLabelMode } from './GeofenceLabelControl.jsx';
@@ -170,6 +171,7 @@ export default function GeofenceMapEditor({
   manualRouteSnapping = false,
   manualRouteLockEndpoints = false,
   onManualRouteAddWaypoint,
+  onManualRouteInsertWaypoint,
   onManualRouteMoveWaypoint,
   onManualRouteUndo,
   onScaleDraft,
@@ -179,7 +181,27 @@ export default function GeofenceMapEditor({
   const [mounted, setMounted] = useState(false);
   const [basemapVariant, setBasemapVariant] = useState('satellite');
   const [labelMode, setLabelMode] = useGeofenceLabelMode();
+  const [fullscreen, setFullscreen] = useState(false);
+  const containerRef = useRef(null);
+  const mapCenterRef = useRef(null);
   useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    const onFs = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const el = containerRef.current;
+    if (!el) return;
+    try {
+      if (!document.fullscreenElement) await el.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch {
+      /* fullscreen may be blocked */
+    }
+  }, []);
 
   const resolveEditColor = editColor || geofenceDisplayColor({ leg: editLeg, fence_type: editFenceType });
 
@@ -193,22 +215,33 @@ export default function GeofenceMapEditor({
 
   const drawingActive = !!manualDrawMode || manualRoutePlotActive;
   const editingActive = !!(editRing || editCenter);
-  const panLocked = mapTool !== 'pan' || drawingActive || mapClickMode;
+  // Only circle drag-draw and freehand sketch lock pan. Pick, polygon clicks, and route plot allow pan+zoom.
+  const panLocked = manualDrawMode === 'circle' || manualDrawMode === 'freehand';
+  const precisionPickActive = mapClickMode || manualRoutePlotActive;
   const hasResizableDraft = !!(manualCircleDraft || manualPolygonDraft?.ring?.length || editingActive);
 
   const selectionEnabled = mapTool === 'pan' && !drawingActive && !mapClickMode && !editingActive;
 
+  const placeAtMapCenter = useCallback(() => {
+    const pt = mapCenterRef.current?.();
+    if (!pt) return;
+    if (manualRoutePlotActive) onManualRouteAddWaypoint?.(pt);
+    else if (mapClickMode) onMapClick?.(pt.lat, pt.lng);
+  }, [manualRoutePlotActive, mapClickMode, onManualRouteAddWaypoint, onMapClick]);
+
   const statusLine = panLocked
-    ? mapClickMode
-      ? 'Pick mode — click once (scroll to zoom, drag handles to resize)'
+    ? manualDrawMode === 'freehand'
+      ? 'Freehand draw — drag on the map to sketch your boundary'
+      : 'Circle draw — click and drag to set radius'
+    : precisionPickActive
+      ? manualRoutePlotActive
+        ? 'Plot route — pan & zoom freely, then click or use “Place at crosshair” for each waypoint'
+        : 'Precision pick — pan & zoom to the spot, then click or “Place at crosshair”'
       : drawingActive
-        ? manualRoutePlotActive
-          ? 'Plot custom route — click waypoints in order; route follows each point to the end'
-          : 'Draw mode — scroll to zoom in/out; map position stays put'
+        ? 'Polygon draw — pan between clicks; double-click or Enter to finish'
         : editingActive
           ? 'Edit mode — drag corner dots to reshape, N/E/S/W handles to resize'
-          : 'Tool active — scroll wheel zooms the map'
-    : 'Pan mode — drag to move, scroll to zoom; click a geofence to edit';
+          : 'Pan mode — drag to move, scroll to zoom; click a geofence to edit';
 
   const showEditPolygon = editRing && editRing.length >= 3;
   const placeLabels = useMemo(
@@ -218,14 +251,19 @@ export default function GeofenceMapEditor({
 
   if (!mounted) {
     return (
-      <div className={`h-[40rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
+      <div className={`h-[44rem] rounded-xl bg-surface-100 flex items-center justify-center text-sm text-surface-500 ${className}`}>
         Loading map…
       </div>
     );
   }
 
+  const mapHeightClass = fullscreen ? 'h-[calc(100vh-0px)]' : 'h-[44rem]';
+
   return (
-    <div className={`rounded-xl border border-surface-200 overflow-hidden z-0 relative overscroll-contain ${className}`}>
+    <div
+      ref={containerRef}
+      className={`rounded-xl border border-surface-200 overflow-hidden z-0 relative overscroll-contain bg-surface-900 ${fullscreen ? 'fixed inset-0 z-[2000] rounded-none border-0' : ''} ${className}`}
+    >
       <div className="absolute top-3 left-3 right-3 z-[1000] pointer-events-none flex justify-center">
         <MapPlaceSearch onSelect={onPlaceSelect} savedPlaces={placeLabels} className="w-full max-w-lg pointer-events-auto shadow-lg" />
       </div>
@@ -245,6 +283,13 @@ export default function GeofenceMapEditor({
         >
           Street
         </ToolBtn>
+        <ToolBtn
+          active={fullscreen}
+          onClick={toggleFullscreen}
+          title={fullscreen ? 'Exit full screen (Esc)' : 'Full screen map'}
+        >
+          {fullscreen ? 'Exit full screen' : 'Full screen'}
+        </ToolBtn>
       </div>
 
       <div className="absolute top-24 right-3 z-[1000] flex justify-end">
@@ -258,20 +303,39 @@ export default function GeofenceMapEditor({
 
       <div className="absolute bottom-3 left-3 z-[1000] flex flex-col gap-2 pointer-events-none max-w-[calc(100%-1.5rem)]">
         <div className="flex flex-wrap gap-1.5 pointer-events-auto shadow-sm">
-          <ToolBtn active={mapTool === 'pan' && !mapClickMode} onClick={() => onMapToolChange?.('pan')} title="Pan the map (drag to move)">
+          <ToolBtn active={mapTool === 'pan' && !mapClickMode && !manualRoutePlotActive} onClick={() => onMapToolChange?.('pan')} title="Pan the map (drag to move)">
             Pan
           </ToolBtn>
           <ToolBtn active={mapTool === 'draw'} onClick={() => onMapToolChange?.('draw')} title="Draw land boundary">
             Draw
           </ToolBtn>
-          <ToolBtn active={mapClickMode} onClick={() => onMapToolChange?.('pick')} title="Pick a point">
+          <ToolBtn active={mapClickMode} onClick={() => onMapToolChange?.('pick')} title="Pick a point — pan & zoom first for precision">
             Pick
           </ToolBtn>
         </div>
         <div className="rounded-lg bg-slate-900/88 text-white px-3 py-2 text-[11px] shadow-lg pointer-events-auto max-w-md">
           {statusLine}
         </div>
+        {precisionPickActive && (
+          <button
+            type="button"
+            onClick={placeAtMapCenter}
+            className="pointer-events-auto self-start text-xs font-semibold px-3 py-2 rounded-lg bg-brand-600 text-white shadow-lg hover:bg-brand-700"
+          >
+            Place at crosshair
+          </button>
+        )}
       </div>
+
+      {precisionPickActive && (
+        <div className="absolute inset-0 z-[400] pointer-events-none flex items-center justify-center">
+          <div className="relative w-10 h-10" aria-hidden>
+            <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-white -translate-y-1/2 shadow-[0_0_2px_rgba(0,0,0,.8)]" />
+            <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-white -translate-x-1/2 shadow-[0_0_2px_rgba(0,0,0,.8)]" />
+            <div className="absolute inset-2 rounded-full border-2 border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,.45)]" />
+          </div>
+        </div>
+      )}
 
       {hasResizableDraft && onScaleDraft && (
         <div className="absolute bottom-3 right-3 z-[1000] flex flex-col gap-1.5 pointer-events-auto">
@@ -283,10 +347,23 @@ export default function GeofenceMapEditor({
         </div>
       )}
 
+      {fullscreen && manualRoutePlotActive && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-[1000] flex flex-wrap items-center gap-2 pointer-events-auto px-4 py-2 rounded-xl bg-slate-900/92 text-white text-xs shadow-xl border border-white/10">
+          <span className="font-semibold">{manualRouteWaypoints?.length || 0} waypoint{(manualRouteWaypoints?.length || 0) === 1 ? '' : 's'}</span>
+          <button type="button" onClick={placeAtMapCenter} className="px-2.5 py-1 rounded-md bg-brand-600 hover:bg-brand-500 font-medium">
+            Place at crosshair
+          </button>
+          <button type="button" onClick={() => onManualRouteUndo?.()} className="px-2.5 py-1 rounded-md border border-white/30 hover:bg-white/10">
+            Undo
+          </button>
+          <span className="text-white/70 hidden sm:inline">Pan · scroll zoom · click map</span>
+        </div>
+      )}
+
       <MapContainer
         center={defaultCenter}
         zoom={9}
-        className="h-[40rem] w-full"
+        className={`${mapHeightClass} w-full`}
         scrollWheelZoom="center"
         doubleClickZoom={!drawingActive || manualDrawMode !== 'polygon'}
         zoomControl
@@ -294,6 +371,8 @@ export default function GeofenceMapEditor({
         <FleetMapBasemap variant={basemapVariant} showLabels={basemapVariant === 'satellite'} />
         <MapWheelGuard />
         <MapPanLock locked={panLocked} disableDoubleClickZoom={manualDrawMode === 'polygon'} />
+        <MapInvalidateSize trigger={fullscreen} />
+        <MapCenterRegistry registerRef={mapCenterRef} />
         <FitBoundsOnce revision={fitRevision} positions={fitPositions} />
         <FlyToPoint point={flyTarget} revision={flyRevision} />
 
@@ -319,6 +398,7 @@ export default function GeofenceMapEditor({
           active={manualRoutePlotActive}
           waypoints={manualRouteWaypoints}
           onAddWaypoint={onManualRouteAddWaypoint}
+          onInsertWaypoint={onManualRouteInsertWaypoint}
           onMoveWaypoint={onManualRouteMoveWaypoint}
           onUndo={onManualRouteUndo}
         />

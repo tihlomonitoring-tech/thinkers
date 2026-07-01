@@ -56,15 +56,66 @@ function initAltCorridors(alternatives, corridorM, selectedIndex, enableAll = fa
 }
 
 function enrichAlternatives(alternatives) {
-  return (alternatives || []).map((alt) => {
-    if (alt.is_manual && alt.polyline?.length) return alt;
+  return (alternatives || []).map((alt, i) => {
+    if (alt.is_manual && alt.polyline?.length) {
+      return { ...alt, uid: alt.uid || `manual-${alt.manual_seq || i}` };
+    }
     const geometryKm = polylineDistanceKm(alt.polyline);
     return {
       ...alt,
+      uid: alt.uid || `osrm-${alt.index ?? i}`,
       distance_km: geometryKm ?? alt.distance_km,
       osrm_distance_km: alt.osrm_distance_km ?? alt.distance_km,
     };
   });
+}
+
+function polylineMatchScore(a, b) {
+  if (!a?.length || !b?.length) return Infinity;
+  const start = a[0];
+  const end = a[a.length - 1];
+  const bStart = b[0];
+  const bEnd = b[b.length - 1];
+  return Math.hypot(bStart.lat - start.lat, bStart.lng - start.lng)
+    + Math.hypot(bEnd.lat - end.lat, bEnd.lng - end.lng);
+}
+
+function findSavedAltForAlternative(alt, altGs) {
+  if (!altGs?.length) return null;
+  if (alt.uid) {
+    const byUid = altGs.find((g) => parseCorridorMeta(g.polygon_json).route_uid === alt.uid);
+    if (byUid) return byUid;
+  }
+  let best = null;
+  let bestScore = Infinity;
+  const pl = alt.polyline || [];
+  for (const g of altGs) {
+    const savedPl = parseCorridorPolyline(g.polygon_json);
+    if (!savedPl?.length) continue;
+    const score = polylineMatchScore(pl, savedPl);
+    if (score < bestScore) {
+      bestScore = score;
+      best = g;
+    }
+  }
+  return bestScore < 0.2 ? best : null;
+}
+
+function buildManualAlternativeFromGeofence(g, seq = 1) {
+  const meta = parseCorridorMeta(g.polygon_json);
+  const pl = parseCorridorPolyline(g.polygon_json);
+  if (!pl?.length) return null;
+  return {
+    uid: meta.route_uid || `manual-saved-${g.id}`,
+    is_manual: true,
+    manual_seq: meta.manual_seq || seq,
+    manual_label: meta.manual_label || g.name?.replace(/^.*—\s*/, '') || `Custom route ${seq}`,
+    manual_waypoints: meta.manual_waypoints?.length >= 2 ? meta.manual_waypoints : pl,
+    polyline: pl,
+    distance_km: polylineDistanceKm(pl),
+    duration_min: meta.duration_min,
+    saved_geofence_id: g.id,
+  };
 }
 
 function countManualRoutes(alternatives) {
@@ -104,42 +155,65 @@ function matchAlternativeIndex(alternatives, polyline) {
 }
 
 function mergeSavedCorridorsIntoPreview(preview, savedGeofences, corridorM) {
-  if (!preview?.alternatives?.length) return preview;
+  if (!preview?.alternatives?.length || !savedGeofences?.length) return preview;
+
   const corridorG = savedGeofences.find((g) => g.leg === 'corridor');
   const altGs = savedGeofences.filter((g) => g.leg === 'corridor_alt');
   const primaryPoly = parseCorridorPolyline(corridorG?.polygon_json);
-  const primaryIndex = primaryPoly?.length
-    ? matchAlternativeIndex(preview.alternatives, primaryPoly)
-    : (preview.selected_route_index ?? 0);
+  const primaryMeta = parseCorridorMeta(corridorG?.polygon_json);
 
-  const alt_corridors = initAltCorridors(preview.alternatives, corridorM, primaryIndex);
-  const primaryRing = parsePolygonJson(corridorG?.polygon_json);
-  if (primaryRing?.length) {
-    alt_corridors[primaryIndex] = {
-      enabled: true,
-      corridor_polygon: primaryRing,
-      corridor_manual: true,
-    };
+  let alternatives = preview.alternatives.filter((a) => !a.is_manual);
+  const manualsFromDb = altGs
+    .filter((g) => parseCorridorMeta(g.polygon_json).is_manual)
+    .map((g, i) => buildManualAlternativeFromGeofence(g, i + 1))
+    .filter(Boolean);
+  const sessionManuals = preview.alternatives.filter((a) => a.is_manual);
+  const manualUids = new Set(sessionManuals.map((a) => a.uid));
+  alternatives = [...alternatives, ...sessionManuals, ...manualsFromDb.filter((m) => !manualUids.has(m.uid))];
+
+  let primaryIndex = preview.selected_route_index ?? 0;
+  if (primaryPoly?.length) {
+    primaryIndex = matchAlternativeIndex(alternatives, primaryPoly);
+    if (alternatives[primaryIndex]) {
+      alternatives[primaryIndex] = {
+        ...alternatives[primaryIndex],
+        uid: primaryMeta.route_uid || alternatives[primaryIndex].uid || `osrm-${primaryIndex}`,
+        polyline: primaryPoly,
+        distance_km: polylineDistanceKm(primaryPoly),
+      };
+    }
   }
 
-  for (const g of altGs) {
-    const meta = parseCorridorMeta(g.polygon_json);
-    const ring = parsePolygonJson(g.polygon_json);
-    const pl = parseCorridorPolyline(g.polygon_json);
-    let idx = Number.isFinite(meta.route_index) ? meta.route_index : matchAlternativeIndex(preview.alternatives, pl);
-    if (!alt_corridors[idx]) idx = primaryIndex;
-    alt_corridors[idx] = {
-      enabled: true,
-      corridor_polygon: ring?.length ? ring : alt_corridors[idx]?.corridor_polygon,
-      corridor_manual: true,
+  const alt_corridors = {};
+  alternatives.forEach((alt, i) => {
+    const isPrimary = i === primaryIndex;
+    if (isPrimary) {
+      const primaryRing = parsePolygonJson(corridorG?.polygon_json);
+      alt_corridors[i] = {
+        enabled: true,
+        corridor_polygon: primaryRing?.length
+          ? primaryRing
+          : bufferPolylineToPolygon(alt.polyline || [], corridorM),
+        corridor_manual: !!primaryRing?.length,
+      };
+      return;
+    }
+    const savedMatch = findSavedAltForAlternative(alt, altGs);
+    alt_corridors[i] = {
+      enabled: !!savedMatch,
+      corridor_polygon: savedMatch
+        ? (parsePolygonJson(savedMatch.polygon_json) || bufferPolylineToPolygon(alt.polyline || [], corridorM))
+        : bufferPolylineToPolygon(alt.polyline || [], corridorM),
+      corridor_manual: !!savedMatch,
     };
-  }
+  });
 
-  const selected = preview.alternatives[primaryIndex] || preview.alternatives[0];
+  const selected = alternatives[primaryIndex] || alternatives[0];
   return {
     ...preview,
+    alternatives,
     selected_route_index: primaryIndex,
-    route_polyline: selected?.polyline || preview.route_polyline,
+    route_polyline: primaryPoly?.length ? primaryPoly : (selected?.polyline || preview.route_polyline),
     corridor_polygon: alt_corridors[primaryIndex]?.corridor_polygon || preview.corridor_polygon,
     alt_corridors,
     driving: {
@@ -171,6 +245,7 @@ export default function GeofenceRoutesTab({ setError }) {
   const [manualRouteLabel, setManualRouteLabel] = useState('');
   const [manualRouteFinalizing, setManualRouteFinalizing] = useState(false);
   const [manualRouteLockEndpoints, setManualRouteLockEndpoints] = useState(false);
+  const [editingManualRouteIndex, setEditingManualRouteIndex] = useState(null);
   const manualSnapSeq = useRef(0);
   const [workflowStep, setWorkflowStep] = useState('land');
   const [mapTool, setMapTool] = useState('pan');
@@ -376,7 +451,7 @@ export default function GeofenceRoutesTab({ setError }) {
       setPreview((p) => (p ? { ...p, destination: { lat, lng } } : p));
       setHaulRoadDirty(true);
       setMapClickTarget(null);
-      setMapTool('pan');
+      // Stay in pick-ready state so user can re-pick either point via Re-pick buttons
     } else if (mapClickTarget === 'alert') {
       setAlertForm((f) => ({ ...f, center_lat: latStr, center_lng: lngStr }));
       setMapClickTarget(null);
@@ -638,6 +713,7 @@ export default function GeofenceRoutesTab({ setError }) {
   }, [manualRoutePlotActive, manualWaypoints]);
 
   const startManualRoutePlot = useCallback(() => {
+    setEditingManualRouteIndex(null);
     setManualRoutePlotActive(true);
     setManualWaypoints([]);
     setManualRouteSnapPreview(null);
@@ -651,11 +727,32 @@ export default function GeofenceRoutesTab({ setError }) {
 
   const cancelManualRoutePlot = useCallback(() => {
     setManualRoutePlotActive(false);
+    setEditingManualRouteIndex(null);
     setManualWaypoints([]);
     setManualRouteSnapPreview(null);
     setManualRouteLabel('');
     setManualRouteLockEndpoints(false);
   }, []);
+
+  const startEditManualRoute = useCallback((index) => {
+    const alt = preview?.alternatives?.[index];
+    if (!alt?.is_manual) return;
+    setEditingManualRouteIndex(index);
+    setManualRoutePlotActive(true);
+    setManualWaypoints(
+      alt.manual_waypoints?.length >= 2
+        ? alt.manual_waypoints.map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+        : (alt.polyline || []).map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+    );
+    setManualRouteLabel(alt.manual_label || '');
+    setManualRouteLockEndpoints(false);
+    setManualRouteSnapPreview(null);
+    setMapTool('pan');
+    setMapClickTarget(null);
+    setManualDrawMode(null);
+    setEditing(null);
+    requestMapFit((alt.polyline || []).map((p) => [p.lat, p.lng]));
+  }, [preview?.alternatives, requestMapFit]);
 
   const seedManualRouteFromAB = useCallback(() => {
     const pts = [];
@@ -683,12 +780,80 @@ export default function GeofenceRoutesTab({ setError }) {
     setManualWaypoints((w) => w.slice(0, -1));
   }, [cancelManualRoutePlot]);
 
+  const insertManualWaypointAfter = useCallback((afterIndex) => {
+    setManualWaypoints((w) => {
+      if (afterIndex < 0 || afterIndex >= w.length - 1) return w;
+      const a = w[afterIndex];
+      const b = w[afterIndex + 1];
+      const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+      const next = [...w];
+      next.splice(afterIndex + 1, 0, mid);
+      return next;
+    });
+  }, []);
+
+  const insertManualWaypointAt = useCallback((index, pt) => {
+    setManualWaypoints((w) => {
+      const next = [...w];
+      next.splice(Math.max(0, Math.min(index, next.length)), 0, pt);
+      return next;
+    });
+  }, []);
+
+  const updateManualWaypointCoords = useCallback((index, lat, lng) => {
+    const latN = Number(lat);
+    const lngN = Number(lng);
+    if (!Number.isFinite(latN) || !Number.isFinite(lngN)) return;
+    setManualWaypoints((w) => w.map((p, i) => (i === index ? { lat: latN, lng: lngN } : p)));
+  }, []);
+
   const removeManualWaypointAt = useCallback((index) => {
     setManualWaypoints((w) => {
       if (manualRouteLockEndpoints && (index === 0 || index === w.length - 1)) return w;
       return w.filter((_, i) => i !== index);
     });
   }, [manualRouteLockEndpoints]);
+
+  const updateManualAlternative = useCallback((index, snapped, waypoints, label) => {
+    const corridorM = Number(drawForm.corridor_m) || 400;
+    setPreview((p) => {
+      if (!p?.alternatives?.[index]) return p;
+      const alternatives = [...p.alternatives];
+      const prev = alternatives[index];
+      alternatives[index] = {
+        ...prev,
+        ...snapped,
+        uid: prev.uid || `manual-${prev.manual_seq || index}`,
+        is_manual: true,
+        manual_waypoints: waypoints,
+        manual_label: label.trim() || prev.manual_label,
+      };
+      const alt_corridors = { ...(p.alt_corridors || {}) };
+      alt_corridors[index] = {
+        ...(alt_corridors[index] || {}),
+        enabled: alt_corridors[index]?.enabled ?? true,
+        corridor_polygon: bufferPolylineToPolygon(snapped.polyline, corridorM),
+        corridor_manual: false,
+      };
+      const isPrimary = (p.selected_route_index ?? 0) === index;
+      return {
+        ...p,
+        alternatives,
+        alt_corridors,
+        ...(isPrimary
+          ? {
+              route_polyline: snapped.polyline,
+              corridor_polygon: alt_corridors[index].corridor_polygon,
+              driving: {
+                distance_km: snapped.distance_km,
+                duration_min: snapped.duration_min,
+                polyline: snapped.polyline,
+              },
+            }
+          : {}),
+      };
+    });
+  }, [drawForm.corridor_m]);
 
   const appendManualAlternative = useCallback((snapped, waypoints, label) => {
     const corridorM = Number(drawForm.corridor_m) || 400;
@@ -721,11 +886,16 @@ export default function GeofenceRoutesTab({ setError }) {
     setError('');
     const waypoints = [...manualWaypoints];
     const label = manualRouteLabel;
+    const editIndex = editingManualRouteIndex;
     try {
       const r = await trackingApi.map.routeThroughWaypoints(waypoints);
       const snapped = r.route;
       if (!snapped?.polyline?.length) throw new Error('Could not snap plotted path to roads');
-      appendManualAlternative(snapped, waypoints, label);
+      if (editIndex != null) {
+        updateManualAlternative(editIndex, snapped, waypoints, label);
+      } else {
+        appendManualAlternative(snapped, waypoints, label);
+      }
       cancelManualRoutePlot();
       requestMapFit(snapped.polyline.map((pt) => [pt.lat, pt.lng]));
     } catch (err) {
@@ -979,11 +1149,21 @@ export default function GeofenceRoutesTab({ setError }) {
       const alt_corridors = synced.alt_corridors || initAltCorridors(preview.alternatives, Number(drawForm.corridor_m) || 400, primaryIndex);
       const alternative_corridors = Object.entries(alt_corridors)
         .filter(([i, c]) => c.enabled && Number(i) !== primaryIndex)
-        .map(([i, c]) => ({
-          index: Number(i),
-          route_polyline: preview.alternatives?.[Number(i)]?.polyline || [],
-          corridor_polygon: c.corridor_polygon,
-        }));
+        .map(([i, c]) => {
+          const alt = preview.alternatives?.[Number(i)] || {};
+          return {
+            index: Number(i),
+            route_polyline: alt.polyline || [],
+            corridor_polygon: c.corridor_polygon,
+            is_manual: !!alt.is_manual,
+            manual_label: alt.manual_label || null,
+            manual_waypoints: alt.manual_waypoints || null,
+            manual_seq: alt.manual_seq || null,
+            route_uid: alt.uid || null,
+            duration_min: alt.duration_min ?? null,
+          };
+        });
+      const primaryAlt = preview.alternatives?.[primaryIndex] || {};
 
       await trackingApi.geofences.drawRoute({
         contractor_route_id: drawForm.contractor_route_id,
@@ -998,6 +1178,7 @@ export default function GeofenceRoutesTab({ setError }) {
         route_polyline: preview.route_polyline,
         corridor_polygon: preview.corridor_polygon,
         selected_route_index: primaryIndex,
+        route_uid: primaryAlt.uid || `osrm-${primaryIndex}`,
         alternative_corridors,
         save: true,
       });
@@ -1293,7 +1474,7 @@ export default function GeofenceRoutesTab({ setError }) {
         <p className="text-sm text-surface-600 dark:text-surface-400 mt-1 max-w-3xl">
           First <strong>search and draw your land or site boundary</strong>, then define the <strong>haul road from point A to point B</strong> and link it to a route from{' '}
           <Link to="/access-management" className="text-brand-600 hover:underline">Access Management</Link>.
-          Use <strong>Pan</strong> to move the map and <strong>scroll to zoom</strong>. While drawing or picking, pan is locked but zoom stays on the map so you do not lose your place.
+          Use <strong>Full screen</strong> for a larger map. While picking points or plotting a custom route, <strong>pan and zoom freely</strong>, then click or use <strong>Place at crosshair</strong> for precision.
         </p>
       </header>
 
@@ -1378,6 +1559,7 @@ export default function GeofenceRoutesTab({ setError }) {
         manualRouteSnapping={manualRouteSnapping}
         manualRouteLockEndpoints={manualRouteLockEndpoints}
         onManualRouteAddWaypoint={addManualWaypoint}
+        onManualRouteInsertWaypoint={insertManualWaypointAt}
         onManualRouteMoveWaypoint={moveManualWaypoint}
         onManualRouteUndo={undoManualWaypoint}
       />
@@ -1454,6 +1636,7 @@ export default function GeofenceRoutesTab({ setError }) {
                 active={mapClickTarget === 'origin'}
                 onPick={() => { setMapTool('pick'); setMapClickTarget('origin'); }}
                 onClear={clearPointA}
+                onZoomTo={() => pointACoords && flyToPlace({ ...pointACoords, zoom: 18 })}
               />
               <PickedPointRow
                 label="Point B — destination"
@@ -1462,6 +1645,7 @@ export default function GeofenceRoutesTab({ setError }) {
                 active={mapClickTarget === 'destination'}
                 onPick={() => { setMapTool('pick'); setMapClickTarget('destination'); }}
                 onClear={clearPointB}
+                onZoomTo={() => pointBCoords && flyToPlace({ ...pointBCoords, zoom: 18 })}
               />
             </div>
           </div>
@@ -1584,6 +1768,11 @@ export default function GeofenceRoutesTab({ setError }) {
           {preview && (
             <ManualRoutePlotPanel
               active={manualRoutePlotActive}
+              editingRouteLabel={
+                editingManualRouteIndex != null
+                  ? (preview.alternatives?.[editingManualRouteIndex]?.manual_label || 'Custom route')
+                  : null
+              }
               waypoints={manualWaypoints}
               snapPreview={manualRouteSnapPreview}
               snapping={manualRouteSnapping}
@@ -1595,6 +1784,8 @@ export default function GeofenceRoutesTab({ setError }) {
               onClear={() => setManualWaypoints([])}
               onSeedFromAB={seedManualRouteFromAB}
               onRemoveWaypoint={removeManualWaypointAt}
+              onInsertWaypointAfter={insertManualWaypointAfter}
+              onUpdateWaypointCoords={updateManualWaypointCoords}
               onFinalize={finalizeManualRoute}
               finalizing={manualRouteFinalizing}
               canSeedFromAB={!!pointACoords && !!pointBCoords}
@@ -1610,6 +1801,7 @@ export default function GeofenceRoutesTab({ setError }) {
               onZoomRoute={zoomRouteOption}
               onZoomAll={zoomAllRouteOptions}
               onRemoveManual={removeManualAlternative}
+              onEditManual={startEditManualRoute}
               onStartPlotManual={startManualRoutePlot}
               systemRouteDistanceKm={selectedSystemRoute?.distance_km}
             />

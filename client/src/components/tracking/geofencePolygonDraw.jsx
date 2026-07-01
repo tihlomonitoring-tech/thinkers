@@ -104,7 +104,7 @@ export function PolygonClickDrawHandler({ active, points, onAddPoint, onComplete
 
   useEffect(() => {
     if (!active) return undefined;
-    map.dragging.disable();
+    // Allow pan/zoom between vertex clicks for precise boundary plotting.
     map.doubleClickZoom.disable();
     map.getContainer().style.cursor = 'crosshair';
     const onKey = (ev) => {
@@ -118,7 +118,6 @@ export function PolygonClickDrawHandler({ active, points, onAddPoint, onComplete
     };
     window.addEventListener('keydown', onKey);
     return () => {
-      map.dragging.enable();
       map.doubleClickZoom.enable();
       map.getContainer().style.cursor = '';
       window.removeEventListener('keydown', onKey);

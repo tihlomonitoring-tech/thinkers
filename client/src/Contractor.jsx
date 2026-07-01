@@ -5,14 +5,14 @@ import { useAuth } from './AuthContext';
 import { canAccessPage } from './lib/pageAccess.js';
 import { useSecondaryNavHidden } from './lib/useSecondaryNavHidden.js';
 import { useAutoHideNavAfterTabChange } from './lib/useAutoHideNavAfterTabChange.js';
-import { contractor as contractorApi, openAttachmentWithAuth, tabAccess as tabAccessApi, users as usersApi } from './api';
+import { contractor as contractorApi, openAttachmentWithAuth, tabAccess as tabAccessApi, users as usersApi, operatorManagement as opMgmtApi } from './api';
 import { parseExcelFile, downloadTruckTemplate, downloadDriverTemplate, downloadConsolidatedTemplate, parseConsolidatedFile } from './lib/excelImport.js';
 import { buildBreakdownPdfDocument } from './lib/breakdownPdfReport.js';
 import SubcontractorFleetsTab from './contractor/SubcontractorFleetsTab.jsx';
 import FleetAdvancedView from './contractor/FleetAdvancedView.jsx';
 import BulkFleetEditPanel from './contractor/BulkFleetEditPanel.jsx';
 import BulkDriverEditPanel from './contractor/BulkDriverEditPanel.jsx';
-import { normalizeTruckRow, normalizeDriverRow, normalizeEntityId } from './lib/entityId.js';
+import { normalizeTruckRow, normalizeDriverRow, normalizeEntityId, rowEntityId } from './lib/entityId.js';
 import { formatTruckRegistration } from './lib/truckKey.js';
 import DriverAdvancedView from './contractor/DriverAdvancedView.jsx';
 import FleetTruckApprovalSummaryPanel from './components/FleetTruckApprovalSummaryPanel.jsx';
@@ -499,6 +499,12 @@ export default function Contractor() {
   const [driverLinkedTruckSearch, setDriverLinkedTruckSearch] = useState('');
   const [driverLinkedTruckDropdownOpen, setDriverLinkedTruckDropdownOpen] = useState(false);
   const driverLinkedTruckDropdownRef = useRef(null);
+  // Read-only view of the driver's operator-profile link (managed in Access Management).
+  // Surfaces operator productivity & integrations on this panel when linked.
+  const [driverLinkedUser, setDriverLinkedUser] = useState(null);
+  const [operatorProductivity, setOperatorProductivity] = useState(null);
+  const [operatorDeliveries, setOperatorDeliveries] = useState([]);
+  const [operatorPerfLoading, setOperatorPerfLoading] = useState(false);
   const [savingTruck, setSavingTruck] = useState(false);
   const [fleetChangeComment, setFleetChangeComment] = useState('');
   const [fleetSelectionMode, setFleetSelectionMode] = useState(false);
@@ -941,6 +947,36 @@ export default function Contractor() {
     setDriverLinkedTruckSearch(truck ? (truck.registration || '') : '');
   }, [selectedRegisterDriver?.id, selectedRegisterDriver?.linkedTruckId, selectedRegisterDriver?.linked_truck_id, activeTab, data.trucks]);
 
+  // Read the driver's operator-profile link (managed in Access Management) when the panel opens.
+  useEffect(() => {
+    if (!selectedRegisterDriver || activeTab !== 'driver-register') return;
+    const d = selectedRegisterDriver;
+    const uid = d.linkedUserId ?? d.linked_user_id ?? null;
+    const name = d.linkedUserName ?? d.linked_user_name ?? null;
+    const email = d.linkedUserEmail ?? d.linked_user_email ?? null;
+    setDriverLinkedUser(uid ? { id: uid, full_name: name, email } : null);
+  }, [selectedRegisterDriver?.id, activeTab]);
+
+  // Fetch the linked operator's productivity + recent deliveries for the panel.
+  useEffect(() => {
+    const uid = driverLinkedUser?.id;
+    if (!uid || activeTab !== 'driver-register' || !selectedRegisterDriver) {
+      setOperatorProductivity(null);
+      setOperatorDeliveries([]);
+      return;
+    }
+    let cancelled = false;
+    setOperatorPerfLoading(true);
+    Promise.allSettled([opMgmtApi.productivity.get(uid, 90), opMgmtApi.deliveries.list(uid)])
+      .then(([prod, del]) => {
+        if (cancelled) return;
+        setOperatorProductivity(prod.status === 'fulfilled' ? (prod.value?.productivity || null) : null);
+        setOperatorDeliveries(del.status === 'fulfilled' ? (del.value?.deliveries || []) : []);
+      })
+      .finally(() => { if (!cancelled) setOperatorPerfLoading(false); });
+    return () => { cancelled = true; };
+  }, [driverLinkedUser?.id, activeTab, selectedRegisterDriver?.id]);
+
   const filteredTrucks = trucksList.filter(
     (t) =>
       !truckSearch.trim() ||
@@ -1343,10 +1379,17 @@ export default function Contractor() {
   const saveDriver = async (e) => {
     e.preventDefault();
     const form = e.target;
-    if (!selectedRegisterDriver?.id) return;
+    const driverId = rowEntityId(selectedRegisterDriver);
+    if (!driverId) {
+      setError('Invalid driver id. Refresh the page and try again.');
+      return;
+    }
     setSavingDriver(true);
     setError('');
     try {
+      const linkedTruckId = driverLinkedTruckSelection?.id
+        ? normalizeEntityId(driverLinkedTruckSelection.id)
+        : null;
       const body = {
         full_name: form.full_name?.value?.trim() || null,
         surname: form.surname?.value?.trim() || null,
@@ -1355,9 +1398,9 @@ export default function Contractor() {
         license_expiry: form.license_expiry?.value || null,
         phone: form.phone?.value?.trim() || null,
         email: form.email?.value?.trim() || null,
-        linked_truck_id: driverLinkedTruckSelection?.id ?? null,
+        linked_truck_id: linkedTruckId,
       };
-      const res = await contractorApi.drivers.update(selectedRegisterDriver.id, body);
+      const res = await contractorApi.drivers.update(driverId, body);
       if (res?.driver) setSelectedRegisterDriver(res.driver);
       load();
     } catch (err) {
@@ -2677,6 +2720,75 @@ export default function Contractor() {
                               )}
                             </div>
                           </div>
+                          <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-3 space-y-2">
+                            <p className="text-xs font-medium text-violet-700 uppercase tracking-wider">Operator profile</p>
+                            {driverLinkedUser ? (
+                              <div className="flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-3 py-2">
+                                <span className="text-sm font-medium text-surface-900">
+                                  {driverLinkedUser.full_name || driverLinkedUser.email || 'Linked operator'}
+                                  {driverLinkedUser.full_name && driverLinkedUser.email && <span className="text-surface-500 font-normal"> · {driverLinkedUser.email}</span>}
+                                </span>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-surface-600">Not linked to an operator profile yet.</p>
+                            )}
+                            <p className="text-[11px] text-surface-500">Operator profile links are managed in <span className="font-medium">Access Management → Operator profile links</span>.</p>
+                          </div>
+                          {driverLinkedUser && (
+                            <div className="rounded-lg border border-surface-200 bg-surface-50/80 p-3 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Operator performance &amp; integrations</p>
+                                {operatorPerfLoading && <span className="text-xs text-surface-400">Loading…</span>}
+                              </div>
+                              {operatorProductivity ? (
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                  {[
+                                    { label: 'Overall', value: `${operatorProductivity.overall_score ?? 0}%`, tone: 'text-violet-700' },
+                                    { label: 'Deliveries', value: operatorProductivity.total_deliveries ?? 0, tone: 'text-surface-900' },
+                                    { label: 'On-time', value: `${operatorProductivity.delivery_score ?? 0}%`, tone: 'text-green-700' },
+                                    { label: 'Attendance', value: `${operatorProductivity.attendance_score ?? 0}%`, tone: 'text-blue-700' },
+                                  ].map((c) => (
+                                    <div key={c.label} className="rounded-lg border border-surface-200 bg-white px-3 py-2 text-center">
+                                      <p className={`text-lg font-bold ${c.tone}`}>{c.value}</p>
+                                      <p className="text-[11px] text-surface-500 uppercase tracking-wide">{c.label}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                !operatorPerfLoading && <p className="text-sm text-surface-500">No productivity data recorded for this operator yet.</p>
+                              )}
+                              <p className="text-[11px] text-surface-400">Last 90 days. Scores are computed from logged deliveries, schedules and clock records on the operator profile.</p>
+                              {operatorDeliveries.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-medium text-surface-600 mb-1">Recent deliveries ({operatorDeliveries.length})</p>
+                                  <div className="overflow-x-auto rounded-lg border border-surface-200 max-h-48 overflow-y-auto">
+                                    <table className="w-full text-xs">
+                                      <thead className="bg-surface-50 sticky top-0">
+                                        <tr className="border-b border-surface-200 text-left">
+                                          <th className="p-2 font-medium text-surface-600">Date</th>
+                                          <th className="p-2 font-medium text-surface-600">Route</th>
+                                          <th className="p-2 font-medium text-surface-600">Truck</th>
+                                          <th className="p-2 font-medium text-surface-600">On-time</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {operatorDeliveries.slice(0, 25).map((d) => (
+                                          <tr key={d.id} className="border-b border-surface-100">
+                                            <td className="p-2 text-surface-700 whitespace-nowrap">{d.delivery_date ? toYmdFromDbOrString(d.delivery_date) : '—'}</td>
+                                            <td className="p-2 text-surface-600">{[d.origin, d.destination].filter(Boolean).join(' → ') || '—'}</td>
+                                            <td className="p-2 text-surface-600">{d.truck_registration || '—'}</td>
+                                            <td className="p-2">
+                                              {d.on_time ? <span className="text-green-700">On time</span> : <span className="text-amber-700">Late</span>}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <div className="flex gap-2 pt-2">
                             <button type="submit" disabled={savingDriver} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
                               {savingDriver ? 'Saving…' : 'Save'}

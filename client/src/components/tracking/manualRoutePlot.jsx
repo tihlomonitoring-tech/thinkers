@@ -4,9 +4,38 @@ import { useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 
 const MIN_VERTEX_DIST_M = 12;
+const SEGMENT_INSERT_MAX_M = 120;
 
 function distM(a, b) {
   return L.latLng(a.lat, a.lng).distanceTo(L.latLng(b.lat, b.lng));
+}
+
+function distancePointToSegmentM(a, b, pt) {
+  const ax = a.lng;
+  const ay = a.lat;
+  const bx = b.lng;
+  const by = b.lat;
+  const px = pt.lng;
+  const py = pt.lat;
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (dx === 0 && dy === 0) return distM(a, pt);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  const proj = { lat: ay + t * dy, lng: ax + t * dx };
+  return distM(proj, pt);
+}
+
+function nearestSegmentIndex(waypoints, pt) {
+  let bestSeg = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const d = distancePointToSegmentM(waypoints[i], waypoints[i + 1], pt);
+    if (d < bestDist) {
+      bestDist = d;
+      bestSeg = i;
+    }
+  }
+  return { segIndex: bestSeg, distM: bestDist };
 }
 
 const waypointIcon = (num, locked = false) =>
@@ -17,11 +46,12 @@ const waypointIcon = (num, locked = false) =>
     iconAnchor: [12, 12],
   });
 
-/** Click map to place route waypoints; drag to adjust; keyboard undo. */
+/** Click map to place route waypoints; click near a segment to insert between points; drag to adjust. */
 export function RouteWaypointDrawHandler({
   active,
   waypoints = [],
   onAddWaypoint,
+  onInsertWaypoint,
   onMoveWaypoint,
   onUndo,
 }) {
@@ -32,6 +62,13 @@ export function RouteWaypointDrawHandler({
       if (!active) return;
       L.DomEvent.stopPropagation(e.originalEvent);
       const pt = { lat: e.latlng.lat, lng: e.latlng.lng };
+      if (waypoints.length >= 2) {
+        const { segIndex, distM: segDist } = nearestSegmentIndex(waypoints, pt);
+        if (segDist <= SEGMENT_INSERT_MAX_M) {
+          onInsertWaypoint?.(segIndex + 1, pt);
+          return;
+        }
+      }
       if (waypoints.length) {
         const last = waypoints[waypoints.length - 1];
         if (last && distM(last, pt) < MIN_VERTEX_DIST_M) return;
@@ -42,8 +79,6 @@ export function RouteWaypointDrawHandler({
 
   useEffect(() => {
     if (!active) return undefined;
-    map.dragging.disable();
-    map.doubleClickZoom.disable();
     map.getContainer().style.cursor = 'crosshair';
     const onKey = (ev) => {
       if (ev.key === 'Backspace' || ((ev.metaKey || ev.ctrlKey) && ev.key === 'z' && !ev.shiftKey)) {
@@ -54,17 +89,15 @@ export function RouteWaypointDrawHandler({
     };
     window.addEventListener('keydown', onKey);
     return () => {
-      map.dragging.enable();
-      map.doubleClickZoom.enable();
       map.getContainer().style.cursor = '';
       window.removeEventListener('keydown', onKey);
     };
-  }, [map, active, onAddWaypoint, onUndo]);
+  }, [map, active, onUndo]);
 
   return null;
 }
 
-/** Sketch line, draggable waypoints, and live road-snapped preview. */
+/** Sketch line, draggable waypoints, segment highlights, and live road-snapped preview. */
 export function ManualRoutePlotLayers({
   waypoints = [],
   snapPreview = null,

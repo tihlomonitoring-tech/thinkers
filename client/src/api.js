@@ -1,6 +1,7 @@
 import { getApiBase } from './lib/apiBase.js';
 import { createLogisticsFlowApi } from './lib/logisticsFlowApi.js';
 import { normalizeTruckRegsInData } from './lib/truckKey.js';
+import { normalizeEntityId } from './lib/entityId.js';
 
 // In dev, call API directly so it works even if proxy fails. Override with VITE_API_BASE in client .env.
 const API = getApiBase();
@@ -241,10 +242,36 @@ export const contractor = {
     update: (id, body) => {
       const rid = normalizeEntityId(id);
       if (!rid) return Promise.reject(new Error('Invalid driver id. Refresh the page and try again.'));
-      return request(`/contractor/drivers/${encodeURIComponent(rid)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      const payload = { ...(body || {}) };
+      if (payload.linked_truck_id !== undefined && payload.linked_truck_id !== null && payload.linked_truck_id !== '') {
+        const truckId = normalizeEntityId(payload.linked_truck_id);
+        if (!truckId) return Promise.reject(new Error('Invalid linked truck id. Refresh the page and try again.'));
+        payload.linked_truck_id = truckId;
+      }
+      if (payload.linked_user_id !== undefined && payload.linked_user_id !== null && payload.linked_user_id !== '') {
+        const userId = normalizeEntityId(payload.linked_user_id);
+        if (!userId) return Promise.reject(new Error('Invalid linked operator id. Refresh the page and try again.'));
+        payload.linked_user_id = userId;
+      }
+      return request(`/contractor/drivers/${encodeURIComponent(rid)}`, { method: 'PATCH', body: JSON.stringify(payload) });
     },
     bulk: (body) => request('/contractor/drivers/bulk', { method: 'POST', body: JSON.stringify(body) }),
     bulkUpdate: (body) => request('/contractor/drivers/bulk-update', { method: 'PATCH', body: JSON.stringify(body) }),
+    linkableUsers: (q) => request(`/contractor/linkable-users${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  },
+  operatorLinks: {
+    eligibleDrivers: () => request('/contractor/operator-links/eligible-drivers'),
+    linkableUsers: (q) => request(`/contractor/linkable-users${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    setLink: (driverId, userId) => {
+      const did = normalizeEntityId(driverId);
+      if (!did) return Promise.reject(new Error('Invalid driver id. Refresh the page and try again.'));
+      const uid = userId ? normalizeEntityId(userId) : null;
+      if (userId && !uid) return Promise.reject(new Error('Invalid operator id. Refresh the page and try again.'));
+      return request(`/contractor/operator-links/drivers/${encodeURIComponent(did)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ user_id: uid }),
+      });
+    },
   },
   incidents: {
     list: (params = {}) => {
@@ -2091,10 +2118,16 @@ export const profileManagement = {
       return fetch(`${API}/profile-management/leave/applications/${id}/attachments`, { method: 'POST', body: formData, credentials: 'include' })
         .then((res) => res.json().then((data) => (res.ok ? data : Promise.reject(new Error(data.error || res.statusText)))));
     },
-    pending: () => pm('/leave/pending'),
+    pending: (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.scope) q.set('scope', String(params.scope));
+      const qs = q.toString();
+      return pm(`/leave/pending${qs ? `?${qs}` : ''}`);
+    },
     applicationsAll: (params = {}) => {
       const q = new URLSearchParams();
       if (params.status) q.set('status', String(params.status));
+      if (params.scope) q.set('scope', String(params.scope));
       const qs = q.toString();
       return pm(`/leave/applications/all${qs ? `?${qs}` : ''}`);
     },
@@ -2105,7 +2138,13 @@ export const profileManagement = {
     createType: (body) => pm('/leave/types', { method: 'POST', body: JSON.stringify(body) }),
     updateType: (id, body) => pm(`/leave/types/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     seedSaTypes: () => pm('/leave/seed-sa-types', { method: 'POST' }),
-    balancesTeam: (year) => pm(`/leave/balances/team${year != null ? `?year=${year}` : ''}`),
+    balancesTeam: (year, scope) => {
+      const q = new URLSearchParams();
+      if (year != null) q.set('year', String(year));
+      if (scope) q.set('scope', String(scope));
+      const qs = q.toString();
+      return pm(`/leave/balances/team${qs ? `?${qs}` : ''}`);
+    },
     allocateBalances: (year) => pm('/leave/balances/allocate', { method: 'POST', body: JSON.stringify({ year }) }),
     updateBalanceEntry: (body) => pm('/leave/balances/entry', { method: 'PATCH', body: JSON.stringify(body) }),
     history: () => pm('/leave/applications/history'),
@@ -3205,7 +3244,12 @@ export const claims = {
   delete: (id) => clm(`/${id}`, { method: 'DELETE' }),
   uploadAttachments: (id, formData) => clm(`/${id}/attachments`, { method: 'POST', body: formData, rawBody: true }),
   removeAttachment: (id) => clm(`/attachments/${id}`, { method: 'DELETE' }),
-  summary: () => clm('/stats/summary'),
+  summary: (params = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) { if (v != null && v !== '') p.set(k, v); }
+    const qs = p.toString();
+    return clm(`/stats/summary${qs ? `?${qs}` : ''}`);
+  },
 };
 
 // ─── Tab Access ──────────────────────────────────────────────────

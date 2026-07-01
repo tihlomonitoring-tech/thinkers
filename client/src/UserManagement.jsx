@@ -10,7 +10,9 @@ const STATUSES = ['active', 'inactive', 'invited'];
 /** Main app pages as roles (multi-select). Must match backend PAGE_IDS. Order matches sidebar. */
 const PAGE_ROLES = [
   { id: 'profile', label: 'Profile' },
+  { id: 'operator_profile', label: 'Operator profile' },
   { id: 'management', label: 'Management' },
+  { id: 'operator_management', label: 'Operator management' },
   { id: 'users', label: 'Users' },
   { id: 'tenants', label: 'Tenants' },
   { id: 'contractor', label: 'Contractor' },

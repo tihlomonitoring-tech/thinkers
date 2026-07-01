@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { operatorManagement as opMgmt, profileManagement as pm, claims as claimsApi } from './api';
@@ -8,9 +8,33 @@ import InfoHint from './components/InfoHint.jsx';
 import OvertimeClaimFields, { OvertimeClaimDetail } from './components/OvertimeClaimFields.jsx';
 import { calculateSaOvertimeClaim } from './lib/saOvertimeClaim.js';
 import EmployeeDetailsTab from './components/EmployeeDetailsTab.jsx';
+import CompanyPoliciesProfileTab from './components/CompanyPoliciesProfileTab.jsx';
+import LeaveTab from './components/profile/LeaveTab.jsx';
 import OperatorLoadingSlipsTab from './components/operator/OperatorLoadingSlipsTab.jsx';
 import OrgStructureView from './components/OrgStructureView.jsx';
-import { wallMonthYearInAppZone } from './lib/appTime.js';
+import {
+  wallMonthYearInAppZone,
+  calendarMonthStartYmd,
+  daysInCalendarMonth,
+  startPadForCalendarMonth,
+  addCalendarDays,
+  isWeekendYmd,
+  todayYmd,
+  toYmdFromDbOrString,
+} from './lib/appTime.js';
+import { DEFAULT_SHIFT_SETTINGS, shiftLabel } from './lib/workScheduleShiftTimes.js';
+
+const SHIFT_TYPE_BADGE = {
+  day: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+  night: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
+  fixed: 'bg-brand-100 text-brand-800 dark:bg-brand-900/30 dark:text-brand-300',
+};
+const SHIFT_TYPE_TEXT = {
+  day: 'text-amber-700 dark:text-amber-300',
+  night: 'text-indigo-700 dark:text-indigo-300',
+  fixed: 'text-brand-700 dark:text-brand-300',
+};
+const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const TABS = [
   { id: 'schedule', label: 'Work schedule' },
@@ -21,6 +45,7 @@ const TABS = [
   { id: 'claims', label: 'Claims & reimbursements' },
   { id: 'organisational_structure', label: 'Organisational structure' },
   { id: 'employee_details', label: 'Employee details' },
+  { id: 'company_policies', label: 'Company policies' },
 ];
 
 function formatDate(d) {
@@ -206,8 +231,10 @@ export default function OperatorProfile() {
   const [error, setError] = useState('');
 
   const [operatorSchedules, setOperatorSchedules] = useState([]);
-  const [opSchedFrom, setOpSchedFrom] = useState('');
-  const [opSchedTo, setOpSchedTo] = useState('');
+  const [shiftSettings, setShiftSettings] = useState({ ...DEFAULT_SHIFT_SETTINGS });
+  const [schedCalMonth, setSchedCalMonth] = useState(() => wallMonthYearInAppZone().monthIndex0);
+  const [schedCalYear, setSchedCalYear] = useState(() => wallMonthYearInAppZone().year);
+  const [selectedSchedDate, setSelectedSchedDate] = useState(null);
 
   const [operatorProductivity, setOperatorProductivity] = useState(null);
   const [operatorDeliveries, setOperatorDeliveries] = useState([]);
@@ -219,8 +246,6 @@ export default function OperatorProfile() {
   const [leaveBalance, setLeaveBalance] = useState([]);
   const [leaveApplications, setLeaveApplications] = useState([]);
   const [leaveTypes, setLeaveTypes] = useState([]);
-  const [leaveForm, setLeaveForm] = useState({ leave_type: '', start_date: '', end_date: '', notes: '' });
-  const [submittingLeave, setSubmittingLeave] = useState(false);
 
   const [myClaims, setMyClaims] = useState([]);
   const [claimLoading, setClaimLoading] = useState(false);
@@ -235,11 +260,25 @@ export default function OperatorProfile() {
 
   useEffect(() => {
     if (activeTab === 'schedule') {
-      opMgmt.schedules.list(user?.id, opSchedFrom, opSchedTo)
-        .then((d) => setOperatorSchedules(d.schedules || []))
+      pm.mySchedule({ month: schedCalMonth, year: schedCalYear })
+        .then((d) => {
+          setOperatorSchedules(d.entries || []);
+          setShiftSettings({ ...DEFAULT_SHIFT_SETTINGS, ...(d.shift_settings || {}) });
+        })
         .catch(() => setOperatorSchedules([]));
     }
-  }, [activeTab, user?.id, opSchedFrom, opSchedTo]);
+  }, [activeTab, schedCalYear, schedCalMonth]);
+
+  const schedulesByDate = useMemo(() => {
+    const map = {};
+    (operatorSchedules || []).forEach((s) => {
+      const ymd = toYmdFromDbOrString(s.work_date);
+      if (!ymd) return;
+      if (!map[ymd]) map[ymd] = [];
+      map[ymd].push(s);
+    });
+    return map;
+  }, [operatorSchedules]);
 
   useEffect(() => {
     if (activeTab === 'productivity') {
@@ -283,24 +322,6 @@ export default function OperatorProfile() {
     const y = wallMonthYearInAppZone().year;
     pm.leave.balance(y).then((d) => setLeaveBalance(d.balance || [])).catch(() => setLeaveBalance([]));
     pm.leave.applications().then((d) => setLeaveApplications(d.applications || [])).catch(() => setLeaveApplications([]));
-  };
-
-  const submitLeave = async () => {
-    if (!leaveForm.leave_type || !leaveForm.start_date || !leaveForm.end_date) {
-      setError('Leave type, start date, and end date are required');
-      return;
-    }
-    setSubmittingLeave(true);
-    setError('');
-    try {
-      await pm.leave.create(leaveForm);
-      setLeaveForm({ leave_type: '', start_date: '', end_date: '', notes: '' });
-      refreshLeave();
-    } catch (err) {
-      setError(err?.message || 'Failed to submit leave application');
-    } finally {
-      setSubmittingLeave(false);
-    }
   };
 
   const fmtZar = (v) => v != null ? `R ${Number(v).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—';
@@ -362,83 +383,135 @@ export default function OperatorProfile() {
         )}
 
         <div className="max-w-6xl">
-          {activeTab === 'schedule' && (
+          {activeTab === 'schedule' && (() => {
+            const startPad = startPadForCalendarMonth(schedCalYear, schedCalMonth);
+            const numDays = daysInCalendarMonth(schedCalYear, schedCalMonth);
+            const monthStart = calendarMonthStartYmd(schedCalYear, schedCalMonth);
+            const dayCount = operatorSchedules.filter((s) => String(s.shift_type || 'day').toLowerCase() === 'day').length;
+            const nightCount = operatorSchedules.filter((s) => String(s.shift_type || '').toLowerCase() === 'night').length;
+            const selectedDay = selectedSchedDate ? (schedulesByDate[selectedSchedDate] || []) : null;
+            const goPrev = () => {
+              setSelectedSchedDate(null);
+              if (schedCalMonth === 0) { setSchedCalMonth(11); setSchedCalYear((y) => y - 1); }
+              else setSchedCalMonth((m) => m - 1);
+            };
+            const goNext = () => {
+              setSelectedSchedDate(null);
+              if (schedCalMonth === 11) { setSchedCalMonth(0); setSchedCalYear((y) => y + 1); }
+              else setSchedCalMonth((m) => m + 1);
+            };
+            return (
             <div className="space-y-6">
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Operator work schedule</h1>
-                <InfoHint title="Operator work schedule" text="View your scheduled working hours. Filter by date range to see upcoming or past schedules." />
+                <InfoHint title="Operator work schedule" text="Your shift roster assigned in Operator Management, shown on a monthly calendar. Click a day to see the shift, hours window and notes." />
               </div>
 
-              <div className="app-glass-card p-4 flex flex-wrap items-end gap-4">
+              <div className="app-glass-card p-4 flex flex-wrap items-center gap-6">
                 <div>
-                  <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">From</label>
-                  <input type="date" value={opSchedFrom} onChange={(e) => setOpSchedFrom(e.target.value)}
-                    className="rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-3 py-1.5 text-sm text-surface-900 dark:text-surface-100 focus:ring-brand-500 focus:border-brand-500" />
+                  <p className="text-sm text-surface-500 dark:text-surface-400">Day shifts</p>
+                  <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{dayCount}</p>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">To</label>
-                  <input type="date" value={opSchedTo} onChange={(e) => setOpSchedTo(e.target.value)}
-                    className="rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-3 py-1.5 text-sm text-surface-900 dark:text-surface-100 focus:ring-brand-500 focus:border-brand-500" />
+                  <p className="text-sm text-surface-500 dark:text-surface-400">Night shifts</p>
+                  <p className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{nightCount}</p>
                 </div>
-                <button onClick={() => {
-                  opMgmt.schedules.list(user?.id, opSchedFrom, opSchedTo)
-                    .then((d) => setOperatorSchedules(d.schedules || []))
-                    .catch(() => setOperatorSchedules([]));
-                }} className="px-4 py-1.5 rounded-md text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors">
-                  Filter
-                </button>
+                <div className="ml-auto text-sm text-surface-500 dark:text-surface-400">{operatorSchedules.length} scheduled day{operatorSchedules.length === 1 ? '' : 's'}</div>
               </div>
-
-              {(() => {
-                const totalHrs = operatorSchedules.reduce((sum, s) => sum + (Number(s.scheduled_hours) || 0), 0);
-                return (
-                  <div className="app-glass-card p-4">
-                    <p className="text-sm text-surface-500 dark:text-surface-400">Total scheduled hours</p>
-                    <p className="text-2xl font-bold text-brand-600 dark:text-brand-400">{totalHrs.toFixed(1)} hrs</p>
-                  </div>
-                );
-              })()}
 
               <div className="app-glass-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50">
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Date</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Start time</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">End time</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Hours</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Type</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Notes</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-surface-100 dark:divide-surface-700/50">
-                      {operatorSchedules.length === 0 ? (
-                        <tr><td colSpan={6} className="px-4 py-8 text-center text-surface-400 dark:text-surface-500">No schedules found for the selected period.</td></tr>
-                      ) : operatorSchedules.map((s, i) => (
-                        <tr key={s.id || i} className="hover:bg-surface-50 dark:hover:bg-surface-800/30 transition-colors">
-                          <td className="px-4 py-3 text-surface-900 dark:text-surface-100">{formatDate(s.work_date)}</td>
-                          <td className="px-4 py-3 text-surface-700 dark:text-surface-300">{s.start_time || '—'}</td>
-                          <td className="px-4 py-3 text-surface-700 dark:text-surface-300">{s.end_time || '—'}</td>
-                          <td className="px-4 py-3 font-medium text-surface-900 dark:text-surface-100">{s.scheduled_hours != null ? Number(s.scheduled_hours).toFixed(1) : '—'}</td>
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              s.schedule_type === 'overtime' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
-                              : s.schedule_type === 'public_holiday' ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'
-                              : s.schedule_type === 'weekend' ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300'
-                              : s.schedule_type === 'standby' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300'
-                              : 'bg-brand-100 text-brand-800 dark:bg-brand-900/30 dark:text-brand-300'
-                            }`}>{(s.schedule_type || 'regular').replace(/_/g, ' ')}</span>
-                          </td>
-                          <td className="px-4 py-3 text-surface-500 dark:text-surface-400 max-w-xs truncate">{s.notes || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100 dark:border-surface-700">
+                  <button type="button" onClick={goPrev} className="px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 text-sm hover:bg-surface-50 dark:hover:bg-surface-800">← Previous</button>
+                  <span className="font-medium text-surface-900 dark:text-surface-50">
+                    {new Date(schedCalYear, schedCalMonth).toLocaleString('default', { month: 'long', year: 'numeric' })}
+                  </span>
+                  <button type="button" onClick={goNext} className="px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 text-sm hover:bg-surface-50 dark:hover:bg-surface-800">Next →</button>
+                </div>
+                <div className="p-4">
+                  <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-surface-500 dark:text-surface-400 mb-2">
+                    {WEEK_DAYS.map((d) => <div key={d}>{d}</div>)}
+                  </div>
+                  <div className="grid grid-cols-7 gap-1">
+                    {Array.from({ length: startPad }, (_, i) => (
+                      <div key={`pad-${i}`} className="min-h-[6.75rem] rounded-lg bg-surface-100/35 dark:bg-surface-800/30" />
+                    ))}
+                    {Array.from({ length: numDays }, (_, i) => {
+                      const day = i + 1;
+                      const dateStr = addCalendarDays(monthStart, day - 1);
+                      const entries = schedulesByDate[dateStr] || [];
+                      const isToday = dateStr === todayYmd();
+                      const isWeekend = isWeekendYmd(dateStr);
+                      const isSelected = selectedSchedDate === dateStr;
+                      return (
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => setSelectedSchedDate((prev) => (prev === dateStr ? null : dateStr))}
+                          className={`min-h-[6.75rem] rounded-lg border p-1 flex flex-col items-stretch justify-start text-left text-xs cursor-pointer transition-colors relative gap-0.5 overflow-hidden ${
+                            isToday
+                              ? 'border-brand-500 bg-brand-50/92 hover:bg-brand-100/88 dark:bg-brand-900/30 dark:hover:bg-brand-900/40'
+                              : isWeekend
+                                ? 'border-surface-200/65 bg-surface-100/50 hover:bg-surface-100/70 dark:border-surface-700 dark:bg-surface-800/40'
+                                : 'border-surface-200 dark:border-surface-700 hover:bg-surface-50 dark:hover:bg-surface-800/40'
+                          } ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1 dark:ring-offset-surface-900' : ''}`}
+                        >
+                          <span className="text-surface-700 dark:text-surface-300 font-medium text-center w-full shrink-0">{day}</span>
+                          {entries.map((s, idx) => {
+                            const st = String(s.shift_type || 'day').toLowerCase();
+                            return (
+                              <span
+                                key={s.entry_id || s.id || idx}
+                                className={`text-[10px] leading-tight w-full truncate font-medium ${SHIFT_TYPE_TEXT[st] || SHIFT_TYPE_TEXT.day}`}
+                                title={shiftLabel(s, shiftSettings)}
+                              >
+                                {st === 'night' ? 'Night' : st === 'fixed' ? 'Fixed' : 'Day'}{s.start_time ? ` · ${s.start_time}` : ''}
+                              </span>
+                            );
+                          })}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="px-4 py-2 border-t border-surface-100 dark:border-surface-700 flex flex-wrap items-center gap-3 text-xs text-surface-500 dark:text-surface-400">
+                  <span><span className="inline-block w-3 h-3 rounded bg-amber-200 dark:bg-amber-900/50 align-middle mr-1" /> Day shift</span>
+                  <span><span className="inline-block w-3 h-3 rounded bg-indigo-200 dark:bg-indigo-900/50 align-middle mr-1" /> Night shift</span>
+                  <span><span className="inline-block w-3 h-3 rounded bg-brand-200 dark:bg-brand-900/50 align-middle mr-1" /> Fixed</span>
                 </div>
               </div>
+
+              {selectedSchedDate && (
+                <div className="app-glass-card p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="font-medium text-surface-900 dark:text-surface-50">{formatDate(selectedSchedDate)}</h2>
+                    <button type="button" onClick={() => setSelectedSchedDate(null)} className="text-sm text-surface-500 hover:text-surface-800 dark:hover:text-surface-200">Close</button>
+                  </div>
+                  {selectedDay && selectedDay.length > 0 ? (
+                    <ul className="space-y-3">
+                      {selectedDay.map((s, idx) => {
+                        const st = String(s.shift_type || 'day').toLowerCase();
+                        return (
+                          <li key={s.entry_id || s.id || idx} className="rounded-lg border border-surface-200 dark:border-surface-700 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${SHIFT_TYPE_BADGE[st] || SHIFT_TYPE_BADGE.day}`}>
+                                {st === 'night' ? 'Night' : st === 'fixed' ? 'Fixed' : 'Day'}
+                              </span>
+                              {s.schedule_title && <span className="text-xs text-surface-500 dark:text-surface-400 truncate">{s.schedule_title}</span>}
+                            </div>
+                            <p className="mt-2 text-sm text-surface-700 dark:text-surface-300">{shiftLabel(s, shiftSettings)}</p>
+                            {s.notes && <p className="mt-1 text-sm text-surface-500 dark:text-surface-400">{s.notes}</p>}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-surface-500 dark:text-surface-400">No shift scheduled on this day.</p>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+            );
+          })()}
 
           {activeTab === 'loading_slips' && (
             <OperatorLoadingSlipsTab user={user} onError={setError} />
@@ -637,102 +710,13 @@ export default function OperatorProfile() {
           )}
 
           {activeTab === 'leave' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-50">Leave application</h1>
-                <InfoHint title="Leave application" text="Apply for leave and track your leave balance and application history." />
-              </div>
-
-              {leaveBalance.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {leaveBalance.map((b, i) => (
-                    <div key={i} className="app-glass-card p-4 text-center">
-                      <p className="text-xs text-surface-500 dark:text-surface-400 mb-1">{b.leave_type || 'Leave'}</p>
-                      <p className="text-lg font-bold text-surface-900 dark:text-surface-100">{b.total_days - b.used_days} <span className="text-sm font-normal text-surface-400">/ {b.total_days}</span></p>
-                      <p className="text-xs text-surface-400 dark:text-surface-500">days remaining</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="app-glass-card p-4 space-y-4">
-                <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Apply for leave</h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div>
-                    <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">Leave type</label>
-                    <select value={leaveForm.leave_type} onChange={(e) => setLeaveForm((f) => ({ ...f, leave_type: e.target.value }))}
-                      className="w-full rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-3 py-1.5 text-sm text-surface-900 dark:text-surface-100 focus:ring-brand-500 focus:border-brand-500">
-                      <option value="">Select type</option>
-                      {leaveTypes.map((lt) => <option key={lt.id || lt.name} value={lt.name}>{lt.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">Start date</label>
-                    <input type="date" value={leaveForm.start_date} onChange={(e) => setLeaveForm((f) => ({ ...f, start_date: e.target.value }))}
-                      className="w-full rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-3 py-1.5 text-sm text-surface-900 dark:text-surface-100 focus:ring-brand-500 focus:border-brand-500" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">End date</label>
-                    <input type="date" value={leaveForm.end_date} onChange={(e) => setLeaveForm((f) => ({ ...f, end_date: e.target.value }))}
-                      className="w-full rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-3 py-1.5 text-sm text-surface-900 dark:text-surface-100 focus:ring-brand-500 focus:border-brand-500" />
-                  </div>
-                  <div className="flex items-end">
-                    <button type="button" onClick={submitLeave} disabled={submittingLeave}
-                      className="w-full px-4 py-1.5 rounded-md text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">
-                      {submittingLeave ? 'Submitting…' : 'Apply'}
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">Notes (optional)</label>
-                  <input type="text" value={leaveForm.notes} onChange={(e) => setLeaveForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Reason for leave"
-                    className="w-full rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 px-3 py-1.5 text-sm text-surface-900 dark:text-surface-100 focus:ring-brand-500 focus:border-brand-500" />
-                </div>
-              </div>
-
-              <div className="app-glass-card overflow-hidden">
-                <div className="px-4 py-3 border-b border-surface-200 dark:border-surface-700">
-                  <h2 className="font-medium text-surface-900 dark:text-surface-100">Application history</h2>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50">
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Type</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">From</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">To</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Days</th>
-                        <th className="px-4 py-3 text-left font-medium text-surface-600 dark:text-surface-300">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-surface-100 dark:divide-surface-700/50">
-                      {leaveApplications.length === 0 ? (
-                        <tr><td colSpan={5} className="px-4 py-8 text-center text-surface-400 dark:text-surface-500">No leave applications.</td></tr>
-                      ) : leaveApplications.map((a, i) => {
-                        const statusStyle = {
-                          approved: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
-                          pending: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
-                          rejected: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
-                        };
-                        return (
-                          <tr key={a.id || i} className="hover:bg-surface-50 dark:hover:bg-surface-800/30 transition-colors">
-                            <td className="px-4 py-3 text-surface-900 dark:text-surface-100">{a.leave_type}</td>
-                            <td className="px-4 py-3 text-surface-700 dark:text-surface-300">{formatDate(a.start_date)}</td>
-                            <td className="px-4 py-3 text-surface-700 dark:text-surface-300">{formatDate(a.end_date)}</td>
-                            <td className="px-4 py-3 text-surface-700 dark:text-surface-300">{a.days_requested ?? '—'}</td>
-                            <td className="px-4 py-3">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusStyle[a.status] || 'bg-surface-100 text-surface-600'}`}>
-                                {a.status || 'pending'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+            <LeaveTab
+              balance={leaveBalance}
+              applications={leaveApplications}
+              leaveTypes={leaveTypes}
+              onRefresh={refreshLeave}
+              onError={setError}
+            />
           )}
 
           {activeTab === 'claims' && (
@@ -742,6 +726,8 @@ export default function OperatorProfile() {
           {activeTab === 'organisational_structure' && <OrgStructureView onError={setError} />}
 
           {activeTab === 'employee_details' && <EmployeeDetailsTab onError={setError} />}
+
+          {activeTab === 'company_policies' && <CompanyPoliciesProfileTab user={user} onError={setError} />}
         </div>
       </div>
     </div>
