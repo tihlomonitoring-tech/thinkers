@@ -8,6 +8,7 @@ import { estimateAllocationRevenue, resolveTruckRoute } from './deliveryActivity
 import { parseCorridorPolyline, parseMonitorWaypoints, polylineDistanceKm } from './routeCorridorGeofence.js';
 import { resolveRouteDestination, resolveRouteOrigin } from './logisticsFlowWhatsApp.js';
 import { parseGuid, rowId } from './guidUtils.js';
+import { resolveReturnLeg, returnLegNeedsRefresh } from './deliveryReturnLeg.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -506,17 +507,29 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
   const alreadySnapshotted = !!get(delivery, 'fuel_snapshot_at');
   const incomplete = deliveryEconomicsIncomplete(delivery);
   const loadedComplete = get(delivery, 'fuel_litres') != null && get(delivery, 'fuel_cost') != null;
+
+  const tripRow = buildTripRowFromDelivery(delivery);
+  const econ = await computeDeliveryFuelEconomics(query, tenantGuid, delivery, tripRow);
+  const resolvedRouteId = await resolveContractorRouteId(query, tenantGuid, delivery, tripRow);
+
+  const returnLeg = await resolveReturnLeg(query, tenantGuid, {
+    deliveryRow: delivery,
+    tripRow,
+    loadedRouteId: resolvedRouteId,
+    loadedDistanceKm: get(delivery, 'distance_km') != null ? Number(get(delivery, 'distance_km')) : econ.distance_km,
+    loadedOriginName: get(delivery, 'origin_name') || econ.origin_name,
+    loadedDestinationName: get(delivery, 'destination_name') || econ.destination_name,
+    loadedAvgSpeed: get(delivery, 'avg_speed_kmh') != null ? Number(get(delivery, 'avg_speed_kmh')) : econ.avg_speed_kmh,
+    deliveredAt: get(delivery, 'delivered_at'),
+  });
+
+  const returnNeedsRefresh = returnLegNeedsRefresh(delivery, returnLeg);
   const needsReturnOnly = !force && alreadySnapshotted && loadedComplete && !incomplete
-    && get(delivery, 'return_fuel_cost') == null;
+    && (get(delivery, 'return_fuel_cost') == null || returnNeedsRefresh);
 
   if (alreadySnapshotted && !incomplete && !needsReturnOnly && !force) {
     return delivery;
   }
-
-  const tripRow = buildTripRowFromDelivery(delivery);
-
-  const econ = await computeDeliveryFuelEconomics(query, tenantGuid, delivery, tripRow);
-  const resolvedRouteId = await resolveContractorRouteId(query, tenantGuid, delivery, tripRow);
 
   const truckId = gid(get(tripRow, 'contractor_truck_id'));
   const regulation = await getFuelRegulation(query, tenantId, truckId);
@@ -526,12 +539,8 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
   const fuelPrice = needsReturnOnly && get(delivery, 'fuel_price_per_litre') != null
     ? Number(get(delivery, 'fuel_price_per_litre'))
     : econ.fuel_price_per_litre;
-  const returnDistance = needsReturnOnly && get(delivery, 'distance_km') != null
-    ? Number(get(delivery, 'distance_km'))
-    : econ.distance_km;
-  const returnSpeed = needsReturnOnly && get(delivery, 'avg_speed_kmh') != null
-    ? Number(get(delivery, 'avg_speed_kmh'))
-    : econ.avg_speed_kmh;
+  const returnDistance = returnLeg.return_distance_km;
+  const returnSpeed = returnLeg.return_avg_speed_kmh ?? econ.avg_speed_kmh;
 
   const returnEcon = computeEmptyReturnFuelEconomics({
     returnDistanceKm: returnDistance,
@@ -539,9 +548,10 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
     loadedLitresPer100: loadedL100,
     fuelPricePerLitre: fuelPrice,
     regulation,
-    calcSource: (needsReturnOnly ? get(delivery, 'fuel_calc_source') : econ.fuel_calc_source) === 'gps_trail'
-      ? 'gps_trail_return' : 'route_distance_return',
+    calcSource: returnLeg.return_fuel_calc_source || 'route_distance_return',
   });
+  returnEcon.return_destination_name = returnLeg.return_destination_name;
+  returnEcon.return_arrived = returnLeg.return_arrived;
 
   if (needsReturnOnly) {
     await query(
@@ -551,9 +561,11 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
         return_fuel_litres_per_100km = @rl100,
         return_fuel_litres_estimated = @rlest,
         return_fuel_cost_estimated = @rcest,
-        return_fuel_litres = COALESCE(return_fuel_litres, @rlest),
-        return_fuel_cost = COALESCE(return_fuel_cost, @rcest),
-        return_fuel_calc_source = @rsrc
+        return_fuel_litres = @rlest,
+        return_fuel_cost = @rcest,
+        return_fuel_calc_source = @rsrc,
+        return_destination_name = @rdn,
+        return_arrived = @rarrived
        WHERE id = @id AND tenant_id = @tenantId`,
       sqlBind({
         tenantId: tenantGuid,
@@ -564,9 +576,11 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
         rlest: returnEcon.return_fuel_litres_estimated,
         rcest: returnEcon.return_fuel_cost_estimated,
         rsrc: returnEcon.return_fuel_calc_source,
+        rdn: returnLeg.return_destination_name,
+        rarrived: returnLeg.return_arrived ? 1 : 0,
       })
     );
-    return { ...econ, ...returnEcon };
+    return { ...econ, ...returnEcon, ...returnLeg };
   }
 
   await query(
@@ -596,6 +610,8 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
       return_fuel_litres = @rlest,
       return_fuel_cost = @rcest,
       return_fuel_calc_source = @rsrc,
+      return_destination_name = @rdn,
+      return_arrived = @rarrived,
       fuel_snapshot_at = SYSUTCDATETIME()
      WHERE id = @id AND tenant_id = @tenantId`,
     sqlBind({
@@ -622,10 +638,12 @@ export async function snapshotDeliveryFuelEconomics(query, tenantId, deliveryId,
       rlest: returnEcon.return_fuel_litres_estimated,
       rcest: returnEcon.return_fuel_cost_estimated,
       rsrc: returnEcon.return_fuel_calc_source,
+      rdn: returnLeg.return_destination_name,
+      rarrived: returnLeg.return_arrived ? 1 : 0,
     })
   );
 
-  return { ...econ, ...returnEcon };
+  return { ...econ, ...returnEcon, ...returnLeg };
 }
 
 /** Backfill economics for completed deliveries missing fuel or revenue figures. */

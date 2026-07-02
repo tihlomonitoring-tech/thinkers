@@ -106,6 +106,8 @@
     "db:tracking-setup": "node scripts/run-tracking-setup-all.js",
     "db:tracking-management": "node scripts/run-tracking-management-schema.js",
     "db:tracking-fuel-economics": "node scripts/run-tracking-fuel-economics.js",
+    "db:tracking-manual-delivery": "node scripts/run-tracking-manual-delivery.js",
+    "db:tracking-return-leg": "node scripts/run-tracking-return-leg.js",
     "db:tracking-fuel-empty-return": "node scripts/run-tracking-fuel-empty-return.js",
     "db:tracking-logistics-activity": "node scripts/run-tracking-logistics-activity-schema.js",
     "db:tracking-trip-positions": "node scripts/run-tracking-trip-positions.js",

@@ -3054,6 +3054,8 @@ export const tracking = {
       method: 'POST',
       body: JSON.stringify({ force }),
     }),
+    previewManual: (body) => trk('/deliveries/manual/preview', { method: 'POST', body: JSON.stringify(body) }),
+    importManual: (body) => trk('/deliveries/manual', { method: 'POST', body: JSON.stringify(body) }),
   },
   fuelRegulation: {
     list: () => trk('/fuel-regulation'),

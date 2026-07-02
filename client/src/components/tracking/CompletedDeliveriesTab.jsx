@@ -7,16 +7,21 @@ import InfoHint from '../InfoHint.jsx';
 import { emptyColumnValues, matchesColumnSearch } from '../../lib/advancedColumnSearch.js';
 import {
   calcSourceLabel,
+  captureSourceLabel,
   deliveryMarginAmount,
   economicsComplete,
+  economicsModeLabel,
   formatCurrency,
   formatKm,
   formatLitres,
   formatTons,
   includeReturnFuelInCost,
+  isManualCapture,
+  isManualEconomics,
   summarizeDeliveries,
   totalLogisticsFuelCost,
 } from '../../lib/deliveryEconomics.js';
+import ManualDeliveryImportModal from './ManualDeliveryImportModal.jsx';
 
 const DELIVERY_SEARCH_COLUMNS = [
   { key: 'truck', label: 'Truck', get: (d) => d.truck_registration },
@@ -28,6 +33,8 @@ const DELIVERY_SEARCH_COLUMNS = [
   { key: 'fuel_litres', label: 'Fuel (L)', get: (d) => d.fuel_litres },
   { key: 'revenue', label: 'Revenue', get: (d) => d.revenue_amount },
   { key: 'deleted_by', label: 'Deleted by', get: (d) => d.deleted_by },
+  { key: 'capture', label: 'Capture', get: (d) => captureSourceLabel(d) },
+  { key: 'calc_mode', label: 'Calculation', get: (d) => economicsModeLabel(d) },
   { key: 'notes', label: 'Notes', get: (d) => d.notes },
 ];
 
@@ -220,7 +227,7 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSupe
   };
 
   useEffect(() => {
-    if (!isSuperAdmin || !delivery?.id || !economicsIncomplete(delivery)) return;
+    if (!isSuperAdmin || !delivery?.id || !economicsIncomplete(delivery) || isManualEconomics(delivery)) return;
     let cancelled = false;
     (async () => {
       setRecalcing(true);
@@ -258,6 +265,8 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSupe
   };
 
   const d = detail || delivery;
+  const manualCalc = isManualEconomics(d);
+  const manualCapture = isManualCapture(d);
   const liveDraft = {
     ...d,
     fuel_cost: form.fuel_cost !== '' ? Number(form.fuel_cost) : d.fuel_cost,
@@ -284,6 +293,14 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSupe
                 {d.route_name || [d.origin_name, d.destination_name].filter(Boolean).join(' → ') || 'Route'}
                 {d.distance_km != null && ` · ${formatKm(d.distance_km)}`}
               </p>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${manualCapture ? 'bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200' : 'bg-sky-100 text-sky-800 dark:bg-sky-950/50 dark:text-sky-200'}`}>
+                  {manualCapture ? 'Manual capture' : 'Auto capture'}
+                </span>
+                <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${manualCalc ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200'}`}>
+                  {manualCalc ? 'Manual calculation' : 'System calculation'}
+                </span>
+              </div>
             </div>
             {isSuperAdmin && d.fuel_calc_source && (
               <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-700 text-surface-600">
@@ -352,8 +369,14 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSupe
 
             <section className="space-y-3">
               <p className="text-xs font-bold uppercase tracking-wider text-surface-500">
-                Empty return{d.origin_name ? ` → ${d.origin_name}` : ''}
+                Empty return{d.return_destination_name ? ` → ${d.return_destination_name}` : d.origin_name ? ` → ${d.origin_name}` : ''}
               </p>
+              {d.return_destination_name && (
+                <p className="text-[11px] text-surface-500 -mt-1">
+                  {d.return_arrived ? 'Arrived at next loading' : 'Planned / in progress'}
+                  {d.return_fuel_calc_source && ` · ${calcSourceLabel(d.return_fuel_calc_source)}`}
+                </p>
+              )}
               <label className="text-sm block">
                 <span className="text-xs text-surface-500 block mb-1">Return fuel (litres)</span>
                 <input type="number" min="0" step="0.001" value={form.return_fuel_litres} onChange={(e) => setForm((f) => ({ ...f, return_fuel_litres: e.target.value }))} className="w-full rounded-lg border px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-950 tabular-nums" />
@@ -407,6 +430,66 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSupe
   );
 }
 
+function ProvenanceBadges({ delivery }) {
+  const manualCapture = isManualCapture(delivery);
+  const manualCalc = isManualEconomics(delivery);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1">
+        <span
+          title={manualCapture ? 'Manually imported delivery' : 'Captured automatically via logistics workflow'}
+          className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+            manualCapture
+              ? 'bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
+              : 'bg-sky-100 text-sky-800 dark:bg-sky-950/50 dark:text-sky-200'
+          }`}
+        >
+          {manualCapture ? 'Manual' : 'Auto'}
+        </span>
+        <span
+          title={manualCalc ? 'Costs entered manually' : 'Costs calculated by the system'}
+          className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+            manualCalc
+              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200'
+              : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200'
+          }`}
+        >
+          {manualCalc ? 'Manual calc' : 'System calc'}
+        </span>
+      </div>
+      {!manualCalc && delivery.trip_linked && (
+        <span className="text-[10px] text-surface-400">GPS-linked trip</span>
+      )}
+      {!manualCalc && delivery.return_destination_name && (
+        <span className="text-[10px] text-surface-400 truncate max-w-[120px]" title={`Return → ${delivery.return_destination_name}`}>
+          Return → {delivery.return_destination_name}
+        </span>
+      )}
+      {!manualCalc && delivery.fuel_calc_source && !delivery.return_destination_name && (
+        <span className="text-[10px] text-surface-400 truncate max-w-[120px]" title={calcSourceLabel(delivery.fuel_calc_source)}>
+          {calcSourceLabel(delivery.fuel_calc_source)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function EconomicsStatusBadge({ delivery }) {
+  const complete = economicsComplete(delivery);
+  if (complete) {
+    return (
+      <span className="inline-flex text-[10px] font-semibold text-emerald-700 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-300 px-2 py-0.5 rounded">
+        Complete
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex text-[10px] font-semibold text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-300 px-2 py-0.5 rounded">
+      Needs figures
+    </span>
+  );
+}
+
 function MarginCell({ delivery }) {
   const margin = delivery.margin_amount ?? deliveryMarginAmount(delivery);
   if (margin == null) return <span className="text-surface-400">—</span>;
@@ -426,6 +509,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
   const [modal, setModal] = useState(null);
   const [calculationModal, setCalculationModal] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [view, setView] = useState('active');
   const [busyId, setBusyId] = useState(null);
   const [from, setFrom] = useState(() => {
@@ -514,9 +598,18 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
           <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">Completed deliveries</h1>
           <InfoHint
             title="Completed deliveries"
-            text="Deliveries captured with an offloading slip on Logistics Activity. Fuel, return fuel, and revenue are calculated from haul-road distance, route regulations, and payload — then snapshotted per delivery."
+            text="Deliveries captured on Logistics Activity or imported manually. Each row shows whether capture and calculation were automatic or manual. System calculations use haul-road distance, GPS trail, speed factors, and route regulations."
           />
         </div>
+        {!isDeletedView && (
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-indigo-600 text-white px-4 py-2 text-sm font-semibold hover:bg-indigo-700 transition-colors"
+          >
+            Manual delivery import
+          </button>
+        )}
       </header>
 
       <div className="flex flex-wrap gap-2 border-b border-surface-200 dark:border-surface-800 pb-2">
@@ -529,8 +622,9 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
       </div>
 
       {!isDeletedView && filteredDeliveries.length > 0 && (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
           <SummaryCard label="Deliveries" value={summary.count} sub={`${summary.complete} with full calculations`} />
+          <SummaryCard label="Auto capture" value={summary.autoCapture} sub={`${summary.manualCapture} manual`} />
           <SummaryCard label="Total tons" value={formatTons(summary.totalTons)} />
           <SummaryCard label="Revenue" value={formatCurrency(summary.totalRevenue)} tone="brand" />
           <SummaryCard label="Total fuel" value={formatCurrency(summary.totalFuel)} />
@@ -570,7 +664,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
       <section className="app-glass-panel-2xl overflow-hidden shadow-sm">
         <div className="px-4 py-2.5 border-b border-surface-200 dark:border-surface-800 flex flex-wrap items-center justify-between gap-2 bg-surface-50/80 dark:bg-surface-900/80">
           <p className="text-xs font-medium text-surface-500">
-            {loading ? 'Loading deliveries…' : `${filteredDeliveries.length} delivery${filteredDeliveries.length === 1 ? '' : 'ies'}`}
+            {loading ? 'Loading deliveries…' : `${filteredDeliveries.length} ${filteredDeliveries.length === 1 ? 'delivery' : 'deliveries'}`}
           </p>
           {!isDeletedView && (
             <p className="text-[11px] text-surface-400">Fuel = loaded + return (when included) · Margin = revenue − total fuel</p>
@@ -580,43 +674,51 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
           <table className="min-w-full text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-surface-500 bg-surface-50 dark:bg-surface-900 sticky top-0 z-10">
               <tr>
-                <th className="text-left px-4 py-3 font-semibold">{isDeletedView ? 'Deleted' : 'Date'}</th>
-                <th className="text-left px-4 py-3 font-semibold">Truck</th>
-                <th className="text-left px-4 py-3 font-semibold min-w-[160px]">Route</th>
-                <th className="text-left px-4 py-3 font-semibold">Loading slip Number</th>
+                <th className="text-left px-4 py-3 font-semibold whitespace-nowrap">{isDeletedView ? 'Deleted' : 'Delivered'}</th>
+                <th className="text-left px-4 py-3 font-semibold">Truck / Driver</th>
+                <th className="text-left px-4 py-3 font-semibold min-w-[140px]">Route</th>
+                <th className="text-left px-4 py-3 font-semibold">Loading slip</th>
                 <th className="text-right px-4 py-3 font-semibold">Tons</th>
+                {!isDeletedView && <th className="text-left px-4 py-3 font-semibold min-w-[110px]">Provenance</th>}
                 {!isDeletedView && <th className="text-right px-4 py-3 font-semibold">Distance</th>}
                 {!isDeletedView && <th className="text-right px-4 py-3 font-semibold">Fuel</th>}
                 {!isDeletedView && <th className="text-right px-4 py-3 font-semibold">Total fuel</th>}
                 {!isDeletedView && <th className="text-right px-4 py-3 font-semibold">Revenue</th>}
                 {!isDeletedView && <th className="text-right px-4 py-3 font-semibold">Margin</th>}
-                <th className="text-left px-4 py-3 font-semibold">Status</th>
+                {!isDeletedView && <th className="text-center px-3 py-3 font-semibold">Econ.</th>}
                 {isDeletedView && <th className="text-left px-4 py-3 font-semibold">Deleted by</th>}
-                <th className="text-right px-4 py-3 font-semibold min-w-[140px]">Actions</th>
+                <th className="text-right px-4 py-3 font-semibold min-w-[130px] sticky right-0 bg-surface-50 dark:bg-surface-900">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-100 dark:divide-surface-800 bg-white/60 dark:bg-surface-950/40">
               {loading ? (
-                <tr><td colSpan={isDeletedView ? 8 : 12} className="px-4 py-12 text-center text-surface-500">Loading…</td></tr>
+                <tr><td colSpan={isDeletedView ? 7 : 13} className="px-4 py-12 text-center text-surface-500">Loading…</td></tr>
               ) : filteredDeliveries.map((d) => {
-                const complete = economicsComplete(d);
                 const totalFuel = d.total_logistics_fuel_cost ?? totalLogisticsFuelCost(d);
                 const routeLabel = d.route_name || '—';
                 const loadingSlip = d.loading_slip_no || d.delivery_note_no;
                 return (
-                  <tr key={d.id} className="hover:bg-surface-50/80 dark:hover:bg-surface-900/50 transition-colors">
-                    <td className="px-4 py-3 whitespace-nowrap text-surface-700 dark:text-surface-300">
-                      {String((isDeletedView ? d.deleted_at : d.delivered_at) || '').slice(0, 16).replace('T', ' ')}
+                  <tr key={d.id} className="group hover:bg-surface-50/80 dark:hover:bg-surface-900/50 transition-colors">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="block text-surface-800 dark:text-surface-200 font-medium tabular-nums">
+                        {String((isDeletedView ? d.deleted_at : d.delivered_at) || '').slice(0, 10)}
+                      </span>
+                      <span className="block text-[10px] text-surface-400 tabular-nums">
+                        {String((isDeletedView ? d.deleted_at : d.delivered_at) || '').slice(11, 16)}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       <span className="font-semibold text-surface-900 dark:text-surface-100">{d.truck_registration}</span>
-                      {d.driver_name && <span className="block text-[11px] text-surface-500">{d.driver_name}</span>}
+                      {d.driver_name && <span className="block text-[11px] text-surface-500 truncate max-w-[120px]">{d.driver_name}</span>}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-surface-700 dark:text-surface-300 font-medium">{routeLabel}</span>
+                      <span className="text-surface-700 dark:text-surface-300 font-medium line-clamp-2">{routeLabel}</span>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-surface-600">{loadingSlip || '—'}</td>
-                    <td className="px-4 py-3 text-right tabular-nums font-medium">{formatTons(d.tons_loaded)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums font-semibold">{formatTons(d.tons_loaded)}</td>
+                    {!isDeletedView && (
+                      <td className="px-4 py-3"><ProvenanceBadges delivery={d} /></td>
+                    )}
                     {!isDeletedView && (
                       <td className="px-4 py-3 text-right tabular-nums text-surface-600">{formatKm(d.distance_km)}</td>
                     )}
@@ -639,19 +741,15 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
                     {!isDeletedView && (
                       <td className="px-4 py-3 text-right"><MarginCell delivery={d} /></td>
                     )}
-                    <td className="px-4 py-3">
-                      {isDeletedView ? (
-                        <span className="inline-flex text-xs font-semibold text-red-700 bg-red-100 dark:bg-red-950/40 dark:text-red-200 px-2 py-0.5 rounded-full">Deleted</span>
-                      ) : complete ? (
-                        <span className="inline-flex text-xs font-semibold text-emerald-700 bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 px-2 py-0.5 rounded-full">Complete</span>
-                      ) : (
-                        <span className="inline-flex text-xs font-semibold text-amber-700 bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 px-2 py-0.5 rounded-full">Needs calculation</span>
-                      )}
-                    </td>
+                    {!isDeletedView && (
+                      <td className="px-4 py-3 text-center">
+                        <EconomicsStatusBadge delivery={d} />
+                      </td>
+                    )}
                     {isDeletedView && (
                       <td className="px-4 py-3 text-surface-600 text-xs">{d.deleted_by || '—'}</td>
                     )}
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right sticky right-0 bg-white/80 dark:bg-surface-950/80 group-hover:bg-surface-50/80 dark:group-hover:bg-surface-900/50">
                       {!isDeletedView && (
                         <DeliveryRowActions
                           busy={busyId === d.id}
@@ -675,7 +773,7 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
               })}
               {!loading && filteredDeliveries.length === 0 && (
                 <tr>
-                  <td colSpan={isDeletedView ? 8 : 12} className="px-4 py-12 text-center text-surface-500">
+                  <td colSpan={isDeletedView ? 7 : 13} className="px-4 py-12 text-center text-surface-500">
                     {deliveries.length === 0
                       ? (isDeletedView ? 'No deleted deliveries in this period.' : 'No completed deliveries with an offloading slip in this period.')
                       : 'No deliveries match your search.'}
@@ -703,6 +801,14 @@ export default function CompletedDeliveriesTab({ setError, noteDeliveryId, onNot
           onSaved={load}
           setError={setError}
           isSuperAdmin={isSuperAdmin}
+        />
+      )}
+
+      {importOpen && (
+        <ManualDeliveryImportModal
+          onClose={() => setImportOpen(false)}
+          onSaved={load}
+          setError={setError}
         />
       )}
 

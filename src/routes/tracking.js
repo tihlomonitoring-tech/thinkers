@@ -28,6 +28,10 @@ import {
   upsertFuelRegulation,
   suggestFuelRegulationAi,
 } from '../lib/trackingDeliveryFuel.js';
+import {
+  createManualDelivery,
+  previewManualDeliveryEconomics,
+} from '../lib/manualDeliveryImport.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -1227,6 +1231,8 @@ function mapDeliveryRow(row) {
     include_return_fuel_in_cost: includeReturn,
     total_logistics_fuel_cost: totalFuelCost,
     return_fuel_calc_source: get(row, 'return_fuel_calc_source'),
+    return_destination_name: get(row, 'return_destination_name'),
+    return_arrived: get(row, 'return_arrived') != null ? !!get(row, 'return_arrived') : null,
     revenue_amount: revenue,
     revenue_per_ton: get(row, 'revenue_per_ton') != null ? Number(get(row, 'revenue_per_ton')) : null,
     margin_amount: margin,
@@ -1234,6 +1240,10 @@ function mapDeliveryRow(row) {
     fuel_snapshot_at: get(row, 'fuel_snapshot_at'),
     offloading_slip_no: get(row, 'offloading_slip_no'),
     activity_phase: get(row, 'activity_phase'),
+    record_source: get(row, 'record_source') || 'workflow',
+    economics_mode: get(row, 'economics_mode') || 'system',
+    trip_linked: get(row, 'trip_linked') != null ? !!get(row, 'trip_linked') : !!get(row, 'trip_id'),
+    created_by_user_id: gid(get(row, 'created_by_user_id')),
   };
 }
 
@@ -1284,9 +1294,12 @@ router.get('/deliveries', async (req, res) => {
     const autofill = String(req.query.autofill ?? 'true').toLowerCase() !== 'false';
     if (completedOnly && autofill && !deleted) {
       const incompleteIds = rows
-        .filter((row) => get(row, 'fuel_litres') == null
+        .filter((row) => String(get(row, 'economics_mode') || 'system').toLowerCase() !== 'manual'
+          && (get(row, 'fuel_litres') == null
           || get(row, 'fuel_cost') == null
-          || get(row, 'revenue_amount') == null)
+          || get(row, 'revenue_amount') == null
+          || get(row, 'return_fuel_cost') == null
+          || (get(row, 'return_fuel_calc_source') || '').endsWith('_planned')))
         .slice(0, 25)
         .map((row) => rowId(row))
         .filter(Boolean);
@@ -1304,6 +1317,39 @@ router.get('/deliveries', async (req, res) => {
     res.json({ deliveries });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Failed to list deliveries' });
+  }
+});
+
+router.post('/deliveries/manual/preview', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const preview = await previewManualDeliveryEconomics(query, tid, req.body || {});
+    res.json(preview);
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to preview delivery economics' });
+  }
+});
+
+router.post('/deliveries/manual', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const result = await createManualDelivery(query, tid, req.body || {}, req.user?.id);
+    const r = await query(
+      `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name,
+              r.destination, r.starting_point,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
+              COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
+       FROM tracking_delivery_record d
+       LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
+       LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       WHERE d.id = @id AND d.tenant_id = @tenantId`,
+      { tenantId: tid, id: result.id }
+    );
+    res.status(201).json({ ok: true, ...result, delivery: mapDeliveryRow(r.recordset?.[0]) });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to import manual delivery' });
   }
 });
 

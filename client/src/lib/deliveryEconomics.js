@@ -69,6 +69,22 @@ export function formatKm(value) {
   return `${n.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km`;
 }
 
+export function isManualCapture(delivery) {
+  return String(delivery?.record_source || 'workflow').toLowerCase() === 'manual';
+}
+
+export function isManualEconomics(delivery) {
+  return String(delivery?.economics_mode || 'system').toLowerCase() === 'manual';
+}
+
+export function captureSourceLabel(delivery) {
+  return isManualCapture(delivery) ? 'Manual' : 'Auto';
+}
+
+export function economicsModeLabel(delivery) {
+  return isManualEconomics(delivery) ? 'Manual' : 'System';
+}
+
 export function calcSourceLabel(source) {
   const map = {
     gps_trail: 'GPS trail',
@@ -78,6 +94,12 @@ export function calcSourceLabel(source) {
     regulation: 'Regulation default',
     gps_trail_return: 'GPS return',
     route_distance_return: 'Route return',
+    gps_return_trail: 'GPS to next loading',
+    gps_return_partial: 'GPS return (in progress)',
+    next_loading_route: 'Next loading site',
+    next_loading_planned: 'Next loading (planned)',
+    origin_return: 'Return to origin',
+    origin_return_planned: 'Return to origin (planned)',
     none: 'Not available',
   };
   return map[source] || source || '—';
@@ -101,9 +123,19 @@ export function summarizeDeliveries(deliveries) {
     if (economicsComplete(d)) complete += 1;
   }
 
+  let manualCapture = 0;
+  let manualEconomics = 0;
+  for (const d of rows) {
+    if (isManualCapture(d)) manualCapture += 1;
+    if (isManualEconomics(d)) manualEconomics += 1;
+  }
+
   return {
     count: rows.length,
     complete,
+    manualCapture,
+    manualEconomics,
+    autoCapture: rows.length - manualCapture,
     totalTons: round2(totalTons),
     totalRevenue: round2(totalRevenue),
     totalFuel: round2(totalFuel),
