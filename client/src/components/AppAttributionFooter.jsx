@@ -6,7 +6,7 @@ export default function AppAttributionFooter({ className = '' }) {
       role="contentinfo"
       className={`shrink-0 px-4 py-2.5 text-center text-[11px] leading-snug ${className}`}
     >
-      © {year} Developed by Lean, Peacetheecoder, Jeannot, Vincent and Maoto Tech Solutions
+      © {year} Developed by Leanweb, Phemelo Vincent Mogashoa, Peacetheecoder, and Maoto Tech Solutions
     </footer>
   );
 }
