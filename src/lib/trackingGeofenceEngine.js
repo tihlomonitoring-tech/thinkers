@@ -1,4 +1,4 @@
-import { isInsideGeofence } from './trackingGeofence.js';
+import { isInsideGeofence, DESTINATION_DEPARTURE_COMPLETE_KM, maxDistanceOutsideRouteLegKm, shouldAutoCompleteAfterDestinationExit } from './trackingGeofence.js';
 import {
   sendGeofenceAlertEmail,
   isTrackingNotificationEnabled,
@@ -14,6 +14,7 @@ import {
   tripHasLoadingSlip,
   AUTO_OFFLOAD_SLIP,
 } from './logisticsActivityBoard.js';
+import { detectRouteMismatch } from './logisticsRouteMismatch.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -42,7 +43,7 @@ function isInsideRouteAltCorridor(fences, lat, lng, routeId) {
  * @returns {{ processed: number, allocated: number, alerts: number, pending_notes: number }}
  */
 export async function processGeofencePositions(query, tenantId) {
-  const stats = { processed: 0, allocated: 0, alerts: 0, pending_notes: 0, auto_completed: 0, auto_enroute: 0 };
+  const stats = { processed: 0, allocated: 0, alerts: 0, pending_notes: 0, auto_completed: 0, auto_enroute: 0, route_mismatches: 0 };
 
   const settingsR = await query(
     `SELECT require_offloading_slip_at_destination, require_loading_slip_before_enroute
@@ -104,6 +105,26 @@ export async function processGeofencePositions(query, tenantId) {
     const currentRouteId = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
     const activityStage = String(get(trip, 'activity_stage') || '').toLowerCase();
     const tripStatus = String(get(trip, 'status') || '').toLowerCase();
+    const mismatchIgnored = String(get(trip, 'route_mismatch_status') || '').toLowerCase() === 'ignored';
+
+    if (!mismatchIgnored && ['scheduled', 'at_loading'].includes(activityStage)) {
+      const liveMismatch = detectRouteMismatch(trip, fences, lat, lng);
+      if (liveMismatch) {
+        const existing = gid(get(trip, 'route_mismatch_route_id'));
+        const status = String(get(trip, 'route_mismatch_status') || '').toLowerCase();
+        if (status !== 'pending' || existing !== liveMismatch.detected_route_id) {
+          await query(
+            `UPDATE fleet_trip SET route_mismatch_route_id = @detected, route_mismatch_status = N'pending', updated_at = SYSUTCDATETIME()
+             WHERE id = @id AND tenant_id = @tenantId`,
+            { tenantId, id: tripId, detected: liveMismatch.detected_route_id }
+          );
+          stats.route_mismatches++;
+        }
+        continue;
+      }
+    }
+
+    let destinationExited = !!get(trip, 'destination_geofence_exited_at');
 
     for (const fence of fences) {
       const fenceId = gid(get(fence, 'id'));
@@ -189,8 +210,18 @@ export async function processGeofencePositions(query, tenantId) {
         if (leg === 'origin' && contractorRouteId) {
           const routeMatch = !currentRouteId || currentRouteId === contractorRouteId;
           const isReturnAfterDelivery = activityStage === 'awaiting_reschedule';
+          const mismatch = !routeMatch && !isReturnAfterDelivery
+            ? detectRouteMismatch(trip, fences, lat, lng)
+            : null;
 
-          if (isReturnAfterDelivery && routeMatch) {
+          if (mismatch && !mismatchIgnored) {
+            await query(
+              `UPDATE fleet_trip SET route_mismatch_route_id = @detected, route_mismatch_status = N'pending', updated_at = SYSUTCDATETIME()
+               WHERE id = @id AND tenant_id = @tenantId`,
+              { tenantId, id: tripId, detected: contractorRouteId }
+            );
+            stats.route_mismatches++;
+          } else if (isReturnAfterDelivery && routeMatch) {
             await allocateTripAtLoading(query, tenantId, tripId, trip, contractorRouteId, route);
             await sendGeofenceAlertEmail({
               query,
@@ -207,7 +238,7 @@ export async function processGeofencePositions(query, tenantId) {
             stats.alerts++;
             stats.allocated++;
             stats.pending_notes++;
-          } else if (routeMatch && !isReturnAfterDelivery) {
+          } else if (routeMatch && !isReturnAfterDelivery && !mismatchIgnored) {
             await allocateTripAtLoading(query, tenantId, tripId, trip, contractorRouteId, route);
             await sendGeofenceAlertEmail({
               query,
@@ -314,19 +345,34 @@ export async function processGeofencePositions(query, tenantId) {
           }
         }
 
-        if (leg === 'destination' && contractorRouteId && !requireOffloadingSlip && activityStage === 'at_destination') {
+        if (wasInside && !inside && leg === 'destination' && contractorRouteId) {
           const matchRoute = !currentRouteId || currentRouteId === contractorRouteId;
-          if (matchRoute && tripHasLoadingSlip(trip)) {
-            try {
-              await completeDestinationDelivery(query, tenantId, tripId, {
-                offloading_slip_no: AUTO_OFFLOAD_SLIP,
-                auto_complete: true,
-              });
-              stats.auto_completed++;
-            } catch (err) {
-              // Trip may have been completed elsewhere; continue processing other geofences.
+          if (matchRoute && activityStage === 'at_destination' && get(trip, 'at_destination_at')) {
+            if (!destinationExited) {
+              await query(
+                `UPDATE fleet_trip SET destination_geofence_exited_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+                 WHERE id = @id AND tenant_id = @tenantId AND destination_geofence_exited_at IS NULL`,
+                { tenantId, id: tripId }
+              );
+              destinationExited = true;
             }
           }
+        }
+      }
+    }
+
+    if (!mismatchIgnored && !requireOffloadingSlip && activityStage === 'at_destination' && tripHasLoadingSlip(trip)) {
+      const kmOutside = maxDistanceOutsideRouteLegKm(lat, lng, currentRouteId, fences, 'destination');
+      const tripForCheck = { ...trip, activity_stage: activityStage };
+      if (shouldAutoCompleteAfterDestinationExit(tripForCheck, kmOutside, destinationExited)) {
+        try {
+          await completeDestinationDelivery(query, tenantId, tripId, {
+            offloading_slip_no: AUTO_OFFLOAD_SLIP,
+            auto_complete: true,
+          });
+          stats.auto_completed++;
+        } catch {
+          // Trip may have been completed elsewhere.
         }
       }
     }

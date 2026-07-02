@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { todayYmd } from '../../lib/appTime.js';
 import { useAuth } from '../../AuthContext.jsx';
-import { tracking as trackingApi } from '../../api';
+import { tracking as trackingApi, openAttachmentWithAuth, downloadAttachmentWithAuth } from '../../api';
 import AdvancedColumnSearchBar from '../AdvancedColumnSearchBar.jsx';
 import InfoHint from '../InfoHint.jsx';
 import { emptyColumnValues, matchesColumnSearch } from '../../lib/advancedColumnSearch.js';
@@ -311,6 +311,69 @@ function DeliveryCalculationModal({ delivery, onClose, onSaved, setError, isSupe
         </div>
 
         <div className="px-6 py-5 space-y-5">
+          {(d.loading_slip_no || d.offloading_slip_no || d.loading_slip_image_path || d.offloading_slip_image_path) && (
+            <section className="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-950/50 p-4 space-y-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-surface-500">Slip documents</p>
+              {d.loading_slip_no && (
+                <p className="text-xs text-surface-600 dark:text-surface-400">
+                  Loading slip <span className="font-mono font-semibold">{d.loading_slip_no}</span>
+                </p>
+              )}
+              {d.offloading_slip_no && (
+                <p className="text-xs text-surface-600 dark:text-surface-400">
+                  Offloading slip <span className="font-mono font-semibold">{d.offloading_slip_no}</span>
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {d.loading_slip_image_path && (
+                  <>
+                    <button
+                      type="button"
+                      className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 hover:bg-white dark:hover:bg-surface-900"
+                      onClick={() => openAttachmentWithAuth(trackingApi.deliveries.slipImageUrl(d.id, 'loading')).catch((err) => setError(err?.message || 'Could not open loading slip'))}
+                    >
+                      View loading slip
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 hover:bg-white dark:hover:bg-surface-900"
+                      onClick={() => downloadAttachmentWithAuth(
+                        trackingApi.deliveries.slipImageUrl(d.id, 'loading'),
+                        `loading-slip-${d.truck_registration || d.id}.jpg`
+                      ).catch((err) => setError(err?.message || 'Could not download loading slip'))}
+                    >
+                      Download loading slip
+                    </button>
+                  </>
+                )}
+                {d.offloading_slip_image_path && (
+                  <>
+                    <button
+                      type="button"
+                      className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 hover:bg-white dark:hover:bg-surface-900"
+                      onClick={() => openAttachmentWithAuth(trackingApi.deliveries.slipImageUrl(d.id, 'offloading')).catch((err) => setError(err?.message || 'Could not open offloading slip'))}
+                    >
+                      View offloading slip
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs px-3 py-1.5 rounded-lg border border-surface-300 dark:border-surface-600 hover:bg-white dark:hover:bg-surface-900"
+                      onClick={() => downloadAttachmentWithAuth(
+                        trackingApi.deliveries.slipImageUrl(d.id, 'offloading'),
+                        `offloading-slip-${d.truck_registration || d.id}.jpg`
+                      ).catch((err) => setError(err?.message || 'Could not download offloading slip'))}
+                    >
+                      Download offloading slip
+                    </button>
+                  </>
+                )}
+              </div>
+              {!d.loading_slip_image_path && !d.offloading_slip_image_path && (
+                <p className="text-xs text-surface-500">Slip numbers are recorded — scan or upload photos on Logistics Activity to attach images.</p>
+              )}
+            </section>
+          )}
+
           {isSuperAdmin && recalcing && economicsIncomplete(d) && (
             <p className="text-sm text-brand-700 dark:text-brand-300 bg-brand-50 dark:bg-brand-950/30 border border-brand-100 dark:border-brand-900 rounded-lg px-3 py-2">
               Calculating fuel, distance, and revenue from route regulations and haul-road data…

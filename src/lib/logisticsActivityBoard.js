@@ -1,5 +1,6 @@
 import { todayYmd } from './appTime.js';
 import { haversineMeters } from './geo.js';
+import { DESTINATION_DEPARTURE_COMPLETE_KM } from './trackingGeofence.js';
 import { resolveRouteDestination, resolveRouteOrigin } from './logisticsFlowWhatsApp.js';
 import {
   distanceProgressAlongPolyline,
@@ -23,6 +24,40 @@ export function gid(v) {
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`.toLowerCase();
   }
   return String(v);
+}
+
+function stripLoadedAtFromNotes(notes) {
+  if (notes == null) return null;
+  const cleaned = String(notes)
+    .replace(/\n?Loaded at:.*$/gim, '')
+    .replace(/^Awaiting loading slip$/i, '')
+    .trim();
+  return cleaned || null;
+}
+
+function parseLoadedAtFromNotes(notes) {
+  if (!notes) return null;
+  const m = String(notes).match(/Loaded at:\s*(.+?)(?:\n|$)/i);
+  if (!m) return null;
+  const d = new Date(m[1].trim());
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function resolveTripLoadingSlipNo(row, loadingDelivery) {
+  const tripSlip = String(get(row, 'loading_slip_no') || '').trim();
+  const deliverySlip = String(get(loadingDelivery, 'loading_slip_no') || '').trim();
+  return tripSlip || deliverySlip || null;
+}
+
+function resolveLoadingCapturedAt(row, loadingDelivery, loadingSlipNo) {
+  if (!loadingSlipNo) return null;
+  const fromDelivery = get(loadingDelivery, 'delivered_at');
+  if (fromDelivery) return fromDelivery;
+  const fromNotes = parseLoadedAtFromNotes(get(loadingDelivery, 'notes'));
+  if (fromNotes) return fromNotes.toISOString();
+  const started = get(row, 'started_at');
+  if (started) return started;
+  return get(row, 'at_loading_at') || null;
 }
 
 export const ACTIVITY_STAGES = [
@@ -76,12 +111,42 @@ export function computeRouteDistances({
     basis = route_distance_source || 'record';
   }
 
-  if (stage === 'awaiting_reschedule' || stage === 'at_destination') {
+  if (stage === 'awaiting_reschedule') {
     return {
       route_distance_km: totalKm,
       km_remaining: 0,
       km_traveled: totalKm,
       distance_basis: basis || 'none',
+      off_route_m: null,
+    };
+  }
+
+  if (stage === 'at_destination') {
+    const lat = last_lat != null ? Number(last_lat) : null;
+    const lng = last_lng != null ? Number(last_lng) : null;
+    let traveled = totalKm;
+    let arrivedBasis = basis || 'none';
+
+    if (polyline && Number.isFinite(lat) && Number.isFinite(lng)) {
+      const prog = distanceProgressAlongPolyline(polyline, lat, lng);
+      if (prog) {
+        const routeTotal = roundKm2(prog.totalM / 1000);
+        const gpsTraveled = roundKm2(prog.traveledM / 1000);
+        if (routeTotal > 0) totalKm = totalKm ?? routeTotal;
+        if (routeTotal > 0) {
+          traveled = roundKm2(Math.min(routeTotal, Math.max(gpsTraveled, routeTotal * 0.92)));
+        } else {
+          traveled = gpsTraveled;
+        }
+        arrivedBasis = 'road';
+      }
+    }
+
+    return {
+      route_distance_km: totalKm,
+      km_remaining: 0,
+      km_traveled: traveled,
+      distance_basis: arrivedBasis,
       off_route_m: null,
     };
   }
@@ -245,6 +310,9 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
 
   const etaAt = etaMinutes != null ? new Date(Date.now() + etaMinutes * 60000).toISOString() : null;
   const etaDueAt = get(row, 'eta_due_at');
+  const loadingSlipNo = resolveTripLoadingSlipNo(row, loadingDelivery);
+  const loadingAt = resolveLoadingCapturedAt(row, loadingDelivery, loadingSlipNo);
+  const loadingNotes = stripLoadedAtFromNotes(get(loadingDelivery, 'notes'));
 
   return {
     trip_id: tripId,
@@ -275,10 +343,12 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     status: get(row, 'status'),
     scheduled_at: get(row, 'scheduled_at'),
     at_loading_at: get(row, 'at_loading_at'),
+    started_at: get(row, 'started_at'),
     at_destination_at: get(row, 'at_destination_at'),
     completed_at: get(row, 'completed_at'),
-    loading_slip_no: get(row, 'loading_slip_no'),
+    loading_slip_no: loadingSlipNo,
     loading_slip_deferred: !!get(row, 'loading_slip_deferred'),
+    loading_at: loadingAt,
     offloading_slip_no: offloadingSlipNo,
     auto_completed_delivery: autoCompletedDelivery,
     delivery_completed: deliveryCompleted,
@@ -287,7 +357,8 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
     tons_loaded: get(loadingDelivery, 'tons_loaded') != null
       ? Number(get(loadingDelivery, 'tons_loaded'))
       : (get(openDelivery, 'tons_loaded') != null ? Number(get(openDelivery, 'tons_loaded')) : null),
-    loading_notes: get(loadingDelivery, 'notes') || null,
+    loading_notes: loadingNotes,
+    loading_slip_image_path: get(loadingDelivery, 'loading_slip_image_path') || null,
     pending_note: openDelivery ? !!get(openDelivery, 'pending_note') : false,
     activity_phase: get(openDelivery, 'activity_phase'),
     hours_on_route: hours != null ? Math.round(hours * 100) / 100 : null,
@@ -305,7 +376,7 @@ export function mapActivityTrip(row, openDelivery, routeMeta, originCoords, dest
       || stage === 'awaiting_reschedule',
     require_offloading_slip_at_destination: requireOffloadingSlip,
     require_loading_slip_before_enroute: requireLoadingSlipBeforeEnroute,
-    loading_slip_missing: !tripHasLoadingSlip(row),
+    loading_slip_missing: !loadingSlipNo,
   };
 }
 
@@ -546,7 +617,35 @@ export async function buildLogisticsActivityBoard(query, tenantId, options = {})
     if (!deliveryByTrip.has(tid)) deliveryByTrip.set(tid, d);
   }
 
-  const items = (tripsR.recordset || []).map((row) => {
+  const routeById = new Map((routesR.recordset || []).map((r) => [gid(get(r, 'id')), r]));
+
+  let route_mismatches = [];
+  try {
+    const { syncRouteMismatches } = await import('./logisticsRouteMismatch.js');
+    const mismatchFencesR = await query(
+      `SELECT g.contractor_route_id, g.leg, g.center_lat, g.center_lng, g.radius_m, g.polygon_json, g.name,
+              cr.name AS route_name
+       FROM tracking_geofence g
+       LEFT JOIN contractor_routes cr ON cr.id = g.contractor_route_id AND cr.tenant_id = g.tenant_id
+       WHERE g.tenant_id = @tenantId AND g.leg = N'origin'`,
+      { tenantId }
+    );
+    route_mismatches = await syncRouteMismatches(
+      query,
+      tenantId,
+      tripsR.recordset || [],
+      mismatchFencesR.recordset || [],
+      routeById
+    );
+  } catch (err) {
+    console.warn('[logistics] route mismatch sync failed:', err?.message || err);
+  }
+
+  const visibleTrips = (tripsR.recordset || []).filter(
+    (row) => String(get(row, 'route_mismatch_status') || '').toLowerCase() !== 'ignored'
+  );
+
+  const items = visibleTrips.map((row) => {
     const tripId = gid(get(row, 'id'));
     return mapActivityTrip(
       row,
@@ -564,7 +663,7 @@ export async function buildLogisticsActivityBoard(query, tenantId, options = {})
   const stages = ACTIVITY_STAGES.map((s) => ({
     ...s,
     hint: s.id === 'at_destination' && !requireOffloadingSlip
-      ? 'No offloading slip required — delivery completes when truck exits destination geofence (loading slip still required)'
+      ? `No offloading slip required — after entering destination, delivery completes ${DESTINATION_DEPARTURE_COMPLETE_KM} km after geofence exit`
       : s.id === 'at_loading' && !requireLoadingSlipBeforeEnroute
         ? 'No loading slip required — truck moves to En route when it exits the loading geofence'
         : s.hint,
@@ -589,6 +688,7 @@ export async function buildLogisticsActivityBoard(query, tenantId, options = {})
     total_active: items.length,
     workflow,
     watcher,
+    route_mismatches,
     updated_at: new Date().toISOString(),
   };
 }
@@ -653,7 +753,7 @@ export async function scheduleTruckForRoute(query, tenantId, { truck_registratio
         status = N'pending', updated_at = SYSUTCDATETIME(),
         contractor_truck_id = COALESCE(@ctid, contractor_truck_id),
         driver_name = COALESCE(@driverName, driver_name),
-        offloading_slip_no = NULL, at_destination_at = NULL,
+        offloading_slip_no = NULL, at_destination_at = NULL, destination_geofence_exited_at = NULL,
         loading_slip_no = NULL, loading_slip_deferred = 0,
         started_at = NULL, eta_due_at = NULL, is_overdue = 0
        WHERE id = @id AND tenant_id = @tenantId`,
@@ -817,6 +917,7 @@ export async function allocateTripAtLoading(query, tenantId, tripId, trip, contr
       loading_slip_deferred = 0,
       offloading_slip_no = NULL,
       at_destination_at = NULL,
+      destination_geofence_exited_at = NULL,
       started_at = NULL,
       eta_due_at = NULL,
       is_overdue = 0,
@@ -864,6 +965,7 @@ export async function moveTripActivityStage(query, tenantId, tripId, targetStage
         status = N'pending',
         at_loading_at = NULL,
         at_destination_at = NULL,
+      destination_geofence_exited_at = NULL,
         started_at = NULL,
         eta_due_at = NULL,
         is_overdue = 0,
@@ -1127,11 +1229,10 @@ export async function captureLoadingSlip(query, tenantId, tripId, body, { defer 
 
   const driver = b.driver_name ? String(b.driver_name).trim() : null;
   const tons = b.tons_loaded !== '' && b.tons_loaded != null ? Number(b.tons_loaded) : null;
-  let notes = b.notes != null ? String(b.notes).trim() : null;
-  if (b.loaded_at) {
-    const stamp = `Loaded at: ${String(b.loaded_at).trim()}`;
-    notes = notes ? `${notes}\n${stamp}` : stamp;
-  }
+  const notes = b.notes != null ? stripLoadedAtFromNotes(String(b.notes).trim()) : null;
+  const loadedAt = b.loaded_at ? new Date(b.loaded_at) : null;
+  const loadedAtValid = loadedAt && !Number.isNaN(loadedAt.getTime()) ? loadedAt : null;
+  const slipImagePath = b.slip_image_path ? String(b.slip_image_path).trim() : null;
 
   await query(
     `UPDATE fleet_trip SET
@@ -1163,9 +1264,10 @@ export async function captureLoadingSlip(query, tenantId, tripId, body, { defer 
       driver_name = COALESCE(@driver, driver_name),
       tons_loaded = COALESCE(@tons, tons_loaded),
       notes = COALESCE(@notes, notes),
+      loading_slip_image_path = COALESCE(@slipImage, loading_slip_image_path),
       pending_note = 0,
       status = N'loading_complete',
-      delivered_at = COALESCE(@loadedAt, delivered_at)
+      delivered_at = COALESCE(@loadedAt, delivered_at, SYSUTCDATETIME())
      WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading'`,
     {
       tenantId,
@@ -1175,7 +1277,8 @@ export async function captureLoadingSlip(query, tenantId, tripId, body, { defer 
       driver,
       tons,
       notes,
-      loadedAt: b.loaded_at ? new Date(b.loaded_at) : null,
+      loadedAt: loadedAtValid,
+      slipImage: slipImagePath,
     }
   );
 
@@ -1199,12 +1302,11 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
   await openLoadingDeliveryRecord(query, tenantId, tripId, trip, rid);
 
   const tons = b.tons_loaded !== '' && b.tons_loaded != null ? Number(b.tons_loaded) : null;
-  let notes = b.notes != null ? String(b.notes).trim() : null;
+  const notes = b.notes != null ? stripLoadedAtFromNotes(String(b.notes).trim()) : null;
   const driver = b.driver_name != null ? String(b.driver_name).trim() || null : null;
-  if (b.loaded_at) {
-    const stamp = `Loaded at: ${String(b.loaded_at).trim()}`;
-    notes = notes ? `${notes}\n${stamp}` : stamp;
-  }
+  const loadedAt = b.loaded_at ? new Date(b.loaded_at) : null;
+  const loadedAtValid = loadedAt && !Number.isNaN(loadedAt.getTime()) ? loadedAt : null;
+  const slipImagePath = b.slip_image_path ? String(b.slip_image_path).trim() : null;
 
   await query(
     `UPDATE fleet_trip SET
@@ -1223,6 +1325,7 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
       driver_name = COALESCE(@driver, driver_name),
       tons_loaded = COALESCE(@tons, tons_loaded),
       notes = COALESCE(@notes, notes),
+      loading_slip_image_path = COALESCE(@slipImage, loading_slip_image_path),
       pending_note = 0,
       status = COALESCE(NULLIF(status, N''), N'loading_complete'),
       delivered_at = COALESCE(@loadedAt, delivered_at)
@@ -1234,7 +1337,8 @@ export async function updateLoadingSlipFields(query, tenantId, tripId, body) {
       driver,
       tons,
       notes,
-      loadedAt: b.loaded_at ? new Date(b.loaded_at) : null,
+      loadedAt: loadedAtValid,
+      slipImage: slipImagePath,
     }
   );
 
@@ -1291,6 +1395,7 @@ export async function completeDestinationDelivery(query, tenantId, tripId, body 
     : null;
   const notes = b.notes != null ? String(b.notes).trim() : null;
   const combinedNotes = [notes, autoNote].filter(Boolean).join('\n') || null;
+  const slipImagePath = b.slip_image_path ? String(b.slip_image_path).trim() : null;
 
   await query(
     `UPDATE fleet_trip SET
@@ -1356,6 +1461,7 @@ export async function completeDestinationDelivery(query, tenantId, tripId, body 
       tons_loaded = COALESCE(@tons, tons_loaded),
       net_weight_kg = COALESCE(@nw, net_weight_kg, CASE WHEN @tons IS NOT NULL THEN @tons * 1000 ELSE NULL END),
       notes = COALESCE(@notes, notes),
+      offloading_slip_image_path = COALESCE(@slipImage, offloading_slip_image_path),
       pending_note = 0,
       status = N'completed',
       delivered_at = COALESCE(delivered_at, SYSUTCDATETIME())
@@ -1371,6 +1477,7 @@ export async function completeDestinationDelivery(query, tenantId, tripId, body 
       tons: tons != null && Number.isFinite(tons) ? tons : null,
       nw: tons != null && Number.isFinite(tons) ? tons * 1000 : null,
       notes: combinedNotes,
+      slipImage: slipImagePath,
     }
   );
 

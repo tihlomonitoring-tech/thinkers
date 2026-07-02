@@ -3005,12 +3005,23 @@ export const tracking = {
   logisticsActivity: {
     board: () => trk('/logistics-activity/board'),
     schedule: (body) => trk('/logistics-activity/schedule', { method: 'POST', body: JSON.stringify(body) }),
+    parseLoadingSlip: (formData) =>
+      fetch(`${API}/tracking/logistics-activity/loading-slips/parse`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      }).then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || r.statusText || 'Parse failed');
+        return data;
+      }),
     saveLoadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/loading-slip`, { method: 'POST', body: JSON.stringify(body) }),
     updateLoadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/loading-slip`, { method: 'PATCH', body: JSON.stringify(body) }),
     saveOffloadingSlip: (id, body) => trk(`/logistics-activity/trips/${id}/offloading-slip`, { method: 'POST', body: JSON.stringify(body) }),
     redirect: (id, body) => trk(`/logistics-activity/trips/${id}/redirect`, { method: 'POST', body: JSON.stringify(body) }),
     cancel: (id) => trk(`/logistics-activity/trips/${id}/cancel`, { method: 'POST' }),
     moveStage: (id, body) => trk(`/logistics-activity/trips/${id}/stage`, { method: 'POST', body: JSON.stringify(body) }),
+    resolveRouteMismatch: (id, body) => trk(`/logistics-activity/trips/${id}/resolve-route-mismatch`, { method: 'POST', body: JSON.stringify(body) }),
   },
   sync: {
     contractorFleet: () => trk('/sync/contractor-fleet', { method: 'POST' }),
@@ -3056,6 +3067,7 @@ export const tracking = {
     }),
     previewManual: (body) => trk('/deliveries/manual/preview', { method: 'POST', body: JSON.stringify(body) }),
     importManual: (body) => trk('/deliveries/manual', { method: 'POST', body: JSON.stringify(body) }),
+    slipImageUrl: (id, kind) => `${API}/tracking/deliveries/${encodeURIComponent(id)}/slip-image/${kind}`,
   },
   fuelRegulation: {
     list: () => trk('/fuel-regulation'),

@@ -1,4 +1,8 @@
 import { Router } from 'express';
+import path from 'path';
+import fs from 'fs';
+import { randomUUID } from 'crypto';
+import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth, loadUser, requirePageAccess, requireSuperAdmin } from '../middleware/auth.js';
 import { todayYmd } from '../lib/appTime.js';
@@ -32,6 +36,8 @@ import {
   createManualDelivery,
   previewManualDeliveryEconomics,
 } from '../lib/manualDeliveryImport.js';
+import { parseLoadingSlipImage } from '../lib/loadingSlipVision.js';
+import { safeResolveUnderRoot } from '../lib/fuelStatementExport.js';
 
 function get(row, key) {
   if (!row) return undefined;
@@ -48,6 +54,28 @@ router.use(requirePageAccess('tracking_integration'));
 /** Hint shown when SQL tables are missing (run migrations from project root). */
 export const TRACKING_MIGRATION_HINT =
   'From the project root run: npm run db:tracking-setup   (then restart the API). Optional: assign page role "Tracking & integration" in User management.';
+
+const logisticsSlipUploadRoot = path.join(process.cwd(), 'uploads', 'logistics-loading-slips');
+
+function ensureUploadDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+const logisticsSlipUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const tid = req.user?.tenant_id || 'unknown';
+      const dir = path.join(logisticsSlipUploadRoot, tid);
+      ensureUploadDir(dir);
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname || '') || '').replace(/[^a-zA-Z0-9.]/g, '') || '.jpg';
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+}).single('slip');
 
 router.use(async (req, res, next) => {
   try {
@@ -1173,6 +1201,15 @@ router.post('/trips/:id/deviation', async (req, res) => {
 });
 
 // ---- Deliveries history ----
+const DELIVERY_LOAD_SLIP_APPLY = `
+  OUTER APPLY (
+    SELECT TOP 1 ld.loading_slip_image_path
+    FROM tracking_delivery_record ld
+    WHERE ld.tenant_id = d.tenant_id AND ld.trip_id = d.trip_id
+      AND ld.activity_phase = N'loading' AND ld.deleted_at IS NULL
+    ORDER BY ld.delivered_at DESC
+  ) load_slip`;
+
 function mapDeliveryRow(row) {
   const revenue = get(row, 'revenue_amount') != null ? Number(get(row, 'revenue_amount')) : null;
   const fuelCost = get(row, 'fuel_cost') != null ? Number(get(row, 'fuel_cost')) : null;
@@ -1202,7 +1239,9 @@ function mapDeliveryRow(row) {
     route_name: get(row, 'route_name') || null,
     driver_name: get(row, 'driver_name'),
     delivery_note_no: get(row, 'delivery_note_no'),
-    loading_slip_no: get(row, 'loading_slip_no') || null,
+    loading_slip_no: get(row, 'loading_slip_no') || get(row, 'trip_loading_slip_no') || null,
+    loading_slip_image_path: get(row, 'loading_slip_image_path') || null,
+    offloading_slip_image_path: get(row, 'offloading_slip_image_path') || null,
     pending_note: !!get(row, 'pending_note'),
     status: get(row, 'status'),
     notes: get(row, 'notes'),
@@ -1264,13 +1303,15 @@ router.get('/deliveries', async (req, res) => {
     const reg = req.query.registration;
     const deleted = String(req.query.deleted || 'false').toLowerCase();
     const completedOnly = String(req.query.completed_only || 'false').toLowerCase() === 'true';
-    let sql = `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name,
+    let sql = `SELECT d.*, t.trip_ref, t.loading_slip_no AS trip_loading_slip_no, r.name AS route_name,
               r.destination, r.starting_point,
+              load_slip.loading_slip_image_path,
               COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
               COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
        FROM tracking_delivery_record d
        LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
        LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       ${DELIVERY_LOAD_SLIP_APPLY}
        WHERE d.tenant_id = @tenantId`;
     const params = { tenantId: tid };
     if (deleted === 'true') sql += ` AND d.deleted_at IS NOT NULL`;
@@ -1320,6 +1361,44 @@ router.get('/deliveries', async (req, res) => {
   }
 });
 
+router.get('/deliveries/:id/slip-image/:kind', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const kind = String(req.params.kind || '').toLowerCase();
+    if (!['loading', 'offloading'].includes(kind)) {
+      return res.status(400).json({ error: 'kind must be loading or offloading' });
+    }
+    const deliveryR = await query(
+      `SELECT d.id, d.tenant_id, d.trip_id, d.offloading_slip_image_path
+       FROM tracking_delivery_record d
+       WHERE d.id = @id AND d.tenant_id = @tenantId AND d.deleted_at IS NULL`,
+      { tenantId: tid, id: req.params.id }
+    );
+    const delivery = deliveryR.recordset?.[0];
+    if (!delivery) return res.status(404).json({ error: 'Delivery not found' });
+
+    let rel = null;
+    if (kind === 'offloading') {
+      rel = get(delivery, 'offloading_slip_image_path');
+    } else {
+      const loadR = await query(
+        `SELECT TOP 1 loading_slip_image_path FROM tracking_delivery_record
+         WHERE tenant_id = @tenantId AND trip_id = @tripId AND activity_phase = N'loading' AND deleted_at IS NULL
+         ORDER BY delivered_at DESC`,
+        { tenantId: tid, tripId: get(delivery, 'trip_id') }
+      );
+      rel = get(loadR.recordset?.[0], 'loading_slip_image_path');
+    }
+    if (!rel) return res.status(404).json({ error: 'No slip image' });
+    const abs = safeResolveUnderRoot(path.join(process.cwd(), 'uploads'), rel);
+    if (!abs || !fs.existsSync(abs)) return res.status(404).json({ error: 'File missing' });
+    res.sendFile(abs);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to load slip image' });
+  }
+});
+
 router.post('/deliveries/manual/preview', async (req, res) => {
   if (!ensureSchema(req, res, {})) return;
   try {
@@ -1337,13 +1416,15 @@ router.post('/deliveries/manual', async (req, res) => {
     const tid = tenantId(req);
     const result = await createManualDelivery(query, tid, req.body || {}, req.user?.id);
     const r = await query(
-      `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name,
+      `SELECT d.*, t.trip_ref, t.loading_slip_no AS trip_loading_slip_no, r.name AS route_name,
               r.destination, r.starting_point,
+              load_slip.loading_slip_image_path,
               COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
               COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
        FROM tracking_delivery_record d
        LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
        LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       ${DELIVERY_LOAD_SLIP_APPLY}
        WHERE d.id = @id AND d.tenant_id = @tenantId`,
       { tenantId: tid, id: result.id }
     );
@@ -1451,12 +1532,14 @@ router.patch('/deliveries/:id/economics', async (req, res) => {
     if (!updates.length) return res.status(400).json({ error: 'No fields' });
     await query(`UPDATE tracking_delivery_record SET ${updates.join(', ')} WHERE id = @id AND tenant_id = @tenantId`, params);
     const r = await query(
-      `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name, r.destination, r.starting_point,
+      `SELECT d.*, t.trip_ref, t.loading_slip_no AS trip_loading_slip_no, r.name AS route_name, r.destination, r.starting_point,
+              load_slip.loading_slip_image_path,
               COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
               COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
        FROM tracking_delivery_record d
        LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
        LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       ${DELIVERY_LOAD_SLIP_APPLY}
        WHERE d.id = @id`,
       { id: req.params.id }
     );
@@ -1477,12 +1560,14 @@ router.post('/deliveries/:id/snapshot-fuel', requireSuperAdmin, async (req, res)
     const econ = await snapshotDeliveryFuelEconomics(query, tenantGuid, deliveryGuid, { force });
     if (!econ) return res.status(404).json({ error: 'Delivery not found' });
     const r = await query(
-      `SELECT d.*, t.trip_ref, t.loading_slip_no, r.name AS route_name, r.destination, r.starting_point,
+      `SELECT d.*, t.trip_ref, t.loading_slip_no AS trip_loading_slip_no, r.name AS route_name, r.destination, r.starting_point,
+              load_slip.loading_slip_image_path,
               COALESCE(NULLIF(LTRIM(RTRIM(d.destination_name)), N''), r.destination_address, r.destination, t.destination_name) AS destination_name,
               COALESCE(NULLIF(LTRIM(RTRIM(d.origin_name)), N''), r.loading_address, r.starting_point, t.collection_point_name) AS origin_name
        FROM tracking_delivery_record d
        LEFT JOIN fleet_trip t ON t.id = d.trip_id AND t.tenant_id = d.tenant_id
        LEFT JOIN contractor_routes r ON r.id = COALESCE(d.contractor_route_id, t.contractor_route_id, t.route_id) AND r.tenant_id = d.tenant_id
+       ${DELIVERY_LOAD_SLIP_APPLY}
        WHERE d.id = @id AND d.tenant_id = @tenantId`,
       { id: deliveryGuid, tenantId: tenantGuid }
     );
@@ -2209,6 +2294,24 @@ router.post('/logistics-activity/schedule', async (req, res) => {
   }
 });
 
+router.post('/logistics-activity/loading-slips/parse', (req, res, next) => {
+  logisticsSlipUpload(req, res, async (err) => {
+    if (err) return next(err);
+    try {
+      if (!req.file) return res.status(400).json({ error: 'slip image required' });
+      const rel = path.relative(path.join(process.cwd(), 'uploads'), req.file.path).replace(/\\/g, '/');
+      const buf = fs.readFileSync(req.file.path);
+      const ext = (path.extname(req.file.path) || '.jpg').toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+      const extracted = await parseLoadingSlipImage(buf, mime);
+      res.json({ slip_image_path: rel, extracted });
+    } catch (e) {
+      if (e.status === 503) return res.status(503).json({ error: e.message });
+      next(e);
+    }
+  });
+});
+
 router.post('/logistics-activity/trips/:id/loading-slip', async (req, res) => {
   if (!ensureSchema(req, res, {})) return;
   try {
@@ -2221,6 +2324,8 @@ router.post('/logistics-activity/trips/:id/loading-slip', async (req, res) => {
       tons_loaded: b.tons_loaded,
       driver_name: b.driver_name,
       notes: b.notes,
+      loaded_at: b.loaded_at,
+      slip_image_path: b.slip_image_path,
     }, { defer });
     res.json(result);
   } catch (err) {
@@ -2241,6 +2346,7 @@ router.patch('/logistics-activity/trips/:id/loading-slip', async (req, res) => {
       driver_name: b.driver_name,
       notes: b.notes,
       loaded_at: b.loaded_at,
+      slip_image_path: b.slip_image_path,
     });
     res.json(result);
   } catch (err) {
@@ -2260,6 +2366,7 @@ router.post('/logistics-activity/trips/:id/offloading-slip', async (req, res) =>
       delivery_note_no: b.delivery_note_no,
       tons_loaded: b.tons_loaded,
       notes: b.notes,
+      slip_image_path: b.slip_image_path,
     });
 
     res.json({
@@ -2330,6 +2437,18 @@ router.post('/logistics-activity/trips/:id/cancel', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Cancel failed' });
+  }
+});
+
+router.post('/logistics-activity/trips/:id/resolve-route-mismatch', async (req, res) => {
+  if (!ensureSchema(req, res, {})) return;
+  try {
+    const tid = tenantId(req);
+    const { resolveRouteMismatch } = await import('../lib/logisticsRouteMismatch.js');
+    const result = await resolveRouteMismatch(query, tid, req.params.id, req.body?.action);
+    res.json(result);
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to resolve route mismatch' });
   }
 });
 

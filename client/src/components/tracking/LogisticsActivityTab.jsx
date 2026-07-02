@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { tracking as trackingApi } from '../../api';
 import InfoHint from '../InfoHint.jsx';
 import AdvancedColumnSearchBar from '../AdvancedColumnSearchBar.jsx';
+import FuelSlipAiCameraModal from '../FuelSlipAiCameraModal.jsx';
 import { emptyColumnValues, matchesColumnSearch } from '../../lib/advancedColumnSearch.js';
 import LogisticsArchivePanel from './LogisticsArchivePanel.jsx';
 import LogisticsRouteViewBar from './LogisticsRouteViewBar.jsx';
@@ -174,8 +175,99 @@ function normalizeLoadingSlipForm(form) {
     driver_name: form?.driver_name != null ? String(form.driver_name).trim() : form?.driver_name,
     notes: form?.notes != null ? String(form.notes).trim() : form?.notes,
     tons_loaded: form?.tons_loaded !== '' && form?.tons_loaded != null ? Number(form.tons_loaded) : null,
+    loaded_at: form?.loaded_at ? new Date(form.loaded_at).toISOString() : null,
+    slip_image_path: form?.slip_image_path ? String(form.slip_image_path).trim() : null,
   };
 }
+
+function toDatetimeLocal(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch {
+    return '';
+  }
+}
+
+function formatWhen(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  } catch {
+    return String(iso);
+  }
+}
+
+function formatShortTime(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '—';
+  }
+}
+
+function cleanLoadingNotes(notes) {
+  if (!notes || notes === 'Awaiting loading slip') return '';
+  return String(notes).replace(/\n?Loaded at:.*$/gim, '').trim();
+}
+
+function buildLoadingSlipInitial(trip) {
+  return {
+    loading_slip_no: trip?.loading_slip_no || '',
+    tons_loaded: trip?.tons_loaded != null ? String(trip.tons_loaded) : '',
+    driver_id: '',
+    driver_name: trip?.driver_name || '',
+    loaded_at: toDatetimeLocal(trip?.loading_at) || '',
+    notes: cleanLoadingNotes(trip?.loading_notes),
+    slip_image_path: trip?.loading_slip_image_path || '',
+  };
+}
+
+function resolveLoadingSlipState(item, requireLoadingSlipBeforeEnroute) {
+  const hasSlip = !!String(item?.loading_slip_no || '').trim();
+  const deferred = !!item?.loading_slip_deferred;
+  const stage = item?.activity_stage;
+  const pastLoading = ['enroute', 'at_destination', 'awaiting_reschedule'].includes(stage);
+
+  if (hasSlip) {
+    return {
+      status: 'captured',
+      label: 'Captured',
+      slip: item.loading_slip_no,
+      tons: item.tons_loaded,
+      at: item.loading_at,
+    };
+  }
+  if (deferred) {
+    return { status: 'deferred', label: 'Deferred' };
+  }
+  if (stage === 'at_loading' && !requireLoadingSlipBeforeEnroute) {
+    return { status: 'optional', label: 'Optional' };
+  }
+  if (pastLoading && !requireLoadingSlipBeforeEnroute) {
+    return { status: 'departed', label: item.at_loading_at ? 'Departed' : 'En route' };
+  }
+  if (stage === 'at_loading' || stage === 'scheduled') {
+    return { status: 'pending', label: 'Pending' };
+  }
+  if (pastLoading) {
+    return { status: 'missing', label: 'Missing' };
+  }
+  return { status: 'pending', label: 'Pending' };
+}
+
+const LOADING_SLIP_STATUS_STYLES = {
+  captured: 'bg-emerald-50/90 border-emerald-200/80 text-emerald-900 dark:bg-emerald-950/30 dark:border-emerald-900/50 dark:text-emerald-100',
+  deferred: 'bg-amber-50/90 border-amber-200/80 text-amber-900 dark:bg-amber-950/30 dark:border-amber-900/50 dark:text-amber-100',
+  pending: 'bg-surface-50 border-surface-200 text-surface-700 dark:bg-surface-950/50 dark:border-surface-700 dark:text-surface-200',
+  missing: 'bg-rose-50/90 border-rose-200/80 text-rose-900 dark:bg-rose-950/30 dark:border-rose-900/50 dark:text-rose-100',
+  optional: 'bg-sky-50/90 border-sky-200/80 text-sky-900 dark:bg-sky-950/30 dark:border-sky-900/50 dark:text-sky-100',
+  departed: 'bg-surface-50 border-surface-200 text-surface-600 dark:bg-surface-950/50 dark:border-surface-700 dark:text-surface-300',
+};
 
 function shouldUpdateLoadingSlip(modal) {
   if (!modal) return false;
@@ -371,6 +463,333 @@ function SlipModal({ title, fields, initial, truckRegistration, resetKey, onClos
   );
 }
 
+function LoadingSlipModal({
+  trip,
+  editMode,
+  resetKey,
+  onClose,
+  onSave,
+  saving,
+  submitLabel = 'Save',
+}) {
+  const [form, setForm] = useState(() => buildLoadingSlipInitial(trip));
+  const [driversLoading, setDriversLoading] = useState(false);
+  const [loadedDrivers, setLoadedDrivers] = useState([]);
+  const [driversError, setDriversError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [parseHint, setParseHint] = useState('');
+  const fileInputRef = useRef(null);
+  const submitLockRef = useRef(false);
+  const truckRegistration = trip?.truck_registration;
+
+  useEffect(() => {
+    setForm(buildLoadingSlipInitial(trip));
+    setSaveError('');
+    setParseHint('');
+  }, [resetKey, trip]);
+
+  useEffect(() => {
+    if (!truckRegistration) {
+      setLoadedDrivers([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setDriversLoading(true);
+    setDriversError('');
+    trackingApi.contractorDrivers
+      .list({ truck_registration: truckRegistration })
+      .then((res) => {
+        if (!cancelled) setLoadedDrivers(res.drivers || []);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setLoadedDrivers([]);
+          setDriversError(e?.message || 'Could not load drivers');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDriversLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [truckRegistration]);
+
+  useEffect(() => {
+    if (!loadedDrivers.length) return;
+    setForm((prev) => {
+      if (prev.driver_id) return prev;
+      const name = String(trip?.driver_name || prev.driver_name || '').trim().toLowerCase();
+      if (!name) return prev;
+      const match = loadedDrivers.find((d) => String(d.full_name || '').trim().toLowerCase() === name);
+      if (!match) return prev;
+      return { ...prev, driver_id: match.id, driver_name: match.full_name };
+    });
+  }, [loadedDrivers, resetKey, trip?.driver_name]);
+
+  const linkedDrivers = loadedDrivers.filter((d) => d.linked_to_truck);
+  const otherDrivers = loadedDrivers.filter((d) => !d.linked_to_truck);
+  const hasExisting = !!String(trip?.loading_slip_no || '').trim();
+
+  const applyExtracted = (ex, res) => {
+    if (ex?.parse_error) {
+      setParseHint('Could not read every field — please confirm details below.');
+    } else {
+      setParseHint('Slip scanned — confirm details before saving.');
+    }
+    setForm((prev) => ({
+      ...prev,
+      loading_slip_no: ex.loading_slip_no || prev.loading_slip_no,
+      driver_name: ex.driver_name || prev.driver_name,
+      tons_loaded: ex.tons_loaded != null ? String(ex.tons_loaded) : prev.tons_loaded,
+      loaded_at: toDatetimeLocal(ex.loaded_at) || prev.loaded_at,
+      notes: ex.notes || prev.notes,
+      slip_image_path: res?.slip_image_path || prev.slip_image_path,
+    }));
+  };
+
+  const runParseFile = async (file) => {
+    if (!file) return;
+    setParsing(true);
+    setParseHint('');
+    setSaveError('');
+    try {
+      const fd = new FormData();
+      fd.append('slip', file);
+      const res = await trackingApi.logisticsActivity.parseLoadingSlip(fd);
+      applyExtracted(res.extracted || {}, res);
+      setCameraOpen(false);
+    } catch (e) {
+      setSaveError(e?.message || 'Could not read slip');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-surface-950/50 backdrop-blur-sm overflow-y-auto">
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (submitLockRef.current || saving) return;
+            const normalized = normalizeLoadingSlipForm(form);
+            if (!normalized.loading_slip_no) {
+              setSaveError('Loading slip number is required');
+              return;
+            }
+            submitLockRef.current = true;
+            setSaveError('');
+            try {
+              await onSave(normalized);
+            } catch (err) {
+              setSaveError(err?.message || 'Save failed');
+            } finally {
+              submitLockRef.current = false;
+            }
+          }}
+          className="w-full max-w-xl rounded-xl bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 shadow-xl my-4"
+        >
+          <div className="border-b border-surface-200 dark:border-surface-800 px-5 py-4">
+            <h3 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
+              {editMode ? 'Edit loading slip' : 'Capture loading slip'} — {trip?.truck_registration}
+            </h3>
+            <p className="text-xs text-surface-500 mt-1">
+              {trip?.route_name || 'Route'} · {trip?.destination_name || trip?.destination_address || 'Destination TBC'}
+            </p>
+          </div>
+
+          <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            {hasExisting && (
+              <div className="rounded-lg border border-brand-200/80 bg-brand-50/70 px-3 py-2.5 dark:border-brand-900/50 dark:bg-brand-950/25">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-brand-700 dark:text-brand-300">Current capture</p>
+                <p className="text-sm font-mono font-semibold text-brand-900 dark:text-brand-100 mt-1">
+                  Slip {trip.loading_slip_no}
+                  {trip.tons_loaded != null ? ` · ${trip.tons_loaded} t` : ''}
+                </p>
+                <p className="text-xs text-brand-800/80 dark:text-brand-200/80 mt-0.5">
+                  {trip.loading_at ? `Loaded ${formatWhen(trip.loading_at)}` : 'Loading time not recorded'}
+                  {trip.driver_name ? ` · ${trip.driver_name}` : ''}
+                </p>
+                {cleanLoadingNotes(trip.loading_notes) && (
+                  <p className="text-xs text-surface-600 dark:text-surface-400 mt-1">{cleanLoadingNotes(trip.loading_notes)}</p>
+                )}
+                {(form.slip_image_path || trip.loading_slip_image_path) && (
+                  <p className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-1">Slip photo attached — saved with delivery</p>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={parsing || saving}
+                onClick={() => setCameraOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-xs font-medium hover:bg-violet-700 disabled:opacity-50"
+              >
+                {parsing ? 'Reading slip…' : 'Scan with AI camera'}
+              </button>
+              <button
+                type="button"
+                disabled={parsing || saving}
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-surface-300 dark:border-surface-600 text-xs font-medium text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-50"
+              >
+                Upload photo
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  runParseFile(file);
+                }}
+              />
+            </div>
+            {parseHint && (
+              <p className="text-xs text-violet-700 dark:text-violet-300">{parseHint}</p>
+            )}
+            {saveError && (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200">
+                {saveError}
+              </p>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="block text-sm sm:col-span-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-surface-500 block mb-1">Loading slip number *</span>
+                <input
+                  className={inputClass}
+                  required
+                  value={form.loading_slip_no || ''}
+                  onChange={(e) => setForm((prev) => ({ ...prev, loading_slip_no: e.target.value }))}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-xs font-medium uppercase tracking-wide text-surface-500 block mb-1">Loading time (from slip)</span>
+                <input
+                  className={inputClass}
+                  type="datetime-local"
+                  value={form.loaded_at || ''}
+                  onChange={(e) => setForm((prev) => ({ ...prev, loaded_at: e.target.value }))}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-xs font-medium uppercase tracking-wide text-surface-500 block mb-1">Tons loaded</span>
+                <input
+                  className={inputClass}
+                  type="number"
+                  step="0.001"
+                  value={form.tons_loaded || ''}
+                  onChange={(e) => setForm((prev) => ({ ...prev, tons_loaded: e.target.value }))}
+                />
+              </label>
+            </div>
+
+            <label className="block text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-surface-500 block mb-1">Driver</span>
+              <div className="space-y-2">
+                <select
+                  className={inputClass}
+                  value={form.driver_id || ''}
+                  disabled={driversLoading}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (!id) {
+                      setForm((prev) => ({ ...prev, driver_id: '', driver_name: prev.driver_name || '' }));
+                      return;
+                    }
+                    if (id === '__manual__') {
+                      setForm((prev) => ({ ...prev, driver_id: '__manual__', driver_name: '' }));
+                      return;
+                    }
+                    const picked = loadedDrivers.find((d) => String(d.id) === String(id));
+                    setForm((prev) => ({
+                      ...prev,
+                      driver_id: id,
+                      driver_name: picked?.full_name || '',
+                    }));
+                  }}
+                >
+                  <option value="">{driversLoading ? 'Loading drivers…' : 'Select driver'}</option>
+                  {linkedDrivers.length > 0 && (
+                    <optgroup label={truckRegistration ? `Linked to ${truckRegistration}` : 'Linked drivers'}>
+                      {linkedDrivers.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.full_name}{d.phone ? ` · ${d.phone}` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {otherDrivers.length > 0 && (
+                    <optgroup label="Other drivers">
+                      {otherDrivers.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.full_name}
+                          {d.linked_truck_registration ? ` (${d.linked_truck_registration})` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <option value="__manual__">Other — enter name manually</option>
+                </select>
+                {(form.driver_id === '__manual__' || !form.driver_id) && (
+                  <input
+                    className={inputClass}
+                    type="text"
+                    placeholder="Driver name"
+                    value={form.driver_name || ''}
+                    onChange={(e) => setForm((prev) => ({ ...prev, driver_name: e.target.value }))}
+                  />
+                )}
+                {driversError && (
+                  <p className="text-xs text-red-600 dark:text-red-400">{driversError}</p>
+                )}
+              </div>
+            </label>
+
+            <label className="block text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-surface-500 block mb-1">Remarks</span>
+              <textarea
+                className={inputClass}
+                rows={3}
+                value={form.notes || ''}
+                onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
+              />
+            </label>
+          </div>
+
+          <div className="flex gap-2 justify-end px-5 py-4 border-t border-surface-200 dark:border-surface-800">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm rounded-lg border border-surface-200 dark:border-surface-600 hover:bg-surface-50 dark:hover:bg-surface-800"
+            >
+              Cancel
+            </button>
+            <button type="submit" disabled={saving || parsing} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+              {saving ? 'Saving…' : submitLabel}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <FuelSlipAiCameraModal
+        open={cameraOpen}
+        busy={parsing}
+        onClose={() => setCameraOpen(false)}
+        onCapture={(file) => runParseFile(file)}
+        title="Scan loading slip"
+        subtitle="Align the slip in frame — we read slip number, tons, and loading time."
+        captureLabel="Capture & read slip"
+      />
+    </>
+  );
+}
+
 function formatKmNum(km) {
   if (km == null || !Number.isFinite(Number(km))) return null;
   const n = Number(km);
@@ -403,18 +822,25 @@ function formatDistanceProgress(item, routes) {
   if (item.activity_stage === 'awaiting_reschedule') {
     return item.auto_completed_delivery ? '✓ Delivered (auto)' : '✓ Delivered';
   }
-  if (item.activity_stage === 'at_destination') {
-    const totalKm = resolveRouteTotalKm(item, routes);
-    const total = formatKmNum(totalKm);
-    return total != null ? `0/${total} km` : 'At destination';
-  }
   const totalKm = resolveRouteTotalKm(item, routes);
+  const traveledRaw = item.km_traveled ?? item.kmTraveled;
+  const traveledKm = traveledRaw != null && Number.isFinite(Number(traveledRaw))
+    ? Number(traveledRaw)
+    : (item.activity_stage === 'at_destination' && totalKm != null ? totalKm : null);
+  const traveled = formatKmNum(traveledKm);
+  const total = formatKmNum(totalKm);
+  const hint = distanceBasisHint(item);
+
+  if (item.activity_stage === 'at_destination') {
+    if (traveled != null && total != null) return `${traveled}/${total} km${hint}`;
+    if (total != null) return `${total}/${total} km`;
+    return 'At destination';
+  }
+
   let leftKm = item.km_remaining ?? item.kmRemaining;
   leftKm = leftKm != null && Number.isFinite(Number(leftKm)) ? Number(leftKm) : null;
   if (leftKm != null && totalKm != null && leftKm > totalKm) leftKm = totalKm;
   const left = formatKmNum(leftKm);
-  const total = formatKmNum(totalKm);
-  const hint = distanceBasisHint(item);
   if (left != null && total != null) return `${left}/${total} km${hint}`;
   if (left != null) return `${left} km left${hint}`;
   if (total != null) return `${total} km route`;
@@ -422,11 +848,15 @@ function formatDistanceProgress(item, routes) {
 }
 
 function formatKmDone(item, routes) {
-  if (item.activity_stage !== 'enroute') return null;
   const traveled = item.km_traveled ?? item.kmTraveled;
   if (traveled != null && Number.isFinite(Number(traveled))) {
     return Math.max(0, Number(traveled));
   }
+  if (item.activity_stage === 'at_destination' || item.activity_stage === 'awaiting_reschedule') {
+    const total = resolveRouteTotalKm(item, routes);
+    return total != null ? total : null;
+  }
+  if (item.activity_stage !== 'enroute') return null;
   const total = resolveRouteTotalKm(item, routes);
   const left = Number(item.km_remaining ?? item.kmRemaining);
   if (!Number.isFinite(total) || !Number.isFinite(left)) return null;
@@ -436,6 +866,12 @@ function formatKmDone(item, routes) {
 function progressPct(item, routes) {
   const traveled = item.km_traveled ?? item.kmTraveled;
   const total = resolveRouteTotalKm(item, routes);
+  if (item.activity_stage === 'at_destination' && Number.isFinite(total) && total > 0) {
+    if (traveled != null && Number.isFinite(Number(traveled))) {
+      return Math.round(Math.max(0, Math.min(100, (Number(traveled) / total) * 100)));
+    }
+    return 100;
+  }
   if (traveled != null && Number.isFinite(Number(traveled)) && Number.isFinite(total) && total > 0) {
     return Math.round(Math.max(0, Math.min(100, (Number(traveled) / total) * 100)));
   }
@@ -506,6 +942,7 @@ function ActivityCard({
   const loadingSlipMissing = !String(item.loading_slip_no || '').trim();
   const blockedAtDestination = item.activity_stage === 'at_destination' && loadingSlipMissing;
   const canEditLoadingSlip = ['enroute', 'at_destination', 'awaiting_reschedule', 'at_loading'].includes(item.activity_stage);
+  const slipState = resolveLoadingSlipState(item, requireLoadingSlipBeforeEnroute);
   const needsAction = needsLoading || needsOffload || blockedAtDestination || awaitingNext;
   const speed = Number(item.last_speed_kmh);
   const hasSpeed = Number.isFinite(speed);
@@ -515,8 +952,20 @@ function ActivityCard({
   const alertCount = (item.deviation_count || 0) + (item.overspeed_count || 0);
   const destLabel = item.destination_name || item.destination_address || '—';
   const loadingTime = item.activity_stage === 'at_loading'
-    ? formatDurationMinutes(item.loading_duration_minutes)
-    : item.at_loading_at ? 'Done' : '—';
+    ? (item.loading_duration_minutes != null ? formatDurationMinutes(item.loading_duration_minutes) : 'At site')
+    : slipState.status === 'captured' && item.loading_at
+      ? formatShortTime(item.loading_at)
+      : slipState.status === 'captured'
+        ? 'Done'
+        : slipState.status === 'deferred'
+          ? 'Deferred'
+          : item.at_loading_at
+            ? 'Done'
+            : slipState.status === 'pending'
+              ? 'Waiting'
+              : slipState.status === 'missing'
+                ? 'No slip'
+                : '—';
   const onRoadTime = ['enroute', 'at_destination', 'awaiting_reschedule'].includes(item.activity_stage)
     ? formatDurationMinutes(item.on_road_duration_minutes)
     : '—';
@@ -605,16 +1054,20 @@ function ActivityCard({
               <span className="text-[10px] text-surface-500 tabular-nums">{formatEta(item.eta_minutes)} left</span>
             )}
           </div>
-          {pct != null && item.activity_stage === 'enroute' && (
+          {pct != null && (item.activity_stage === 'enroute' || item.activity_stage === 'at_destination') && (
             <div>
               <div className="h-1.5 rounded-full bg-surface-200 dark:bg-surface-800 overflow-hidden">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-brand-500 via-brand-400 to-emerald-500 transition-all duration-500"
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    item.activity_stage === 'at_destination'
+                      ? 'bg-gradient-to-r from-emerald-500 to-emerald-400'
+                      : 'bg-gradient-to-r from-brand-500 via-brand-400 to-emerald-500'
+                  }`}
                   style={{ width: `${pct}%` }}
                 />
               </div>
               <p className="text-[10px] text-surface-500 mt-1 tabular-nums flex justify-between">
-                <span>{pct}% {progressLabel(item)}</span>
+                <span>{pct}% {item.activity_stage === 'at_destination' ? 'arrived' : progressLabel(item)}</span>
                 {kmDone != null && <span>{formatKmNum(kmDone)} km done</span>}
               </p>
             </div>
@@ -652,17 +1105,31 @@ function ActivityCard({
           </div>
         )}
 
-        {item.loading_slip_deferred && (
-          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-            Slip deferred
-          </span>
-        )}
-        {item.loading_slip_no && canEditLoadingSlip && (
-          <p className="text-[10px] text-brand-700 dark:text-brand-300">
-            Loaded · slip {item.loading_slip_no}
-            {item.tons_loaded != null ? ` · ${item.tons_loaded} t` : ''}
-          </p>
-        )}
+        <div className={`rounded-lg border px-2.5 py-2 ${LOADING_SLIP_STATUS_STYLES[slipState.status] || LOADING_SLIP_STATUS_STYLES.pending}`}>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] font-bold uppercase tracking-wide">Loading slip</p>
+            <span className="text-[10px] font-semibold">{slipState.label}</span>
+          </div>
+          {slipState.slip && (
+            <p className="text-[10px] mt-1 font-mono font-medium">
+              #{slipState.slip}
+              {slipState.tons != null ? ` · ${slipState.tons} t` : ''}
+            </p>
+          )}
+          {slipState.at && (
+            <p className="text-[10px] mt-0.5 opacity-90">Loaded {formatWhen(slipState.at)}</p>
+          )}
+          {slipState.status === 'deferred' && (
+            <p className="text-[10px] mt-0.5">Capture before delivery can leave destination</p>
+          )}
+          {slipState.status === 'missing' && (
+            <p className="text-[10px] mt-0.5">Required before delivery can complete</p>
+          )}
+          {slipState.status === 'pending' && item.activity_stage === 'at_loading' && (
+            <p className="text-[10px] mt-0.5">Awaiting slip capture at loading site</p>
+          )}
+        </div>
+
         {item.activity_stage === 'at_loading' && !requireLoadingSlipBeforeEnroute && (
           <div className="flex items-center gap-2 rounded-lg border border-emerald-200/70 bg-emerald-50/80 px-2.5 py-2 dark:border-emerald-900/50 dark:bg-emerald-950/30">
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
@@ -735,7 +1202,7 @@ function ActivityCard({
               {item.loading_slip_no ? 'Edit loading slip' : 'Capture loading slip (optional)'}
             </button>
           )}
-          {canEditLoadingSlip && (
+          {canEditLoadingSlip && !(item.activity_stage === 'at_loading' && requireLoadingSlipBeforeEnroute) && (
             <button
               type="button"
               onClick={() => onEditLoadingSlip(item)}
@@ -765,6 +1232,78 @@ function ActivityCard({
   );
 }
 
+function WatcherFixesPanel({ watcher }) {
+  const [open, setOpen] = useState(false);
+  const fixes = watcher?.fixes || [];
+  if (!fixes.length) return null;
+
+  return (
+    <div className="rounded-xl border border-violet-200 dark:border-violet-900/50 bg-violet-50/60 dark:bg-violet-950/20 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left"
+      >
+        <span className="text-xs font-semibold text-violet-900 dark:text-violet-200">
+          Activity watcher corrected {fixes.length} truck{fixes.length === 1 ? '' : 's'}
+        </span>
+        <span className="text-[10px] text-violet-700 dark:text-violet-300">{open ? 'Hide' : 'Show details'}</span>
+      </button>
+      {open && (
+        <ul className="border-t border-violet-200/80 dark:border-violet-900/40 divide-y divide-violet-100 dark:divide-violet-900/30 max-h-40 overflow-y-auto">
+          {fixes.map((f) => (
+            <li key={`${f.trip_id}-${f.to}`} className="px-3 py-2 text-[11px] text-violet-900 dark:text-violet-100">
+              <span className="font-bold">{f.truck_registration}</span>
+              {' · '}
+              <span className="uppercase tracking-wide">{f.from}</span>
+              {' → '}
+              <span className="uppercase tracking-wide">{f.to}</span>
+              {f.reason && (
+                <span className="block text-violet-700/90 dark:text-violet-300/90 mt-0.5">{f.reason}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RouteMismatchDialog({ mismatch, routes, busy, onAmend, onIgnore, onClose }) {
+  if (!mismatch) return null;
+  const scheduledName = mismatch.scheduled_route_name || 'Scheduled route';
+  const detectedName = mismatch.detected_route_name
+    || routes.find((r) => r.id === mismatch.detected_route_id)?.name
+    || 'Detected route';
+
+  return (
+    <div className="fixed inset-0 z-[2100] flex items-center justify-center p-4 bg-surface-950/50 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-xl bg-white dark:bg-surface-900 border border-amber-200 dark:border-amber-900/50 shadow-xl p-5 space-y-4">
+        <div>
+          <h3 className="text-lg font-semibold text-surface-900 dark:text-surface-100">Unscheduled route detected</h3>
+          <p className="text-sm text-surface-600 dark:text-surface-400 mt-1">
+            <strong>{mismatch.truck_registration}</strong> is scheduled for <strong>{scheduledName}</strong> but arrived at the loading geofence for <strong>{detectedName}</strong>.
+          </p>
+        </div>
+        <p className="text-xs text-surface-500">
+          Amend the schedule to match where the truck actually went, or ignore and keep the original schedule — the truck will be hidden from Logistics Activity until it returns to the scheduled route.
+        </p>
+        <div className="flex flex-wrap gap-2 justify-end">
+          <button type="button" onClick={onClose} disabled={busy} className="px-3 py-1.5 text-sm rounded-lg border border-surface-200 dark:border-surface-600">
+            Decide later
+          </button>
+          <button type="button" onClick={onIgnore} disabled={busy} className="px-3 py-1.5 text-sm rounded-lg border border-amber-300 text-amber-900 dark:border-amber-800 dark:text-amber-200">
+            {busy ? 'Working…' : 'Keep scheduled route'}
+          </button>
+          <button type="button" onClick={onAmend} disabled={busy} className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white">
+            {busy ? 'Working…' : 'Amend schedule'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LogisticsActivityTab({ setError }) {
   const [board, setBoard] = useState({ stages: [], routes: [], route_summaries: [], total_active: 0 });
   const [trucks, setTrucks] = useState([]);
@@ -776,6 +1315,8 @@ export default function LogisticsActivityTab({ setError }) {
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [redirectTarget, setRedirectTarget] = useState(null);
+  const [routeMismatch, setRouteMismatch] = useState(null);
+  const [watcherDismissed, setWatcherDismissed] = useState(false);
   const [mapTripId, setMapTripId] = useState(null);
   const [geofences, setGeofences] = useState([]);
   const mapPanelRef = useRef(null);
@@ -822,6 +1363,11 @@ export default function LogisticsActivityTab({ setError }) {
       ]);
       setBoard(b);
       setTrucks(t.trucks || []);
+      const pending = b.route_mismatches || [];
+      if (pending.length) {
+        setRouteMismatch((current) => current || pending[0]);
+      }
+      if ((b.watcher?.fixes || []).length) setWatcherDismissed(false);
     } catch (e) {
       setError(e?.message || 'Failed to load logistics activity');
     } finally {
@@ -932,6 +1478,8 @@ export default function LogisticsActivityTab({ setError }) {
       tons_loaded: form.tons_loaded,
       driver_name: form.driver_name,
       notes: form.notes,
+      loaded_at: form.loaded_at,
+      slip_image_path: form.slip_image_path,
     };
     if (update || defer) {
       if (update) {
@@ -1097,7 +1645,7 @@ export default function LogisticsActivityTab({ setError }) {
                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Auto-complete on exit
+                Auto-complete 2 km after geofence exit
               </span>
             )}
             {!requireLoadingSlipBeforeEnroute && (
@@ -1139,6 +1687,19 @@ export default function LogisticsActivityTab({ setError }) {
           </button>
         </div>
       </header>
+
+      {board.watcher?.fixes?.length > 0 && !watcherDismissed && (
+        <div className="relative">
+          <WatcherFixesPanel watcher={board.watcher} />
+          <button
+            type="button"
+            onClick={() => setWatcherDismissed(true)}
+            className="absolute top-2 right-2 text-[10px] text-violet-600 hover:text-violet-800 dark:text-violet-400"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <ScheduleLoadPanel
         expanded={!scheduleArchived}
@@ -1339,23 +1900,10 @@ export default function LogisticsActivityTab({ setError }) {
       </section>
 
       {(modal?.activity_stage === 'at_loading' || modal?.edit_loading_slip) && (
-        <SlipModal
-          title={`${modal.edit_loading_slip ? 'Edit loading slip' : 'Loading slip'} — ${modal.truck_registration}`}
-          truckRegistration={modal.truck_registration}
+        <LoadingSlipModal
+          trip={modal}
+          editMode={!!modal.edit_loading_slip}
           resetKey={`${modal.trip_id}-${modal.edit_loading_slip ? 'edit' : 'capture'}-loading`}
-          initial={{
-            loading_slip_no: modal.loading_slip_no || '',
-            tons_loaded: modal.tons_loaded ?? '',
-            driver_id: '',
-            driver_name: modal.driver_name || '',
-            notes: modal.loading_notes && modal.loading_notes !== 'Awaiting loading slip' ? modal.loading_notes : '',
-          }}
-          fields={[
-            { key: 'loading_slip_no', label: 'Loading slip number', required: true },
-            { key: 'tons_loaded', label: 'Tons loaded', type: 'number', step: '0.001' },
-            { key: 'driver_name', label: 'Driver', type: 'driver_select' },
-            { key: 'notes', label: 'Remarks', type: 'textarea' },
-          ]}
           onClose={() => setModal(null)}
           onSave={(form) => (modal.edit_loading_slip || shouldUpdateLoadingSlip(modal)
             ? handleLoadingEdit(form)
@@ -1365,7 +1913,7 @@ export default function LogisticsActivityTab({ setError }) {
         />
       )}
 
-      {modal?.activity_stage === 'at_destination' && (
+      {modal?.activity_stage === 'at_destination' && !modal?.edit_loading_slip && (
         <SlipModal
           title={`Offloading slip — ${modal.truck_registration}`}
           resetKey={`${modal.trip_id}-offloading`}
@@ -1443,6 +1991,39 @@ export default function LogisticsActivityTab({ setError }) {
           </div>
         </div>
       )}
+
+      <RouteMismatchDialog
+        mismatch={routeMismatch}
+        routes={board.routes || []}
+        busy={saving}
+        onClose={() => setRouteMismatch(null)}
+        onIgnore={async () => {
+          if (!routeMismatch?.trip_id) return;
+          setSaving(true);
+          try {
+            await trackingApi.logisticsActivity.resolveRouteMismatch(routeMismatch.trip_id, { action: 'ignore' });
+            setRouteMismatch(null);
+            await load({ silent: true });
+          } catch (e) {
+            setError(e?.message || 'Could not ignore route mismatch');
+          } finally {
+            setSaving(false);
+          }
+        }}
+        onAmend={async () => {
+          if (!routeMismatch?.trip_id) return;
+          setSaving(true);
+          try {
+            await trackingApi.logisticsActivity.resolveRouteMismatch(routeMismatch.trip_id, { action: 'amend' });
+            setRouteMismatch(null);
+            await load({ silent: true });
+          } catch (e) {
+            setError(e?.message || 'Could not amend schedule');
+          } finally {
+            setSaving(false);
+          }
+        }}
+      />
     </div>
   );
 }

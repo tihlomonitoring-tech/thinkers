@@ -3,7 +3,7 @@
  * and route progress so trucks land in the correct column automatically.
  */
 
-import { isInsideGeofence } from './trackingGeofence.js';
+import { isInsideGeofence, DESTINATION_DEPARTURE_COMPLETE_KM, maxDistanceOutsideRouteLegKm, shouldAutoCompleteAfterDestinationExit } from './trackingGeofence.js';
 import {
   parseCorridorPolyline,
   parseMonitorWaypoints,
@@ -73,7 +73,13 @@ function routeGeofenceFlags(lat, lng, routeId, geofences) {
 export function inferExpectedActivityStage(trip, ctx) {
   const stored = String(get(trip, 'activity_stage') || 'scheduled').toLowerCase();
   const status = String(get(trip, 'status') || '').toLowerCase();
-  const { atOrigin, atDestination, traveledKm, totalKm, remainingKm, workflow } = ctx;
+  const {
+    atOrigin, atDestination, traveledKm, totalKm, remainingKm, workflow, kmOutsideDestination,
+  } = ctx;
+
+  if (String(get(trip, 'route_mismatch_status') || '').toLowerCase() === 'ignored') {
+    return { stage: stored, reason: null };
+  }
 
   if (stored === 'awaiting_reschedule' && atOrigin) {
     return { stage: 'at_loading', reason: 'Returned to origin geofence' };
@@ -119,7 +125,15 @@ export function inferExpectedActivityStage(trip, ctx) {
   }
 
   if (stored === 'at_destination' && get(trip, 'offloading_slip_no') && !workflow.require_offloading_slip_at_destination) {
-    return { stage: 'awaiting_reschedule', reason: 'Delivery complete — awaiting return' };
+    const outside = kmOutsideDestination != null ? kmOutsideDestination : 0;
+    const exited = !!get(trip, 'destination_geofence_exited_at');
+    if (shouldAutoCompleteAfterDestinationExit(trip, outside, exited)) {
+      return {
+        stage: 'awaiting_reschedule',
+        reason: `Exited destination geofence and is ${DESTINATION_DEPARTURE_COMPLETE_KM}+ km away`,
+      };
+    }
+    return { stage: stored, reason: null };
   }
 
   return { stage: stored, reason: null };
@@ -230,8 +244,10 @@ export async function reconcileLogisticsActivityStages(query, tenantId) {
     const rid = gid(get(trip, 'contractor_route_id')) || gid(get(trip, 'route_id'));
     const route = rid ? routeById.get(rid) : null;
     const stored = String(get(trip, 'activity_stage') || 'scheduled').toLowerCase();
+    if (String(get(trip, 'route_mismatch_status') || '').toLowerCase() === 'ignored') continue;
 
     const { atOrigin, atDestination } = routeGeofenceFlags(lat, lng, rid, geofences);
+    const kmOutsideDestination = maxDistanceOutsideRouteLegKm(lat, lng, rid, geofences, 'destination');
 
     const polyline = resolveRoutePolyline(rid, corridorR.recordset, monitorR.recordset);
     const routeDistanceKm = polyline?.length >= 2
@@ -255,6 +271,7 @@ export async function reconcileLogisticsActivityStages(query, tenantId) {
       totalKm: dist.route_distance_km ?? routeDistanceKm,
       remainingKm: dist.km_remaining,
       workflow,
+      kmOutsideDestination,
     });
 
     if (!reason || expected === stored) continue;
