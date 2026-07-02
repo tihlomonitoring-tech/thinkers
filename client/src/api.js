@@ -1726,6 +1726,22 @@ export const logisticsFinance = {
   },
 };
 
+const lp = (path, options = {}) => request(`/logistics-planning${path}`, options);
+
+export const logisticsPlanning = {
+  getPlan: (date) => lp(`/plan?date=${encodeURIComponent(date || '')}`),
+  savePlan: (body) => lp('/plan', { method: 'POST', body: JSON.stringify(body) }),
+  getAdvise: (date) => lp(`/advise?date=${encodeURIComponent(date || '')}`),
+  applyAdvise: (body) => lp('/advise/apply', { method: 'POST', body: JSON.stringify(body || {}) }),
+  acceptPlan: (id, body) => lp(`/plan/${encodeURIComponent(id)}/accept`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  getOverview: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, String(v)); });
+    const s = q.toString();
+    return lp(`/overview${s ? `?${s}` : ''}`);
+  },
+};
+
 const tob = (path, options = {}) => request(`/truck-onboarding${path}`, options);
 
 export const truckOnboarding = {

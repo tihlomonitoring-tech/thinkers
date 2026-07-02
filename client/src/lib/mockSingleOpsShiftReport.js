@@ -62,6 +62,7 @@ export function buildMockSingleOpsShiftReport(rowsPerSection = 10, opts = {}) {
   const truckDeliveries = Array.from({ length: n }, (_, i) => ({
     truck_registration: `KMRGMG${pad(i)}`,
     driver_name: ['Kea Modila', 'Thabo Nkosi', 'Nomsa Dlamini', 'Pieter van Wyk'][i % 4],
+    route_name: routes[i % routes.length],
     completed_deliveries: 3 + (i % 8),
     remarks:
       i % 3 === 0

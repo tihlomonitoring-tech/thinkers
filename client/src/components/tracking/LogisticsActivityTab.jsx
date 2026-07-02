@@ -84,10 +84,13 @@ function ScheduleLoadPanel({
   onToggle,
   trucks,
   routes,
+  dailyPlan,
   scheduleReg,
   setScheduleReg,
   scheduleRouteId,
   setScheduleRouteId,
+  deviationJustification,
+  setDeviationJustification,
   scheduling,
   onSubmit,
 }) {
@@ -95,10 +98,36 @@ function ScheduleLoadPanel({
 
   const selectedRoute = routes.find((r) => r.id === scheduleRouteId);
   const selectedTruck = trucks.find((t) => t.registration === scheduleReg);
+  const planRoutes = (dailyPlan?.routes || []).filter((r) => r.enabled && !r.is_plan_b);
+  const planRouteIds = new Set(planRoutes.map((r) => r.contractor_route_id));
+  const isOffPlan = scheduleRouteId && planRouteIds.size > 0 && !planRouteIds.has(scheduleRouteId)
+    && !planRoutes.some((r) => r.plan_b_route_id === scheduleRouteId);
+  const matchedPlanRoute = planRoutes.find((r) => r.contractor_route_id === scheduleRouteId);
 
   return (
-    <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 p-4 shadow-sm">
-      <h3 className="font-medium text-surface-900 dark:text-surface-100 mb-3">Schedule load</h3>
+    <div className="rounded-xl border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 p-4 shadow-sm space-y-3">
+      <h3 className="font-medium text-surface-900 dark:text-surface-100">Schedule load</h3>
+
+      {planRoutes.length > 0 && (
+        <div className="rounded-lg border border-brand-200/80 bg-brand-50/70 dark:border-brand-900/40 dark:bg-brand-950/25 p-3 space-y-2">
+          <p className="text-xs font-bold uppercase tracking-wide text-brand-800 dark:text-brand-200">
+            Today&apos;s logistics plan ({dailyPlan?.title || 'Published'})
+          </p>
+          <ul className="space-y-1">
+            {planRoutes.map((r) => (
+              <li key={r.contractor_route_id} className="text-xs text-brand-900 dark:text-brand-100 flex flex-wrap gap-x-2">
+                <span className="font-semibold">#{r.priority_rank} {r.route_name}</span>
+                {r.expected_loads != null && <span>· {r.expected_loads} loads</span>}
+                {r.risk_level && <span className="uppercase text-[10px]">· {r.risk_level} risk</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[10px] text-brand-700/90 dark:text-brand-300/90">
+            Prefer these routes when scheduling. Selecting another route requires justification.
+          </p>
+        </div>
+      )}
+
       <form onSubmit={onSubmit} className="space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="block text-sm">
@@ -134,10 +163,18 @@ function ScheduleLoadPanel({
               required
             >
               <option value="">Select route</option>
-              {routes.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
+              {routes.map((r) => {
+                const inPlan = planRouteIds.has(r.id);
+                return (
+                  <option key={r.id} value={r.id}>
+                    {inPlan ? `★ ${r.name}` : r.name}
+                  </option>
+                );
+              })}
             </select>
+            {matchedPlanRoute && (
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-1">On plan — {matchedPlanRoute.execution_reason || 'Scheduled route for today'}</p>
+            )}
             {selectedRoute && (selectedRoute.loading_address || selectedRoute.destination_address) && (
               <p className="text-xs text-surface-500 mt-1 truncate" title={`${selectedRoute.loading_address || ''} → ${selectedRoute.destination_address || ''}`}>
                 {[selectedRoute.loading_address, selectedRoute.destination_address].filter(Boolean).join(' → ')}
@@ -145,6 +182,22 @@ function ScheduleLoadPanel({
             )}
           </label>
         </div>
+
+        {isOffPlan && (
+          <label className="block text-sm">
+            <span className="text-xs font-medium text-amber-700 dark:text-amber-300 block mb-1">
+              Justification for off-plan route <span className="text-red-500">*</span>
+            </span>
+            <textarea
+              className={inputClass}
+              rows={3}
+              required
+              value={deviationJustification}
+              onChange={(e) => setDeviationJustification(e.target.value)}
+              placeholder="Explain why this truck is not using a planned route today…"
+            />
+          </label>
+        )}
 
         <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
           <button
@@ -1202,7 +1255,7 @@ function ActivityCard({
               {item.loading_slip_no ? 'Edit loading slip' : 'Capture loading slip (optional)'}
             </button>
           )}
-          {canEditLoadingSlip && !(item.activity_stage === 'at_loading' && requireLoadingSlipBeforeEnroute) && (
+          {canEditLoadingSlip && item.activity_stage !== 'at_loading' && (
             <button
               type="button"
               onClick={() => onEditLoadingSlip(item)}
@@ -1311,6 +1364,7 @@ export default function LogisticsActivityTab({ setError }) {
   const [refreshing, setRefreshing] = useState(false);
   const [scheduleReg, setScheduleReg] = useState('');
   const [scheduleRouteId, setScheduleRouteId] = useState('');
+  const [deviationJustification, setDeviationJustification] = useState('');
   const [scheduling, setScheduling] = useState(false);
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -1452,9 +1506,11 @@ export default function LogisticsActivityTab({ setError }) {
         truck_registration: scheduleReg.trim(),
         contractor_truck_id: truck?.id,
         contractor_route_id: scheduleRouteId,
+        deviation_justification: deviationJustification.trim() || undefined,
       });
       setScheduleReg('');
       setScheduleRouteId('');
+      setDeviationJustification('');
       setScheduleArchived(true);
       persistPrefs({ scheduleArchived: true });
       await load({ silent: true });
@@ -1709,10 +1765,13 @@ export default function LogisticsActivityTab({ setError }) {
         }}
         trucks={trucks}
         routes={board.routes || []}
+        dailyPlan={board.daily_plan}
         scheduleReg={scheduleReg}
         setScheduleReg={setScheduleReg}
         scheduleRouteId={scheduleRouteId}
         setScheduleRouteId={setScheduleRouteId}
+        deviationJustification={deviationJustification}
+        setDeviationJustification={setDeviationJustification}
         scheduling={scheduling}
         onSubmit={schedule}
       />

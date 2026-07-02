@@ -28,6 +28,7 @@ const PAGE_ROLES = [
   { id: 'letters', label: 'Letter composition' },
   { id: 'accounting_management', label: 'Accounting management' },
   { id: 'logistics_finance_management', label: 'Logistics finance management' },
+  { id: 'logistics_planning', label: 'Logistics planning' },
   { id: 'tracking_integration', label: 'Tracking management' },
   { id: 'fuel_supply_management', label: 'Fuel supply management' },
   { id: 'fuel_customer_orders', label: 'Customer diesel orders (portal)' },

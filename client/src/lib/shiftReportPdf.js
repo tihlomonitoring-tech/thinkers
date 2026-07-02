@@ -22,6 +22,9 @@ const STATUS_OTHER = [71, 85, 105];
 
 const BAR_HEIGHT = 6;
 const ROW_HEIGHT = 5.5;
+const TABLE_ROW_HEIGHT = 4.2;
+const TABLE_LINE_HEIGHT = 3.4;
+const TABLE_CELL_PAD = 1;
 const CELL_PAD = 1.5;
 const LINE_HEIGHT = 4;
 const SECTION_GAP = 5;
@@ -48,8 +51,16 @@ function wrap(doc, text, maxW) {
 
 /** Return column widths that sum exactly to CONTENT_WIDTH (last column absorbs remainder). */
 function cols(...widths) {
-  const sum = widths.reduce((a, b) => a + b, 0);
   if (widths.length === 0) return [CONTENT_WIDTH];
+  let sum = widths.reduce((a, b) => a + b, 0);
+  if (sum <= 0) return [CONTENT_WIDTH];
+  if (sum > CONTENT_WIDTH) {
+    const scale = CONTENT_WIDTH / sum;
+    const scaled = widths.map((w) => Math.max(10, w * scale));
+    const scaledSum = scaled.reduce((a, b) => a + b, 0);
+    scaled[scaled.length - 1] += CONTENT_WIDTH - scaledSum;
+    return scaled;
+  }
   const diff = CONTENT_WIDTH - sum;
   return widths.map((w, i) => (i === widths.length - 1 ? w + diff : w));
 }
@@ -230,40 +241,40 @@ function drawTable(doc, yRef, headers, rows, colWidths) {
   const startX = MARGIN;
   let y = yRef.current;
 
-  checkNewPage(doc, yRef, ROW_HEIGHT * 3 + 15);
+  checkNewPage(doc, yRef, TABLE_ROW_HEIGHT * 3 + 12);
   y = yRef.current;
   doc.setDrawColor(...TABLE_BORDER);
-  doc.setLineWidth(0.4);
+  doc.setLineWidth(0.35);
   setTableFont(doc, true);
-  doc.rect(startX, y, tableWidth, ROW_HEIGHT, 'S');
+  doc.rect(startX, y, tableWidth, TABLE_ROW_HEIGHT, 'S');
   let x = startX;
   headers.forEach((h, i) => {
-    if (i > 0) doc.line(x, y, x, y + ROW_HEIGHT);
-    const lines = wrap(doc, h, colWidths[i] - CELL_PAD * 2);
-    doc.text(lines[0] || h, x + CELL_PAD, y + 3.8);
+    if (i > 0) doc.line(x, y, x, y + TABLE_ROW_HEIGHT);
+    const lines = wrap(doc, h, colWidths[i] - TABLE_CELL_PAD * 2);
+    doc.text(lines[0] || h, x + TABLE_CELL_PAD, y + 3.2);
     x += colWidths[i];
   });
-  doc.line(startX + tableWidth, y, startX + tableWidth, y + ROW_HEIGHT);
-  y += ROW_HEIGHT;
+  doc.line(startX + tableWidth, y, startX + tableWidth, y + TABLE_ROW_HEIGHT);
+  y += TABLE_ROW_HEIGHT;
 
   setTableFont(doc, false);
 
   rows.forEach((row) => {
     const cellLines = row.map((cell, colIdx) => {
-      const cellW = Math.max(6, colWidths[colIdx] - CELL_PAD * 2);
+      const cellW = Math.max(6, colWidths[colIdx] - TABLE_CELL_PAD * 2);
       return wrap(doc, cell != null ? String(cell) : '—', cellW);
     });
     const maxLines = Math.max(1, ...cellLines.map((arr) => arr.length));
-    const rowH = Math.max(ROW_HEIGHT, maxLines * LINE_HEIGHT + CELL_PAD * 2);
+    const rowH = Math.max(TABLE_ROW_HEIGHT, maxLines * TABLE_LINE_HEIGHT + TABLE_CELL_PAD * 2);
     yRef.current = y;
-    checkNewPage(doc, yRef, rowH + 5);
+    checkNewPage(doc, yRef, rowH + 4);
     y = yRef.current;
     doc.rect(startX, y, tableWidth, rowH, 'S');
     x = startX;
     row.forEach((cell, colIdx) => {
       if (colIdx > 0) doc.line(x, y, x, y + rowH);
       const lines = cellLines[colIdx] || [];
-      lines.forEach((line, i) => doc.text(line, x + CELL_PAD, y + CELL_PAD + (i + 1) * LINE_HEIGHT));
+      lines.forEach((line, i) => doc.text(line, x + TABLE_CELL_PAD, y + TABLE_CELL_PAD + (i + 1) * TABLE_LINE_HEIGHT));
       x += colWidths[colIdx];
     });
     doc.line(startX + tableWidth, y, startX + tableWidth, y + rowH);
@@ -478,7 +489,7 @@ export function generateShiftReportPdf(report, options = {}) {
     drawTable(
       doc,
       yRef,
-      ['Truck registration', 'Driver', 'Route', 'Completed deliveries', 'Remarks'],
+      ['Truck registration', 'Driver', 'Route', 'Loads Delivered', 'Remarks'],
       truckDel.map((row) => [
         row.truck_registration || '—',
         row.driver_name || '—',
@@ -486,7 +497,7 @@ export function generateShiftReportPdf(report, options = {}) {
         row.completed_deliveries != null && row.completed_deliveries !== '' ? String(row.completed_deliveries) : '—',
         row.remarks || '—',
       ]),
-      cols(72, 86, 86, 62, CONTENT_WIDTH - 72 - 86 - 86 - 62)
+      cols(34, 40, 46, 24, 30)
     );
   }
 

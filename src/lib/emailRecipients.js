@@ -604,3 +604,35 @@ export async function getSuperAdminEmailsForTenant(query, tenantId) {
   } catch (_) {}
   return Array.from(emails);
 }
+
+/** Users with Logistics Planning page access in a tenant. */
+export async function getLogisticsPlanningEmails(query, tenantId) {
+  if (!tenantId) return [];
+  const emails = new Set();
+  const getRowEmail = (row) => {
+    if (!row || typeof row !== 'object') return null;
+    const key = Object.keys(row).find((k) => k.toLowerCase() === 'email');
+    const e = (key ? row[key] : row.email ?? row.Email ?? '').toString().trim();
+    return e && e.includes('@') ? e : null;
+  };
+  try {
+    const result = await query(
+      `SELECT DISTINCT u.email FROM user_page_roles r
+       INNER JOIN users u ON u.id = r.user_id
+       WHERE r.page_id = N'logistics_planning'
+         AND u.tenant_id = @tenantId
+         AND u.email IS NOT NULL AND LTRIM(RTRIM(u.email)) <> N''
+         ${EXCLUDE_SUBCONTRACTOR_PORTAL_USERS_SQL}`,
+      { tenantId }
+    );
+    for (const row of result?.recordset ?? []) {
+      const e = getRowEmail(row);
+      if (e) emails.add(e);
+    }
+    const superAdmins = await getSuperAdminEmailsForTenant(query, tenantId);
+    for (const e of superAdmins) emails.add(e);
+  } catch (err) {
+    console.warn('[emailRecipients] getLogisticsPlanningEmails:', err?.message || err);
+  }
+  return Array.from(emails);
+}

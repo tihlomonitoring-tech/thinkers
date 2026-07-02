@@ -290,6 +290,13 @@ const navSections = [
         shortcut: '',
         pageId: 'logistics_finance_management',
       },
+      {
+        to: '/logistics-planning',
+        label: 'Logistics planning',
+        icon: IconAccounting,
+        shortcut: '',
+        pageId: 'logistics_planning',
+      },
     ],
   },
 ];

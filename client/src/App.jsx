@@ -23,6 +23,7 @@ import Recruitment from './Recruitment';
 import LetterComposition from './LetterComposition';
 import AccountingManagement from './AccountingManagement';
 import LogisticsFinanceManagement from './LogisticsFinanceManagement';
+import LogisticsPlanning from './LogisticsPlanning';
 import TrackingManagement from './TrackingManagement';
 import FuelSupplyManagement from './FuelSupplyManagement';
 import FuelCustomerOrders from './FuelCustomerOrders';
@@ -142,6 +143,7 @@ function AppRoutes() {
         <Route path="letters" element={<Navigate to="/letter-composition" replace />} />
         <Route path="accounting-management" element={<PageGate pathKey="/accounting-management"><AccountingManagement /></PageGate>} />
         <Route path="logistics-finance-management" element={<PageGate pathKey="/logistics-finance-management"><LogisticsFinanceManagement /></PageGate>} />
+        <Route path="logistics-planning" element={<PageGate pathKey="/logistics-planning"><LogisticsPlanning /></PageGate>} />
         <Route path="tracking-management" element={<PageGate pathKey="/tracking-management"><TrackingManagement /></PageGate>} />
         <Route path="tracking-integration" element={<PageGate pathKey="/tracking-integration"><TrackingManagement /></PageGate>} />
         <Route path="quick-sign" element={<PageGate pathKey="/quick-sign"><QuickSign /></PageGate>} />

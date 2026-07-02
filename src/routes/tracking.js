@@ -12,6 +12,7 @@ import { bufferPolylineToPolygon, polylineDistanceKm } from '../lib/routeCorrido
 import { applyTelemetryToTrip } from '../lib/trackingTelemetry.js';
 import { getTripTrailLastKm } from '../lib/tripPositionTrail.js';
 import { sendDeviationAlertEmail } from '../lib/trackingEmailAlerts.js';
+import { sendScheduleDeviationPlannerEmail } from '../lib/logisticsPlanningEmailAlerts.js';
 import { getTrackingPollStatus, runTrackingProviderPoll } from '../lib/trackingProviderPoll.js';
 import { compactTruckRegistration } from '../lib/truckRegistration.js';
 import { resolveRouteDestination, resolveRouteOrigin } from '../lib/logisticsFlowWhatsApp.js';
@@ -25,6 +26,11 @@ import {
   updateLoadingSlipFields,
   completeDestinationDelivery,
 } from '../lib/logisticsActivityBoard.js';
+import {
+  getPublishedPlan,
+  validateScheduleAgainstPlan,
+  recordScheduleDeviation,
+} from '../lib/logisticsPlanner.js';
 import {
   snapshotDeliveryFuelEconomics,
   backfillDeliveryEconomics,
@@ -2276,8 +2282,11 @@ router.get('/logistics-activity/board', async (req, res) => {
   if (!ensureSchema(req, res, { stages: [], routes: [], total_active: 0 })) return;
   try {
     const tid = tenantId(req);
-    const board = await buildLogisticsActivityBoard(query, tid);
-    res.json({ ...board, poll: getTrackingPollStatus() });
+    const [board, dailyPlan] = await Promise.all([
+      buildLogisticsActivityBoard(query, tid),
+      getPublishedPlan(query, tid).catch(() => null),
+    ]);
+    res.json({ ...board, daily_plan: dailyPlan, poll: getTrackingPollStatus() });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Logistics activity board failed' });
   }
@@ -2287,10 +2296,41 @@ router.post('/logistics-activity/schedule', async (req, res) => {
   if (!ensureSchema(req, res, {})) return;
   try {
     const tid = tenantId(req);
-    const result = await scheduleTruckForRoute(query, tid, req.body || {});
+    const b = req.body || {};
+    const validation = await validateScheduleAgainstPlan(query, tid, b.contractor_route_id);
+    if (validation.requires_justification && !String(b.deviation_justification || '').trim()) {
+      return res.status(400).json({
+        error: 'Today\'s logistics plan uses different routes. Please justify why you selected this route.',
+        requires_justification: true,
+        daily_plan: validation.plan,
+      });
+    }
+    const result = await scheduleTruckForRoute(query, tid, b);
+    if (validation.requires_justification) {
+      const primaryPlanned = validation.plan?.routes?.[0];
+      const matched = validation.matched_route;
+      const routeName = matched?.route_name
+        || validation.plan?.routes?.find((r) => r.contractor_route_id === b.contractor_route_id)?.route_name;
+      await recordScheduleDeviation(query, tid, {
+        plan_id: validation.plan?.id,
+        trip_id: result.trip_id,
+        truck_registration: b.truck_registration,
+        planned_route_id: primaryPlanned?.contractor_route_id,
+        actual_route_id: b.contractor_route_id,
+        justification: b.deviation_justification,
+        user_id: req.user?.id,
+      });
+      sendScheduleDeviationPlannerEmail({
+        query,
+        tenantId: tid,
+        truckRegistration: b.truck_registration,
+        routeName: routeName || 'Off-plan route',
+        justification: b.deviation_justification,
+      }).catch(() => null);
+    }
     res.status(result.updated ? 200 : 201).json({ ok: true, ...result });
   } catch (err) {
-    res.status(err.message?.includes('required') || err.message?.includes('not found') ? 400 : 500).json({ error: err?.message || 'Schedule failed' });
+    res.status(err.message?.includes('required') || err.message?.includes('not found') || err.message?.includes('justify') ? 400 : 500).json({ error: err?.message || 'Schedule failed' });
   }
 });
 
